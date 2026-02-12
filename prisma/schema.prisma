@@ -1,0 +1,335 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Organization {
+  id                    String                  @id @default(uuid())
+  name                  String
+  slug                  String                  @unique
+  system_mode           String                  @default("observe")
+  assessment_completed  Boolean                 @default(false)
+  transition_acknowledged Boolean                @default(false)  // Phase 0→1: operator must acknowledge low-score assessments
+  created_at            DateTime                @default(now())
+  updated_at            DateTime                @updatedAt
+  apiKeys               ApiKey[]
+  auditLogs             AuditLog[]
+  campaigns             Campaign[]
+  domains               Domain[]
+  leads                 Lead[]
+  mailboxes             Mailbox[]
+  systemSettings        OrganizationSetting[]
+  rawEvents             RawEvent[]
+  routingRules          RoutingRule[]
+  stateTransitions      StateTransition[]
+  users                 User[]
+  notifications         Notification[]
+  infraReports          InfrastructureReport[]
+
+  @@index([slug])
+}
+
+model User {
+  id              String       @id @default(uuid())
+  email           String       @unique
+  password_hash   String
+  name            String?
+  role            String       @default("viewer")
+  organization_id String
+  last_login_at   DateTime?
+  created_at      DateTime     @default(now())
+  updated_at      DateTime     @updatedAt
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id])
+  @@index([email])
+}
+
+model ApiKey {
+  id              String       @id @default(uuid())
+  key_hash        String       @unique
+  key_prefix      String
+  name            String
+  scopes          String[]
+  organization_id String
+  last_used_at    DateTime?
+  expires_at      DateTime?
+  created_at      DateTime     @default(now())
+  revoked_at      DateTime?
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id])
+  @@index([key_hash])
+}
+
+model Lead {
+  id                    String       @id @default(uuid())
+  email                 String
+  persona               String
+  lead_score            Int
+  source                String       @default("clay")
+  status                String       @default("held")
+  health_state          String       @default("healthy")
+  health_classification String       @default("green")  // green, yellow, red
+  health_score_calc     Float        @default(100)      // 0-100 calculated health score
+  health_checks         Json?                           // { disposable, catchAll, roleEmail, domainAge }
+  health_checked_at     DateTime?                       // Last health re-evaluation timestamp
+  assigned_campaign_id  String?
+  organization_id       String
+  created_at            DateTime     @default(now())
+  updated_at            DateTime     @updatedAt
+  deleted_at            DateTime?
+  organization          Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@unique([organization_id, email])
+  @@index([organization_id, status])
+  @@index([organization_id, assigned_campaign_id])
+  @@index([organization_id, health_classification])
+  @@index([health_classification, health_checked_at])  // For health worker queries
+  @@index([status])
+}
+
+model Campaign {
+  id                 String       @id
+  name               String
+  channel            String       @default("email")
+  status             String       @default("active")
+  paused_reason      String?
+  paused_at          DateTime?
+  bounce_rate        Float        @default(0)
+  warning_count      Int          @default(0)
+  total_sent         Int          @default(0)
+  total_bounced      Int          @default(0)
+  organization_id    String
+  last_synced_at     DateTime     @default(now())
+  created_at         DateTime     @default(now())
+  updated_at         DateTime     @updatedAt
+  organization       Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  mailboxes          Mailbox[]    @relation("CampaignToMailbox")
+
+  @@index([organization_id, status])
+  @@index([organization_id])
+}
+
+model Mailbox {
+  id                     String          @id
+  email                  String
+  status                 String          @default("healthy")
+  recovery_phase         String          @default("healthy")       // RecoveryPhase: healthy|paused|quarantine|restricted_send|warm_recovery
+  healing_origin         String?                                   // HealingOrigin: rehab|recovery
+  phase_entered_at       DateTime?                                 // When the entity entered its current recovery phase
+  clean_sends_since_phase Int            @default(0)               // Clean sends (0 hard bounces) since entering current phase
+  resilience_score       Int             @default(50)              // 0-100, drives healing speed multipliers
+  relapse_count          Int             @default(0)               // Total relapses for escalating penalties
+  trend_state            String          @default("stable")        // TrendState: stable|degrading|accelerating|oscillating|recovering
+  provider_restrictions  Json?                                     // Per-provider restrictions: { gmail: { restricted: true, bounce_rate: 0.15 } }
+  hard_bounce_count      Int             @default(0)
+  delivery_failure_count Int             @default(0)
+  total_sent_count       Int             @default(0)
+  window_sent_count      Int             @default(0)
+  window_bounce_count    Int             @default(0)
+  window_start_at        DateTime        @default(now())
+  last_pause_at          DateTime?
+  cooldown_until         DateTime?
+  consecutive_pauses     Int             @default(0)
+  last_activity_at       DateTime        @default(now())
+  initial_bounce_rate    Float?                              // Historical bounce rate at import from Smartlead
+  initial_assessment_at  DateTime?                           // When initial assessment was performed
+  domain_id              String
+  organization_id        String
+  created_at             DateTime        @default(now())
+  updated_at             DateTime        @updatedAt
+  domain                 Domain          @relation(fields: [domain_id], references: [id])
+  organization           Organization    @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  metrics                MailboxMetrics?
+  campaigns              Campaign[]      @relation("CampaignToMailbox")
+
+  @@index([organization_id, status])
+  @@index([organization_id, domain_id])
+  @@index([domain_id])
+  @@index([recovery_phase])
+}
+
+model Domain {
+  id                           String       @id @default(uuid())
+  domain                       String
+  status                       String       @default("healthy")
+  recovery_phase               String       @default("healthy")       // RecoveryPhase
+  healing_origin               String?                                // HealingOrigin: rehab|recovery
+  phase_entered_at             DateTime?                               // When entered current recovery phase
+  clean_sends_since_phase      Int          @default(0)               // Clean sends since entering current phase
+  resilience_score             Int          @default(50)              // 0-100, drives healing speed multipliers
+  relapse_count                Int          @default(0)               // Total relapses
+  trend_state                  String       @default("stable")        // TrendState
+  provider_restrictions        Json?                                   // Per-provider restriction state
+  warning_count                Int          @default(0)
+  aggregated_bounce_rate_trend Float        @default(0.0)
+  paused_reason                String?
+  last_pause_at                DateTime?
+  cooldown_until               DateTime?
+  consecutive_pauses           Int          @default(0)
+  spf_valid                    Boolean?                        // SPF record check result
+  dkim_valid                   Boolean?                        // DKIM record check result
+  dmarc_policy                 String?                         // DMARC policy: 'none' | 'quarantine' | 'reject'
+  blacklist_results            Json?                           // { spamhaus: 'CONFIRMED'|'NOT_LISTED'|'UNREACHABLE', ... }
+  dns_checked_at               DateTime?                       // When DNS was last checked
+  initial_assessment_score     Float?                          // REPORT-ONLY. Never use in execution gate logic.
+  organization_id              String
+  created_at                   DateTime     @default(now())
+  updated_at                   DateTime     @updatedAt
+  organization                 Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  mailboxes                    Mailbox[]
+
+  @@unique([organization_id, domain])
+  @@index([organization_id, status])
+  @@index([organization_id])
+  @@index([recovery_phase])
+}
+
+model RoutingRule {
+  id                 String       @id @default(uuid())
+  persona            String
+  min_score          Int          @default(0)
+  target_campaign_id String
+  priority           Int          @default(0)
+  organization_id    String
+  created_at         DateTime     @default(now())
+  updated_at         DateTime     @updatedAt
+  organization       Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id, priority])
+  @@index([organization_id])
+}
+
+model RawEvent {
+  id              String       @id @default(uuid())
+  event_type      String
+  entity_type     String
+  entity_id       String?
+  payload         Json
+  idempotency_key String?      @unique
+  processed       Boolean      @default(false)
+  processed_at    DateTime?
+  error_message   String?
+  retry_count     Int          @default(0)
+  organization_id String
+  created_at      DateTime     @default(now())
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id, event_type])
+  @@index([organization_id, entity_type, entity_id])
+  @@index([processed, created_at])
+  @@index([idempotency_key])
+}
+
+model StateTransition {
+  id              String       @id @default(uuid())
+  entity_type     String
+  entity_id       String
+  from_state      String
+  to_state        String
+  reason          String
+  triggered_by    String
+  organization_id String
+  created_at      DateTime     @default(now())
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id, entity_type, entity_id])
+  @@index([entity_type, entity_id, created_at])
+}
+
+model MailboxMetrics {
+  id                 String   @id @default(uuid())
+  mailbox_id         String   @unique
+  window_1h_sent     Int      @default(0)
+  window_1h_bounce   Int      @default(0)
+  window_1h_failure  Int      @default(0)
+  window_1h_start    DateTime @default(now())
+  window_24h_sent    Int      @default(0)
+  window_24h_bounce  Int      @default(0)
+  window_24h_failure Int      @default(0)
+  window_24h_start   DateTime @default(now())
+  window_7d_sent     Int      @default(0)
+  window_7d_bounce   Int      @default(0)
+  window_7d_failure  Int      @default(0)
+  window_7d_start    DateTime @default(now())
+  risk_score         Float    @default(0)
+  velocity           Float    @default(0)
+  updated_at         DateTime @updatedAt
+  mailbox            Mailbox  @relation(fields: [mailbox_id], references: [id], onDelete: Cascade)
+
+  @@index([mailbox_id])
+}
+
+model AuditLog {
+  id              String       @id @default(uuid())
+  entity          String
+  entity_id       String?
+  trigger         String
+  action          String
+  details         String?
+  correlation_id  String?
+  user_id         String?
+  ip_address      String?
+  organization_id String
+  timestamp       DateTime     @default(now())
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id, entity, entity_id])
+  @@index([organization_id, timestamp])
+  @@index([correlation_id])
+}
+
+model OrganizationSetting {
+  id              String       @id @default(uuid())
+  key             String
+  value           String
+  is_secret       Boolean      @default(false)
+  organization_id String
+  updated_at      DateTime     @updatedAt
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@unique([organization_id, key])
+  @@index([organization_id])
+}
+
+
+
+model Notification {
+  id              String       @id @default(uuid())
+  type            String       // INFO, SUCCESS, WARNING, ERROR, SYSTEM
+  title           String
+  message         String
+  is_read         Boolean      @default(false)
+  user_id         String?      // Optional: Specific user targeting
+  organization_id String
+  created_at      DateTime     @default(now())
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id, created_at])
+  @@index([organization_id, is_read])
+}
+
+model SystemSetting {
+  key   String @id
+  value String
+}
+
+model InfrastructureReport {
+  id                 String       @id @default(uuid())
+  organization_id    String
+  report_type        String       // 'onboarding' | 'manual_reassessment'
+  assessment_version String       @default("1.0")
+  overall_score      Float        // 0-100, REPORT-ONLY — never reference in execution logic
+  summary            Json         // { domains, mailboxes, campaigns, totals }
+  findings           Json         // [{ severity, entity, entity_id, message, remediation }]
+  recommendations    Json         // [{ priority, action, details }]
+  created_at         DateTime     @default(now())
+  organization       Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id, created_at])
+}

@@ -1,0 +1,21 @@
+/**
+ * Healing Routes
+ * 
+ * Routes for the graduated healing system API.
+ */
+
+import { Router } from 'express';
+import * as healingController from '../controllers/healingController';
+
+const router = Router();
+
+// Transition gate status (Phase 0 → Phase 1)
+router.get('/transition-gate', healingController.getTransitionGate);
+
+// Acknowledge low-score assessment to proceed
+router.post('/acknowledge-transition', healingController.acknowledgeTransition);
+
+// Recovery status overview
+router.get('/recovery-status', healingController.getRecoveryStatus);
+
+export default router;
