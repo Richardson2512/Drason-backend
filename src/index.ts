@@ -399,17 +399,41 @@ app.patch('/api/organization', asyncHandler(async (req, res) => {
 // ERROR HANDLING
 // ============================================================================
 
+// Import error handling utils
+import { AppError } from './utils/appError';
+import { ZodError } from 'zod';
+
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
     logger.error('Unhandled error', err, {
         method: req.method,
         path: req.path,
         ip: req.ip
     });
+
+    // 1. Zod Validation Errors
+    if (err instanceof ZodError) {
+        const message = (err as any).errors.map((e: any) => `${e.path.join('.')}: ${e.message}`).join(', ');
+        return res.status(400).json({
+            success: false,
+            error: `Validation Error: ${message}`
+        });
+    }
+
+    // 2. Operational Errors (AppError)
+    if (err instanceof AppError) {
+        return res.status(err.statusCode).json({
+            success: false,
+            error: err.message
+        });
+    }
+
+    // 3. Programming/Unknown Errors
     res.status(500).json({
-        error: 'Internal server error',
-        message: process.env.NODE_ENV === 'development' ? err.message : undefined
+        success: false,
+        error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
     });
 });
+
 
 // ============================================================================
 // SERVER STARTUP
