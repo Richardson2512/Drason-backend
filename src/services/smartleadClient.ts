@@ -79,7 +79,8 @@ export const syncSmartlead = async (organizationId: string): Promise<{
                 update: {
                     name: campaign.name,
                     status: campaign.status || 'active',
-                    last_synced_at: new Date()
+                    last_synced_at: new Date(),
+                    organization_id: organizationId // Force ownership update
                 },
                 create: {
                     id: campaign.id.toString(),
