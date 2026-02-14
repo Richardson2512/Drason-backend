@@ -65,6 +65,14 @@ export const syncSmartlead = async (organizationId: string): Promise<{
         );
         const campaigns = campaignsRes.data || [];
 
+        logger.info('[DEBUG] Smartlead Campaigns Fetch', {
+            organizationId,
+            apiKeyLen: apiKey?.length,
+            count: campaigns.length,
+            isArray: Array.isArray(campaigns),
+            firstItem: campaigns.length > 0 ? campaigns[0] : null
+        });
+
         for (const campaign of campaigns) {
             await prisma.campaign.upsert({
                 where: { id: campaign.id.toString() },
