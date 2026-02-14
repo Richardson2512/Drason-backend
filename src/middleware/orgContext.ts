@@ -104,9 +104,15 @@ export const extractOrgContext = async (
             return next();
         }
 
-        if (authHeader && authHeader.startsWith('Bearer ')) {
-            const token = authHeader.substring(7);
+        let token: string | undefined;
 
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+            token = authHeader.substring(7);
+        } else if (req.cookies && req.cookies.token) {
+            token = req.cookies.token;
+        }
+
+        if (token) {
             // Try JWT first
             const jwtPayload = verifyJwt(token);
             if (jwtPayload) {

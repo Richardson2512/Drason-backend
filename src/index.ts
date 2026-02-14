@@ -61,6 +61,8 @@ import { startRetentionJob, getRetentionJobStatus } from './services/complianceS
 import { initEventQueue, getQueueStatus, shutdownEventQueue } from './services/eventQueue';
 import { startLeadHealthWorker, getLeadHealthWorkerStatus } from './services/leadHealthWorker';
 
+import cookieParser from 'cookie-parser';
+
 // Middleware
 app.use(cors({
     origin: process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3000'),
@@ -68,6 +70,7 @@ app.use(cors({
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Organization-ID'],
 }));
+app.use(cookieParser());
 app.use(express.json({ limit: '1mb' }));
 
 // Security headers on all responses
