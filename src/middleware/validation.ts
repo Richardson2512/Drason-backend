@@ -51,7 +51,8 @@ export function validateQuery(schema: z.ZodType) {
             });
             return;
         }
-        req.query = result.data as any;
+        // req.query is read-only in newer Express — merge validated data instead of replacing
+        Object.assign(req.query, result.data);
         next();
     };
 }
