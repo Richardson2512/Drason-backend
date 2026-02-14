@@ -406,10 +406,13 @@ import { AppError } from './utils/appError';
 import { ZodError } from 'zod';
 
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
-    logger.error('Unhandled error', err, {
+    // Log the FULL error details — not just "Unhandled error"
+    logger.error(`Unhandled error: ${err.message}`, err, {
         method: req.method,
         path: req.path,
-        ip: req.ip
+        ip: req.ip,
+        stack: err.stack,
+        name: err.name
     });
 
     // 1. Zod Validation Errors
@@ -429,10 +432,10 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
         });
     }
 
-    // 3. Programming/Unknown Errors
+    // 3. Programming/Unknown Errors — always include message for internal API debugging
     res.status(500).json({
         success: false,
-        error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
+        error: err.message || 'Internal server error'
     });
 });
 
