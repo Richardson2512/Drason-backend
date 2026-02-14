@@ -97,6 +97,13 @@ export const extractOrgContext = async (
 
         const authHeader = req.headers.authorization;
 
+        // PUBLIC ROUTES: Skip context check for auth endpoints and webhooks
+        // Note: req.path is relative to the mount point ('/api')
+        const publicPaths = ['/auth/login', '/auth/register', '/monitor/smartlead-webhook', '/ingest/clay'];
+        if (publicPaths.some(path => req.path.startsWith(path))) {
+            return next();
+        }
+
         if (authHeader && authHeader.startsWith('Bearer ')) {
             const token = authHeader.substring(7);
 
