@@ -180,11 +180,22 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
     const payload = req.body;
 
     // Get organization context
-    let organizationId: string;
-    try {
-        organizationId = getOrgId(req);
-    } catch (error) {
-        return res.status(401).json({ error: 'Organization context required' });
+    // Get organization context manual extraction (since middleware skips public routes)
+    let organizationId = req.headers['x-organization-id'] as string || req.query.orgId as string;
+
+    if (!organizationId) {
+        // Fallback: Try to find orgId in the payload itself
+        organizationId = payload.orgId || payload.organizationId || payload.organization_id;
+    }
+
+    if (!organizationId) {
+        return res.status(400).json({ error: 'Organization ID required in header (X-Organization-ID) or query param (?orgId)' });
+    }
+
+    // specific validation to ensure org exists
+    const orgExists = await prisma.organization.findUnique({ where: { id: organizationId } });
+    if (!orgExists) {
+        return res.status(404).json({ error: 'Invalid Organization ID' });
     }
 
     // Helper to find value case-insensitively
