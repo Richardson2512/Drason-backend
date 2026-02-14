@@ -29,7 +29,7 @@ export const getReport = async (req: Request, res: Response): Promise<void> => {
             return;
         }
 
-        res.json({ success: true, report });
+        res.json({ success: true, data: report });
     } catch (e: any) {
         logger.error('Failed to fetch assessment report', e);
         res.status(500).json({ error: e.message });
@@ -44,7 +44,7 @@ export const getReports = async (req: Request, res: Response): Promise<void> => 
     try {
         const orgId = getOrgId(req);
         const reports = await assessmentService.getReports(orgId);
-        res.json({ success: true, reports });
+        res.json({ success: true, data: reports });
     } catch (e: any) {
         logger.error('Failed to fetch assessment reports', e);
         res.status(500).json({ error: e.message });
@@ -103,10 +103,12 @@ export const getDomainDNS = async (req: Request, res: Response): Promise<void> =
 
         res.json({
             success: true,
-            domain: domain.domain,
-            domainId: domain.id,
-            currentStatus: domain.status,
-            dns: dnsResult
+            data: {
+                domain: domain.domain,
+                domainId: domain.id,
+                currentStatus: domain.status,
+                dns: dnsResult
+            }
         });
     } catch (e: any) {
         logger.error('DNS check failed', e);

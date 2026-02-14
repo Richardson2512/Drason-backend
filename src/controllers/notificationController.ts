@@ -20,7 +20,7 @@ export const getNotifications = async (req: Request, res: Response) => {
         const filter = req.query.filter as 'all' | 'unread' || 'all';
 
         const result = await notificationService.getNotifications(orgId, page, limit, filter);
-        res.json(result);
+        res.json({ success: true, data: result });
     } catch (error) {
         logger.error('Error fetching notifications:', error as Error);
         res.status(500).json({ error: 'Internal Server Error' });
@@ -34,7 +34,7 @@ export const getUnreadCount = async (req: Request, res: Response) => {
     try {
         const orgId = getOrgId(req);
         const count = await notificationService.getUnreadCount(orgId);
-        res.json({ count });
+        res.json({ success: true, data: { count } });
     } catch (error) {
         logger.error('Error fetching unread count:', error as Error);
         res.status(500).json({ error: 'Internal Server Error' });

@@ -76,10 +76,10 @@ export const triggerEvent = async (req: Request, res: Response) => {
     try {
         if (eventType === 'bounce') {
             await monitoringService.recordBounce(mailboxId, campaignId || '');
-            res.json({ message: 'Bounce recorded', mailboxId });
+            res.json({ success: true, message: 'Bounce recorded', mailboxId });
         } else if (eventType === 'sent') {
             await monitoringService.recordSent(mailboxId, campaignId || '');
-            res.json({ message: 'Send recorded', mailboxId });
+            res.json({ success: true, message: 'Send recorded', mailboxId });
         } else {
             res.status(400).json({ error: 'Invalid eventType. Use: bounce, sent' });
         }
@@ -270,17 +270,20 @@ export const getMailboxHealth = async (req: Request, res: Response) => {
         });
 
         res.json({
-            mailbox,
-            recentTransitions,
-            health: {
-                status: mailbox.status,
-                windowBounceRate: mailbox.window_sent_count > 0
-                    ? (mailbox.window_bounce_count / mailbox.window_sent_count * 100).toFixed(2) + '%'
-                    : '0%',
-                inCooldown: mailbox.cooldown_until && mailbox.cooldown_until > new Date(),
-                cooldownRemaining: mailbox.cooldown_until
-                    ? Math.max(0, mailbox.cooldown_until.getTime() - Date.now())
-                    : 0
+            success: true,
+            data: {
+                mailbox,
+                recentTransitions,
+                health: {
+                    status: mailbox.status,
+                    windowBounceRate: mailbox.window_sent_count > 0
+                        ? (mailbox.window_bounce_count / mailbox.window_sent_count * 100).toFixed(2) + '%'
+                        : '0%',
+                    inCooldown: mailbox.cooldown_until && mailbox.cooldown_until > new Date(),
+                    cooldownRemaining: mailbox.cooldown_until
+                        ? Math.max(0, mailbox.cooldown_until.getTime() - Date.now())
+                        : 0
+                }
             }
         });
     } catch (error) {

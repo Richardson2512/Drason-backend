@@ -191,20 +191,20 @@ import * as healingService from './services/healingService';
 app.get('/api/admin/dlq', requireRole(UserRole.ADMIN), asyncHandler(async (req, res) => {
     const limit = parseInt(String(req.query.limit || '50'), 10);
     const jobs = await getDeadLetterJobs(limit);
-    res.json({ count: jobs.length, jobs });
+    res.json({ success: true, data: { count: jobs.length, jobs } });
 }));
 
 // DLQ: Retry a specific failed job (ADMIN only)
 app.post('/api/admin/dlq/:jobId/retry', requireRole(UserRole.ADMIN), asyncHandler(async (req, res) => {
     const jobId = String(req.params.jobId);
     const success = await retryDeadLetterJob(jobId);
-    res.json({ success, jobId });
+    res.json({ success: true, data: { retried: success, jobId } });
 }));
 
 // DLQ: Retry all failed jobs (ADMIN only)
 app.post('/api/admin/dlq/retry-all', requireRole(UserRole.ADMIN), asyncHandler(async (req, res) => {
     const retried = await retryAllDeadLetterJobs();
-    res.json({ retriedCount: retried });
+    res.json({ success: true, data: { retriedCount: retried } });
 }));
 
 // Event Replay: Trigger replay for an entity (ADMIN only, org-scoped)
@@ -214,11 +214,11 @@ app.post('/api/admin/replay', requireRole(UserRole.ADMIN), asyncHandler(async (r
     const organizationId = req.orgContext?.organizationId;
 
     if (!organizationId || !entityType || !entityId) {
-        return res.status(400).json({ error: 'entityType and entityId are required' });
+        return res.status(400).json({ success: false, error: 'entityType and entityId are required' });
     }
 
     if (!['dry_run', 'live'].includes(mode)) {
-        return res.status(400).json({ error: 'mode must be "dry_run" or "live"' });
+        return res.status(400).json({ success: false, error: 'mode must be "dry_run" or "live"' });
     }
 
     const result = await replayEvents({
@@ -230,7 +230,7 @@ app.post('/api/admin/replay', requireRole(UserRole.ADMIN), asyncHandler(async (r
         toTimestamp: toTimestamp ? new Date(toTimestamp) : undefined,
     });
 
-    res.json(result);
+    res.json({ success: true, data: result });
 }));
 
 // Event Replay: Get replay summary (ADMIN only, org-scoped)
@@ -240,7 +240,7 @@ app.get('/api/admin/replay/summary', requireRole(UserRole.ADMIN), asyncHandler(a
     const organizationId = req.orgContext?.organizationId;
 
     if (!organizationId || !entityType || !entityId) {
-        return res.status(400).json({ error: 'entityType and entityId query params required' });
+        return res.status(400).json({ success: false, error: 'entityType and entityId query params required' });
     }
 
     const summary = await getReplaySummary(
@@ -248,7 +248,7 @@ app.get('/api/admin/replay/summary', requireRole(UserRole.ADMIN), asyncHandler(a
         entityType as string,
         entityId as string,
     );
-    res.json(summary);
+    res.json({ success: true, data: summary });
 }));
 
 // System Metrics Dashboard (ADMIN only)
@@ -298,50 +298,52 @@ app.get('/api/dashboard/system-metrics', requireRole(UserRole.ADMIN), asyncHandl
     const dlqJobs = await getDeadLetterJobs(1);
 
     res.json({
-        timestamp: new Date(),
-        eventQueue: {
-            status: queueStatus.isRunning ? 'active' : 'disabled',
-            active: queueStatus.activeCount,
-            waiting: queueStatus.waitingCount,
-            failed: queueStatus.failedCount,
-            completed: queueStatus.completedCount,
-            lastProcessedAt: queueStatus.lastProcessedAt,
-        },
-        circuitBreaker: {
-            smartlead: {
-                state: circuitBreakerStatus.state,
-                consecutiveFailures: circuitBreakerStatus.consecutiveFailures,
-                totalFailures: circuitBreakerStatus.totalFailures,
-                lastFailureAt: circuitBreakerStatus.lastFailureAt,
-                nextAttemptAt: circuitBreakerStatus.nextAttemptAt,
+        success: true, data: {
+            timestamp: new Date(),
+            eventQueue: {
+                status: queueStatus.isRunning ? 'active' : 'disabled',
+                active: queueStatus.activeCount,
+                waiting: queueStatus.waitingCount,
+                failed: queueStatus.failedCount,
+                completed: queueStatus.completedCount,
+                lastProcessedAt: queueStatus.lastProcessedAt,
             },
-        },
-        leadHealthWorker: {
-            lastRunAt: leadHealthStatus.lastRunAt,
-            totalReclassified: leadHealthStatus.totalReclassified,
-            lastBatchSize: leadHealthStatus.lastBatchSize,
-        },
-        entityHealth: {
-            mailboxes: {
-                total: totalMailboxes,
-                healthy: healthyMailboxes,
-                paused: pausedMailboxes,
-                warning: warningMailboxes,
+            circuitBreaker: {
+                smartlead: {
+                    state: circuitBreakerStatus.state,
+                    consecutiveFailures: circuitBreakerStatus.consecutiveFailures,
+                    totalFailures: circuitBreakerStatus.totalFailures,
+                    lastFailureAt: circuitBreakerStatus.lastFailureAt,
+                    nextAttemptAt: circuitBreakerStatus.nextAttemptAt,
+                },
             },
-            domains: {
-                total: totalDomains,
-                healthy: healthyDomains,
-                paused: pausedDomains,
+            leadHealthWorker: {
+                lastRunAt: leadHealthStatus.lastRunAt,
+                totalReclassified: leadHealthStatus.totalReclassified,
+                lastBatchSize: leadHealthStatus.lastBatchSize,
             },
-        },
-        events24h: {
-            total: recentEvents,
-            bounces: recentBounces,
-            bounceRate: recentEvents > 0 ? ((recentBounces / recentEvents) * 100).toFixed(2) + '%' : '0%',
-        },
-        dlq: {
-            count: queueStatus.failedCount,
-        },
+            entityHealth: {
+                mailboxes: {
+                    total: totalMailboxes,
+                    healthy: healthyMailboxes,
+                    paused: pausedMailboxes,
+                    warning: warningMailboxes,
+                },
+                domains: {
+                    total: totalDomains,
+                    healthy: healthyDomains,
+                    paused: pausedDomains,
+                },
+            },
+            events24h: {
+                total: recentEvents,
+                bounces: recentBounces,
+                bounceRate: recentEvents > 0 ? ((recentBounces / recentEvents) * 100).toFixed(2) + '%' : '0%',
+            },
+            dlq: {
+                count: queueStatus.failedCount,
+            },
+        }
     });
 }));
 
@@ -352,7 +354,7 @@ app.post('/api/dashboard/routing-rules', dashboardRoutes);
 app.get('/api/organization', asyncHandler(async (req, res) => {
     const orgId = req.orgContext?.organizationId;
     if (!orgId) {
-        return res.status(401).json({ error: 'Organization context required' });
+        return res.status(401).json({ success: false, error: 'Organization context required' });
     }
 
     const org = await prisma.organization.findUnique({
@@ -366,7 +368,7 @@ app.get('/api/organization', asyncHandler(async (req, res) => {
         }
     });
 
-    res.json(org);
+    res.json({ success: true, data: org });
 }));
 
 // Update organization settings
@@ -380,7 +382,7 @@ app.patch('/api/organization', asyncHandler(async (req, res) => {
 
     // Validate system_mode if provided
     if (system_mode && !['observe', 'suggest', 'enforce'].includes(system_mode)) {
-        return res.status(400).json({ error: 'Invalid system_mode. Must be: observe, suggest, or enforce' });
+        return res.status(400).json({ success: false, error: 'Invalid system_mode. Must be: observe, suggest, or enforce' });
     }
 
     const org = await prisma.organization.update({
@@ -392,7 +394,7 @@ app.patch('/api/organization', asyncHandler(async (req, res) => {
     });
 
     logger.info('Organization updated', { orgId, name, system_mode });
-    res.json(org);
+    res.json({ success: true, data: org });
 }));
 
 // ============================================================================

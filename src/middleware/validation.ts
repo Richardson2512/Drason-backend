@@ -20,6 +20,7 @@ export function validateBody(schema: z.ZodType) {
         const result = schema.safeParse(req.body);
         if (!result.success) {
             res.status(400).json({
+                success: false,
                 error: 'Validation failed',
                 details: result.error.issues.map((e: any) => ({
                     field: e.path.join('.'),
@@ -41,6 +42,7 @@ export function validateQuery(schema: z.ZodType) {
         const result = schema.safeParse(req.query);
         if (!result.success) {
             res.status(400).json({
+                success: false,
                 error: 'Invalid query parameters',
                 details: result.error.issues.map((e: any) => ({
                     field: e.path.join('.'),
@@ -74,11 +76,7 @@ export const registerSchema = z.object({
 // SCHEMAS — Settings
 // ============================================================================
 
-export const updateSettingsSchema = z.object({
-    smartlead_api_key: z.string().optional(),
-    clay_webhook_url: z.string().url().optional().or(z.literal('')),
-    system_mode: z.enum(['observe', 'suggest', 'enforce']).optional()
-});
+export const updateSettingsSchema = z.object({}).passthrough();
 
 export const updateOrganizationSchema = z.object({
     name: z.string().min(1).optional(),
@@ -90,11 +88,10 @@ export const updateOrganizationSchema = z.object({
 // ============================================================================
 
 export const routingRuleSchema = z.object({
-    name: z.string().min(1, 'Rule name is required'),
-    conditions: z.record(z.string(), z.any()).default({}),
-    action: z.string().min(1, 'Action is required'),
-    priority: z.number().int().min(0).default(0),
-    enabled: z.boolean().default(true)
+    persona: z.string().min(1, 'Persona is required'),
+    min_score: z.number().min(0).default(0),
+    target_campaign_id: z.string().min(1, 'Target campaign ID is required'),
+    priority: z.number().int().min(0).default(0)
 });
 
 // ============================================================================

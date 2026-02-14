@@ -5,7 +5,7 @@
  * All queries are scoped to the organization context.
  */
 
-import { Request, Response } from 'express';
+import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../index';
 import { getOrgId } from '../middleware/orgContext';
 import * as routingService from '../services/routingService';
@@ -16,7 +16,7 @@ import { logger } from '../services/observabilityService';
 /**
  * Get all leads for the organization with pagination.
  */
-export const getLeads = async (req: Request, res: Response) => {
+export const getLeads = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const orgId = getOrgId(req);
         const page = parseInt(req.query.page as string) || 1;
@@ -49,24 +49,26 @@ export const getLeads = async (req: Request, res: Response) => {
         ]);
 
         res.json({
-            data: leads,
-            meta: {
-                total,
-                page,
-                limit,
-                totalPages: Math.ceil(total / limit)
+            success: true,
+            data: {
+                leads,
+                meta: {
+                    total,
+                    page,
+                    limit,
+                    totalPages: Math.ceil(total / limit)
+                }
             }
         });
     } catch (error) {
-        logger.error('getLeads error', error as Error);
-        res.status(500).json({ error: 'Failed to fetch leads' });
+        next(error);
     }
 };
 
 /**
  * Get dashboard stats (Global or Campaign-specific)
  */
-export const getStats = async (req: Request, res: Response) => {
+export const getStats = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const orgId = getOrgId(req);
         const campaignId = req.query.campaignId as string;
@@ -89,22 +91,24 @@ export const getStats = async (req: Request, res: Response) => {
         ]);
 
         res.json({
-            active: activeCount,
-            held: heldCount,
-            paused: pausedCount,
-            completed: completedCount,
-            total: totalCount
+            success: true,
+            data: {
+                active: activeCount,
+                held: heldCount,
+                paused: pausedCount,
+                completed: completedCount,
+                total: totalCount
+            }
         });
     } catch (error) {
-        logger.error('getStats error', error as Error);
-        res.status(500).json({ error: 'Failed to fetch stats' });
+        next(error);
     }
 };
 
 /**
  * Get all campaigns with pagination.
  */
-export const getCampaigns = async (req: Request, res: Response) => {
+export const getCampaigns = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const orgId = getOrgId(req);
         const page = parseInt(req.query.page as string) || 1;
@@ -127,19 +131,21 @@ export const getCampaigns = async (req: Request, res: Response) => {
         ]);
 
         res.json({
-            data: campaigns,
-            meta: { total, page, limit, totalPages: Math.ceil(total / limit) }
+            success: true,
+            data: {
+                campaigns,
+                meta: { total, page, limit, totalPages: Math.ceil(total / limit) }
+            }
         });
     } catch (error) {
-        logger.error('getCampaigns error', error as Error);
-        res.status(500).json({ error: 'Failed to fetch campaigns' });
+        next(error);
     }
 };
 
 /**
  * Get all domains with pagination.
  */
-export const getDomains = async (req: Request, res: Response) => {
+export const getDomains = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const orgId = getOrgId(req);
         const page = parseInt(req.query.page as string) || 1;
@@ -164,19 +170,21 @@ export const getDomains = async (req: Request, res: Response) => {
         ]);
 
         res.json({
-            data: domains,
-            meta: { total, page, limit, totalPages: Math.ceil(total / limit) }
+            success: true,
+            data: {
+                domains,
+                meta: { total, page, limit, totalPages: Math.ceil(total / limit) }
+            }
         });
     } catch (error) {
-        logger.error('getDomains error', error as Error);
-        res.status(500).json({ error: 'Failed to fetch domains' });
+        next(error);
     }
 };
 
 /**
  * Get all mailboxes with pagination.
  */
-export const getMailboxes = async (req: Request, res: Response) => {
+export const getMailboxes = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const orgId = getOrgId(req);
         const page = parseInt(req.query.page as string) || 1;
@@ -199,12 +207,14 @@ export const getMailboxes = async (req: Request, res: Response) => {
         ]);
 
         res.json({
-            data: mailboxes,
-            meta: { total, page, limit, totalPages: Math.ceil(total / limit) }
+            success: true,
+            data: {
+                mailboxes,
+                meta: { total, page, limit, totalPages: Math.ceil(total / limit) }
+            }
         });
     } catch (error) {
-        logger.error('getMailboxes error', error as Error);
-        res.status(500).json({ error: 'Failed to fetch mailboxes' });
+        next(error);
     }
 };
 
@@ -225,7 +235,7 @@ export const getAuditLogs = async (req: Request, res: Response) => {
             take: limit ? parseInt(limit as string, 10) : 100
         });
 
-        res.json(logs);
+        res.json({ success: true, data: logs });
     } catch (error) {
         logger.error('getAuditLogs error', error as Error);
         res.status(500).json({ error: 'Failed to fetch audit logs' });
@@ -239,7 +249,7 @@ export const getRoutingRules = async (req: Request, res: Response) => {
     try {
         const orgId = getOrgId(req);
         const rules = await routingService.getRules(orgId);
-        res.json(rules);
+        res.json({ success: true, data: rules });
     } catch (error) {
         logger.error('getRoutingRules error', error as Error);
         res.status(500).json({ error: 'Failed to fetch routing rules' });
@@ -265,7 +275,7 @@ export const createRoutingRule = async (req: Request, res: Response) => {
             priority: priority || 0
         });
 
-        res.json(rule);
+        res.json({ success: true, data: rule });
     } catch (error) {
         logger.error('createRoutingRule error', error as Error);
         res.status(500).json({ error: 'Failed to create routing rule' });
@@ -290,7 +300,7 @@ export const getStateTransitions = async (req: Request, res: Response) => {
             take: 100
         });
 
-        res.json(transitions);
+        res.json({ success: true, data: transitions });
     } catch (error) {
         logger.error('getStateTransitions error', error as Error);
         res.status(500).json({ error: 'Failed to fetch state transitions' });
@@ -315,7 +325,7 @@ export const getRawEvents = async (req: Request, res: Response) => {
             take: limit ? parseInt(limit as string, 10) : 100
         });
 
-        res.json(events);
+        res.json({ success: true, data: events });
     } catch (error) {
         logger.error('getRawEvents error', error as Error);
         res.status(500).json({ error: 'Failed to fetch events' });
@@ -357,15 +367,18 @@ export const getLeadHealthStats = async (req: Request, res: Response) => {
         ]);
 
         res.json({
-            total,
-            green,
-            yellow,
-            red,
-            blocked,
-            recentBlocked,
-            greenPercent: total > 0 ? Math.round((green / total) * 100) : 0,
-            yellowPercent: total > 0 ? Math.round((yellow / total) * 100) : 0,
-            redPercent: total > 0 ? Math.round((red / total) * 100) : 0
+            success: true,
+            data: {
+                total,
+                green,
+                yellow,
+                red,
+                blocked,
+                recentBlocked,
+                greenPercent: total > 0 ? Math.round((green / total) * 100) : 0,
+                yellowPercent: total > 0 ? Math.round((yellow / total) * 100) : 0,
+                redPercent: total > 0 ? Math.round((red / total) * 100) : 0
+            }
         });
     } catch (error) {
         logger.error('getLeadHealthStats error', error as Error);
@@ -403,11 +416,14 @@ export const getCampaignHealthStats = async (req: Request, res: Response) => {
         const warning = campaigns.filter(c => c.status === 'warning').length;
 
         res.json({
-            total,
-            active,
-            paused,
-            warning,
-            campaigns
+            success: true,
+            data: {
+                total,
+                active,
+                paused,
+                warning,
+                campaigns
+            }
         });
     } catch (error) {
         logger.error('getCampaignHealthStats error', error as Error);

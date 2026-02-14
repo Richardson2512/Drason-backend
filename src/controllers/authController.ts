@@ -19,13 +19,44 @@ function getJwtSecret(): string {
 }
 
 const JWT_SECRET = getJwtSecret();
+const TOKEN_EXPIRY = '3d'; // 3-day token lifetime
+const COOKIE_MAX_AGE = 3 * 24 * 60 * 60 * 1000; // 3 days in ms
+
+/**
+ * Set auth token as httpOnly server-side cookie + return in body for backward compat.
+ */
+function setTokenCookie(res: Response, token: string): void {
+    res.cookie('token', token, {
+        httpOnly: true,           // Not accessible via document.cookie — XSS safe
+        secure: process.env.NODE_ENV === 'production', // HTTPS only in production
+        sameSite: 'lax',          // CSRF protection
+        path: '/',
+        maxAge: COOKIE_MAX_AGE,
+    });
+}
+
+/**
+ * Generate a JWT for a user.
+ */
+function generateToken(user: { id: string; email: string; role: string; organization_id: string }): string {
+    return jwt.sign(
+        {
+            userId: user.id,
+            email: user.email,
+            role: user.role,
+            orgId: user.organization_id,
+        },
+        JWT_SECRET,
+        { expiresIn: TOKEN_EXPIRY }
+    );
+}
 
 export const login = async (req: Request, res: Response) => {
     try {
         const { email, password } = req.body;
 
         if (!email || !password) {
-            return res.status(400).json({ error: 'Email and password are required' });
+            return res.status(400).json({ success: false, error: 'Email and password are required' });
         }
 
         const user = await prisma.user.findUnique({
@@ -34,25 +65,15 @@ export const login = async (req: Request, res: Response) => {
         });
 
         if (!user) {
-            return res.status(401).json({ error: 'Invalid credentials' });
+            return res.status(401).json({ success: false, error: 'Invalid credentials' });
         }
 
         const isValid = await bcrypt.compare(password, user.password_hash);
         if (!isValid) {
-            return res.status(401).json({ error: 'Invalid credentials' });
+            return res.status(401).json({ success: false, error: 'Invalid credentials' });
         }
 
-        // Generate JWT
-        const token = jwt.sign(
-            {
-                userId: user.id,
-                email: user.email,
-                role: user.role,
-                orgId: user.organization_id
-            },
-            JWT_SECRET,
-            { expiresIn: '24h' }
-        );
+        const token = generateToken(user);
 
         // Update last login
         await prisma.user.update({
@@ -61,6 +82,9 @@ export const login = async (req: Request, res: Response) => {
         });
 
         logger.info('User logged in', { userId: user.id, email: user.email });
+
+        // Set httpOnly cookie server-side
+        setTokenCookie(res, token);
 
         res.json({
             token,
@@ -78,7 +102,7 @@ export const login = async (req: Request, res: Response) => {
         });
     } catch (error: any) {
         logger.error('Login error', error);
-        res.status(500).json({ error: 'Internal server error' });
+        res.status(500).json({ success: false, error: 'Internal server error' });
     }
 };
 
@@ -87,12 +111,12 @@ export const register = async (req: Request, res: Response) => {
         const { name, email, password, organizationName } = req.body;
 
         if (!email || !password || !organizationName) {
-            return res.status(400).json({ error: 'Missing required fields' });
+            return res.status(400).json({ success: false, error: 'Missing required fields' });
         }
 
         const existingUser = await prisma.user.findUnique({ where: { email } });
         if (existingUser) {
-            return res.status(400).json({ error: 'Email already registered' });
+            return res.status(400).json({ success: false, error: 'Email already registered' });
         }
 
         // Slugify org name
@@ -101,7 +125,7 @@ export const register = async (req: Request, res: Response) => {
         // Check slug uniqueness
         const existingOrg = await prisma.organization.findUnique({ where: { slug } });
         if (existingOrg) {
-            return res.status(400).json({ error: 'Organization name/slug already taken' });
+            return res.status(400).json({ success: false, error: 'Organization name/slug already taken' });
         }
 
         const salt = await bcrypt.genSalt(10);
@@ -130,18 +154,12 @@ export const register = async (req: Request, res: Response) => {
             return { org, user };
         });
 
-        const token = jwt.sign(
-            {
-                userId: result.user.id,
-                email: result.user.email,
-                role: result.user.role,
-                orgId: result.org.id
-            },
-            JWT_SECRET,
-            { expiresIn: '24h' }
-        );
+        const token = generateToken({ ...result.user, organization_id: result.org.id });
 
         logger.info('User registered', { userId: result.user.id, email: result.user.email });
+
+        // Set httpOnly cookie server-side
+        setTokenCookie(res, token);
 
         res.status(201).json({
             token,
@@ -160,6 +178,86 @@ export const register = async (req: Request, res: Response) => {
 
     } catch (error: any) {
         logger.error('Registration error', error);
-        res.status(500).json({ error: 'Internal server error' });
+        res.status(500).json({ success: false, error: 'Internal server error' });
     }
+};
+
+/**
+ * Refresh token — issues a new JWT if the current one is still valid.
+ * Called periodically by the frontend to extend the session.
+ * Requires a valid (non-expired) JWT in the cookie or Authorization header.
+ */
+export const refreshToken = async (req: Request, res: Response) => {
+    try {
+        // Extract token from cookie or header
+        let token: string | undefined;
+
+        if (req.cookies?.token) {
+            token = req.cookies.token;
+        } else {
+            const authHeader = req.headers.authorization;
+            if (authHeader?.startsWith('Bearer ')) {
+                token = authHeader.substring(7);
+            }
+        }
+
+        if (!token) {
+            return res.status(401).json({ success: false, error: 'No token provided' });
+        }
+
+        // Verify current token
+        let decoded: any;
+        try {
+            decoded = jwt.verify(token, JWT_SECRET);
+        } catch (err: any) {
+            if (err.name === 'TokenExpiredError') {
+                return res.status(401).json({ success: false, error: 'Token expired. Please log in again.' });
+            }
+            return res.status(401).json({ success: false, error: 'Invalid token' });
+        }
+
+        // Look up user to ensure they still exist and are active
+        const user = await prisma.user.findUnique({
+            where: { id: decoded.userId },
+            include: { organization: true }
+        });
+
+        if (!user) {
+            return res.status(401).json({ success: false, error: 'User no longer exists' });
+        }
+
+        // Issue fresh token
+        const newToken = generateToken(user);
+
+        // Set new httpOnly cookie
+        setTokenCookie(res, newToken);
+
+        logger.info('Token refreshed', { userId: user.id });
+
+        res.json({
+            token: newToken,
+            user: {
+                id: user.id,
+                email: user.email,
+                name: user.name,
+                role: user.role,
+                organization: {
+                    id: user.organization.id,
+                    name: user.organization.name,
+                    slug: user.organization.slug
+                }
+            }
+        });
+    } catch (error: any) {
+        logger.error('Token refresh error', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
+    }
+};
+
+/**
+ * Logout — clears the auth cookie.
+ */
+export const logout = async (_req: Request, res: Response) => {
+    res.clearCookie('token', { path: '/' });
+    res.json({ success: true, data: { message: 'Logged out successfully' } });
 };

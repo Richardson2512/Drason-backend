@@ -9,9 +9,9 @@ router.post('/', async (req: Request, res: Response) => {
     try {
         const orgId = getOrgId(req);
         const result = await smartleadClient.syncSmartlead(orgId);
-        res.json({ success: true, result });
+        res.json({ success: true, data: result });
     } catch (e: any) {
-        res.status(500).json({ error: e.message });
+        res.status(500).json({ success: false, error: e.message });
     }
 });
 

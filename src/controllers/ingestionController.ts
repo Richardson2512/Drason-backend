@@ -109,12 +109,15 @@ export const ingestLead = async (req: Request, res: Response) => {
             });
 
             return res.json({
-                message: 'Lead blocked by health gate',
-                leadId: createdLead.id,
-                healthClassification: healthResult.classification,
-                healthScore: healthResult.score,
-                blockReasons: healthResult.reasons,
-                assignedCampaignId: null
+                success: true,
+                data: {
+                    message: 'Lead blocked by health gate',
+                    leadId: createdLead.id,
+                    healthClassification: healthResult.classification,
+                    healthScore: healthResult.score,
+                    blockReasons: healthResult.reasons,
+                    assignedCampaignId: null
+                }
             });
         }
 
@@ -150,9 +153,12 @@ export const ingestLead = async (req: Request, res: Response) => {
         }
 
         res.json({
-            message: 'Lead ingested successfully',
-            leadId: createdLead.id,
-            assignedCampaignId: campaignId
+            success: true,
+            data: {
+                message: 'Lead ingested successfully',
+                leadId: createdLead.id,
+                assignedCampaignId: campaignId
+            }
         });
 
     } catch (error) {

@@ -20,7 +20,7 @@ export const getTransitionGate = async (req: Request, res: Response): Promise<vo
     try {
         const orgId = getOrgId(req);
         const result = await healingService.checkTransitionGate(orgId);
-        res.json({ success: true, ...result });
+        res.json({ success: true, data: result });
     } catch (e: any) {
         logger.error('Failed to check transition gate', e);
         res.status(500).json({ error: e.message });
@@ -128,13 +128,15 @@ export const getRecoveryStatus = async (req: Request, res: Response): Promise<vo
 
         res.json({
             success: true,
-            mailboxes: mailboxesWithLimits,
-            domains: domainsWithLimits,
-            summary: {
-                totalRecovering: recoveringMailboxes.length + recoveringDomains.length,
-                mailboxCount: recoveringMailboxes.length,
-                domainCount: recoveringDomains.length,
-            },
+            data: {
+                mailboxes: mailboxesWithLimits,
+                domains: domainsWithLimits,
+                summary: {
+                    totalRecovering: recoveringMailboxes.length + recoveringDomains.length,
+                    mailboxCount: recoveringMailboxes.length,
+                    domainCount: recoveringDomains.length,
+                }
+            }
         });
     } catch (e: any) {
         logger.error('Failed to fetch recovery status', e);

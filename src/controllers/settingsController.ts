@@ -29,7 +29,7 @@ export const getSettings = async (req: Request, res: Response) => {
             is_secret: s.is_secret
         }));
 
-        res.json(maskedSettings);
+        res.json({ success: true, data: maskedSettings });
     } catch (error) {
         logger.error('[SETTINGS] getSettings error:', error as Error);
         res.status(500).json({ error: 'Failed to fetch settings' });
@@ -75,7 +75,7 @@ export const updateSettings = async (req: Request, res: Response) => {
 
         await prisma.$transaction(updates as any);
 
-        res.json({ message: 'Settings updated successfully' });
+        res.json({ success: true, message: 'Settings updated successfully' });
     } catch (error) {
         logger.error('[SETTINGS] updateSettings error:', error as Error);
         res.status(500).json({ error: 'Failed to update settings' });
@@ -106,12 +106,15 @@ export const getClayWebhookUrl = async (req: Request, res: Response) => {
         const baseUrl = process.env.BASE_URL || process.env.FRONTEND_URL || `http://localhost:${process.env.PORT || 3001}`;
 
         res.json({
-            webhookUrl: `${baseUrl}/api/ingest/clay`,
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Organization-ID': orgId
-            },
-            note: 'Include the X-Organization-ID header in Clay webhook configuration'
+            success: true,
+            data: {
+                webhookUrl: `${baseUrl}/api/ingest/clay`,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Organization-ID': orgId
+                },
+                note: 'Include the X-Organization-ID header in Clay webhook configuration'
+            }
         });
     } catch (error) {
         res.status(500).json({ error: 'Failed to generate webhook URL' });

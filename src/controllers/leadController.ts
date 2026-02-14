@@ -28,7 +28,7 @@ export const ingestLead = async (req: Request, res: Response): Promise<void> => 
             lead_score,
         });
 
-        res.status(201).json({ message: 'Lead ingested successfully', lead });
+        res.status(201).json({ success: true, data: { message: 'Lead ingested successfully', lead } });
     } catch (error) {
         logger.error('Error ingesting lead:', error as Error);
         res.status(500).json({ error: 'Internal Server Error' });
