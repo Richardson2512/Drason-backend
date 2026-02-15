@@ -21,6 +21,7 @@ import {
 } from '../types';
 import * as auditLogService from './auditLogService';
 import * as notificationService from './notificationService';
+import * as smartleadClient from './smartleadClient';
 import logger from '../utils/logger';
 
 // ============================================================================
@@ -719,6 +720,76 @@ async function transitionPhase(
             });
         } catch (notifError) {
             logger.warn('Failed to create graduation notification', { entityId });
+        }
+
+        // ── SMARTLEAD INTEGRATION: Re-add mailbox to campaigns when fully recovered ──
+        if (entityType === 'mailbox') {
+            try {
+                // Get all campaigns this mailbox is assigned to in Drason
+                const campaigns = await prisma.campaign.findMany({
+                    where: {
+                        mailboxes: {
+                            some: { id: entityId }
+                        }
+                    }
+                });
+
+                // Re-add the mailbox to each campaign in Smartlead
+                for (const campaign of campaigns) {
+                    await smartleadClient.addMailboxToSmartleadCampaign(
+                        organizationId,
+                        campaign.id,
+                        entityId
+                    );
+                }
+
+                logger.info(`[HEALING] Re-added mailbox ${entityId} to ${campaigns.length} Smartlead campaigns`, {
+                    organizationId,
+                    entityId,
+                    campaignCount: campaigns.length
+                });
+            } catch (smartleadError: any) {
+                // Smartlead re-add failure doesn't block the recovery — mailbox is already healthy in Drason
+                logger.error(`[HEALING] Failed to re-add mailbox ${entityId} to Smartlead campaigns`, smartleadError, {
+                    organizationId,
+                    entityId
+                });
+            }
+        }
+
+        // ── SMARTLEAD INTEGRATION: Re-add domain mailboxes when domain recovers ──
+        if (entityType === 'domain') {
+            try {
+                // Get all mailboxes for this domain with their campaign assignments
+                const mailboxes = await prisma.mailbox.findMany({
+                    where: { domain_id: entityId, status: 'healthy' },
+                    include: { campaigns: true }
+                });
+
+                let addedCount = 0;
+                for (const mailbox of mailboxes) {
+                    for (const campaign of mailbox.campaigns) {
+                        await smartleadClient.addMailboxToSmartleadCampaign(
+                            organizationId,
+                            campaign.id,
+                            mailbox.id
+                        );
+                        addedCount++;
+                    }
+                }
+
+                logger.info(`[HEALING] Re-added domain ${entityId} mailboxes to Smartlead campaigns`, {
+                    organizationId,
+                    domainId: entityId,
+                    mailboxCount: mailboxes.length,
+                    addedCount
+                });
+            } catch (smartleadError: any) {
+                logger.error(`[HEALING] Failed to re-add domain ${entityId} mailboxes to Smartlead`, smartleadError, {
+                    organizationId,
+                    domainId: entityId
+                });
+            }
         }
     }
 

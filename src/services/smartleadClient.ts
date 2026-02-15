@@ -448,3 +448,266 @@ export const pushLeadToCampaign = async (
         return false;
     }
 };
+
+// ============================================================================
+// CAMPAIGN & MAILBOX CONTROL (Infrastructure Health Integration)
+// ============================================================================
+
+/**
+ * Pause a Smartlead campaign.
+ * Called when Drason detects infrastructure health degradation.
+ */
+export const pauseSmartleadCampaign = async (
+    organizationId: string,
+    campaignId: string
+): Promise<boolean> => {
+    const apiKey = await getApiKey(organizationId);
+    if (!apiKey) {
+        throw new Error('Smartlead API key not configured');
+    }
+
+    try {
+        await smartleadBreaker.call(() =>
+            axios.patch(
+                `${SMARTLEAD_API_BASE}/campaigns/${campaignId}`,
+                { status: 'PAUSED' },
+                { params: { api_key: apiKey } }
+            )
+        );
+
+        await auditLogService.logAction({
+            organizationId,
+            entity: 'campaign',
+            entityId: campaignId,
+            trigger: 'infrastructure_health',
+            action: 'paused_in_smartlead',
+            details: 'Campaign paused in Smartlead due to infrastructure health degradation'
+        });
+
+        logger.info(`[SMARTLEAD] Paused campaign ${campaignId} in Smartlead`, { organizationId });
+        return true;
+    } catch (error: any) {
+        logger.error(`[SMARTLEAD] Failed to pause campaign ${campaignId}`, error, {
+            organizationId,
+            response: error.response?.data,
+            status: error.response?.status
+        });
+
+        await auditLogService.logAction({
+            organizationId,
+            entity: 'campaign',
+            entityId: campaignId,
+            trigger: 'infrastructure_health',
+            action: 'smartlead_pause_failed',
+            details: `Failed to pause in Smartlead: ${error.message}`
+        });
+
+        return false;
+    }
+};
+
+/**
+ * Resume a Smartlead campaign.
+ * Called when Drason detects infrastructure health recovery.
+ */
+export const resumeSmartleadCampaign = async (
+    organizationId: string,
+    campaignId: string
+): Promise<boolean> => {
+    const apiKey = await getApiKey(organizationId);
+    if (!apiKey) {
+        throw new Error('Smartlead API key not configured');
+    }
+
+    try {
+        await smartleadBreaker.call(() =>
+            axios.patch(
+                `${SMARTLEAD_API_BASE}/campaigns/${campaignId}`,
+                { status: 'ACTIVE' },
+                { params: { api_key: apiKey } }
+            )
+        );
+
+        await auditLogService.logAction({
+            organizationId,
+            entity: 'campaign',
+            entityId: campaignId,
+            trigger: 'infrastructure_health',
+            action: 'resumed_in_smartlead',
+            details: 'Campaign resumed in Smartlead after infrastructure recovery'
+        });
+
+        logger.info(`[SMARTLEAD] Resumed campaign ${campaignId} in Smartlead`, { organizationId });
+        return true;
+    } catch (error: any) {
+        logger.error(`[SMARTLEAD] Failed to resume campaign ${campaignId}`, error, {
+            organizationId,
+            response: error.response?.data,
+            status: error.response?.status
+        });
+
+        await auditLogService.logAction({
+            organizationId,
+            entity: 'campaign',
+            entityId: campaignId,
+            trigger: 'infrastructure_health',
+            action: 'smartlead_resume_failed',
+            details: `Failed to resume in Smartlead: ${error.message}`
+        });
+
+        return false;
+    }
+};
+
+/**
+ * Remove a mailbox from a Smartlead campaign.
+ * Called when a mailbox is paused due to health degradation.
+ */
+export const removeMailboxFromSmartleadCampaign = async (
+    organizationId: string,
+    campaignId: string,
+    mailboxId: string
+): Promise<boolean> => {
+    const apiKey = await getApiKey(organizationId);
+    if (!apiKey) {
+        throw new Error('Smartlead API key not configured');
+    }
+
+    try {
+        // Remove the email account from the campaign
+        await smartleadBreaker.call(() =>
+            axios.delete(
+                `${SMARTLEAD_API_BASE}/campaigns/${campaignId}/email-accounts/${mailboxId}`,
+                { params: { api_key: apiKey } }
+            )
+        );
+
+        await auditLogService.logAction({
+            organizationId,
+            entity: 'mailbox',
+            entityId: mailboxId,
+            trigger: 'infrastructure_health',
+            action: 'removed_from_smartlead_campaign',
+            details: `Removed from campaign ${campaignId} in Smartlead`
+        });
+
+        logger.info(`[SMARTLEAD] Removed mailbox ${mailboxId} from campaign ${campaignId}`, { organizationId });
+        return true;
+    } catch (error: any) {
+        logger.error(`[SMARTLEAD] Failed to remove mailbox ${mailboxId} from campaign ${campaignId}`, error, {
+            organizationId,
+            response: error.response?.data,
+            status: error.response?.status
+        });
+
+        await auditLogService.logAction({
+            organizationId,
+            entity: 'mailbox',
+            entityId: mailboxId,
+            trigger: 'infrastructure_health',
+            action: 'smartlead_remove_failed',
+            details: `Failed to remove from Smartlead campaign: ${error.message}`
+        });
+
+        return false;
+    }
+};
+
+/**
+ * Add a mailbox back to a Smartlead campaign.
+ * Called when a mailbox recovers to healthy status.
+ */
+export const addMailboxToSmartleadCampaign = async (
+    organizationId: string,
+    campaignId: string,
+    mailboxId: string
+): Promise<boolean> => {
+    const apiKey = await getApiKey(organizationId);
+    if (!apiKey) {
+        throw new Error('Smartlead API key not configured');
+    }
+
+    try {
+        // Add the email account back to the campaign
+        await smartleadBreaker.call(() =>
+            axios.post(
+                `${SMARTLEAD_API_BASE}/campaigns/${campaignId}/email-accounts`,
+                { email_account_id: mailboxId },
+                { params: { api_key: apiKey } }
+            )
+        );
+
+        await auditLogService.logAction({
+            organizationId,
+            entity: 'mailbox',
+            entityId: mailboxId,
+            trigger: 'infrastructure_health',
+            action: 'added_to_smartlead_campaign',
+            details: `Added back to campaign ${campaignId} in Smartlead after recovery`
+        });
+
+        logger.info(`[SMARTLEAD] Added mailbox ${mailboxId} to campaign ${campaignId}`, { organizationId });
+        return true;
+    } catch (error: any) {
+        logger.error(`[SMARTLEAD] Failed to add mailbox ${mailboxId} to campaign ${campaignId}`, error, {
+            organizationId,
+            response: error.response?.data,
+            status: error.response?.status
+        });
+
+        await auditLogService.logAction({
+            organizationId,
+            entity: 'mailbox',
+            entityId: mailboxId,
+            trigger: 'infrastructure_health',
+            action: 'smartlead_add_failed',
+            details: `Failed to add to Smartlead campaign: ${error.message}`
+        });
+
+        return false;
+    }
+};
+
+/**
+ * Remove all mailboxes from a domain from their assigned Smartlead campaigns.
+ * Called when an entire domain is paused.
+ */
+export const removeDomainMailboxesFromSmartlead = async (
+    organizationId: string,
+    domainId: string
+): Promise<{ success: number; failed: number }> => {
+    // Get all mailboxes for this domain with their campaign assignments
+    const mailboxes = await prisma.mailbox.findMany({
+        where: { domain_id: domainId },
+        include: { campaigns: true }
+    });
+
+    let successCount = 0;
+    let failedCount = 0;
+
+    for (const mailbox of mailboxes) {
+        // Remove this mailbox from all assigned campaigns
+        for (const campaign of mailbox.campaigns) {
+            const removed = await removeMailboxFromSmartleadCampaign(
+                organizationId,
+                campaign.id,
+                mailbox.id
+            );
+            if (removed) {
+                successCount++;
+            } else {
+                failedCount++;
+            }
+        }
+    }
+
+    logger.info(`[SMARTLEAD] Removed domain ${domainId} mailboxes from Smartlead campaigns`, {
+        organizationId,
+        domainId,
+        successCount,
+        failedCount,
+        totalMailboxes: mailboxes.length
+    });
+
+    return { success: successCount, failed: failedCount };
+};

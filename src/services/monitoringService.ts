@@ -19,6 +19,7 @@ import * as eventService from './eventService';
 import { classifyBounce } from './bounceClassifier';
 import * as healingService from './healingService';
 import * as correlationService from './correlationService';
+import * as smartleadClient from './smartleadClient';
 import { logger } from './observabilityService';
 import {
     EventType,
@@ -409,6 +410,37 @@ const pauseMailbox = async (mailboxId: string, reason: string): Promise<void> =>
         details: `${reason}. Cooldown until ${cooldownUntil.toISOString()}. Resilience: ${newResilience}. Correlation: ${correlation.message}`
     });
 
+    // ── SMARTLEAD INTEGRATION: Remove mailbox from all assigned campaigns ──
+    try {
+        const campaigns = await prisma.campaign.findMany({
+            where: {
+                mailboxes: {
+                    some: { id: mailboxId }
+                }
+            }
+        });
+
+        for (const campaign of campaigns) {
+            await smartleadClient.removeMailboxFromSmartleadCampaign(
+                orgId,
+                campaign.id,
+                mailboxId
+            );
+        }
+
+        logger.info(`[MONITOR] Removed mailbox ${mailboxId} from ${campaigns.length} Smartlead campaigns`, {
+            organizationId: orgId,
+            mailboxId,
+            campaignCount: campaigns.length
+        });
+    } catch (smartleadError: any) {
+        // Smartlead removal failure doesn't block the pause — mailbox is already paused in Drason
+        logger.error(`[MONITOR] Failed to remove mailbox ${mailboxId} from Smartlead campaigns`, smartleadError, {
+            organizationId: orgId,
+            mailboxId
+        });
+    }
+
     // Trigger Domain Check
     await checkDomainHealth(mailbox.domain_id);
 };
@@ -693,6 +725,23 @@ const pauseDomain = async (domainId: string, reason: string): Promise<void> => {
         action: 'pause',
         details: `Domain paused via correlation escalation: ${reason}`,
     });
+
+    // ── SMARTLEAD INTEGRATION: Remove all domain mailboxes from campaigns ──
+    try {
+        const result = await smartleadClient.removeDomainMailboxesFromSmartlead(orgId, domainId);
+        logger.info(`[MONITOR] Removed domain ${domainId} mailboxes from Smartlead`, {
+            organizationId: orgId,
+            domainId,
+            successCount: result.success,
+            failedCount: result.failed
+        });
+    } catch (smartleadError: any) {
+        // Smartlead removal failure doesn't block the pause — domain is already paused in Drason
+        logger.error(`[MONITOR] Failed to remove domain ${domainId} mailboxes from Smartlead`, smartleadError, {
+            organizationId: orgId,
+            domainId
+        });
+    }
 };
 
 /**
@@ -727,6 +776,21 @@ const pauseCampaign = async (campaignId: string, organizationId: string, reason:
         action: 'pause',
         details: `Campaign paused via correlation redirect: ${reason}`,
     });
+
+    // ── SMARTLEAD INTEGRATION: Pause campaign in Smartlead ──
+    try {
+        await smartleadClient.pauseSmartleadCampaign(organizationId, campaignId);
+        logger.info(`[MONITOR] Paused campaign ${campaignId} in Smartlead`, {
+            organizationId,
+            campaignId
+        });
+    } catch (smartleadError: any) {
+        // Smartlead pause failure doesn't block the pause — campaign is already paused in Drason
+        logger.error(`[MONITOR] Failed to pause campaign ${campaignId} in Smartlead`, smartleadError, {
+            organizationId,
+            campaignId
+        });
+    }
 };
 
 /**
