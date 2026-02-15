@@ -49,15 +49,12 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
         ]);
 
         res.json({
-            success: true,
-            data: {
-                leads,
-                meta: {
-                    total,
-                    page,
-                    limit,
-                    totalPages: Math.ceil(total / limit)
-                }
+            data: leads,
+            meta: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit)
             }
         });
     } catch (error) {
@@ -131,11 +128,8 @@ export const getCampaigns = async (req: Request, res: Response, next: NextFuncti
         ]);
 
         res.json({
-            success: true,
-            data: {
-                campaigns,
-                meta: { total, page, limit, totalPages: Math.ceil(total / limit) }
-            }
+            data: campaigns,
+            meta: { total, page, limit, totalPages: Math.ceil(total / limit) }
         });
     } catch (error) {
         next(error);
@@ -170,11 +164,8 @@ export const getDomains = async (req: Request, res: Response, next: NextFunction
         ]);
 
         res.json({
-            success: true,
-            data: {
-                domains,
-                meta: { total, page, limit, totalPages: Math.ceil(total / limit) }
-            }
+            data: domains,
+            meta: { total, page, limit, totalPages: Math.ceil(total / limit) }
         });
     } catch (error) {
         next(error);
@@ -207,11 +198,8 @@ export const getMailboxes = async (req: Request, res: Response, next: NextFuncti
         ]);
 
         res.json({
-            success: true,
-            data: {
-                mailboxes,
-                meta: { total, page, limit, totalPages: Math.ceil(total / limit) }
-            }
+            data: mailboxes,
+            meta: { total, page, limit, totalPages: Math.ceil(total / limit) }
         });
     } catch (error) {
         next(error);
