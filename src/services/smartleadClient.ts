@@ -293,6 +293,7 @@ export const syncSmartlead = async (organizationId: string): Promise<{
                             },
                             update: {
                                 assigned_campaign_id: campaignId,
+                                status: 'active', // Update pre-existing held leads to active
                                 updated_at: new Date()
                             },
                             create: {
