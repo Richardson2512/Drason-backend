@@ -194,7 +194,10 @@ export const syncSmartlead = async (organizationId: string): Promise<{
                         });
                     }
 
-                    for (const lead of leadsList) {
+                    for (const leadData of leadsList) {
+                        // Smartlead returns leads wrapped in a container object with nested 'lead' property
+                        const lead = leadData.lead || leadData;
+
                         // Try multiple field name variations for email
                         const email = lead.email ||
                                     lead.lead_email ||
@@ -209,7 +212,8 @@ export const syncSmartlead = async (organizationId: string): Promise<{
                             logger.warn(`[LeadSync] Skipping lead with no email`, {
                                 campaignId,
                                 leadKeys: Object.keys(lead),
-                                leadSample: lead
+                                leadSample: lead,
+                                originalLeadData: leadData
                             });
                             continue;
                         }
