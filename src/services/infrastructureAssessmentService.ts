@@ -113,6 +113,7 @@ interface Finding {
     category: string;
     entity: string;
     entityId: string;
+    entityName: string;
     title: string;
     details: string;
     message: string;
@@ -124,6 +125,7 @@ interface Recommendation {
     action: string;
     details: string;
     reason: string;
+    link: string;
 }
 
 interface AssessmentResult {
@@ -353,6 +355,7 @@ export async function assessInfrastructure(
                     category: 'domain_dns',
                     entity: 'domain',
                     entityId: domain.id,
+                    entityName: domain.domain,
                     title: `Blacklisted: ${domain.domain}`,
                     details: `Listed on: ${confirmedLists.join(', ')}. Submit delisting requests and trigger a manual re-assessment.`,
                     message: `Domain ${domain.domain} is listed on blacklist(s): ${confirmedLists.join(', ')}`,
@@ -372,6 +375,7 @@ export async function assessInfrastructure(
                     category: 'domain_dns',
                     entity: 'domain',
                     entityId: domain.id,
+                    entityName: domain.domain,
                     title: `Blacklist Check Unreachable: ${domain.domain}`,
                     details: `Cannot confirm clean status for: ${unreachableLists.join(', ')}. Re-assess later.`,
                     message: `Domain ${domain.domain}: blacklist check(s) unreachable for: ${unreachableLists.join(', ')}. Cannot confirm clean status.`,
@@ -387,6 +391,7 @@ export async function assessInfrastructure(
                     category: 'domain_dns',
                     entity: 'domain',
                     entityId: domain.id,
+                    entityName: domain.domain,
                     title: `Missing SPF: ${domain.domain}`,
                     details: `No SPF record found. Add a TXT record: "v=spf1 include:_spf.google.com ~all"`,
                     message: `Domain ${domain.domain} has no SPF record configured.`,
@@ -399,6 +404,7 @@ export async function assessInfrastructure(
                     category: 'domain_dns',
                     entity: 'domain',
                     entityId: domain.id,
+                    entityName: domain.domain,
                     title: `SPF Check Failed: ${domain.domain}`,
                     details: `DNS unreachable — cannot verify SPF. Trigger manual re-assessment.`,
                     message: `Domain ${domain.domain}: SPF record check failed (DNS unreachable).`,
@@ -414,6 +420,7 @@ export async function assessInfrastructure(
                     category: 'domain_dns',
                     entity: 'domain',
                     entityId: domain.id,
+                    entityName: domain.domain,
                     title: `Missing DKIM: ${domain.domain}`,
                     details: `No DKIM record found on common selectors. Enable DKIM signing in your email provider.`,
                     message: `Domain ${domain.domain} has no DKIM record configured (checked common selectors).`,
@@ -428,6 +435,7 @@ export async function assessInfrastructure(
                     category: 'domain_dns',
                     entity: 'domain',
                     entityId: domain.id,
+                    entityName: domain.domain,
                     title: `Missing DMARC: ${domain.domain}`,
                     details: `Add a DMARC record at _dmarc.${domain.domain} to improve deliverability.`,
                     message: `Domain ${domain.domain} has no DMARC policy configured.`,
@@ -439,6 +447,7 @@ export async function assessInfrastructure(
                     category: 'domain_dns',
                     entity: 'domain',
                     entityId: domain.id,
+                    entityName: domain.domain,
                     title: `Weak DMARC: ${domain.domain}`,
                     details: `DMARC set to 'none' (monitoring only). Upgrade to p=quarantine or p=reject.`,
                     message: `Domain ${domain.domain} has DMARC policy set to 'none' (monitoring only, not enforcing).`,
@@ -494,6 +503,7 @@ export async function assessInfrastructure(
                     category: 'mailbox_health',
                     entity: 'mailbox',
                     entityId: mailbox.id,
+                    entityName: mailbox.email,
                     title: `High Bounce Rate: ${mailbox.email}`,
                     details: `Bounce rate ${(bounceRate * 100).toFixed(1)}% exceeds ${(MAILBOX_THRESHOLDS.PAUSE_BOUNCE_RATE * 100)}% threshold. Mailbox paused; enters healing pipeline.`,
                     message: `Mailbox ${mailbox.email} has a historical bounce rate of ${(bounceRate * 100).toFixed(1)}% (>${(MAILBOX_THRESHOLDS.PAUSE_BOUNCE_RATE * 100)}% threshold).`,
@@ -506,6 +516,7 @@ export async function assessInfrastructure(
                     category: 'mailbox_health',
                     entity: 'mailbox',
                     entityId: mailbox.id,
+                    entityName: mailbox.email,
                     title: `Elevated Bounce Rate: ${mailbox.email}`,
                     details: `Bounce rate ${(bounceRate * 100).toFixed(1)}% approaching threshold. Reduce volume or verify email list quality.`,
                     message: `Mailbox ${mailbox.email} has a historical bounce rate of ${(bounceRate * 100).toFixed(1)}% (approaching threshold).`,
@@ -566,6 +577,7 @@ export async function assessInfrastructure(
                         category: 'campaign_health',
                         entity: 'campaign',
                         entityId: campaign.id,
+                        entityName: campaign.name,
                         title: `High Bounce Rate: ${campaign.name}`,
                         details: `Campaign bounce rate ${(bounceRate * 100).toFixed(1)}% exceeds ${(CAMPAIGN_THRESHOLDS.PAUSE_BOUNCE_RATE * 100)}% threshold. Campaign paused.`,
                         message: `Campaign "${campaign.name}" has a bounce rate of ${(bounceRate * 100).toFixed(1)}% (>${(CAMPAIGN_THRESHOLDS.PAUSE_BOUNCE_RATE * 100)}% threshold).`,
@@ -578,6 +590,7 @@ export async function assessInfrastructure(
                         category: 'campaign_health',
                         entity: 'campaign',
                         entityId: campaign.id,
+                        entityName: campaign.name,
                         title: `Elevated Bounce Rate: ${campaign.name}`,
                         details: `Campaign bounce rate ${(bounceRate * 100).toFixed(1)}% approaching threshold. Review email list and remove invalid addresses.`,
                         message: `Campaign "${campaign.name}" has a bounce rate of ${(bounceRate * 100).toFixed(1)}% (approaching threshold).`,
@@ -633,6 +646,7 @@ export async function assessInfrastructure(
                 action: 'Address critical issues immediately',
                 details: `${criticalCount} critical issue(s) found. Blacklisted domains and high-bounce mailboxes have been paused. Resolve blacklist listings and verify email list quality before resuming.`,
                 reason: `${criticalCount} critical issue(s) found. Blacklisted domains and high-bounce mailboxes have been paused. Resolve blacklist listings and verify email list quality before resuming.`,
+                link: '/dashboard/domains',
             });
         }
 
@@ -642,6 +656,7 @@ export async function assessInfrastructure(
                 action: 'Review warning-level issues',
                 details: `${warningCount} warning(s) found. Missing DNS authentication records and elevated bounce rates need attention. These entities are operational but at elevated risk.`,
                 reason: `${warningCount} warning(s) found. Missing DNS authentication records and elevated bounce rates need attention. These entities are operational but at elevated risk.`,
+                link: '/dashboard/domains',
             });
         }
 
@@ -655,6 +670,7 @@ export async function assessInfrastructure(
                 action: 'Configure DMARC policies',
                 details: `Some domains are missing DMARC policies. While not blocking, DMARC significantly improves deliverability and protects against spoofing.`,
                 reason: `Some domains are missing DMARC policies. While not blocking, DMARC significantly improves deliverability and protects against spoofing.`,
+                link: '/dashboard/domains',
             });
         }
 
