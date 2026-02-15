@@ -146,11 +146,21 @@ export const syncSmartlead = async (organizationId: string): Promise<{
         for (const campaign of campaigns) {
             const campaignId = campaign.id.toString();
             try {
+                logger.info(`[LeadSync] Starting lead sync for campaign`, {
+                    campaignId,
+                    campaignName: campaign.name,
+                    organizationId
+                });
+
                 let offset = 0;
                 const limit = 100;
                 let hasMore = true;
+                let campaignLeadCount = 0;
 
                 while (hasMore) {
+                    // Log before API call
+                    logger.debug(`[LeadSync] Fetching leads page`, { campaignId, offset, limit });
+
                     const leadsRes = await smartleadBreaker.call(() =>
                         axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/leads`, {
                             params: { api_key: apiKey, offset, limit }
@@ -160,6 +170,15 @@ export const syncSmartlead = async (organizationId: string): Promise<{
                     const leadsData = leadsRes.data || [];
                     const leadsList = Array.isArray(leadsData) ? leadsData : (leadsData.data || []);
 
+                    // Log API response structure
+                    logger.info(`[LeadSync] API Response`, {
+                        campaignId,
+                        offset,
+                        responseIsArray: Array.isArray(leadsData),
+                        responseHasDataProp: !!leadsData.data,
+                        leadsFound: leadsList.length
+                    });
+
                     if (leadsList.length === 0) {
                         hasMore = false;
                         break;
@@ -167,7 +186,10 @@ export const syncSmartlead = async (organizationId: string): Promise<{
 
                     for (const lead of leadsList) {
                         const email = lead.email || lead.lead_email || '';
-                        if (!email) continue;
+                        if (!email) {
+                            logger.warn(`[LeadSync] Skipping lead with no email`, { campaignId, leadData: JSON.stringify(lead) });
+                            continue;
+                        }
 
                         const firstName = lead.first_name || lead.firstName || '';
                         const lastName = lead.last_name || lead.lastName || '';
@@ -197,6 +219,7 @@ export const syncSmartlead = async (organizationId: string): Promise<{
                             }
                         });
                         leadCount++;
+                        campaignLeadCount++;
                     }
 
                     // If we got fewer than the limit, no more pages
@@ -207,16 +230,19 @@ export const syncSmartlead = async (organizationId: string): Promise<{
                     }
                 }
 
-                logger.info(`Synced leads for campaign ${campaignId}`, {
+                logger.info(`Synced ${campaignLeadCount} leads for campaign ${campaignId}`, {
                     organizationId,
                     campaignId,
                     campaignName: campaign.name
                 });
             } catch (leadError: any) {
                 // Lead sync failure for one campaign doesn't block the others
-                logger.warn(`Failed to sync leads for campaign ${campaignId}: ${leadError.message}`, {
+                // CRITICAL: Log full error details
+                logger.error(`Failed to sync leads for campaign ${campaignId}`, leadError, {
                     organizationId,
-                    campaignId
+                    campaignId,
+                    response: leadError.response?.data,
+                    status: leadError.response?.status
                 });
             }
         }
