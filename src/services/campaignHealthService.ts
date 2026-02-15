@@ -13,6 +13,7 @@
 
 import { prisma } from '../index';
 import * as auditLogService from './auditLogService';
+import * as notificationService from './notificationService';
 import { logger } from './observabilityService';
 
 // ============================================================================
@@ -149,6 +150,18 @@ export async function pauseCampaign(
     });
 
     logger.info(`[CAMPAIGN] Paused campaign ${campaignId}: ${reason}`);
+
+    // Notify user
+    try {
+        const campaign = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { name: true } });
+        await notificationService.createNotification(organizationId, {
+            type: 'WARNING',
+            title: 'Campaign Paused',
+            message: `Campaign "${campaign?.name || campaignId}" has been automatically paused. Reason: ${reason}`,
+        });
+    } catch (notifError) {
+        logger.warn('Failed to create campaign pause notification', { campaignId });
+    }
 }
 
 /**
@@ -178,6 +191,18 @@ export async function resumeCampaign(
     });
 
     logger.info(`[CAMPAIGN] Resumed campaign ${campaignId}`);
+
+    // Notify user
+    try {
+        const campaign = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { name: true } });
+        await notificationService.createNotification(organizationId, {
+            type: 'SUCCESS',
+            title: 'Campaign Resumed',
+            message: `Campaign "${campaign?.name || campaignId}" has been resumed and is now active.`,
+        });
+    } catch (notifError) {
+        logger.warn('Failed to create campaign resume notification', { campaignId });
+    }
 }
 
 /**
@@ -206,6 +231,18 @@ export async function warnCampaign(
     });
 
     logger.info(`[CAMPAIGN] Warning for campaign ${campaignId}: ${reason}`);
+
+    // Notify user
+    try {
+        const campaign = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { name: true } });
+        await notificationService.createNotification(organizationId, {
+            type: 'WARNING',
+            title: 'Campaign Health Warning',
+            message: `Campaign "${campaign?.name || campaignId}" is showing elevated risk. ${reason}`,
+        });
+    } catch (notifError) {
+        logger.warn('Failed to create campaign warning notification', { campaignId });
+    }
 }
 
 // ============================================================================

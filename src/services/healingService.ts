@@ -20,6 +20,7 @@ import {
     TriggerType,
 } from '../types';
 import * as auditLogService from './auditLogService';
+import * as notificationService from './notificationService';
 import logger from '../utils/logger';
 
 // ============================================================================
@@ -395,6 +396,18 @@ export async function handleRelapse(
 
     logger.warn(`[HEALING] Relapse for ${entityType} ${entityId}: ${reason}. New phase: ${targetPhase}, resilience: ${resAdj.newScore}`);
 
+    // Notify user of relapse
+    try {
+        const severity = relapseCount >= 3 ? 'ERROR' as const : 'WARNING' as const;
+        await notificationService.createNotification(organizationId, {
+            type: severity,
+            title: `${entityType === 'mailbox' ? 'Mailbox' : 'Domain'} Relapse #${relapseCount}`,
+            message: `A ${entityType} relapsed during recovery and was moved to ${targetPhase}. ${relapseCount >= 3 ? 'Manual intervention required.' : 'Healing will restart automatically.'}`,
+        });
+    } catch (notifError) {
+        logger.warn('Failed to create relapse notification', { entityId });
+    }
+
     return {
         transitioned: true,
         fromPhase: currentPhase,
@@ -695,6 +708,19 @@ async function transitionPhase(
             resilienceScore: currentResilienceScore,
         }),
     });
+
+    // Notify user of milestone graduations
+    if (toPhase === RecoveryPhase.HEALTHY) {
+        try {
+            await notificationService.createNotification(organizationId, {
+                type: 'SUCCESS',
+                title: `${entityType === 'mailbox' ? 'Mailbox' : 'Domain'} Fully Recovered`,
+                message: `A ${entityType} has completed the healing pipeline and is now fully healthy. Resilience score: ${currentResilienceScore}/100.`,
+            });
+        } catch (notifError) {
+            logger.warn('Failed to create graduation notification', { entityId });
+        }
+    }
 
     logger.info(`[HEALING] ${entityType} ${entityId}: ${fromPhase} → ${toPhase}. Reason: ${reason}`);
 

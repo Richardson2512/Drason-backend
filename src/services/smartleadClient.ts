@@ -14,6 +14,7 @@ import { getOrgId } from '../middleware/orgContext';
 import * as auditLogService from './auditLogService';
 import * as eventService from './eventService';
 import * as assessmentService from './infrastructureAssessmentService';
+import * as notificationService from './notificationService';
 import { EventType } from '../types';
 import { logger } from './observabilityService';
 import { smartleadBreaker } from '../utils/circuitBreaker';
@@ -248,6 +249,17 @@ export const syncSmartlead = async (organizationId: string): Promise<{
             });
         }
 
+        // ── Notify user of successful sync ──
+        try {
+            await notificationService.createNotification(organizationId, {
+                type: 'SUCCESS',
+                title: 'Smartlead Sync Complete',
+                message: `Successfully synced ${campaignCount} campaigns, ${mailboxCount} mailboxes, and ${leadCount} leads from Smartlead.`,
+            });
+        } catch (notifError) {
+            logger.warn('Failed to create sync success notification', { organizationId });
+        }
+
         return { campaigns: campaignCount, mailboxes: mailboxCount, leads: leadCount };
 
     } catch (error: any) {
@@ -258,6 +270,18 @@ export const syncSmartlead = async (organizationId: string): Promise<{
             action: 'smartlead_sync_failed',
             details: error.message
         });
+
+        // Notify user of sync failure
+        try {
+            await notificationService.createNotification(organizationId, {
+                type: 'ERROR',
+                title: 'Smartlead Sync Failed',
+                message: `Smartlead sync failed: ${error.message}. Check your API key in Configuration and try again.`,
+            });
+        } catch (notifError) {
+            logger.warn('Failed to create sync failure notification', { organizationId });
+        }
+
         throw error;
     }
 };

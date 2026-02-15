@@ -16,6 +16,7 @@ import dns from 'dns';
 import { promisify } from 'util';
 import { prisma } from '../index';
 import * as auditLogService from './auditLogService';
+import * as notificationService from './notificationService';
 import { logger } from './observabilityService';
 
 const _resolveTxt = promisify(dns.resolveTxt);
@@ -674,6 +675,23 @@ export async function assessInfrastructure(
             data: { assessment_completed: true },
         });
 
+        // ── Step 10: Notify user of assessment results ──
+        try {
+            const notifType = criticalCount > 0 ? 'WARNING' as const : 'SUCCESS' as const;
+            const statusSummary = [
+                criticalCount > 0 ? `${criticalCount} critical` : null,
+                warningCount > 0 ? `${warningCount} warning` : null,
+            ].filter(Boolean).join(', ');
+
+            await notificationService.createNotification(organizationId, {
+                type: notifType,
+                title: 'Infrastructure Assessment Complete',
+                message: `Your infrastructure scored ${overallScore}/100. ${statusSummary ? `Found: ${statusSummary} issue(s).` : 'No issues found.'} View the full report on the Infrastructure page.`,
+            });
+        } catch (notifError) {
+            logger.warn('Failed to create assessment notification', { organizationId });
+        }
+
         return { overallScore, summary, findings, recommendations };
 
     } catch (error: any) {
@@ -687,6 +705,17 @@ export async function assessInfrastructure(
             action: 'assessment_failed',
             details: error.message,
         });
+
+        // Notify user of failure
+        try {
+            await notificationService.createNotification(organizationId, {
+                type: 'ERROR',
+                title: 'Infrastructure Assessment Failed',
+                message: `The infrastructure assessment could not be completed: ${error.message}. The execution gate remains locked — trigger a manual reassessment from the Infrastructure page.`,
+            });
+        } catch (notifError) {
+            logger.warn('Failed to create assessment failure notification', { organizationId });
+        }
 
         // IMPORTANT: Do NOT unlock the gate on failure.
         // The gate stays locked — manual intervention required.

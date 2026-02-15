@@ -13,6 +13,7 @@
 
 import { prisma } from '../index';
 import * as auditLogService from './auditLogService';
+import * as notificationService from './notificationService';
 
 // ============================================================================
 // TYPES
@@ -259,7 +260,7 @@ export async function applyHealthClassification(
         }
     });
 
-    // Log if blocked
+    // Log and notify if blocked
     if (healthResult.classification === 'red') {
         await auditLogService.logAction({
             organizationId,
@@ -269,5 +270,16 @@ export async function applyHealthClassification(
             action: 'blocked',
             details: `Lead blocked by health gate: ${healthResult.reasons.join(', ')}`
         });
+
+        try {
+            const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { email: true } });
+            await notificationService.createNotification(organizationId, {
+                type: 'WARNING',
+                title: 'Lead Blocked by Health Gate',
+                message: `Lead "${lead?.email || leadId}" was blocked (score: ${healthResult.score}/100). Reasons: ${healthResult.reasons.join(', ')}.`,
+            });
+        } catch (notifError) {
+            // Non-critical — don't block the flow
+        }
     }
 }

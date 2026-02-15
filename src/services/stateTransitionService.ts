@@ -22,6 +22,7 @@ import {
     MONITORING_THRESHOLDS
 } from '../types';
 import * as auditLogService from './auditLogService';
+import * as notificationService from './notificationService';
 import { logger } from './observabilityService';
 
 // ============================================================================
@@ -310,6 +311,25 @@ export async function executeTransition(
         });
 
         logger.info(`[STATE] Transition complete: ${entityTypeName} ${entityId} ${fromState} -> ${toState}`);
+
+        // Notify user of significant state transitions
+        try {
+            if (toState === MailboxState.PAUSED || toState === DomainState.PAUSED) {
+                await notificationService.createNotification(organizationId, {
+                    type: 'ERROR',
+                    title: `${entityTypeName === 'mailbox' ? 'Mailbox' : 'Domain'} Paused`,
+                    message: `A ${entityTypeName} has been paused due to health issues. Reason: ${reason}`,
+                });
+            } else if (toState === MailboxState.HEALTHY || toState === DomainState.HEALTHY) {
+                await notificationService.createNotification(organizationId, {
+                    type: 'SUCCESS',
+                    title: `${entityTypeName === 'mailbox' ? 'Mailbox' : 'Domain'} Recovered`,
+                    message: `A ${entityTypeName} has fully recovered and is now healthy.`,
+                });
+            }
+        } catch (notifError) {
+            logger.warn('Failed to create state transition notification', { entityId });
+        }
 
         return {
             success: true,
