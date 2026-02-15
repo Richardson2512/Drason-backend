@@ -176,7 +176,8 @@ export const syncSmartlead = async (organizationId: string): Promise<{
                         offset,
                         responseIsArray: Array.isArray(leadsData),
                         responseHasDataProp: !!leadsData.data,
-                        leadsFound: leadsList.length
+                        leadsFound: leadsList.length,
+                        rawResponseSample: offset === 0 ? JSON.stringify(leadsData).substring(0, 500) : undefined
                     });
 
                     if (leadsList.length === 0) {
@@ -184,10 +185,32 @@ export const syncSmartlead = async (organizationId: string): Promise<{
                         break;
                     }
 
+                    // Log first lead structure for debugging
+                    if (offset === 0 && leadsList.length > 0) {
+                        logger.info(`[LeadSync] First lead structure sample`, {
+                            campaignId,
+                            sample: leadsList[0],
+                            keys: Object.keys(leadsList[0])
+                        });
+                    }
+
                     for (const lead of leadsList) {
-                        const email = lead.email || lead.lead_email || '';
+                        // Try multiple field name variations for email
+                        const email = lead.email ||
+                                    lead.lead_email ||
+                                    lead.Email ||
+                                    lead.EMAIL ||
+                                    lead.emailId ||
+                                    lead.email_address ||
+                                    (lead.custom_fields && lead.custom_fields.email) ||
+                                    '';
+
                         if (!email) {
-                            logger.warn(`[LeadSync] Skipping lead with no email`, { campaignId, leadData: JSON.stringify(lead) });
+                            logger.warn(`[LeadSync] Skipping lead with no email`, {
+                                campaignId,
+                                leadKeys: Object.keys(lead),
+                                leadSample: lead
+                            });
                             continue;
                         }
 
