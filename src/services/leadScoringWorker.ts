@@ -35,7 +35,7 @@ export function startLeadScoringWorker(): void {
         try {
             await runScoringCycle();
         } catch (error) {
-            logger.error('[LEAD-SCORING-WORKER] Scoring cycle failed', error);
+            logger.error('[LEAD-SCORING-WORKER] Scoring cycle failed', error instanceof Error ? error : new Error(String(error)));
         }
     }, SCORING_INTERVAL_MS);
 

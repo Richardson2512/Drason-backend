@@ -69,7 +69,7 @@ export const getTopLeads = async (req: Request, res: Response): Promise<void> =>
  */
 export const getLeadScoreBreakdown = async (req: Request, res: Response): Promise<void> => {
     try {
-        const leadId = req.params.leadId;
+        const leadId = Array.isArray(req.params.leadId) ? req.params.leadId[0] : req.params.leadId;
 
         const breakdown = await leadScoringService.getLeadScoreBreakdown(leadId);
 
@@ -99,7 +99,7 @@ export const getLeadScoreBreakdown = async (req: Request, res: Response): Promis
  */
 export const getTopLeadsForCampaign = async (req: Request, res: Response): Promise<void> => {
     try {
-        const campaignId = req.params.campaignId;
+        const campaignId = Array.isArray(req.params.campaignId) ? req.params.campaignId[0] : req.params.campaignId;
         const limit = parseInt(req.query.limit as string) || 10;
 
         const topLeads = await leadScoringService.getTopLeadsForCampaign(campaignId, limit);

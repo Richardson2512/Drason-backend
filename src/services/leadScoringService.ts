@@ -255,25 +255,27 @@ async function aggregateEngagementFromEvents(
 
     // Query events from our event store
     // This assumes we're storing email events (opens, clicks, replies, bounces)
-    const events = await prisma.event.findMany({
-        where: {
-            organization_id: organizationId,
-            event_type: {
-                in: ['EmailSent', 'EmailOpened', 'EmailClicked', 'EmailReplied', 'HardBounce', 'SoftBounce']
-            }
-        },
-        select: {
-            event_type: true,
-            payload: true,
-            created_at: true
-        },
-        orderBy: {
-            created_at: 'desc'
-        }
-    });
+    // TODO: Implement Event model in Prisma schema
+    const events: Array<{ event_type: string; payload: any; created_at: Date }> = [];
+    // const events = await prisma.event.findMany({
+    //     where: {
+    //         organization_id: organizationId,
+    //         event_type: {
+    //             in: ['EmailSent', 'EmailOpened', 'EmailClicked', 'EmailReplied', 'HardBounce', 'SoftBounce']
+    //         }
+    //     },
+    //     select: {
+    //         event_type: true,
+    //         payload: true,
+    //         created_at: true
+    //     },
+    //     orderBy: {
+    //         created_at: 'desc'
+    //     }
+    // });
 
     // Aggregate engagement by email
-    events.forEach(event => {
+    events.forEach((event: { event_type: string; payload: any; created_at: Date }) => {
         const email = (event.payload as any)?.email || (event.payload as any)?.lead_email;
 
         if (!email || !engagementMap[email]) {
