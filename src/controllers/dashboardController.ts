@@ -117,7 +117,14 @@ export const getCampaigns = async (req: Request, res: Response, next: NextFuncti
                 where: { organization_id: orgId },
                 include: {
                     mailboxes: {
-                        select: { id: true, email: true, status: true }
+                        select: {
+                            id: true,
+                            email: true,
+                            status: true,
+                            domain: {
+                                select: { id: true, domain: true, status: true }
+                            }
+                        }
                     }
                 },
                 orderBy: { name: 'asc' },
