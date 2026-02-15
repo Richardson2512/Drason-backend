@@ -211,6 +211,9 @@ export const getMailboxes = async (req: Request, res: Response, next: NextFuncti
                 include: {
                     domain: {
                         select: { id: true, domain: true, status: true }
+                    },
+                    campaigns: {
+                        select: { id: true, name: true, status: true }
                     }
                 },
                 orderBy: { email: 'asc' },
