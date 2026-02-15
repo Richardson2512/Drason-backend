@@ -36,11 +36,12 @@ async function getApiKey(organizationId: string): Promise<string | null> {
 }
 
 /**
- * Sync campaigns and mailboxes from Smartlead.
+ * Sync campaigns, mailboxes, AND leads from Smartlead.
  */
 export const syncSmartlead = async (organizationId: string): Promise<{
     campaigns: number;
     mailboxes: number;
+    leads: number;
 }> => {
     const apiKey = await getApiKey(organizationId);
     if (!apiKey) {
@@ -57,9 +58,10 @@ export const syncSmartlead = async (organizationId: string): Promise<{
 
     let campaignCount = 0;
     let mailboxCount = 0;
+    let leadCount = 0;
 
     try {
-        // Fetch campaigns (protected by circuit breaker)
+        // ── 1. Fetch campaigns (protected by circuit breaker) ──
         const campaignsRes = await smartleadBreaker.call(() =>
             axios.get(`${SMARTLEAD_API_BASE}/campaigns?api_key=${apiKey}`)
         );
@@ -92,7 +94,7 @@ export const syncSmartlead = async (organizationId: string): Promise<{
             campaignCount++;
         }
 
-        // Fetch email accounts (mailboxes) (protected by circuit breaker)
+        // ── 2. Fetch email accounts (mailboxes) (protected by circuit breaker) ──
         const mailboxesRes = await smartleadBreaker.call(() =>
             axios.get(`${SMARTLEAD_API_BASE}/email-accounts?api_key=${apiKey}`)
         );
@@ -139,12 +141,91 @@ export const syncSmartlead = async (organizationId: string): Promise<{
             mailboxCount++;
         }
 
+        // ── 3. Fetch leads for each campaign from Smartlead ──
+        for (const campaign of campaigns) {
+            const campaignId = campaign.id.toString();
+            try {
+                let offset = 0;
+                const limit = 100;
+                let hasMore = true;
+
+                while (hasMore) {
+                    const leadsRes = await smartleadBreaker.call(() =>
+                        axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/leads`, {
+                            params: { api_key: apiKey, offset, limit }
+                        })
+                    );
+
+                    const leadsData = leadsRes.data || [];
+                    const leadsList = Array.isArray(leadsData) ? leadsData : (leadsData.data || []);
+
+                    if (leadsList.length === 0) {
+                        hasMore = false;
+                        break;
+                    }
+
+                    for (const lead of leadsList) {
+                        const email = lead.email || lead.lead_email || '';
+                        if (!email) continue;
+
+                        const firstName = lead.first_name || lead.firstName || '';
+                        const lastName = lead.last_name || lead.lastName || '';
+                        const company = lead.company_name || lead.company || '';
+                        const persona = company || 'general';
+
+                        await prisma.lead.upsert({
+                            where: {
+                                organization_id_email: {
+                                    organization_id: organizationId,
+                                    email
+                                }
+                            },
+                            update: {
+                                assigned_campaign_id: campaignId,
+                                updated_at: new Date()
+                            },
+                            create: {
+                                email,
+                                persona,
+                                lead_score: 50, // Default neutral score
+                                source: 'smartlead',
+                                status: 'held',
+                                health_classification: 'green',
+                                assigned_campaign_id: campaignId,
+                                organization_id: organizationId
+                            }
+                        });
+                        leadCount++;
+                    }
+
+                    // If we got fewer than the limit, no more pages
+                    if (leadsList.length < limit) {
+                        hasMore = false;
+                    } else {
+                        offset += limit;
+                    }
+                }
+
+                logger.info(`Synced leads for campaign ${campaignId}`, {
+                    organizationId,
+                    campaignId,
+                    campaignName: campaign.name
+                });
+            } catch (leadError: any) {
+                // Lead sync failure for one campaign doesn't block the others
+                logger.warn(`Failed to sync leads for campaign ${campaignId}: ${leadError.message}`, {
+                    organizationId,
+                    campaignId
+                });
+            }
+        }
+
         await auditLogService.logAction({
             organizationId,
             entity: 'system',
             trigger: 'manual_sync',
             action: 'smartlead_synced',
-            details: `Synced ${campaignCount} campaigns, ${mailboxCount} mailboxes`
+            details: `Synced ${campaignCount} campaigns, ${mailboxCount} mailboxes, ${leadCount} leads`
         });
 
         // ── STRICT ORDER: Sync complete → Trigger Infrastructure Assessment ──
@@ -167,7 +248,7 @@ export const syncSmartlead = async (organizationId: string): Promise<{
             });
         }
 
-        return { campaigns: campaignCount, mailboxes: mailboxCount };
+        return { campaigns: campaignCount, mailboxes: mailboxCount, leads: leadCount };
 
     } catch (error: any) {
         await auditLogService.logAction({
