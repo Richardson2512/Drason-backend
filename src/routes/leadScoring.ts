@@ -1,16 +1,19 @@
+/**
+ * Lead Scoring Routes
+ */
+
 import { Router } from 'express';
-import * as leadController from '../controllers/leadController';
 import * as leadScoringController from '../controllers/leadScoringController';
-import { validateBody, ingestLeadSchema } from '../middleware/validation';
 
 const router = Router();
 
-// Lead ingestion
-router.post('/', validateBody(ingestLeadSchema), leadController.ingestLead);
-
-// Lead scoring endpoints
+// Manually trigger lead score sync
 router.post('/scoring/sync', leadScoringController.syncLeadScores);
+
+// Get top leads across all campaigns
 router.get('/top', leadScoringController.getTopLeads);
+
+// Get score breakdown for a specific lead
 router.get('/:leadId/score-breakdown', leadScoringController.getLeadScoreBreakdown);
 
 export default router;

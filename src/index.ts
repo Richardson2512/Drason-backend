@@ -60,6 +60,7 @@ import { startWorker as startMetricsWorker, getWorkerStatus as getMetricsWorkerS
 import { startRetentionJob, getRetentionJobStatus } from './services/complianceService';
 import { initEventQueue, getQueueStatus, shutdownEventQueue } from './services/eventQueue';
 import { startLeadHealthWorker, getLeadHealthWorkerStatus } from './services/leadHealthWorker';
+import { startLeadScoringWorker, stopLeadScoringWorker } from './services/leadScoringWorker';
 
 import cookieParser from 'cookie-parser';
 
@@ -468,6 +469,10 @@ const server = app.listen(PORT, () => {
     // Start lead health re-evaluation worker
     startLeadHealthWorker();
     logger.info('Lead health re-evaluation worker started');
+
+    // Start lead scoring worker
+    startLeadScoringWorker();
+    logger.info('Lead scoring worker started (runs every 24h)');
 });
 
 // ============================================================================
@@ -476,6 +481,10 @@ const server = app.listen(PORT, () => {
 
 async function gracefulShutdown(signal: string): Promise<void> {
     logger.info(`${signal} received, shutting down gracefully`);
+
+    // Stop background workers
+    stopLeadScoringWorker();
+    logger.info('Lead scoring worker stopped');
 
     // Stop accepting new connections
     server.close(() => {

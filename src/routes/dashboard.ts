@@ -26,6 +26,10 @@ router.get('/campaign-health-stats', dashboardController.getCampaignHealthStats)
 router.post('/campaign/pause', validateBody(campaignActionSchema), dashboardController.pauseCampaign);
 router.post('/campaign/resume', validateBody(campaignActionSchema), dashboardController.resumeCampaign);
 
+// Lead scoring endpoints
+import * as leadScoringController from '../controllers/leadScoringController';
+router.get('/campaigns/:campaignId/top-leads', leadScoringController.getTopLeadsForCampaign);
+
 // Notification endpoints
 import * as notificationController from '../controllers/notificationController';
 router.get('/notifications', notificationController.getNotifications);
