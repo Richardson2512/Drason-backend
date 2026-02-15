@@ -110,8 +110,11 @@ interface DomainDNSResult {
 
 interface Finding {
     severity: 'critical' | 'warning' | 'info';
+    category: string;
     entity: string;
     entityId: string;
+    title: string;
+    details: string;
     message: string;
     remediation: string;
 }
@@ -120,6 +123,7 @@ interface Recommendation {
     priority: number;
     action: string;
     details: string;
+    reason: string;
 }
 
 interface AssessmentResult {
@@ -346,8 +350,11 @@ export async function assessInfrastructure(
 
                 findings.push({
                     severity: 'critical',
+                    category: 'domain_dns',
                     entity: 'domain',
                     entityId: domain.id,
+                    title: `Blacklisted: ${domain.domain}`,
+                    details: `Listed on: ${confirmedLists.join(', ')}. Submit delisting requests and trigger a manual re-assessment.`,
                     message: `Domain ${domain.domain} is listed on blacklist(s): ${confirmedLists.join(', ')}`,
                     remediation: `Visit the blacklist removal pages for ${confirmedLists.join(', ')} and submit a delisting request. After confirmed removal, trigger a manual re-assessment.`,
                 });
@@ -362,8 +369,11 @@ export async function assessInfrastructure(
 
                 findings.push({
                     severity: 'warning',
+                    category: 'domain_dns',
                     entity: 'domain',
                     entityId: domain.id,
+                    title: `Blacklist Check Unreachable: ${domain.domain}`,
+                    details: `Cannot confirm clean status for: ${unreachableLists.join(', ')}. Re-assess later.`,
                     message: `Domain ${domain.domain}: blacklist check(s) unreachable for: ${unreachableLists.join(', ')}. Cannot confirm clean status.`,
                     remediation: `Trigger a manual re-assessment later to verify blacklist status. Do not assume clean.`,
                 });
@@ -374,8 +384,11 @@ export async function assessInfrastructure(
                 if (domainState === 'healthy') domainState = 'warning';
                 findings.push({
                     severity: 'warning',
+                    category: 'domain_dns',
                     entity: 'domain',
                     entityId: domain.id,
+                    title: `Missing SPF: ${domain.domain}`,
+                    details: `No SPF record found. Add a TXT record: "v=spf1 include:_spf.google.com ~all"`,
                     message: `Domain ${domain.domain} has no SPF record configured.`,
                     remediation: `Add a TXT record to your DNS: "v=spf1 include:_spf.google.com ~all" (adjust for your email provider).`,
                 });
@@ -383,8 +396,11 @@ export async function assessInfrastructure(
                 if (domainState === 'healthy') domainState = 'warning';
                 findings.push({
                     severity: 'warning',
+                    category: 'domain_dns',
                     entity: 'domain',
                     entityId: domain.id,
+                    title: `SPF Check Failed: ${domain.domain}`,
+                    details: `DNS unreachable — cannot verify SPF. Trigger manual re-assessment.`,
                     message: `Domain ${domain.domain}: SPF record check failed (DNS unreachable).`,
                     remediation: `Verify DNS configuration is accessible. Trigger manual re-assessment.`,
                 });
@@ -395,8 +411,11 @@ export async function assessInfrastructure(
                 if (domainState === 'healthy') domainState = 'warning';
                 findings.push({
                     severity: 'warning',
+                    category: 'domain_dns',
                     entity: 'domain',
                     entityId: domain.id,
+                    title: `Missing DKIM: ${domain.domain}`,
+                    details: `No DKIM record found on common selectors. Enable DKIM signing in your email provider.`,
                     message: `Domain ${domain.domain} has no DKIM record configured (checked common selectors).`,
                     remediation: `Enable DKIM signing in your email provider and add the DKIM TXT record to DNS.`,
                 });
@@ -406,16 +425,22 @@ export async function assessInfrastructure(
             if (dnsResult.dmarcPolicy === null) {
                 findings.push({
                     severity: 'info',
+                    category: 'domain_dns',
                     entity: 'domain',
                     entityId: domain.id,
+                    title: `Missing DMARC: ${domain.domain}`,
+                    details: `Add a DMARC record at _dmarc.${domain.domain} to improve deliverability.`,
                     message: `Domain ${domain.domain} has no DMARC policy configured.`,
                     remediation: `Add a TXT record at _dmarc.${domain.domain}: "v=DMARC1; p=quarantine; rua=mailto:dmarc@${domain.domain}"`,
                 });
             } else if (dnsResult.dmarcPolicy === 'none') {
                 findings.push({
                     severity: 'info',
+                    category: 'domain_dns',
                     entity: 'domain',
                     entityId: domain.id,
+                    title: `Weak DMARC: ${domain.domain}`,
+                    details: `DMARC set to 'none' (monitoring only). Upgrade to p=quarantine or p=reject.`,
                     message: `Domain ${domain.domain} has DMARC policy set to 'none' (monitoring only, not enforcing).`,
                     remediation: `Consider upgrading to p=quarantine or p=reject once SPF and DKIM are stable.`,
                 });
@@ -466,8 +491,11 @@ export async function assessInfrastructure(
                 mailboxState = 'paused';
                 findings.push({
                     severity: 'critical',
+                    category: 'mailbox_health',
                     entity: 'mailbox',
                     entityId: mailbox.id,
+                    title: `High Bounce Rate: ${mailbox.email}`,
+                    details: `Bounce rate ${(bounceRate * 100).toFixed(1)}% exceeds ${(MAILBOX_THRESHOLDS.PAUSE_BOUNCE_RATE * 100)}% threshold. Mailbox paused; enters healing pipeline.`,
                     message: `Mailbox ${mailbox.email} has a historical bounce rate of ${(bounceRate * 100).toFixed(1)}% (>${(MAILBOX_THRESHOLDS.PAUSE_BOUNCE_RATE * 100)}% threshold).`,
                     remediation: `This mailbox has been paused and will enter the healing pipeline. It will be available for sending after cooldown and recovery.`,
                 });
@@ -475,8 +503,11 @@ export async function assessInfrastructure(
                 mailboxState = 'warning';
                 findings.push({
                     severity: 'warning',
+                    category: 'mailbox_health',
                     entity: 'mailbox',
                     entityId: mailbox.id,
+                    title: `Elevated Bounce Rate: ${mailbox.email}`,
+                    details: `Bounce rate ${(bounceRate * 100).toFixed(1)}% approaching threshold. Reduce volume or verify email list quality.`,
                     message: `Mailbox ${mailbox.email} has a historical bounce rate of ${(bounceRate * 100).toFixed(1)}% (approaching threshold).`,
                     remediation: `This mailbox is under elevated monitoring. Reduce sending volume or verify email list quality.`,
                 });
@@ -532,8 +563,11 @@ export async function assessInfrastructure(
                     campaignState = 'paused';
                     findings.push({
                         severity: 'critical',
+                        category: 'campaign_health',
                         entity: 'campaign',
                         entityId: campaign.id,
+                        title: `High Bounce Rate: ${campaign.name}`,
+                        details: `Campaign bounce rate ${(bounceRate * 100).toFixed(1)}% exceeds ${(CAMPAIGN_THRESHOLDS.PAUSE_BOUNCE_RATE * 100)}% threshold. Campaign paused.`,
                         message: `Campaign "${campaign.name}" has a bounce rate of ${(bounceRate * 100).toFixed(1)}% (>${(CAMPAIGN_THRESHOLDS.PAUSE_BOUNCE_RATE * 100)}% threshold).`,
                         remediation: `Campaign has been paused. Review the email list quality and domain reputation before resuming.`,
                     });
@@ -541,8 +575,11 @@ export async function assessInfrastructure(
                     campaignState = 'warning';
                     findings.push({
                         severity: 'warning',
+                        category: 'campaign_health',
                         entity: 'campaign',
                         entityId: campaign.id,
+                        title: `Elevated Bounce Rate: ${campaign.name}`,
+                        details: `Campaign bounce rate ${(bounceRate * 100).toFixed(1)}% approaching threshold. Review email list and remove invalid addresses.`,
                         message: `Campaign "${campaign.name}" has a bounce rate of ${(bounceRate * 100).toFixed(1)}% (approaching threshold).`,
                         remediation: `Monitor closely. Consider reviewing email list and removing invalid addresses.`,
                     });
@@ -595,6 +632,7 @@ export async function assessInfrastructure(
                 priority: 1,
                 action: 'Address critical issues immediately',
                 details: `${criticalCount} critical issue(s) found. Blacklisted domains and high-bounce mailboxes have been paused. Resolve blacklist listings and verify email list quality before resuming.`,
+                reason: `${criticalCount} critical issue(s) found. Blacklisted domains and high-bounce mailboxes have been paused. Resolve blacklist listings and verify email list quality before resuming.`,
             });
         }
 
@@ -603,6 +641,7 @@ export async function assessInfrastructure(
                 priority: 2,
                 action: 'Review warning-level issues',
                 details: `${warningCount} warning(s) found. Missing DNS authentication records and elevated bounce rates need attention. These entities are operational but at elevated risk.`,
+                reason: `${warningCount} warning(s) found. Missing DNS authentication records and elevated bounce rates need attention. These entities are operational but at elevated risk.`,
             });
         }
 
@@ -615,6 +654,7 @@ export async function assessInfrastructure(
                 priority: 3,
                 action: 'Configure DMARC policies',
                 details: `Some domains are missing DMARC policies. While not blocking, DMARC significantly improves deliverability and protects against spoofing.`,
+                reason: `Some domains are missing DMARC policies. While not blocking, DMARC significantly improves deliverability and protects against spoofing.`,
             });
         }
 
