@@ -293,8 +293,11 @@ export const syncSmartlead = async (organizationId: string): Promise<{
                             },
                             update: {
                                 assigned_campaign_id: campaignId,
-                                status: 'active', // Update pre-existing held leads to active
                                 updated_at: new Date()
+                                // Note: Status is intentionally NOT updated here
+                                // - Smartlead leads are created as 'active' (line 304)
+                                // - Clay leads stay 'held' until execution gate approves them
+                                // - Status changes only via execution gate or monitoring service
                             },
                             create: {
                                 email,
