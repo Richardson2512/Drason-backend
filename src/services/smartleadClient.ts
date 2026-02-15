@@ -158,7 +158,52 @@ export const syncSmartlead = async (organizationId: string): Promise<{
             mailboxCount++;
         }
 
-        // ── 3. Fetch leads for each campaign from Smartlead ──
+        // ── 3. Link campaigns to mailboxes by fetching email account assignments ──
+        for (const campaign of campaigns) {
+            const campaignId = campaign.id.toString();
+
+            try {
+                // Fetch email accounts assigned to this campaign
+                logger.info(`[CampaignMailboxSync] Fetching email accounts for campaign ${campaignId}`);
+
+                const campaignEmailAccountsRes = await smartleadBreaker.call(() =>
+                    axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/email-accounts`, {
+                        params: { api_key: apiKey }
+                    })
+                );
+
+                const emailAccounts = campaignEmailAccountsRes.data || [];
+                logger.info(`[CampaignMailboxSync] Found ${emailAccounts.length} email accounts for campaign ${campaignId}`);
+
+                // Connect mailboxes to this campaign
+                const mailboxIds = emailAccounts
+                    .map((ea: any) => ea.id?.toString() || ea.email_account_id?.toString())
+                    .filter(Boolean);
+
+                if (mailboxIds.length > 0) {
+                    // Update campaign to connect mailboxes
+                    await prisma.campaign.update({
+                        where: { id: campaignId },
+                        data: {
+                            mailboxes: {
+                                connect: mailboxIds.map((id: string) => ({ id }))
+                            }
+                        }
+                    });
+
+                    logger.info(`[CampaignMailboxSync] Linked ${mailboxIds.length} mailboxes to campaign ${campaignId}`);
+                }
+            } catch (emailAccountError: any) {
+                // Log but don't fail the sync if email account fetching fails
+                logger.warn(`[CampaignMailboxSync] Failed to fetch email accounts for campaign ${campaignId}`, {
+                    error: emailAccountError.message,
+                    status: emailAccountError.response?.status,
+                    data: emailAccountError.response?.data
+                });
+            }
+        }
+
+        // ── 4. Fetch leads for each campaign from Smartlead ──
         for (const campaign of campaigns) {
             const campaignId = campaign.id.toString();
             try {
