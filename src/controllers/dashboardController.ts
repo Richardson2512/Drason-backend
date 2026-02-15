@@ -48,8 +48,24 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
             prisma.lead.count({ where })
         ]);
 
+        // Fetch campaign names for all assigned campaigns
+        const campaignIds = [...new Set(leads.filter(l => l.assigned_campaign_id).map(l => l.assigned_campaign_id))];
+        const campaigns = await prisma.campaign.findMany({
+            where: { id: { in: campaignIds as string[] } },
+            select: { id: true, name: true, status: true }
+        });
+
+        // Create a map for quick lookup
+        const campaignMap = new Map(campaigns.map(c => [c.id, c]));
+
+        // Enrich leads with campaign data
+        const enrichedLeads = leads.map(lead => ({
+            ...lead,
+            campaign: lead.assigned_campaign_id ? campaignMap.get(lead.assigned_campaign_id) : null
+        }));
+
         res.json({
-            data: leads,
+            data: enrichedLeads,
             meta: {
                 total,
                 page,
