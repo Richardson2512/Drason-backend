@@ -76,6 +76,14 @@ export const syncSmartlead = async (organizationId: string): Promise<{
             firstItem: campaigns.length > 0 ? campaigns[0] : null
         })}`);
 
+        // Log first campaign structure to see available fields
+        if (campaigns.length > 0) {
+            logger.info('[CampaignSync] First campaign structure', {
+                campaignSample: campaigns[0],
+                campaignKeys: Object.keys(campaigns[0])
+            });
+        }
+
         for (const campaign of campaigns) {
             await prisma.campaign.upsert({
                 where: { id: campaign.id.toString() },
@@ -100,6 +108,14 @@ export const syncSmartlead = async (organizationId: string): Promise<{
             axios.get(`${SMARTLEAD_API_BASE}/email-accounts?api_key=${apiKey}`)
         );
         const mailboxes = mailboxesRes.data || [];
+
+        // Log first mailbox structure to see if it includes campaign assignments
+        if (mailboxes.length > 0) {
+            logger.info('[MailboxSync] First mailbox structure', {
+                mailboxSample: mailboxes[0],
+                mailboxKeys: Object.keys(mailboxes[0])
+            });
+        }
 
         for (const mailbox of mailboxes) {
             // Extract domain from email
