@@ -300,7 +300,7 @@ export const syncSmartlead = async (organizationId: string): Promise<{
                                 persona,
                                 lead_score: 50, // Default neutral score
                                 source: 'smartlead',
-                                status: 'held',
+                                status: 'active', // Pre-existing leads in Smartlead campaigns are already approved
                                 health_classification: 'green',
                                 assigned_campaign_id: campaignId,
                                 organization_id: organizationId
