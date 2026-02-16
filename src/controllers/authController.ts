@@ -108,7 +108,7 @@ export const login = async (req: Request, res: Response) => {
 
 export const register = async (req: Request, res: Response) => {
     try {
-        const { name, email, password, organizationName } = req.body;
+        const { name, email, password, organizationName, tier } = req.body;
 
         if (!email || !password || !organizationName) {
             return res.status(400).json({ success: false, error: 'Missing required fields' });
@@ -136,13 +136,18 @@ export const register = async (req: Request, res: Response) => {
             const trialStartedAt = new Date();
             const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 14 days from now
 
+            // Use selected tier or default to 'trial'
+            // Valid tiers: 'trial', 'starter', 'growth', 'scale'
+            const validTiers = ['trial', 'starter', 'growth', 'scale'];
+            const subscriptionTier = tier && validTiers.includes(tier) ? tier : 'trial';
+
             const org = await tx.organization.create({
                 data: {
                     name: organizationName,
                     slug,
                     system_mode: 'observe',
-                    // Initialize 14-day trial
-                    subscription_tier: 'trial',
+                    // Initialize 14-day trial with selected tier limits
+                    subscription_tier: subscriptionTier,
                     subscription_status: 'trialing',
                     trial_started_at: trialStartedAt,
                     trial_ends_at: trialEndsAt
