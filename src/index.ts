@@ -63,6 +63,7 @@ import { initEventQueue, getQueueStatus, shutdownEventQueue } from './services/e
 import { startLeadHealthWorker, getLeadHealthWorkerStatus } from './services/leadHealthWorker';
 import { startLeadScoringWorker, stopLeadScoringWorker } from './services/leadScoringWorker';
 import { startTrialWorker, stopTrialWorker } from './services/trialWorker';
+import { startSmartleadSyncWorker, stopSmartleadSyncWorker, getSmartleadSyncWorkerStatus } from './services/smartleadSyncWorker';
 
 import cookieParser from 'cookie-parser';
 
@@ -480,6 +481,10 @@ const server = app.listen(PORT, () => {
     // Start trial expiration worker
     startTrialWorker();
     logger.info('Trial expiration worker started (runs hourly)');
+
+    // Start Smartlead sync worker for 24/7 infrastructure monitoring
+    startSmartleadSyncWorker();
+    logger.info('Smartlead sync worker started (runs every 20min for real-time monitoring)');
 });
 
 // ============================================================================
@@ -495,6 +500,9 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
     stopTrialWorker();
     logger.info('Trial worker stopped');
+
+    stopSmartleadSyncWorker();
+    logger.info('Smartlead sync worker stopped');
 
     // Stop accepting new connections
     server.close(() => {
