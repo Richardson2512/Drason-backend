@@ -133,11 +133,19 @@ export const register = async (req: Request, res: Response) => {
 
         // Transaction to create Org + User
         const result = await prisma.$transaction(async (tx) => {
+            const trialStartedAt = new Date();
+            const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 14 days from now
+
             const org = await tx.organization.create({
                 data: {
                     name: organizationName,
                     slug,
-                    system_mode: 'observe'
+                    system_mode: 'observe',
+                    // Initialize 14-day trial
+                    subscription_tier: 'trial',
+                    subscription_status: 'trialing',
+                    trial_started_at: trialStartedAt,
+                    trial_ends_at: trialEndsAt
                 }
             });
 

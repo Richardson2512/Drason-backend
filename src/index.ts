@@ -49,6 +49,7 @@ import syncRoutes from './routes/sync';
 import authRoutes from './routes/auth';
 import assessmentRoutes from './routes/assessment';
 import healingRoutes from './routes/healing';
+import billingRoutes from './routes/billing';
 
 // Import controllers
 import * as monitoringController from './controllers/monitoringController';
@@ -61,6 +62,7 @@ import { startRetentionJob, getRetentionJobStatus } from './services/complianceS
 import { initEventQueue, getQueueStatus, shutdownEventQueue } from './services/eventQueue';
 import { startLeadHealthWorker, getLeadHealthWorkerStatus } from './services/leadHealthWorker';
 import { startLeadScoringWorker, stopLeadScoringWorker } from './services/leadScoringWorker';
+import { startTrialWorker, stopTrialWorker } from './services/trialWorker';
 
 import cookieParser from 'cookie-parser';
 
@@ -168,6 +170,7 @@ app.use('/api/sync', syncRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/assessment', assessmentRoutes);
 app.use('/api/healing', healingRoutes);
+app.use('/api/billing', billingRoutes);
 
 // Ingestion endpoints
 app.post('/api/ingest', asyncHandler(ingestionController.ingestLead));
@@ -473,6 +476,10 @@ const server = app.listen(PORT, () => {
     // Start lead scoring worker
     startLeadScoringWorker();
     logger.info('Lead scoring worker started (runs every 24h)');
+
+    // Start trial expiration worker
+    startTrialWorker();
+    logger.info('Trial expiration worker started (runs hourly)');
 });
 
 // ============================================================================
@@ -485,6 +492,9 @@ async function gracefulShutdown(signal: string): Promise<void> {
     // Stop background workers
     stopLeadScoringWorker();
     logger.info('Lead scoring worker stopped');
+
+    stopTrialWorker();
+    logger.info('Trial worker stopped');
 
     // Stop accepting new connections
     server.close(() => {

@@ -14,6 +14,23 @@ model Organization {
   system_mode           String                  @default("observe")
   assessment_completed  Boolean                 @default(false)
   transition_acknowledged Boolean                @default(false)  // Phase 0→1: operator must acknowledge low-score assessments
+
+  // Subscription Management
+  subscription_tier       String                @default("trial")
+  subscription_status     String                @default("trialing")
+  polar_customer_id       String?               @unique
+  polar_subscription_id   String?               @unique
+  trial_started_at        DateTime?
+  trial_ends_at           DateTime?
+  subscription_started_at DateTime?
+  next_billing_date       DateTime?
+
+  // Usage Tracking for Feature Gates
+  current_lead_count      Int                   @default(0)
+  current_domain_count    Int                   @default(0)
+  current_mailbox_count   Int                   @default(0)
+  usage_last_updated_at   DateTime?
+
   created_at            DateTime                @default(now())
   updated_at            DateTime                @updatedAt
   apiKeys               ApiKey[]
@@ -29,8 +46,11 @@ model Organization {
   users                 User[]
   notifications         Notification[]
   infraReports          InfrastructureReport[]
+  subscriptionEvents    SubscriptionEvent[]
 
   @@index([slug])
+  @@index([subscription_status])
+  @@index([trial_ends_at])
 }
 
 model User {
@@ -332,4 +352,20 @@ model InfrastructureReport {
   organization       Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
 
   @@index([organization_id, created_at])
+}
+
+model SubscriptionEvent {
+  id              String       @id @default(uuid())
+  organization_id String
+  event_type      String       // subscription.created, subscription.updated, subscription.canceled, invoice.paid, invoice.payment_failed
+  polar_event_id  String?      @unique
+  previous_tier   String?
+  new_tier        String?
+  payload         Json?        // Full webhook payload for audit purposes
+  created_at      DateTime     @default(now())
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id, created_at])
+  @@index([event_type])
+  @@index([polar_event_id])
 }
