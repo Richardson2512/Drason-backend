@@ -70,9 +70,24 @@ export const createCheckout = async (req: Request, res: Response): Promise<Respo
             return res.status(400).json({ error: 'Invalid tier. Must be one of: starter, growth, scale' });
         }
 
-        // Check if already has active subscription
-        const org = await billingService.getUsageAndLimits(orgId);
-        if (org.tier !== 'trial' && org.tier !== 'free') {
+        // Check subscription status instead of tier
+        // With no-payment trials, users can be on 'growth' tier while 'trialing'
+        const { prisma } = await import('../index');
+        const org = await prisma.organization.findUnique({
+            where: { id: orgId },
+            select: {
+                subscription_status: true,
+                subscription_tier: true
+            }
+        });
+
+        if (!org) {
+            return res.status(404).json({ error: 'Organization not found' });
+        }
+
+        // Only allow upgrade if trialing, expired, or free
+        // Block if already have active paid subscription
+        if (org.subscription_status === 'active') {
             return res.status(400).json({ error: 'Already have an active subscription. Cancel first to change tiers.' });
         }
 
