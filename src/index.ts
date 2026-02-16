@@ -110,6 +110,7 @@ app.get('/health', asyncHandler(async (req: express.Request, res: express.Respon
     const retentionJob = getRetentionJobStatus();
     const eventQueueStatus = await getQueueStatus();
     const leadHealthWorker = getLeadHealthWorkerStatus();
+    const smartleadSyncWorker = getSmartleadSyncWorkerStatus();
 
     const components = {
         database: dbStatus,
@@ -135,6 +136,15 @@ app.get('/health', asyncHandler(async (req: express.Request, res: express.Respon
             status: leadHealthWorker.lastRunAt ? 'active' : 'not_started',
             lastRunAt: leadHealthWorker.lastRunAt,
             lastError: leadHealthWorker.lastError
+        },
+        smartleadSyncWorker: {
+            status: smartleadSyncWorker.lastRunAt ? 'active' : 'not_started',
+            lastRunAt: smartleadSyncWorker.lastRunAt,
+            lastError: smartleadSyncWorker.lastError,
+            totalSyncs: smartleadSyncWorker.totalSyncs,
+            totalOrganizationsSynced: smartleadSyncWorker.totalOrganizationsSynced,
+            lastSyncDurationMs: smartleadSyncWorker.lastSyncDurationMs,
+            consecutiveFailures: smartleadSyncWorker.consecutiveFailures
         }
     };
 

@@ -9,7 +9,13 @@ router.post('/', async (req: Request, res: Response) => {
     try {
         const orgId = getOrgId(req);
         const result = await smartleadClient.syncSmartlead(orgId);
-        res.json({ success: true, data: result });
+        // Return field names that match frontend expectations
+        res.json({
+            success: true,
+            campaigns_synced: result.campaigns,
+            mailboxes_synced: result.mailboxes,
+            leads_synced: result.leads
+        });
     } catch (e: any) {
         res.status(500).json({ success: false, error: e.message });
     }
