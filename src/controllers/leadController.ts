@@ -9,6 +9,7 @@ import { Request, Response } from 'express';
 import * as leadService from '../services/leadService';
 import { getOrgId } from '../middleware/orgContext';
 import { logger } from '../services/observabilityService';
+import { prisma } from '../index';
 
 export const ingestLead = async (req: Request, res: Response): Promise<void> => {
     try {
@@ -26,6 +27,12 @@ export const ingestLead = async (req: Request, res: Response): Promise<void> => 
             email,
             persona,
             lead_score,
+        });
+
+        // 3. Increment usage count for billing/capacity tracking
+        await prisma.organization.update({
+            where: { id: orgId },
+            data: { current_lead_count: { increment: 1 } }
         });
 
         res.status(201).json({ success: true, data: { message: 'Lead ingested successfully', lead } });

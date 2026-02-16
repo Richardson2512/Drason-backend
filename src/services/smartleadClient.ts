@@ -18,6 +18,7 @@ import * as notificationService from './notificationService';
 import { EventType } from '../types';
 import { logger } from './observabilityService';
 import { smartleadBreaker } from '../utils/circuitBreaker';
+import { TIER_LIMITS } from './polarClient';
 
 const SMARTLEAD_API_BASE = 'https://server.smartlead.ai/api/v1';
 
@@ -60,6 +61,29 @@ export const syncSmartlead = async (organizationId: string): Promise<{
     let campaignCount = 0;
     let mailboxCount = 0;
     let leadCount = 0;
+
+    // Get organization subscription info for capacity checks
+    const org = await prisma.organization.findUnique({
+        where: { id: organizationId },
+        select: {
+            subscription_tier: true,
+            subscription_status: true,
+            current_domain_count: true,
+            current_mailbox_count: true
+        }
+    });
+
+    if (!org) {
+        throw new Error('Organization not found');
+    }
+
+    // Check if subscription is active
+    const blockedStatuses = ['expired', 'past_due', 'canceled'];
+    if (blockedStatuses.includes(org.subscription_status)) {
+        throw new Error(`Cannot sync: subscription ${org.subscription_status}. Please upgrade to continue.`);
+    }
+
+    const limits = TIER_LIMITS[org.subscription_tier] || TIER_LIMITS.trial;
 
     try {
         // ── 1. Fetch campaigns (protected by circuit breaker) ──
@@ -131,6 +155,18 @@ export const syncSmartlead = async (organizationId: string): Promise<{
             });
 
             if (!domain) {
+                // Check domain capacity before creating
+                if (org.current_domain_count >= limits.domains) {
+                    logger.warn('[Smartlead Sync] Domain capacity reached, skipping domain creation', {
+                        organizationId,
+                        current: org.current_domain_count,
+                        limit: limits.domains,
+                        tier: org.subscription_tier,
+                        skippedDomain: domainName
+                    });
+                    continue; // Skip this mailbox if we can't create its domain
+                }
+
                 domain = await prisma.domain.create({
                     data: {
                         domain: domainName,
@@ -138,6 +174,32 @@ export const syncSmartlead = async (organizationId: string): Promise<{
                         organization_id: organizationId
                     }
                 });
+
+                // Increment domain count
+                await prisma.organization.update({
+                    where: { id: organizationId },
+                    data: { current_domain_count: { increment: 1 } }
+                });
+                org.current_domain_count++; // Update local copy
+            }
+
+            // Check if mailbox exists
+            const existingMailbox = await prisma.mailbox.findUnique({
+                where: { id: mailbox.id.toString() }
+            });
+
+            if (!existingMailbox) {
+                // Check mailbox capacity before creating
+                if (org.current_mailbox_count >= limits.mailboxes) {
+                    logger.warn('[Smartlead Sync] Mailbox capacity reached, skipping mailbox creation', {
+                        organizationId,
+                        current: org.current_mailbox_count,
+                        limit: limits.mailboxes,
+                        tier: org.subscription_tier,
+                        skippedEmail: email
+                    });
+                    continue; // Skip this mailbox
+                }
             }
 
             // Upsert mailbox
@@ -155,6 +217,16 @@ export const syncSmartlead = async (organizationId: string): Promise<{
                     organization_id: organizationId
                 }
             });
+
+            // Increment mailbox count if this was a new mailbox
+            if (!existingMailbox) {
+                await prisma.organization.update({
+                    where: { id: organizationId },
+                    data: { current_mailbox_count: { increment: 1 } }
+                });
+                org.current_mailbox_count++; // Update local copy
+            }
+
             mailboxCount++;
         }
 

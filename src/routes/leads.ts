@@ -2,11 +2,12 @@ import { Router } from 'express';
 import * as leadController from '../controllers/leadController';
 import * as leadScoringController from '../controllers/leadScoringController';
 import { validateBody, ingestLeadSchema } from '../middleware/validation';
+import { checkLeadCapacity } from '../middleware/featureGate';
 
 const router = Router();
 
-// Lead ingestion
-router.post('/', validateBody(ingestLeadSchema), leadController.ingestLead);
+// Lead ingestion - with capacity check to enforce tier limits
+router.post('/', checkLeadCapacity, validateBody(ingestLeadSchema), leadController.ingestLead);
 
 // Lead scoring endpoints
 router.post('/scoring/sync', leadScoringController.syncLeadScores);
