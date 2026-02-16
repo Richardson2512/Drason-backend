@@ -99,7 +99,7 @@ export const extractOrgContext = async (
 
         // PUBLIC ROUTES: Skip context check for auth endpoints and webhooks
         // Note: req.path is relative to the mount point ('/api')
-        const publicPaths = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout', '/monitor/smartlead-webhook', '/ingest/clay'];
+        const publicPaths = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout', '/monitor/smartlead-webhook', '/ingest/clay', '/billing/polar-webhook'];
         if (publicPaths.some(path => req.path.startsWith(path))) {
             return next();
         }

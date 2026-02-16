@@ -11,7 +11,7 @@ import { Request, Response } from 'express';
 import { logger } from '../services/observabilityService';
 import * as billingService from '../services/billingService';
 import * as polarClient from '../services/polarClient';
-import { getOrganizationId } from '../middleware/auth';
+import { getOrgId } from '../middleware/orgContext';
 
 // ============================================================================
 // WEBHOOK HANDLER
@@ -63,7 +63,7 @@ export const handlePolarWebhook = async (req: Request, res: Response): Promise<R
  */
 export const createCheckout = async (req: Request, res: Response): Promise<Response> => {
     try {
-        const orgId = getOrganizationId(req);
+        const orgId = getOrgId(req);
         const { tier } = req.body;
 
         if (!tier || !['starter', 'growth', 'scale'].includes(tier)) {
@@ -98,7 +98,7 @@ export const createCheckout = async (req: Request, res: Response): Promise<Respo
  */
 export const getSubscriptionStatus = async (req: Request, res: Response): Promise<Response> => {
     try {
-        const orgId = getOrganizationId(req);
+        const orgId = getOrgId(req);
 
         // Refresh usage counts
         await billingService.refreshUsageCounts(orgId);
@@ -143,7 +143,7 @@ export const getSubscriptionStatus = async (req: Request, res: Response): Promis
  */
 export const cancelSubscription = async (req: Request, res: Response): Promise<Response> => {
     try {
-        const orgId = getOrganizationId(req);
+        const orgId = getOrgId(req);
 
         await polarClient.cancelSubscription(orgId);
 
@@ -163,7 +163,7 @@ export const cancelSubscription = async (req: Request, res: Response): Promise<R
  */
 export const refreshUsage = async (req: Request, res: Response): Promise<Response> => {
     try {
-        const orgId = getOrganizationId(req);
+        const orgId = getOrgId(req);
 
         const usage = await billingService.refreshUsageCounts(orgId);
 

@@ -13,7 +13,7 @@ import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
 import { TIER_LIMITS } from '../services/polarClient';
-import { getOrganizationId } from './auth';
+import { getOrgId } from './orgContext';
 
 // ============================================================================
 // SUBSCRIPTION STATUS CHECK
@@ -26,7 +26,7 @@ import { getOrganizationId } from './auth';
 export function checkSubscriptionStatus(req: Request, res: Response, next: NextFunction): void {
     (async () => {
         try {
-            const orgId = getOrganizationId(req);
+            const orgId = getOrgId(req);
 
             const org = await prisma.organization.findUnique({
                 where: { id: orgId },
@@ -87,7 +87,7 @@ function getSubscriptionMessage(status: string): string {
 export function checkLeadCapacity(req: Request, res: Response, next: NextFunction): void {
     (async () => {
         try {
-            const orgId = getOrganizationId(req);
+            const orgId = getOrgId(req);
 
             const org = await prisma.organization.findUnique({
                 where: { id: orgId },
@@ -148,7 +148,7 @@ export function checkLeadCapacity(req: Request, res: Response, next: NextFunctio
 export function checkDomainCapacity(req: Request, res: Response, next: NextFunction): void {
     (async () => {
         try {
-            const orgId = getOrganizationId(req);
+            const orgId = getOrgId(req);
 
             const org = await prisma.organization.findUnique({
                 where: { id: orgId },
@@ -209,7 +209,7 @@ export function checkDomainCapacity(req: Request, res: Response, next: NextFunct
 export function checkMailboxCapacity(req: Request, res: Response, next: NextFunction): void {
     (async () => {
         try {
-            const orgId = getOrganizationId(req);
+            const orgId = getOrgId(req);
 
             const org = await prisma.organization.findUnique({
                 where: { id: orgId },
