@@ -134,11 +134,28 @@ export const getCampaigns = async (req: Request, res: Response, next: NextFuncti
         const orgId = getOrgId(req);
         const page = parseInt(req.query.page as string) || 1;
         const limit = parseInt(req.query.limit as string) || 20;
+        const status = req.query.status as string;
+        const search = req.query.search as string;
         const skip = (page - 1) * limit;
+
+        const where: any = {
+            organization_id: orgId
+        };
+
+        if (status && status !== 'all') {
+            where.status = status;
+        }
+
+        if (search && search.trim()) {
+            where.name = {
+                contains: search.trim(),
+                mode: 'insensitive'
+            };
+        }
 
         const [campaigns, total] = await Promise.all([
             prisma.campaign.findMany({
-                where: { organization_id: orgId },
+                where,
                 include: {
                     mailboxes: {
                         select: {
@@ -155,7 +172,7 @@ export const getCampaigns = async (req: Request, res: Response, next: NextFuncti
                 take: limit,
                 skip
             }),
-            prisma.campaign.count({ where: { organization_id: orgId } })
+            prisma.campaign.count({ where })
         ]);
 
         res.json({
