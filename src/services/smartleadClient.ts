@@ -20,6 +20,7 @@ import { logger } from './observabilityService';
 import { smartleadBreaker } from '../utils/circuitBreaker';
 import { syncProgressService } from './syncProgressService';
 import { TIER_LIMITS } from './polarClient';
+import { decrypt } from '../utils/encryption';
 
 const SMARTLEAD_API_BASE = 'https://server.smartlead.ai/api/v1';
 
@@ -35,7 +36,11 @@ async function getApiKey(organizationId: string): Promise<string | null> {
             }
         }
     });
-    return setting?.value || null;
+
+    if (!setting?.value) return null;
+
+    // Decrypt the API key before returning (it's encrypted in the database)
+    return decrypt(setting.value);
 }
 
 /**
