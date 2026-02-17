@@ -17,7 +17,7 @@ const router = Router();
  * @route GET /api/sync-progress/:sessionId
  */
 router.get('/:sessionId', (req: Request, res: Response) => {
-    const { sessionId } = req.params;
+    const sessionId = req.params.sessionId as string;
 
     logger.info('[SyncProgress] Client connected', { sessionId });
 
