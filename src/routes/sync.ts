@@ -9,7 +9,8 @@ const router = Router();
 router.post('/', async (req: Request, res: Response) => {
     try {
         const orgId = getOrgId(req);
-        const result = await smartleadClient.syncSmartlead(orgId);
+        const sessionId = req.query.session as string | undefined;
+        const result = await smartleadClient.syncSmartlead(orgId, sessionId);
 
         // Check for critical infrastructure findings after sync
         const report = await prisma.infrastructureReport.findFirst({

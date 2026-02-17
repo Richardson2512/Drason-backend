@@ -18,6 +18,7 @@ import * as notificationService from './notificationService';
 import { EventType } from '../types';
 import { logger } from './observabilityService';
 import { smartleadBreaker } from '../utils/circuitBreaker';
+import { syncProgressService } from './syncProgressService';
 import { TIER_LIMITS } from './polarClient';
 
 const SMARTLEAD_API_BASE = 'https://server.smartlead.ai/api/v1';
@@ -40,7 +41,7 @@ async function getApiKey(organizationId: string): Promise<string | null> {
 /**
  * Sync campaigns, mailboxes, AND leads from Smartlead.
  */
-export const syncSmartlead = async (organizationId: string): Promise<{
+export const syncSmartlead = async (organizationId: string, sessionId?: string): Promise<{
     campaigns: number;
     mailboxes: number;
     leads: number;
@@ -87,6 +88,10 @@ export const syncSmartlead = async (organizationId: string): Promise<{
 
     try {
         // ── 1. Fetch campaigns (protected by circuit breaker) ──
+        if (sessionId) {
+            syncProgressService.emitProgress(sessionId, 'campaigns', 'in_progress', { total: 0 });
+        }
+
         const campaignsRes = await smartleadBreaker.call(() =>
             axios.get(`${SMARTLEAD_API_BASE}/campaigns?api_key=${apiKey}`)
         );
@@ -105,6 +110,13 @@ export const syncSmartlead = async (organizationId: string): Promise<{
             logger.info('[CampaignSync] First campaign structure', {
                 campaignSample: campaigns[0],
                 campaignKeys: Object.keys(campaigns[0])
+            });
+        }
+
+        if (sessionId) {
+            syncProgressService.emitProgress(sessionId, 'campaigns', 'in_progress', {
+                current: 0,
+                total: campaigns.length
             });
         }
 
@@ -147,6 +159,20 @@ export const syncSmartlead = async (organizationId: string): Promise<{
             }
 
             campaignCount++;
+
+            if (sessionId) {
+                syncProgressService.emitProgress(sessionId, 'campaigns', 'in_progress', {
+                    current: campaignCount,
+                    total: campaigns.length
+                });
+            }
+        }
+
+        if (sessionId) {
+            syncProgressService.emitProgress(sessionId, 'campaigns', 'completed', {
+                count: campaignCount
+            });
+            syncProgressService.emitProgress(sessionId, 'mailboxes', 'in_progress', { total: 0 });
         }
 
         // ── 2. Fetch email accounts (mailboxes) (protected by circuit breaker) ──
@@ -160,6 +186,13 @@ export const syncSmartlead = async (organizationId: string): Promise<{
             logger.info('[MailboxSync] First mailbox structure', {
                 mailboxSample: mailboxes[0],
                 mailboxKeys: Object.keys(mailboxes[0])
+            });
+        }
+
+        if (sessionId) {
+            syncProgressService.emitProgress(sessionId, 'mailboxes', 'in_progress', {
+                current: 0,
+                total: mailboxes.length
             });
         }
 
@@ -250,6 +283,20 @@ export const syncSmartlead = async (organizationId: string): Promise<{
             }
 
             mailboxCount++;
+
+            if (sessionId) {
+                syncProgressService.emitProgress(sessionId, 'mailboxes', 'in_progress', {
+                    current: mailboxCount,
+                    total: mailboxes.length
+                });
+            }
+        }
+
+        if (sessionId) {
+            syncProgressService.emitProgress(sessionId, 'mailboxes', 'completed', {
+                count: mailboxCount
+            });
+            syncProgressService.emitProgress(sessionId, 'leads', 'in_progress', { total: 0 });
         }
 
         // ── 3. Link campaigns to mailboxes by fetching email account assignments ──
@@ -310,6 +357,14 @@ export const syncSmartlead = async (organizationId: string): Promise<{
         }
 
         // ── 4. Fetch leads for each campaign from Smartlead ──
+        if (sessionId) {
+            syncProgressService.emitProgress(sessionId, 'leads', 'in_progress', {
+                current: 0,
+                total: campaigns.length
+            });
+        }
+
+        let campaignIndex = 0;
         for (const campaign of campaigns) {
             const campaignId = campaign.id.toString();
             try {
@@ -443,6 +498,21 @@ export const syncSmartlead = async (organizationId: string): Promise<{
                     status: leadError.response?.status
                 });
             }
+
+            campaignIndex++;
+            if (sessionId) {
+                syncProgressService.emitProgress(sessionId, 'leads', 'in_progress', {
+                    current: campaignIndex,
+                    total: campaigns.length
+                });
+            }
+        }
+
+        if (sessionId) {
+            syncProgressService.emitProgress(sessionId, 'leads', 'completed', {
+                count: leadCount
+            });
+            syncProgressService.emitProgress(sessionId, 'health_check', 'in_progress', {});
         }
 
         await auditLogService.logAction({
@@ -456,9 +526,10 @@ export const syncSmartlead = async (organizationId: string): Promise<{
         // ── STRICT ORDER: Sync complete → Trigger Infrastructure Assessment ──
         // Assessment runs inline (not async) to maintain the strict ordering guarantee.
         // The execution gate remains locked until assessment completes.
+        let healthCheckResult = null;
         try {
             logger.info('Triggering infrastructure assessment after Smartlead sync', { organizationId });
-            await assessmentService.assessInfrastructure(organizationId, 'onboarding');
+            healthCheckResult = await assessmentService.assessInfrastructure(organizationId, 'onboarding');
             logger.info('Infrastructure assessment completed after sync', { organizationId });
         } catch (assessError: any) {
             // Assessment failure does NOT fail the sync — sync data is already persisted.
@@ -473,6 +544,10 @@ export const syncSmartlead = async (organizationId: string): Promise<{
             });
         }
 
+        if (sessionId) {
+            syncProgressService.emitProgress(sessionId, 'health_check', 'completed', {});
+        }
+
         // ── Notify user of successful sync ──
         try {
             await notificationService.createNotification(organizationId, {
@@ -482,6 +557,16 @@ export const syncSmartlead = async (organizationId: string): Promise<{
             });
         } catch (notifError) {
             logger.warn('Failed to create sync success notification', { organizationId });
+        }
+
+        // Emit completion event with results
+        if (sessionId) {
+            syncProgressService.emitComplete(sessionId, {
+                campaigns_synced: campaignCount,
+                mailboxes_synced: mailboxCount,
+                leads_synced: leadCount,
+                health_check: healthCheckResult
+            });
         }
 
         return { campaigns: campaignCount, mailboxes: mailboxCount, leads: leadCount };
@@ -504,6 +589,11 @@ export const syncSmartlead = async (organizationId: string): Promise<{
             });
         } catch (notifError) {
             logger.warn('Failed to create sync failure notification', { organizationId });
+        }
+
+        // Emit error event
+        if (sessionId) {
+            syncProgressService.emitError(sessionId, error.message);
         }
 
         throw error;
