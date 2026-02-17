@@ -404,47 +404,6 @@ export const getLeadHealthStats = async (req: Request, res: Response) => {
  * Get campaign health statistics.
  * Returns active/paused/warning counts and campaign details.
  */
-export const getCampaignHealthStats = async (req: Request, res: Response) => {
-    try {
-        const orgId = getOrgId(req);
-
-        const campaigns = await prisma.campaign.findMany({
-            where: { organization_id: orgId },
-            select: {
-                id: true,
-                name: true,
-                status: true,
-                paused_reason: true,
-                paused_at: true,
-                bounce_rate: true,
-                warning_count: true,
-                total_sent: true,
-                total_bounced: true
-            },
-            orderBy: { updated_at: 'desc' }
-        });
-
-        const total = campaigns.length;
-        const active = campaigns.filter(c => c.status === 'active').length;
-        const paused = campaigns.filter(c => c.status === 'paused').length;
-        const warning = campaigns.filter(c => c.status === 'warning').length;
-
-        res.json({
-            success: true,
-            data: {
-                total,
-                active,
-                paused,
-                warning,
-                campaigns
-            }
-        });
-    } catch (error) {
-        logger.error('getCampaignHealthStats error', error as Error);
-        res.status(500).json({ error: 'Failed to fetch campaign health stats' });
-    }
-};
-
 /**
  * Pause a campaign.
  */

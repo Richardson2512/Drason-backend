@@ -42,6 +42,7 @@ router.post('/', async (req: Request, res: Response) => {
             }
         });
     } catch (e: any) {
+        console.error('[SYNC ERROR]', e.message, e.stack);
         res.status(500).json({ success: false, error: e.message });
     }
 });

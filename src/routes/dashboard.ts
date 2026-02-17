@@ -25,7 +25,7 @@ router.get('/events', requireRole(UserRole.ADMIN), dashboardController.getRawEve
 router.get('/lead-health-stats', dashboardController.getLeadHealthStats);
 
 // Campaign Health endpoints
-router.get('/campaign-health-stats', dashboardController.getCampaignHealthStats);
+// Removed: /campaign-health-stats - Duplicate of /campaigns endpoint (use that instead)
 router.post('/campaign/pause', validateBody(campaignActionSchema), dashboardController.pauseCampaign);
 router.post('/campaign/resume', validateBody(campaignActionSchema), dashboardController.resumeCampaign);
 router.post('/campaigns/pause-all', campaignController.pauseAllCampaigns);

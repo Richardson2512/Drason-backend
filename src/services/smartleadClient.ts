@@ -572,6 +572,8 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
         return { campaigns: campaignCount, mailboxes: mailboxCount, leads: leadCount };
 
     } catch (error: any) {
+        logger.error(`[SmartleadSync] Sync failed for org ${organizationId}: ${error.message}`, error);
+
         await auditLogService.logAction({
             organizationId,
             entity: 'system',

@@ -196,7 +196,7 @@ app.post('/api/ingest/clay', asyncHandler(ingestionController.ingestClayWebhook)
 
 // Monitoring endpoints
 app.post('/api/monitor/event', asyncHandler(monitoringController.triggerEvent));
-app.post('/api/monitor/smartlead-webhook', asyncHandler(monitoringController.handleSmartleadWebhook));
+// Note: /api/monitor/smartlead-webhook is handled by smartleadWebhookRoutes (line 187)
 
 // ============================================================================
 // ADMIN ENDPOINTS — DLQ, Replay, System Metrics
