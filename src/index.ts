@@ -75,7 +75,28 @@ import cookieParser from 'cookie-parser';
 
 // Middleware
 app.use(cors({
-    origin: process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3000'),
+    origin: (origin, callback) => {
+        // Allow requests with no origin (like mobile apps, Postman, etc.)
+        if (!origin) return callback(null, true);
+
+        // In development, allow localhost
+        if (process.env.NODE_ENV !== 'production') {
+            return callback(null, true);
+        }
+
+        // In production, allow both www and non-www versions of the domain
+        const allowedOrigins = [
+            process.env.FRONTEND_URL,
+            process.env.FRONTEND_URL?.replace('https://', 'https://www.'),
+            process.env.FRONTEND_URL?.replace('https://www.', 'https://'),
+        ].filter(Boolean);
+
+        if (allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Organization-ID'],
