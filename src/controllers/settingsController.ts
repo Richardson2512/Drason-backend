@@ -9,6 +9,7 @@ import { Request, Response } from 'express';
 import { prisma } from '../index';
 import { getOrgId } from '../middleware/orgContext';
 import { logger } from '../services/observabilityService';
+import { encrypt, decrypt, isEncrypted } from '../utils/encryption';
 
 /**
  * Get all settings for the organization.
@@ -52,9 +53,13 @@ export const updateSettings = async (req: Request, res: Response) => {
         // Determine which keys are secrets
         const secretKeys = ['SMARTLEAD_API_KEY', 'INSTANTLY_API_KEY'];
 
-        // Upsert each setting
+        // Upsert each setting (encrypt secrets before storing)
         const updates = Object.entries(settingsToUpdate).map(([key, value]) => {
             if (typeof value !== 'string') return null;
+
+            const isSecret = secretKeys.includes(key);
+            // Encrypt secret values before storing
+            const storedValue = isSecret ? encrypt(value) : value;
 
             return prisma.organizationSetting.upsert({
                 where: {
@@ -63,12 +68,12 @@ export const updateSettings = async (req: Request, res: Response) => {
                         key
                     }
                 },
-                update: { value },
+                update: { value: storedValue },
                 create: {
                     organization_id: orgId,
                     key,
-                    value,
-                    is_secret: secretKeys.includes(key)
+                    value: storedValue,
+                    is_secret: isSecret
                 }
             });
         }).filter(Boolean);
@@ -84,6 +89,7 @@ export const updateSettings = async (req: Request, res: Response) => {
 
 /**
  * Get a single setting value (unmasked, for internal use).
+ * Automatically decrypts encrypted values.
  */
 export const getSetting = async (orgId: string, key: string): Promise<string | null> => {
     const setting = await prisma.organizationSetting.findUnique({
@@ -94,7 +100,20 @@ export const getSetting = async (orgId: string, key: string): Promise<string | n
             }
         }
     });
-    return setting?.value || null;
+
+    if (!setting?.value) return null;
+
+    // Decrypt if encrypted (secret values)
+    if (setting.is_secret && isEncrypted(setting.value)) {
+        try {
+            return decrypt(setting.value);
+        } catch (error) {
+            logger.error('[SETTINGS] Failed to decrypt setting', { key, error });
+            return null;
+        }
+    }
+
+    return setting.value;
 };
 
 /**
