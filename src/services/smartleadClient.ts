@@ -476,7 +476,14 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         const company = lead.company_name || lead.company || '';
                         const persona = company || 'general';
 
-                        await prisma.lead.upsert({
+                        // Extract activity/engagement data from Smartlead (if available)
+                        const emailsSent = lead.emails_sent || lead.sent_count || 0;
+                        const emailsOpened = lead.emails_opened || lead.open_count || 0;
+                        const emailsClicked = lead.emails_clicked || lead.click_count || 0;
+                        const emailsReplied = lead.emails_replied || lead.reply_count || 0;
+                        const emailsBounced = lead.emails_bounced || lead.bounce_count || 0;
+
+                        const upsertedLead = await prisma.lead.upsert({
                             where: {
                                 organization_id_email: {
                                     organization_id: organizationId,
@@ -502,6 +509,61 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                 organization_id: organizationId
                             }
                         });
+
+                        // Backfill activity timeline from Smartlead historical data
+                        // This creates audit log entries for activity that happened before webhooks were configured
+                        if (emailsSent > 0 || emailsOpened > 0 || emailsClicked > 0 || emailsReplied > 0) {
+                            logger.info('[LeadSync] Found lead activity history', {
+                                email,
+                                campaignId,
+                                emailsSent,
+                                emailsOpened,
+                                emailsClicked,
+                                emailsReplied,
+                                emailsBounced
+                            });
+
+                            // Create audit log summary entry for historical activity
+                            await auditLogService.logAction({
+                                organizationId,
+                                entity: 'lead',
+                                entityId: upsertedLead.id,
+                                trigger: 'smartlead_sync',
+                                action: 'activity_backfill',
+                                details: `Historical activity: ${emailsSent} sent, ${emailsOpened} opened, ${emailsClicked} clicked, ${emailsReplied} replied${emailsBounced > 0 ? `, ${emailsBounced} bounced` : ''}`
+                            });
+
+                            // If lead has replies, boost engagement score
+                            if (emailsReplied > 0) {
+                                await prisma.lead.update({
+                                    where: { id: upsertedLead.id },
+                                    data: {
+                                        lead_score: { increment: emailsReplied * 20 } // +20 per reply
+                                    }
+                                });
+                            }
+
+                            // If lead has clicks, boost engagement score
+                            if (emailsClicked > 0) {
+                                await prisma.lead.update({
+                                    where: { id: upsertedLead.id },
+                                    data: {
+                                        lead_score: { increment: emailsClicked * 10 } // +10 per click
+                                    }
+                                });
+                            }
+
+                            // If lead has opens, boost engagement score
+                            if (emailsOpened > 0) {
+                                await prisma.lead.update({
+                                    where: { id: upsertedLead.id },
+                                    data: {
+                                        lead_score: { increment: emailsOpened * 5 } // +5 per open
+                                    }
+                                });
+                            }
+                        }
+
                         leadCount++;
                         campaignLeadCount++;
                     }
