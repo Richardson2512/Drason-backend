@@ -51,6 +51,12 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
         throw new Error('Smartlead API key not configured');
     }
 
+    // Debug: Log API key format (first/last 4 chars only for security)
+    const maskedKey = apiKey.length > 8
+        ? `${apiKey.substring(0, 4)}...${apiKey.substring(apiKey.length - 4)}`
+        : '****';
+    logger.info(`[SmartleadSync] Using API key: ${maskedKey} for org ${organizationId}`);
+
     // Store sync event
     await eventService.storeEvent({
         organizationId,
