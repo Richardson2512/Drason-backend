@@ -23,6 +23,7 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
         const limit = parseInt(req.query.limit as string) || 20;
         const status = req.query.status as string;
         const campaignId = req.query.campaignId as string;
+        const search = req.query.search as string;
         const skip = (page - 1) * limit;
 
         const where: any = {
@@ -36,6 +37,13 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
 
         if (campaignId) {
             where.assigned_campaign_id = campaignId;
+        }
+
+        if (search && search.trim()) {
+            where.email = {
+                contains: search.trim(),
+                mode: 'insensitive'
+            };
         }
 
         const [leads, total] = await Promise.all([
