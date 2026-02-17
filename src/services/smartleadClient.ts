@@ -109,11 +109,19 @@ export const syncSmartlead = async (organizationId: string): Promise<{
         }
 
         for (const campaign of campaigns) {
+            // Extract bounce rate metrics if available from Smartlead
+            const totalSent = campaign.total_sent || campaign.emails_sent || 0;
+            const totalBounced = campaign.total_bounced || campaign.bounced_count || 0;
+            const bounceRate = totalSent > 0 ? (totalBounced / totalSent) * 100 : 0;
+
             await prisma.campaign.upsert({
                 where: { id: campaign.id.toString() },
                 update: {
                     name: campaign.name,
                     status: campaign.status || 'active',
+                    bounce_rate: bounceRate,
+                    total_sent: totalSent,
+                    total_bounced: totalBounced,
                     last_synced_at: new Date(),
                     organization_id: organizationId // Force ownership update
                 },
@@ -121,9 +129,23 @@ export const syncSmartlead = async (organizationId: string): Promise<{
                     id: campaign.id.toString(),
                     name: campaign.name,
                     status: campaign.status || 'active',
+                    bounce_rate: bounceRate,
+                    total_sent: totalSent,
+                    total_bounced: totalBounced,
                     organization_id: organizationId
                 }
             });
+
+            if (bounceRate > 0) {
+                logger.info('[CampaignSync] Campaign bounce rate synced', {
+                    campaignId: campaign.id,
+                    campaignName: campaign.name,
+                    bounceRate: bounceRate.toFixed(2) + '%',
+                    totalSent,
+                    totalBounced
+                });
+            }
+
             campaignCount++;
         }
 

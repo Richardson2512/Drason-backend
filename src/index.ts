@@ -50,6 +50,10 @@ import authRoutes from './routes/auth';
 import assessmentRoutes from './routes/assessment';
 import healingRoutes from './routes/healing';
 import billingRoutes from './routes/billing';
+import userRoutes from './routes/user';
+import smartleadWebhookRoutes from './routes/smartleadWebhook';
+import findingsRoutes from './routes/findings';
+import analyticsRoutes from './routes/analytics';
 
 // Import controllers
 import * as monitoringController from './controllers/monitoringController';
@@ -165,11 +169,6 @@ app.get('/metrics', (req, res) => {
     res.json(getMetrics());
 });
 
-// Health alias under /api (for Vercel proxy — must be BEFORE orgContext middleware)
-app.get('/api/health', (req, res) => {
-    res.redirect('/health');
-});
-
 // Apply organization context middleware to all /api routes
 app.use('/api', extractOrgContext);
 
@@ -182,6 +181,10 @@ app.use('/api/auth', authRoutes);
 app.use('/api/assessment', assessmentRoutes);
 app.use('/api/healing', healingRoutes);
 app.use('/api/billing', billingRoutes);
+app.use('/api/user', userRoutes);
+app.use('/api/monitor', smartleadWebhookRoutes);
+app.use('/api/findings', findingsRoutes);
+app.use('/api/analytics', analyticsRoutes);
 
 // Ingestion endpoints
 app.post('/api/ingest', asyncHandler(ingestionController.ingestLead));
@@ -220,6 +223,77 @@ app.post('/api/admin/dlq/:jobId/retry', requireRole(UserRole.ADMIN), asyncHandle
 app.post('/api/admin/dlq/retry-all', requireRole(UserRole.ADMIN), asyncHandler(async (req, res) => {
     const retried = await retryAllDeadLetterJobs();
     res.json({ success: true, data: { retriedCount: retried } });
+}));
+
+// System Health: Get detailed health status (ADMIN only)
+app.get('/api/health', requireRole(UserRole.ADMIN), asyncHandler(async (req, res) => {
+    // Database check
+    let dbStatus: { status: string; latencyMs?: number } = { status: 'unhealthy' };
+    try {
+        const dbStart = Date.now();
+        await prisma.$queryRaw`SELECT 1`;
+        dbStatus = { status: 'healthy', latencyMs: Date.now() - dbStart };
+    } catch {
+        dbStatus = { status: 'unhealthy' };
+    }
+
+    // Redis check
+    const redisStatus = await checkRedisHealth();
+
+    // Worker checks
+    const metricsWorker = getMetricsWorkerStatus();
+    const retentionJob = getRetentionJobStatus();
+    const eventQueueStatus = await getQueueStatus();
+    const leadHealthWorker = getLeadHealthWorkerStatus();
+    const smartleadSyncWorker = getSmartleadSyncWorkerStatus();
+
+    const components = {
+        database: dbStatus,
+        redis: redisStatus,
+        api: { status: 'healthy' },
+        metricsWorker: {
+            status: metricsWorker.lastRunAt ? 'active' : 'not_started',
+            lastRunAt: metricsWorker.lastRunAt,
+            lastError: metricsWorker.lastError
+        },
+        retentionJob: {
+            status: retentionJob.lastRunAt ? 'active' : 'not_started',
+            lastRunAt: retentionJob.lastRunAt,
+            lastError: retentionJob.lastError
+        },
+        eventQueue: {
+            status: eventQueueStatus.isRunning ? 'active' : 'disabled',
+            active: eventQueueStatus.activeCount,
+            waiting: eventQueueStatus.waitingCount,
+            failed: eventQueueStatus.failedCount,
+            lastProcessedAt: eventQueueStatus.lastProcessedAt
+        },
+        leadHealthWorker: {
+            status: leadHealthWorker.lastRunAt ? 'active' : 'not_started',
+            lastRunAt: leadHealthWorker.lastRunAt,
+            lastError: leadHealthWorker.lastError
+        },
+        smartleadSyncWorker: {
+            status: smartleadSyncWorker.lastRunAt ? 'active' : 'not_started',
+            lastRunAt: smartleadSyncWorker.lastRunAt,
+            lastError: smartleadSyncWorker.lastError,
+            totalSyncs: smartleadSyncWorker.totalSyncs,
+            totalOrganizationsSynced: smartleadSyncWorker.totalOrganizationsSynced,
+            lastSyncDurationMs: smartleadSyncWorker.lastSyncDurationMs,
+            consecutiveFailures: smartleadSyncWorker.consecutiveFailures
+        }
+    };
+
+    const allHealthy = dbStatus.status === 'healthy' &&
+        (redisStatus.status === 'healthy' || redisStatus.status === 'not_configured');
+
+    res.status(allHealthy ? 200 : 503).json({
+        status: allHealthy ? 'ok' : 'degraded',
+        timestamp: new Date(),
+        version: '2.1.0',
+        uptime: Math.floor(process.uptime()),
+        components
+    });
 }));
 
 // Event Replay: Trigger replay for an entity (ADMIN only, org-scoped)

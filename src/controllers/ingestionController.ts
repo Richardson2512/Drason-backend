@@ -170,9 +170,11 @@ export const ingestLead = async (req: Request, res: Response) => {
 /**
  * Clay webhook lead ingestion.
  * POST /api/ingest/clay
- * 
+ *
  * Handles flexible Clay payload format with case-insensitive field lookup.
- * NOW WITH: Lead Health Gate - classifies leads before routing
+ * NOW WITH:
+ * - HMAC-SHA256 signature validation for security
+ * - Lead Health Gate - classifies leads before routing
  */
 export const ingestClayWebhook = async (req: Request, res: Response) => {
     logger.info('[INGEST CLAY] Received payload', { preview: JSON.stringify(req.body).substring(0, 200) });
@@ -192,10 +194,60 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
         return res.status(400).json({ error: 'Organization ID required in header (X-Organization-ID) or query param (?orgId)' });
     }
 
-    // specific validation to ensure org exists
-    const orgExists = await prisma.organization.findUnique({ where: { id: organizationId } });
-    if (!orgExists) {
+    // Fetch organization and webhook secret
+    const org = await prisma.organization.findUnique({
+        where: { id: organizationId },
+        select: { id: true, clay_webhook_secret: true }
+    });
+
+    if (!org) {
         return res.status(404).json({ error: 'Invalid Organization ID' });
+    }
+
+    // === SECURITY: Validate HMAC-SHA256 Signature ===
+    const signature = req.headers['x-clay-signature'] as string;
+
+    if (!signature && process.env.NODE_ENV === 'production') {
+        logger.warn('[INGEST CLAY] Missing signature in production - rejecting', { organizationId });
+        return res.status(401).json({
+            error: 'Missing webhook signature',
+            message: 'Clay webhooks must include X-Clay-Signature header. Configure this in your Clay webhook settings.'
+        });
+    }
+
+    if (!org.clay_webhook_secret) {
+        logger.warn('[INGEST CLAY] No webhook secret configured for org', { organizationId });
+        if (process.env.NODE_ENV === 'production') {
+            return res.status(500).json({
+                error: 'Webhook not configured',
+                message: 'Contact support - webhook secret is missing for your organization'
+            });
+        }
+        logger.info('[INGEST CLAY] Allowing in development without secret');
+    }
+
+    // Validate signature if secret exists
+    if (signature && org.clay_webhook_secret) {
+        const crypto = await import('crypto');
+        const expectedSignature = crypto
+            .createHmac('sha256', org.clay_webhook_secret)
+            .update(JSON.stringify(req.body))
+            .digest('hex');
+
+        const isValid = crypto.timingSafeEqual(
+            Buffer.from(signature),
+            Buffer.from(expectedSignature)
+        );
+
+        if (!isValid) {
+            logger.warn('[INGEST CLAY] Invalid signature', { organizationId });
+            return res.status(401).json({
+                error: 'Invalid webhook signature',
+                message: 'Signature validation failed. Ensure Clay is configured with the correct webhook secret.'
+            });
+        }
+
+        logger.info('[INGEST CLAY] Signature validated successfully', { organizationId });
     }
 
     // Helper to find value case-insensitively

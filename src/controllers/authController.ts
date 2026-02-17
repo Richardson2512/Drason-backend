@@ -141,16 +141,22 @@ export const register = async (req: Request, res: Response) => {
             const validTiers = ['trial', 'starter', 'growth', 'scale'];
             const subscriptionTier = tier && validTiers.includes(tier) ? tier : 'trial';
 
+            // Generate Clay webhook secret for HMAC validation
+            const crypto = await import('crypto');
+            const clayWebhookSecret = crypto.randomBytes(32).toString('hex');
+
             const org = await tx.organization.create({
                 data: {
                     name: organizationName,
                     slug,
-                    system_mode: 'observe',
+                    system_mode: 'enforce', // Default to full protection mode
                     // Initialize 14-day trial with selected tier limits
                     subscription_tier: subscriptionTier,
                     subscription_status: 'trialing',
                     trial_started_at: trialStartedAt,
-                    trial_ends_at: trialEndsAt
+                    trial_ends_at: trialEndsAt,
+                    // Webhook security
+                    clay_webhook_secret: clayWebhookSecret
                 }
             });
 

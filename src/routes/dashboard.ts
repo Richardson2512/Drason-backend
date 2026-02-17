@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import * as dashboardController from '../controllers/dashboardController';
 import { validateBody, validateQuery, routingRuleSchema, campaignActionSchema, paginationSchema, auditLogQuerySchema } from '../middleware/validation';
+import { requireRole } from '../middleware/security';
+import { UserRole } from '../types';
 
 const router = Router();
 
@@ -14,9 +16,9 @@ router.get('/audit-logs', validateQuery(auditLogQuerySchema), dashboardControlle
 router.get('/routing-rules', dashboardController.getRoutingRules);
 router.post('/routing-rules', validateBody(routingRuleSchema), dashboardController.createRoutingRule);
 
-// Phase 1 endpoints
-router.get('/state-transitions', dashboardController.getStateTransitions);
-router.get('/events', dashboardController.getRawEvents);
+// Phase 1 endpoints - ADMIN ONLY (used by System Status page)
+router.get('/state-transitions', requireRole(UserRole.ADMIN), dashboardController.getStateTransitions);
+router.get('/events', requireRole(UserRole.ADMIN), dashboardController.getRawEvents);
 
 // Lead Health Gate endpoints
 router.get('/lead-health-stats', dashboardController.getLeadHealthStats);

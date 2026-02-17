@@ -98,25 +98,59 @@ export const getSetting = async (orgId: string, key: string): Promise<string | n
 };
 
 /**
- * Get Clay webhook URL for the organization.
+ * Get Clay webhook URL and secret for the organization.
+ * Auto-generates webhook secret if missing for existing organizations.
  */
 export const getClayWebhookUrl = async (req: Request, res: Response) => {
     try {
         const orgId = getOrgId(req);
-        const baseUrl = process.env.BASE_URL || process.env.FRONTEND_URL || `http://localhost:${process.env.PORT || 3001}`;
+
+        // Determine base URL - prefer BACKEND_URL for webhook endpoints
+        let baseUrl = process.env.BACKEND_URL || process.env.BASE_URL;
+        if (!baseUrl) {
+            // Fallback: construct from request host
+            const protocol = req.protocol;
+            const host = req.get('host');
+            baseUrl = `${protocol}://${host}`;
+        }
+
+        // Fetch organization's webhook secret
+        let org = await prisma.organization.findUnique({
+            where: { id: orgId },
+            select: { clay_webhook_secret: true }
+        });
+
+        // Auto-generate webhook secret if missing (backfill for existing orgs)
+        if (!org?.clay_webhook_secret) {
+            const crypto = await import('crypto');
+            const webhookSecret = crypto.randomBytes(32).toString('hex');
+
+            await prisma.organization.update({
+                where: { id: orgId },
+                data: { clay_webhook_secret: webhookSecret }
+            });
+
+            logger.info('[SETTINGS] Auto-generated webhook secret for existing organization', { orgId });
+
+            org = { clay_webhook_secret: webhookSecret };
+        }
 
         res.json({
             success: true,
             data: {
                 webhookUrl: `${baseUrl}/api/ingest/clay`,
+                webhookSecret: org.clay_webhook_secret,
+                organizationId: orgId,
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-Organization-ID': orgId
+                    'X-Organization-ID': orgId,
+                    'X-Clay-Signature': '<HMAC-SHA256 signature of request body>'
                 },
-                note: 'Include the X-Organization-ID header in Clay webhook configuration'
+                note: 'Configure Clay to send X-Organization-ID header and X-Clay-Signature (HMAC-SHA256 using webhookSecret)'
             }
         });
     } catch (error) {
+        logger.error('[SETTINGS] getClayWebhookUrl error:', error as Error);
         res.status(500).json({ error: 'Failed to generate webhook URL' });
     }
 };
