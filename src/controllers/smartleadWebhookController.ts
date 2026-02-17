@@ -231,6 +231,28 @@ async function handleBounceEvent(orgId: string, event: any) {
 async function handleSentEvent(orgId: string, event: any) {
     const campaignId = event.campaign_id;
     const mailboxId = event.email_account_id || event.mailbox_id;
+    const email = event.email || event.lead_email;
+
+    logger.info('[SMARTLEAD-WEBHOOK] Processing sent event', {
+        organizationId: orgId,
+        mailboxId,
+        campaignId,
+        email
+    });
+
+    // Find the lead for this email (if exists)
+    let leadId: string | undefined;
+    if (email) {
+        const lead = await prisma.lead.findUnique({
+            where: {
+                organization_id_email: {
+                    organization_id: orgId,
+                    email: email
+                }
+            }
+        });
+        leadId = lead?.id;
+    }
 
     // Update campaign sent count
     if (campaignId) {
@@ -253,6 +275,25 @@ async function handleSentEvent(orgId: string, event: any) {
             }
         });
     }
+
+    // Log email sent activity to lead timeline
+    if (leadId) {
+        await auditLogService.logAction({
+            organizationId: orgId,
+            entity: 'lead',
+            entityId: leadId,
+            trigger: 'smartlead_webhook',
+            action: 'email_sent',
+            details: `Email sent via campaign ${campaignId || 'unknown'} from mailbox ${mailboxId || 'unknown'}`
+        });
+
+        logger.info('[SMARTLEAD-WEBHOOK] Logged email sent activity to lead timeline', {
+            organizationId: orgId,
+            leadId,
+            campaignId,
+            mailboxId
+        });
+    }
 }
 
 /**
@@ -262,17 +303,36 @@ async function handleOpenEvent(orgId: string, event: any) {
     const email = event.email || event.lead_email;
 
     if (email) {
-        // Update lead engagement score
-        await prisma.lead.updateMany({
+        // Find the lead
+        const lead = await prisma.lead.findUnique({
             where: {
-                organization_id: orgId,
-                email: email
-            },
-            data: {
-                lead_score: { increment: 5 }, // +5 points for open
-                updated_at: new Date()
+                organization_id_email: {
+                    organization_id: orgId,
+                    email: email
+                }
             }
         });
+
+        if (lead) {
+            // Update lead engagement score
+            await prisma.lead.update({
+                where: { id: lead.id },
+                data: {
+                    lead_score: { increment: 5 }, // +5 points for open
+                    updated_at: new Date()
+                }
+            });
+
+            // Log to timeline
+            await auditLogService.logAction({
+                organizationId: orgId,
+                entity: 'lead',
+                entityId: lead.id,
+                trigger: 'smartlead_webhook',
+                action: 'email_opened',
+                details: `Lead opened email (+5 engagement score)`
+            });
+        }
     }
 }
 
@@ -283,17 +343,36 @@ async function handleClickEvent(orgId: string, event: any) {
     const email = event.email || event.lead_email;
 
     if (email) {
-        // Update lead engagement score
-        await prisma.lead.updateMany({
+        // Find the lead
+        const lead = await prisma.lead.findUnique({
             where: {
-                organization_id: orgId,
-                email: email
-            },
-            data: {
-                lead_score: { increment: 10 }, // +10 points for click
-                updated_at: new Date()
+                organization_id_email: {
+                    organization_id: orgId,
+                    email: email
+                }
             }
         });
+
+        if (lead) {
+            // Update lead engagement score
+            await prisma.lead.update({
+                where: { id: lead.id },
+                data: {
+                    lead_score: { increment: 10 }, // +10 points for click
+                    updated_at: new Date()
+                }
+            });
+
+            // Log to timeline
+            await auditLogService.logAction({
+                organizationId: orgId,
+                entity: 'lead',
+                entityId: lead.id,
+                trigger: 'smartlead_webhook',
+                action: 'email_clicked',
+                details: `Lead clicked link in email (+10 engagement score)`
+            });
+        }
     }
 }
 
@@ -304,18 +383,37 @@ async function handleReplyEvent(orgId: string, event: any) {
     const email = event.email || event.lead_email;
 
     if (email) {
-        // Update lead engagement score and status
-        await prisma.lead.updateMany({
+        // Find the lead
+        const lead = await prisma.lead.findUnique({
             where: {
-                organization_id: orgId,
-                email: email
-            },
-            data: {
-                lead_score: { increment: 20 }, // +20 points for reply
-                status: 'active', // Keep active on reply
-                updated_at: new Date()
+                organization_id_email: {
+                    organization_id: orgId,
+                    email: email
+                }
             }
         });
+
+        if (lead) {
+            // Update lead engagement score and status
+            await prisma.lead.update({
+                where: { id: lead.id },
+                data: {
+                    lead_score: { increment: 20 }, // +20 points for reply
+                    status: 'active', // Keep active on reply
+                    updated_at: new Date()
+                }
+            });
+
+            // Log to timeline
+            await auditLogService.logAction({
+                organizationId: orgId,
+                entity: 'lead',
+                entityId: lead.id,
+                trigger: 'smartlead_webhook',
+                action: 'email_replied',
+                details: `Lead replied to email (+20 engagement score)`
+            });
+        }
     }
 }
 
