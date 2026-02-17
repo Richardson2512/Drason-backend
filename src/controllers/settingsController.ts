@@ -107,8 +107,8 @@ export const getSetting = async (orgId: string, key: string): Promise<string | n
     if (setting.is_secret && isEncrypted(setting.value)) {
         try {
             return decrypt(setting.value);
-        } catch (error) {
-            logger.error('[SETTINGS] Failed to decrypt setting', { key, error });
+        } catch (error: any) {
+            logger.error('[SETTINGS] Failed to decrypt setting', error, { key });
             return null;
         }
     }
