@@ -212,6 +212,21 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             const email = mailbox.from_email || mailbox.email || '';
             const domainName = email.split('@')[1] || 'unknown.com';
 
+            // Extract analytics data from Smartlead (if available)
+            const totalSent = mailbox.total_sent || mailbox.emails_sent || mailbox.sent_count || 0;
+            const totalBounced = mailbox.total_bounced || mailbox.bounced_count || mailbox.hard_bounces || 0;
+            const warmupEmailsSent = mailbox.warmup_sent || mailbox.warmup_emails_sent || 0;
+
+            // Log analytics data if found
+            if (totalSent > 0 || totalBounced > 0) {
+                logger.info('[MailboxSync] Syncing mailbox analytics', {
+                    email,
+                    totalSent,
+                    totalBounced,
+                    warmupSent: warmupEmailsSent
+                });
+            }
+
             // Ensure domain exists
             let domain = await prisma.domain.findFirst({
                 where: {
@@ -268,17 +283,22 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 }
             }
 
-            // Upsert mailbox
+            // Upsert mailbox WITH analytics data
             await prisma.mailbox.upsert({
                 where: { id: mailbox.id.toString() },
                 update: {
                     email,
-                    status: mailbox.status === 'ACTIVE' ? 'healthy' : 'paused'
+                    status: mailbox.status === 'ACTIVE' ? 'healthy' : 'paused',
+                    total_sent_count: totalSent,
+                    hard_bounce_count: totalBounced,
+                    last_activity_at: new Date()
                 },
                 create: {
                     id: mailbox.id.toString(),
                     email,
                     status: mailbox.status === 'ACTIVE' ? 'healthy' : 'paused',
+                    total_sent_count: totalSent,
+                    hard_bounce_count: totalBounced,
                     domain_id: domain.id,
                     organization_id: organizationId
                 }
