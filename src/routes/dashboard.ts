@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import * as dashboardController from '../controllers/dashboardController';
+import * as campaignController from '../controllers/campaignController';
 import { validateBody, validateQuery, routingRuleSchema, campaignActionSchema, paginationSchema, auditLogQuerySchema } from '../middleware/validation';
 import { requireRole } from '../middleware/security';
 import { UserRole } from '../types';
@@ -27,6 +28,7 @@ router.get('/lead-health-stats', dashboardController.getLeadHealthStats);
 router.get('/campaign-health-stats', dashboardController.getCampaignHealthStats);
 router.post('/campaign/pause', validateBody(campaignActionSchema), dashboardController.pauseCampaign);
 router.post('/campaign/resume', validateBody(campaignActionSchema), dashboardController.resumeCampaign);
+router.post('/campaigns/pause-all', campaignController.pauseAllCampaigns);
 
 // Lead scoring endpoints
 import * as leadScoringController from '../controllers/leadScoringController';
