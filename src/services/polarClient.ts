@@ -29,10 +29,10 @@ export interface CheckoutSession {
 // ============================================================================
 
 export const TIER_LIMITS: Record<string, TierLimits> = {
-    trial: { leads: 10000, domains: 3, mailboxes: 15 },
-    starter: { leads: 10000, domains: 3, mailboxes: 15 },
-    growth: { leads: 50000, domains: 15, mailboxes: 75 },
-    scale: { leads: 100000, domains: 30, mailboxes: 200 },
+    trial: { leads: 10000, domains: 20, mailboxes: 75 },
+    starter: { leads: 10000, domains: 20, mailboxes: 75 },
+    growth: { leads: 50000, domains: 75, mailboxes: 350 },
+    scale: { leads: 100000, domains: 150, mailboxes: 700 },
     enterprise: { leads: Infinity, domains: Infinity, mailboxes: Infinity }
 };
 
