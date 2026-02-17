@@ -54,7 +54,10 @@ export const getEntityFindings = async (req: Request, res: Response) => {
         const allFindings = report.findings as any[];
         const entityFindings = allFindings.filter((finding: any) => {
             // Match both entity_type and entity_id
-            return finding.entity_type === entity_type && finding.entity_id === entity_id;
+            // Check both possible field name formats (entity_type/entity and entity_id/entityId)
+            const findingEntityType = finding.entity_type || finding.entity;
+            const findingEntityId = finding.entity_id || finding.entityId;
+            return findingEntityType === entity_type && findingEntityId === entity_id;
         });
 
         // Calculate report age
