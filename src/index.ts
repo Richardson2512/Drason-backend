@@ -54,6 +54,7 @@ import userRoutes from './routes/user';
 import smartleadWebhookRoutes from './routes/smartleadWebhook';
 import findingsRoutes from './routes/findings';
 import analyticsRoutes from './routes/analytics';
+import diagnosticsRoutes from './routes/diagnostics';
 
 // Import controllers
 import * as monitoringController from './controllers/monitoringController';
@@ -185,6 +186,7 @@ app.use('/api/user', userRoutes);
 app.use('/api/monitor', smartleadWebhookRoutes);
 app.use('/api/findings', findingsRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/diagnostics', diagnosticsRoutes);
 
 // Ingestion endpoints
 app.post('/api/ingest', asyncHandler(ingestionController.ingestLead));
