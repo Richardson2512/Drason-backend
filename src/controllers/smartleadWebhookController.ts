@@ -362,15 +362,8 @@ async function handleSpamEvent(orgId: string, event: any) {
         });
     }
 
-    // Flag mailbox as potentially compromised
+    // Flag mailbox as potentially compromised (logged in audit trail)
     if (mailboxId) {
-        await prisma.mailbox.update({
-            where: { id: mailboxId.toString() },
-            data: {
-                warning_count: { increment: 1 }
-            }
-        });
-
         await auditLogService.logAction({
             organizationId: orgId,
             entity: 'mailbox',

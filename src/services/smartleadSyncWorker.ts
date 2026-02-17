@@ -118,10 +118,11 @@ async function runSync(): Promise<void> {
         const orgsWithSmartlead = await prisma.organizationSetting.findMany({
             where: {
                 key: 'SMARTLEAD_API_KEY',
-                value: { not: null },
+                NOT: {
+                    value: ''
+                }
             },
-            select: {
-                organization_id: true,
+            include: {
                 organization: {
                     select: {
                         name: true,
@@ -271,7 +272,7 @@ async function runSync(): Promise<void> {
 
         // Alert if too many consecutive failures
         if (workerStatus.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-            logger.error('[SMARTLEAD-SYNC-WORKER] CRITICAL: Too many consecutive sync failures', {
+            logger.error('[SMARTLEAD-SYNC-WORKER] CRITICAL: Too many consecutive sync failures', new Error('Too many consecutive failures'), {
                 consecutiveFailures: workerStatus.consecutiveFailures,
                 maxAllowed: MAX_CONSECUTIVE_FAILURES,
             });
