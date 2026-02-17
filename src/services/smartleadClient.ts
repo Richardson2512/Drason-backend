@@ -289,16 +289,15 @@ export const syncSmartlead = async (organizationId: string): Promise<{
                 }
             } catch (emailAccountError: any) {
                 // Log but don't fail the sync if email account fetching fails
-                logger.error(`[CampaignMailboxSync] Failed to fetch email accounts for campaign ${campaignId}`, {
-                    error: emailAccountError.message,
+                logger.error(`[CampaignMailboxSync] Failed to fetch email accounts for campaign ${campaignId}`, emailAccountError, {
                     status: emailAccountError.response?.status,
                     data: emailAccountError.response?.data
                 });
 
                 // Notify user about linking failure
                 try {
-                    const campaign = campaigns.find(c => c.id.toString() === campaignId);
-                    await notificationService.createNotification(orgId, {
+                    const campaign = campaigns.find((c: any) => c.id.toString() === campaignId);
+                    await notificationService.createNotification(organizationId, {
                         type: 'WARNING',
                         title: 'Campaign Linking Issue',
                         message: `Could not link mailboxes to campaign "${campaign?.name || campaignId}". Check your Smartlead configuration and API permissions.`
