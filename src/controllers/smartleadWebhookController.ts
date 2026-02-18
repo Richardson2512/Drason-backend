@@ -212,7 +212,7 @@ async function handleBounceEvent(orgId: string, event: any) {
                         message: `${updatedMailbox.email} paused due to ${(bounceRate * 100).toFixed(1)}% bounce rate (threshold: 3%). Review email list quality.`
                     });
                 } catch (notifError) {
-                    logger.error('[SMARTLEAD-WEBHOOK] Failed to send auto-pause notification', notifError);
+                    logger.error('[SMARTLEAD-WEBHOOK] Failed to send auto-pause notification', notifError as Error);
                 }
 
                 // Audit log
