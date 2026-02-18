@@ -216,13 +216,15 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             const totalSent = mailbox.total_sent || mailbox.emails_sent || mailbox.sent_count || 0;
             const totalBounced = mailbox.total_bounced || mailbox.bounced_count || mailbox.hard_bounces || 0;
             const warmupEmailsSent = mailbox.warmup_sent || mailbox.warmup_emails_sent || 0;
+            const deliveryFailures = mailbox.delivery_failures || mailbox.failed_count || mailbox.failures || 0;
 
             // Log analytics data if found
-            if (totalSent > 0 || totalBounced > 0) {
+            if (totalSent > 0 || totalBounced > 0 || deliveryFailures > 0) {
                 logger.info('[MailboxSync] Syncing mailbox analytics', {
                     email,
                     totalSent,
                     totalBounced,
+                    deliveryFailures,
                     warmupSent: warmupEmailsSent
                 });
             }
@@ -290,7 +292,10 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     email,
                     status: mailbox.status === 'ACTIVE' ? 'healthy' : 'paused',
                     total_sent_count: totalSent,
+                    window_sent_count: totalSent,
                     hard_bounce_count: totalBounced,
+                    window_bounce_count: totalBounced,
+                    delivery_failure_count: deliveryFailures,
                     last_activity_at: new Date()
                 },
                 create: {
@@ -298,7 +303,10 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     email,
                     status: mailbox.status === 'ACTIVE' ? 'healthy' : 'paused',
                     total_sent_count: totalSent,
+                    window_sent_count: totalSent,
                     hard_bounce_count: totalBounced,
+                    window_bounce_count: totalBounced,
+                    delivery_failure_count: deliveryFailures,
                     domain_id: domain.id,
                     organization_id: organizationId
                 }
