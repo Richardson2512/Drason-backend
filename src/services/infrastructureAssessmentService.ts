@@ -83,16 +83,20 @@ const BLACKLISTS = [
 /** Common DKIM selectors to check */
 const DKIM_SELECTORS = ['default', 'google', 'selector1', 'selector2', 's1', 's2'];
 
-/** Mailbox classification thresholds */
+/** Mailbox classification thresholds - Volume-aware for better protection */
 const MAILBOX_THRESHOLDS = {
-    PAUSE_BOUNCE_RATE: 0.10,   // >10% → paused
-    WARNING_BOUNCE_RATE: 0.05, // 5-10% → warning
+    PAUSE_BOUNCE_RATE: 0.03,        // 3% → paused (after 60 sends)
+    WARNING_BOUNCE_RATE: 0.02,      // 2% → warning (early detection)
+    EARLY_WARNING: 0.03,            // 3% → warning (20-60 sends)
+    MIN_SENDS_FOR_PAUSE: 60,        // Minimum sends before auto-pause
+    MIN_SENDS_FOR_WARNING: 20,      // Minimum sends before warning
 };
 
-/** Campaign classification thresholds */
+/** Campaign classification thresholds - Aligned with mailbox protection */
 const CAMPAIGN_THRESHOLDS = {
-    PAUSE_BOUNCE_RATE: 0.10,   // >10% → paused
-    WARNING_BOUNCE_RATE: 0.05, // 5-10% → warning
+    PAUSE_BOUNCE_RATE: 0.03,        // 3% → paused (after 60 sends)
+    WARNING_BOUNCE_RATE: 0.02,      // 2% → warning
+    MIN_SENDS_FOR_PAUSE: 60,        // Minimum sends before judgment
 };
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -496,33 +500,54 @@ export async function assessInfrastructure(
 
             let mailboxState = 'healthy';
 
-            if (bounceRate >= MAILBOX_THRESHOLDS.PAUSE_BOUNCE_RATE) {
-                mailboxState = 'paused';
-                findings.push({
-                    severity: 'critical',
-                    category: 'mailbox_health',
-                    entity: 'mailbox',
-                    entityId: mailbox.id,
-                    entityName: mailbox.email,
-                    title: `High Bounce Rate: ${mailbox.email}`,
-                    details: `Bounce rate ${(bounceRate * 100).toFixed(1)}% exceeds ${(MAILBOX_THRESHOLDS.PAUSE_BOUNCE_RATE * 100)}% threshold. Mailbox paused; enters healing pipeline.`,
-                    message: `Mailbox ${mailbox.email} has a historical bounce rate of ${(bounceRate * 100).toFixed(1)}% (>${(MAILBOX_THRESHOLDS.PAUSE_BOUNCE_RATE * 100)}% threshold).`,
-                    remediation: `This mailbox has been paused and will enter the healing pipeline. It will be available for sending after cooldown and recovery.`,
-                });
-            } else if (bounceRate >= MAILBOX_THRESHOLDS.WARNING_BOUNCE_RATE) {
-                mailboxState = 'warning';
-                findings.push({
-                    severity: 'warning',
-                    category: 'mailbox_health',
-                    entity: 'mailbox',
-                    entityId: mailbox.id,
-                    entityName: mailbox.email,
-                    title: `Elevated Bounce Rate: ${mailbox.email}`,
-                    details: `Bounce rate ${(bounceRate * 100).toFixed(1)}% approaching threshold. Reduce volume or verify email list quality.`,
-                    message: `Mailbox ${mailbox.email} has a historical bounce rate of ${(bounceRate * 100).toFixed(1)}% (approaching threshold).`,
-                    remediation: `This mailbox is under elevated monitoring. Reduce sending volume or verify email list quality.`,
-                });
+            // Volume-aware bounce rate assessment (3% threshold after 60 sends)
+            if (totalSent >= MAILBOX_THRESHOLDS.MIN_SENDS_FOR_PAUSE) {
+                // After 60 sends: Apply 3% pause threshold
+                if (bounceRate >= MAILBOX_THRESHOLDS.PAUSE_BOUNCE_RATE) {
+                    mailboxState = 'paused';
+                    findings.push({
+                        severity: 'critical',
+                        category: 'mailbox_health',
+                        entity: 'mailbox',
+                        entityId: mailbox.id,
+                        entityName: mailbox.email,
+                        title: `High Bounce Rate: ${mailbox.email}`,
+                        details: `Bounce rate ${(bounceRate * 100).toFixed(1)}% exceeds ${(MAILBOX_THRESHOLDS.PAUSE_BOUNCE_RATE * 100)}% threshold after ${totalSent} sends. Mailbox paused; enters healing pipeline.`,
+                        message: `Mailbox ${mailbox.email} has a bounce rate of ${(bounceRate * 100).toFixed(1)}% (>${(MAILBOX_THRESHOLDS.PAUSE_BOUNCE_RATE * 100)}% threshold) after ${totalSent} sends.`,
+                        remediation: `This mailbox has been paused to protect domain reputation. Review email list quality and remove invalid addresses before resuming.`,
+                    });
+                } else if (bounceRate >= MAILBOX_THRESHOLDS.WARNING_BOUNCE_RATE) {
+                    mailboxState = 'warning';
+                    findings.push({
+                        severity: 'warning',
+                        category: 'mailbox_health',
+                        entity: 'mailbox',
+                        entityId: mailbox.id,
+                        entityName: mailbox.email,
+                        title: `Elevated Bounce Rate: ${mailbox.email}`,
+                        details: `Bounce rate ${(bounceRate * 100).toFixed(1)}% approaching 3% threshold. Clean email list recommended.`,
+                        message: `Mailbox ${mailbox.email} has a bounce rate of ${(bounceRate * 100).toFixed(1)}% (approaching 3% pause threshold).`,
+                        remediation: `Monitor closely. Verify email list quality and remove invalid addresses to prevent auto-pause.`,
+                    });
+                }
+            } else if (totalSent >= MAILBOX_THRESHOLDS.MIN_SENDS_FOR_WARNING) {
+                // Early phase (20-60 sends): Show warning at 3%
+                if (bounceRate >= MAILBOX_THRESHOLDS.EARLY_WARNING) {
+                    mailboxState = 'warning';
+                    findings.push({
+                        severity: 'warning',
+                        category: 'mailbox_health',
+                        entity: 'mailbox',
+                        entityId: mailbox.id,
+                        entityName: mailbox.email,
+                        title: `Early Bounce Signal: ${mailbox.email}`,
+                        details: `Bounce rate ${(bounceRate * 100).toFixed(1)}% on ${totalSent} sends. Will auto-pause at 3% after 60 sends.`,
+                        message: `Mailbox ${mailbox.email} showing ${(bounceRate * 100).toFixed(1)}% bounce rate in early sending phase.`,
+                        remediation: `Monitor email list quality. Small sample size - pattern will be confirmed after 60 sends.`,
+                    });
+                }
             }
+            // Below 20 sends: Too early to judge, remain healthy
 
             // Domain-health ceiling: mailbox cannot be healthier than its domain
             const domainStatus = mailbox.domain.status;
@@ -570,20 +595,37 @@ export async function assessInfrastructure(
 
             // Only assess if currently active
             if (campaignState === 'active') {
-                if (bounceRate >= CAMPAIGN_THRESHOLDS.PAUSE_BOUNCE_RATE && campaign.total_sent >= 20) {
-                    campaignState = 'paused';
-                    findings.push({
-                        severity: 'critical',
-                        category: 'campaign_health',
-                        entity: 'campaign',
-                        entityId: campaign.id,
-                        entityName: campaign.name,
-                        title: `High Bounce Rate: ${campaign.name}`,
-                        details: `Campaign bounce rate ${(bounceRate * 100).toFixed(1)}% exceeds ${(CAMPAIGN_THRESHOLDS.PAUSE_BOUNCE_RATE * 100)}% threshold. Campaign paused.`,
-                        message: `Campaign "${campaign.name}" has a bounce rate of ${(bounceRate * 100).toFixed(1)}% (>${(CAMPAIGN_THRESHOLDS.PAUSE_BOUNCE_RATE * 100)}% threshold).`,
-                        remediation: `Campaign has been paused. Review the email list quality and domain reputation before resuming.`,
-                    });
-                } else if (bounceRate >= CAMPAIGN_THRESHOLDS.WARNING_BOUNCE_RATE && campaign.total_sent >= 20) {
+                // Volume-aware campaign assessment (aligned with mailbox thresholds)
+                if (campaign.total_sent >= CAMPAIGN_THRESHOLDS.MIN_SENDS_FOR_PAUSE) {
+                    if (bounceRate >= CAMPAIGN_THRESHOLDS.PAUSE_BOUNCE_RATE) {
+                        campaignState = 'paused';
+                        findings.push({
+                            severity: 'critical',
+                            category: 'campaign_health',
+                            entity: 'campaign',
+                            entityId: campaign.id,
+                            entityName: campaign.name,
+                            title: `High Bounce Rate: ${campaign.name}`,
+                            details: `Campaign bounce rate ${(bounceRate * 100).toFixed(1)}% exceeds ${(CAMPAIGN_THRESHOLDS.PAUSE_BOUNCE_RATE * 100)}% threshold after ${campaign.total_sent} sends.`,
+                            message: `Campaign "${campaign.name}" has a bounce rate of ${(bounceRate * 100).toFixed(1)}% (>${(CAMPAIGN_THRESHOLDS.PAUSE_BOUNCE_RATE * 100)}% threshold).`,
+                            remediation: `Campaign paused to protect domain reputation. Review email list quality and remove invalid addresses before resuming.`,
+                        });
+                    } else if (bounceRate >= CAMPAIGN_THRESHOLDS.WARNING_BOUNCE_RATE) {
+                        campaignState = 'warning';
+                        findings.push({
+                            severity: 'warning',
+                            category: 'campaign_health',
+                            entity: 'campaign',
+                            entityId: campaign.id,
+                            entityName: campaign.name,
+                            title: `Elevated Bounce Rate: ${campaign.name}`,
+                            details: `Campaign bounce rate ${(bounceRate * 100).toFixed(1)}% approaching 3% threshold. Clean email list to prevent auto-pause.`,
+                            message: `Campaign "${campaign.name}" has a bounce rate of ${(bounceRate * 100).toFixed(1)}% (approaching 3% pause threshold).`,
+                            remediation: `Monitor closely. Verify email list quality and remove invalid addresses.`,
+                        });
+                    }
+                } else if (campaign.total_sent >= 20 && bounceRate >= CAMPAIGN_THRESHOLDS.WARNING_BOUNCE_RATE) {
+                    // Early warning for campaigns with 20-60 sends
                     campaignState = 'warning';
                     findings.push({
                         severity: 'warning',
@@ -591,10 +633,10 @@ export async function assessInfrastructure(
                         entity: 'campaign',
                         entityId: campaign.id,
                         entityName: campaign.name,
-                        title: `Elevated Bounce Rate: ${campaign.name}`,
-                        details: `Campaign bounce rate ${(bounceRate * 100).toFixed(1)}% approaching threshold. Review email list and remove invalid addresses.`,
-                        message: `Campaign "${campaign.name}" has a bounce rate of ${(bounceRate * 100).toFixed(1)}% (approaching threshold).`,
-                        remediation: `Monitor closely. Consider reviewing email list and removing invalid addresses.`,
+                        title: `Early Bounce Signal: ${campaign.name}`,
+                        details: `Campaign showing ${(bounceRate * 100).toFixed(1)}% bounce rate on ${campaign.total_sent} sends. Will auto-pause at 3% after 60 sends.`,
+                        message: `Campaign "${campaign.name}" showing elevated bounce rate in early sending phase.`,
+                        remediation: `Monitor email list quality closely. Pattern will be confirmed after 60 sends.`,
                     });
                 }
             }

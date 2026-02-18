@@ -171,6 +171,61 @@ async function handleBounceEvent(orgId: string, event: any) {
                 window_bounce_count: { increment: 1 }
             }
         });
+
+        // Real-time auto-pause: Check if mailbox exceeds 3% bounce threshold
+        const updatedMailbox = await prisma.mailbox.findUnique({
+            where: { id: mailboxId.toString() }
+        });
+
+        if (updatedMailbox && updatedMailbox.total_sent_count >= 60) {
+            const bounceRate = updatedMailbox.hard_bounce_count / updatedMailbox.total_sent_count;
+
+            // Auto-pause at 3% threshold (real-time protection)
+            if (bounceRate >= 0.03 && updatedMailbox.status !== 'paused') {
+                await prisma.mailbox.update({
+                    where: { id: mailboxId.toString() },
+                    data: {
+                        status: 'paused',
+                        recovery_phase: 'paused',
+                        cooldown_until: new Date(Date.now() + 48 * 60 * 60 * 1000), // 48h cooldown
+                        last_pause_at: new Date(),
+                        consecutive_pauses: { increment: 1 },
+                        resilience_score: Math.max(0, (updatedMailbox.resilience_score || 50) - 15) // -15 penalty
+                    }
+                });
+
+                logger.warn('[SMARTLEAD-WEBHOOK] Auto-paused mailbox due to 3% bounce threshold', {
+                    organizationId: orgId,
+                    mailboxId,
+                    email: updatedMailbox.email,
+                    bounceRate: (bounceRate * 100).toFixed(2) + '%',
+                    totalSent: updatedMailbox.total_sent_count,
+                    totalBounced: updatedMailbox.hard_bounce_count
+                });
+
+                // Notify user of auto-pause
+                try {
+                    const notificationService = require('../services/notificationService');
+                    await notificationService.createNotification(orgId, {
+                        type: 'WARNING',
+                        title: 'Mailbox Auto-Paused',
+                        message: `${updatedMailbox.email} paused due to ${(bounceRate * 100).toFixed(1)}% bounce rate (threshold: 3%). Review email list quality.`
+                    });
+                } catch (notifError) {
+                    logger.error('[SMARTLEAD-WEBHOOK] Failed to send auto-pause notification', notifError);
+                }
+
+                // Audit log
+                await auditLogService.logAction({
+                    organizationId: orgId,
+                    entity: 'mailbox',
+                    entityId: mailboxId.toString(),
+                    trigger: 'smartlead_webhook',
+                    action: 'auto_paused_bounce_threshold',
+                    details: `Auto-paused at ${(bounceRate * 100).toFixed(1)}% bounce rate (${updatedMailbox.hard_bounce_count} bounces in ${updatedMailbox.total_sent_count} sends)`
+                });
+            }
+        }
     }
 
     // Update campaign bounce stats
