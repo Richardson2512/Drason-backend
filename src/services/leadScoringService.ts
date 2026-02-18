@@ -344,7 +344,20 @@ export async function getTopLeadsForCampaign(
  */
 export async function getLeadScoreBreakdown(
     leadId: string
-): Promise<{ score: number; breakdown: LeadScore['breakdown'] } | null> {
+): Promise<{
+    score: number;
+    breakdown: {
+        engagement: number;
+        recency: number;
+        frequency: number;
+    };
+    factors: {
+        totalOpens: number;
+        totalClicks: number;
+        totalReplies: number;
+        lastEngagement: Date | null;
+    };
+} | null> {
     const lead = await prisma.lead.findUnique({
         where: { id: leadId },
         select: {
@@ -370,8 +383,41 @@ export async function getLeadScoreBreakdown(
         return null;
     }
 
-    const breakdown = calculateEngagementScore(engagement);
-    const score = calculateFinalScore(breakdown);
+    const rawBreakdown = calculateEngagementScore(engagement);
+    const score = calculateFinalScore(rawBreakdown);
 
-    return { score, breakdown };
+    // Transform to frontend-expected structure
+    // Engagement: Sum of all positive engagement scores (before recency multiplier)
+    const engagementScore = rawBreakdown.opensScore + rawBreakdown.clicksScore + rawBreakdown.repliesScore;
+
+    // Recency: Convert multiplier to a 0-30 score (max expected by frontend)
+    // 1.0 multiplier = 30 points, 0.7 = 21 points, 0.5 = 15 points
+    const recencyScore = Math.round(rawBreakdown.recencyMultiplier * 30);
+
+    // Frequency: Based on total interaction count
+    // Scale: 1-5 interactions = 5-10 points, 6-10 = 11-15 points, 11+ = 16-20 points
+    const totalInteractions = engagement.opens + engagement.clicks + engagement.replies;
+    let frequencyScore = 0;
+    if (totalInteractions >= 11) {
+        frequencyScore = Math.min(20, 16 + Math.floor((totalInteractions - 11) / 2));
+    } else if (totalInteractions >= 6) {
+        frequencyScore = 11 + (totalInteractions - 6);
+    } else if (totalInteractions >= 1) {
+        frequencyScore = 5 + (totalInteractions - 1);
+    }
+
+    return {
+        score,
+        breakdown: {
+            engagement: engagementScore,
+            recency: recencyScore,
+            frequency: frequencyScore
+        },
+        factors: {
+            totalOpens: engagement.opens,
+            totalClicks: engagement.clicks,
+            totalReplies: engagement.replies,
+            lastEngagement: engagement.lastEngagementDate || null
+        }
+    };
 }
