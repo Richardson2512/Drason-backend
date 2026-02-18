@@ -263,12 +263,13 @@ export const getMailboxes = async (req: Request, res: Response, next: NextFuncti
 export const getAuditLogs = async (req: Request, res: Response) => {
     try {
         const orgId = getOrgId(req);
-        const { entity, limit } = req.query;
+        const { entity, entity_id, limit } = req.query;
 
         const logs = await prisma.auditLog.findMany({
             where: {
                 organization_id: orgId,
-                ...(entity && { entity: entity as string })
+                ...(entity && { entity: entity as string }),
+                ...(entity_id && { entity_id: entity_id as string })
             },
             orderBy: { timestamp: 'desc' },
             take: limit ? parseInt(limit as string, 10) : 100
