@@ -117,22 +117,23 @@ model Lead {
 }
 
 model Campaign {
-  id                 String       @id
-  name               String
-  channel            String       @default("email")
-  status             String       @default("active")
-  paused_reason      String?
-  paused_at          DateTime?
-  bounce_rate        Float        @default(0)
-  warning_count      Int          @default(0)
-  total_sent         Int          @default(0)
-  total_bounced      Int          @default(0)
-  organization_id    String
-  last_synced_at     DateTime     @default(now())
-  created_at         DateTime     @default(now())
-  updated_at         DateTime     @updatedAt
-  organization       Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
-  mailboxes          Mailbox[]    @relation("CampaignToMailbox")
+  id                   String       @id
+  name                 String
+  channel              String       @default("email")
+  status               String       @default("active")
+  paused_reason        String?
+  paused_at            DateTime?
+  bounce_rate          Float        @default(0)
+  warning_count        Int          @default(0)
+  total_sent           Int          @default(0)
+  total_bounced        Int          @default(0)
+  organization_id      String
+  last_synced_at       DateTime     @default(now())
+  created_at           DateTime     @default(now())
+  updated_at           DateTime     @updatedAt
+
+  organization         Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  mailboxes            Mailbox[]    @relation("CampaignToMailbox")
 
   @@index([organization_id, status])
   @@index([organization_id])
@@ -162,6 +163,14 @@ model Mailbox {
   last_activity_at       DateTime        @default(now())
   initial_bounce_rate    Float?                              // Historical bounce rate at import from Smartlead
   initial_assessment_at  DateTime?                           // When initial assessment was performed
+
+  // Healing Tracking Fields
+  phase_clean_sends      Int             @default(0)         // Clean sends in current healing phase (separate from clean_sends_since_phase)
+  phase_bounces          Int             @default(0)         // Bounces in current healing phase
+
+  // Smartlead Integration
+  smartlead_email_account_id Int?                            // Smartlead email account ID for warmup API calls
+
   domain_id              String
   organization_id        String
   created_at             DateTime        @default(now())

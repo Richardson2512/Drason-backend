@@ -710,6 +710,62 @@ async function transitionPhase(
         }),
     });
 
+    // ── AUTOMATED WARMUP: Enable/Update warmup based on phase ──
+    if (entityType === 'mailbox') {
+        const warmupService = require('./warmupService');
+
+        // QUARANTINE → RESTRICTED_SEND: Enable conservative warmup
+        if (fromPhase === RecoveryPhase.QUARANTINE && toPhase === RecoveryPhase.RESTRICTED_SEND) {
+            try {
+                const result = await warmupService.enableWarmupForRecovery(
+                    organizationId,
+                    entityId,
+                    RecoveryPhase.RESTRICTED_SEND
+                );
+
+                if (result.success) {
+                    logger.info('[HEALING-WARMUP] Enabled warmup for RESTRICTED_SEND phase', {
+                        organizationId,
+                        mailboxId: entityId
+                    });
+                } else {
+                    logger.warn('[HEALING-WARMUP] Could not enable warmup (mailbox may not be synced from Smartlead yet)', {
+                        organizationId,
+                        mailboxId: entityId
+                    });
+                }
+            } catch (warmupError: any) {
+                logger.error('[HEALING-WARMUP] Failed to enable warmup', warmupError, {
+                    organizationId,
+                    mailboxId: entityId
+                });
+            }
+        }
+
+        // RESTRICTED_SEND → WARM_RECOVERY: Increase warmup volume
+        if (fromPhase === RecoveryPhase.RESTRICTED_SEND && toPhase === RecoveryPhase.WARM_RECOVERY) {
+            try {
+                const result = await warmupService.updateWarmupForPhaseTransition(
+                    organizationId,
+                    entityId,
+                    RecoveryPhase.WARM_RECOVERY
+                );
+
+                if (result.success) {
+                    logger.info('[HEALING-WARMUP] Updated warmup for WARM_RECOVERY phase', {
+                        organizationId,
+                        mailboxId: entityId
+                    });
+                }
+            } catch (warmupError: any) {
+                logger.error('[HEALING-WARMUP] Failed to update warmup', warmupError, {
+                    organizationId,
+                    mailboxId: entityId
+                });
+            }
+        }
+    }
+
     // Notify user of milestone graduations
     if (toPhase === RecoveryPhase.HEALTHY) {
         try {
@@ -722,8 +778,29 @@ async function transitionPhase(
             logger.warn('Failed to create graduation notification', { entityId });
         }
 
-        // ── SMARTLEAD INTEGRATION: Re-add mailbox to campaigns when fully recovered ──
+        // ── DISABLE WARMUP & RE-ADD TO PRODUCTION CAMPAIGNS ──
         if (entityType === 'mailbox') {
+            // Step 1: Disable warmup (or keep maintenance warmup)
+            try {
+                const warmupService = require('./warmupService');
+                await warmupService.disableWarmup(
+                    organizationId,
+                    entityId,
+                    true  // Keep maintenance warmup (10/day) for ongoing health
+                );
+
+                logger.info('[HEALING-WARMUP] Switched to maintenance warmup', {
+                    organizationId,
+                    mailboxId: entityId
+                });
+            } catch (warmupError: any) {
+                logger.error('[HEALING-WARMUP] Failed to disable warmup', warmupError, {
+                    organizationId,
+                    mailboxId: entityId
+                });
+            }
+
+            // Step 2: Re-add mailbox to production campaigns in Smartlead
             try {
                 // Get all campaigns this mailbox is assigned to in Drason
                 const campaigns = await prisma.campaign.findMany({
@@ -743,7 +820,7 @@ async function transitionPhase(
                     );
                 }
 
-                logger.info(`[HEALING] Re-added mailbox ${entityId} to ${campaigns.length} Smartlead campaigns`, {
+                logger.info(`[HEALING] Re-added mailbox ${entityId} to ${campaigns.length} production Smartlead campaigns`, {
                     organizationId,
                     entityId,
                     campaignCount: campaigns.length

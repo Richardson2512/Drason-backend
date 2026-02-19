@@ -70,6 +70,7 @@ import { startLeadHealthWorker, getLeadHealthWorkerStatus } from './services/lea
 import { startLeadScoringWorker, stopLeadScoringWorker } from './services/leadScoringWorker';
 import { startTrialWorker, stopTrialWorker } from './services/trialWorker';
 import { startSmartleadSyncWorker, stopSmartleadSyncWorker, getSmartleadSyncWorkerStatus } from './services/smartleadSyncWorker';
+import { scheduleWarmupTracking } from './workers/warmupTrackingWorker';
 
 import cookieParser from 'cookie-parser';
 
@@ -594,6 +595,10 @@ const server = app.listen(PORT, () => {
     // Start Smartlead sync worker for 24/7 infrastructure monitoring
     startSmartleadSyncWorker();
     logger.info('Smartlead sync worker started (runs every 20min for real-time monitoring)');
+
+    // Start warmup tracking worker for automated recovery
+    scheduleWarmupTracking();
+    logger.info('Warmup tracking worker started (runs every 24h for auto-graduation)');
 });
 
 // ============================================================================

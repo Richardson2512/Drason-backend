@@ -164,18 +164,71 @@ async function handleBounceEvent(orgId: string, event: any) {
 
     // Update mailbox bounce count
     if (mailboxId) {
-        await prisma.mailbox.update({
+        const mailbox = await prisma.mailbox.update({
             where: { id: mailboxId.toString() },
             data: {
                 hard_bounce_count: { increment: 1 },
                 window_bounce_count: { increment: 1 }
+            },
+            select: {
+                recovery_phase: true,
+                email: true,
+                status: true,
+                resilience_score: true,
+                total_sent_count: true,
+                hard_bounce_count: true
             }
         });
 
+        // ── WARMUP RECOVERY: Track bounces during recovery (CRITICAL - ZERO TOLERANCE) ──
+        if (mailbox.recovery_phase &&
+            (mailbox.recovery_phase === 'restricted_send' || mailbox.recovery_phase === 'warm_recovery')) {
+
+            try {
+                const healingService = require('../services/healingService');
+                const notificationService = require('../services/notificationService');
+
+                logger.error('[WARMUP-RECOVERY] BOUNCE during recovery - ZERO TOLERANCE VIOLATED', {
+                    organizationId: orgId,
+                    mailboxId,
+                    recoveryPhase: mailbox.recovery_phase,
+                    bounceType,
+                    bounceReason
+                });
+
+                // REGRESSION: Bounce during recovery = back to PAUSED
+                await healingService.transitionPhase(
+                    orgId,
+                    'mailbox',
+                    mailboxId.toString(),
+                    'paused',
+                    `Bounce during ${mailbox.recovery_phase} warmup recovery: ${bounceReason}`
+                );
+
+                // Notify user of recovery failure
+                await notificationService.createNotification(orgId, {
+                    type: 'ERROR',
+                    title: 'Recovery Failed - Bounce Detected',
+                    message: `${mailbox.email} bounced during ${mailbox.recovery_phase} warmup. Mailbox reset to PAUSED. Recovery will restart after cooldown.`
+                });
+
+                logger.warn('[WARMUP-RECOVERY] Regressed mailbox to PAUSED due to bounce during recovery', {
+                    organizationId: orgId,
+                    mailboxId,
+                    fromPhase: mailbox.recovery_phase,
+                    toPhase: 'paused'
+                });
+
+            } catch (healingError: any) {
+                logger.error('[WARMUP-RECOVERY] Failed to handle recovery bounce', healingError, {
+                    organizationId: orgId,
+                    mailboxId
+                });
+            }
+        }
+
         // Real-time auto-pause: Check if mailbox exceeds 3% bounce threshold
-        const updatedMailbox = await prisma.mailbox.findUnique({
-            where: { id: mailboxId.toString() }
-        });
+        const updatedMailbox = mailbox;
 
         if (updatedMailbox && updatedMailbox.total_sent_count >= 60) {
             const bounceRate = updatedMailbox.hard_bounce_count / updatedMailbox.total_sent_count;

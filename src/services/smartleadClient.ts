@@ -290,6 +290,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 where: { id: mailbox.id.toString() },
                 update: {
                     email,
+                    smartlead_email_account_id: mailbox.id,
                     status: mailbox.status === 'ACTIVE' ? 'healthy' : 'paused',
                     total_sent_count: totalSent,
                     window_sent_count: totalSent,
@@ -301,6 +302,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 create: {
                     id: mailbox.id.toString(),
                     email,
+                    smartlead_email_account_id: mailbox.id,
                     status: mailbox.status === 'ACTIVE' ? 'healthy' : 'paused',
                     total_sent_count: totalSent,
                     window_sent_count: totalSent,
@@ -1116,4 +1118,176 @@ export const removeDomainMailboxesFromSmartlead = async (
     });
 
     return { success: successCount, failed: failedCount };
+};
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * WARMUP MANAGEMENT (AUTOMATED RECOVERY)
+ * ══════════════════════════════════════════════════════════════════════
+ */
+
+/**
+ * Enable or update warmup settings for a mailbox.
+ * Used for automated recovery during RESTRICTED_SEND and WARM_RECOVERY phases.
+ */
+export const updateMailboxWarmup = async (
+    organizationId: string,
+    emailAccountId: number,
+    settings: {
+        warmup_enabled: boolean;
+        total_warmup_per_day?: number;
+        daily_rampup?: number;
+        reply_rate_percentage?: number;
+        warmup_key_id?: string;
+    }
+): Promise<{
+    ok: boolean;
+    message: string;
+    emailAccountId: number;
+    warmupKey: string;
+}> => {
+    const apiKey = await getApiKey(organizationId);
+    if (!apiKey) {
+        throw new Error('Smartlead API key not configured');
+    }
+
+    try {
+        const response = await smartleadBreaker.call(() =>
+            axios.post(
+                `${SMARTLEAD_API_BASE}/email-accounts/${emailAccountId}/warmup`,
+                settings,
+                {
+                    params: { api_key: apiKey }
+                }
+            )
+        );
+
+        logger.info('[SMARTLEAD-WARMUP] Updated warmup settings', {
+            organizationId,
+            emailAccountId,
+            warmupEnabled: settings.warmup_enabled,
+            warmupPerDay: settings.total_warmup_per_day,
+            dailyRampup: settings.daily_rampup
+        });
+
+        return response.data;
+    } catch (error: any) {
+        logger.error('[SMARTLEAD-WARMUP] Failed to update warmup settings', error, {
+            organizationId,
+            emailAccountId,
+            settings,
+            response: error.response?.data
+        });
+        throw error;
+    }
+};
+
+/**
+ * Get warmup statistics for a mailbox.
+ * Returns warmup progress, reputation score, and send counts.
+ */
+export const getWarmupStats = async (
+    organizationId: string,
+    emailAccountId: number
+): Promise<{
+    id: number;
+    sent_count: string;
+    spam_count: string;
+    inbox_count: string;
+    warmup_email_received_count: string;
+    stats_by_date: Array<{
+        id: number;
+        date: string;
+        sent_count: number;
+        reply_count: number;
+        save_from_spam_count: number;
+    }>;
+}> => {
+    const apiKey = await getApiKey(organizationId);
+    if (!apiKey) {
+        throw new Error('Smartlead API key not configured');
+    }
+
+    try {
+        const response = await smartleadBreaker.call(() =>
+            axios.get(
+                `${SMARTLEAD_API_BASE}/email-accounts/${emailAccountId}/warmup-stats`,
+                {
+                    params: { api_key: apiKey }
+                }
+            )
+        );
+
+        logger.info('[SMARTLEAD-WARMUP] Retrieved warmup stats', {
+            organizationId,
+            emailAccountId,
+            totalSent: response.data.sent_count,
+            spamCount: response.data.spam_count
+        });
+
+        return response.data;
+    } catch (error: any) {
+        logger.error('[SMARTLEAD-WARMUP] Failed to get warmup stats', error, {
+            organizationId,
+            emailAccountId,
+            response: error.response?.data
+        });
+        throw error;
+    }
+};
+
+/**
+ * Get detailed email account information including warmup details.
+ */
+export const getEmailAccountDetails = async (
+    organizationId: string,
+    emailAccountId: number
+): Promise<{
+    id: number;
+    from_email: string;
+    warmup_details: {
+        id: number;
+        status: 'ACTIVE' | 'INACTIVE';
+        reply_rate: number;
+        warmup_key_id: string;
+        total_sent_count: number;
+        total_spam_count: number;
+        warmup_max_count: number;
+        warmup_min_count: number;
+        is_warmup_blocked: boolean;
+        max_email_per_day: number;
+        warmup_reputation: string;
+    };
+}> => {
+    const apiKey = await getApiKey(organizationId);
+    if (!apiKey) {
+        throw new Error('Smartlead API key not configured');
+    }
+
+    try {
+        const response = await smartleadBreaker.call(() =>
+            axios.get(
+                `${SMARTLEAD_API_BASE}/email-accounts/${emailAccountId}`,
+                {
+                    params: { api_key: apiKey }
+                }
+            )
+        );
+
+        logger.info('[SMARTLEAD-WARMUP] Retrieved email account details', {
+            organizationId,
+            emailAccountId,
+            warmupStatus: response.data.warmup_details?.status,
+            warmupReputation: response.data.warmup_details?.warmup_reputation
+        });
+
+        return response.data;
+    } catch (error: any) {
+        logger.error('[SMARTLEAD-WARMUP] Failed to get email account details', error, {
+            organizationId,
+            emailAccountId,
+            response: error.response?.data
+        });
+        throw error;
+    }
 };
