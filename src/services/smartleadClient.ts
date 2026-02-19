@@ -132,9 +132,41 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
         }
 
         for (const campaign of campaigns) {
-            // Extract bounce rate metrics if available from Smartlead
-            const totalSent = campaign.total_sent || campaign.emails_sent || 0;
-            const totalBounced = campaign.total_bounced || campaign.bounced_count || 0;
+            // ── Fetch detailed analytics from Smartlead (sent, opens, clicks, bounces) ──
+            let analytics = {
+                sent_count: 0,
+                open_count: 0,
+                click_count: 0,
+                reply_count: 0,
+                bounce_count: 0,
+                unsubscribed_count: 0
+            };
+
+            try {
+                const analyticsRes = await smartleadBreaker.call(() =>
+                    axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaign.id}/analytics`, {
+                        params: { api_key: apiKey }
+                    })
+                );
+                analytics = analyticsRes.data || analytics;
+
+                logger.info('[CampaignSync] Fetched campaign analytics', {
+                    campaignId: campaign.id,
+                    campaignName: campaign.name,
+                    sent: analytics.sent_count,
+                    opens: analytics.open_count,
+                    replies: analytics.reply_count,
+                    bounces: analytics.bounce_count
+                });
+            } catch (analyticsError: any) {
+                logger.warn('[CampaignSync] Failed to fetch campaign analytics', {
+                    campaignId: campaign.id,
+                    error: analyticsError.message
+                });
+            }
+
+            const totalSent = parseInt(analytics.sent_count || '0');
+            const totalBounced = parseInt(analytics.bounce_count || '0');
             const bounceRate = totalSent > 0 ? (totalBounced / totalSent) * 100 : 0;
 
             await prisma.campaign.upsert({
@@ -212,22 +244,9 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             const email = mailbox.from_email || mailbox.email || '';
             const domainName = email.split('@')[1] || 'unknown.com';
 
-            // Extract analytics data from Smartlead (if available)
-            const totalSent = mailbox.total_sent || mailbox.emails_sent || mailbox.sent_count || 0;
-            const totalBounced = mailbox.total_bounced || mailbox.bounced_count || mailbox.hard_bounces || 0;
-            const warmupEmailsSent = mailbox.warmup_sent || mailbox.warmup_emails_sent || 0;
-            const deliveryFailures = mailbox.delivery_failures || mailbox.failed_count || mailbox.failures || 0;
-
-            // Log analytics data if found
-            if (totalSent > 0 || totalBounced > 0 || deliveryFailures > 0) {
-                logger.info('[MailboxSync] Syncing mailbox analytics', {
-                    email,
-                    totalSent,
-                    totalBounced,
-                    deliveryFailures,
-                    warmupSent: warmupEmailsSent
-                });
-            }
+            // NOTE: Smartlead /email-accounts endpoint does NOT return send/bounce stats
+            // Mailbox stats are tracked via webhooks (email_sent, email_bounced events)
+            // Historical data must be aggregated from campaigns if needed
 
             // Ensure domain exists
             let domain = await prisma.domain.findFirst({
@@ -285,18 +304,13 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 }
             }
 
-            // Upsert mailbox WITH analytics data
+            // Upsert mailbox (stats tracked via webhooks, not synced from Smartlead)
             await prisma.mailbox.upsert({
                 where: { id: mailbox.id.toString() },
                 update: {
                     email,
                     smartlead_email_account_id: mailbox.id,
                     status: mailbox.status === 'ACTIVE' ? 'healthy' : 'paused',
-                    total_sent_count: totalSent,
-                    window_sent_count: totalSent,
-                    hard_bounce_count: totalBounced,
-                    window_bounce_count: totalBounced,
-                    delivery_failure_count: deliveryFailures,
                     last_activity_at: new Date()
                 },
                 create: {
@@ -304,11 +318,6 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     email,
                     smartlead_email_account_id: mailbox.id,
                     status: mailbox.status === 'ACTIVE' ? 'healthy' : 'paused',
-                    total_sent_count: totalSent,
-                    window_sent_count: totalSent,
-                    hard_bounce_count: totalBounced,
-                    window_bounce_count: totalBounced,
-                    delivery_failure_count: deliveryFailures,
                     domain_id: domain.id,
                     organization_id: organizationId
                 }
