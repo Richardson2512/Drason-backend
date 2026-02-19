@@ -59,17 +59,26 @@ model Organization {
 model User {
   id              String       @id @default(uuid())
   email           String       @unique
-  password_hash   String
+  password_hash   String?      // Made optional for OAuth-only users
   name            String?
   role            String       @default("viewer")
   organization_id String
   last_login_at   DateTime?
   created_at      DateTime     @default(now())
   updated_at      DateTime     @updatedAt
+
+  // Google OAuth fields
+  google_id                String?   @unique  // Google user ID (sub claim)
+  google_access_token      String?            // Encrypted access token
+  google_refresh_token     String?            // Encrypted refresh token
+  google_token_expires_at  DateTime?          // Token expiry timestamp
+  avatar_url               String?            // Google profile picture URL
+
   organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
 
   @@index([organization_id])
   @@index([email])
+  @@index([google_id])
 }
 
 model ApiKey {

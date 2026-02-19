@@ -14,5 +14,7 @@ const router = Router();
  * Get current authenticated user's information.
  */
 router.get('/me', userController.getCurrentUser);
+router.patch('/me', userController.updateCurrentUser);
+router.post('/change-password', userController.changePassword);
 
 export default router;
