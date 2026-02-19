@@ -30,8 +30,14 @@ class SyncProgressService extends EventEmitter {
         connections.push(res);
         this.activeConnections.set(sessionId, connections);
 
+        // Send keepalive comments every 15s to prevent browser/proxy timeout
+        const keepalive = setInterval(() => {
+            try { res.write(': keepalive\n\n'); } catch { clearInterval(keepalive); }
+        }, 15000);
+
         // Remove connection when client disconnects
         res.on('close', () => {
+            clearInterval(keepalive);
             this.removeConnection(sessionId, res);
         });
     }

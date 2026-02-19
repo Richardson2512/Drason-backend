@@ -356,13 +356,22 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             const warmupStatus = mailbox.warmup_status || mailbox.warmup_details?.status || null;
             const warmupReputation = mailbox.warmup_reputation || mailbox.warmup_details?.warmup_reputation || null;
 
-            // Upsert mailbox (stats tracked via webhooks, not synced from Smartlead)
+            // Extract stats from Smartlead API response
+            const dailySentCount = mailbox.daily_sent_count || 0;
+            const warmupSpamCount = mailbox.warmup_details?.total_spam_count || 0;
+
+            // Upsert mailbox with connection diagnostics and stats
             await prisma.mailbox.upsert({
                 where: { id: mailbox.id.toString() },
                 update: {
                     email,
                     smartlead_email_account_id: mailbox.id,
                     status: mailboxStatus,
+                    smtp_status: mailbox.is_smtp_success === true,
+                    imap_status: mailbox.is_imap_success === true,
+                    connection_error: connectionError || null,
+                    total_sent_count: dailySentCount,
+                    spam_count: warmupSpamCount,
                     warmup_status: warmupStatus,
                     warmup_reputation: warmupReputation,
                     last_activity_at: new Date()
@@ -372,6 +381,11 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     email,
                     smartlead_email_account_id: mailbox.id,
                     status: mailboxStatus,
+                    smtp_status: mailbox.is_smtp_success === true,
+                    imap_status: mailbox.is_imap_success === true,
+                    connection_error: connectionError || null,
+                    total_sent_count: dailySentCount,
+                    spam_count: warmupSpamCount,
                     warmup_status: warmupStatus,
                     warmup_reputation: warmupReputation,
                     domain_id: domain.id,
@@ -528,13 +542,13 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
 
                         // Try multiple field name variations for email
                         const email = lead.email ||
-                                    lead.lead_email ||
-                                    lead.Email ||
-                                    lead.EMAIL ||
-                                    lead.emailId ||
-                                    lead.email_address ||
-                                    (lead.custom_fields && lead.custom_fields.email) ||
-                                    '';
+                            lead.lead_email ||
+                            lead.Email ||
+                            lead.EMAIL ||
+                            lead.emailId ||
+                            lead.email_address ||
+                            (lead.custom_fields && lead.custom_fields.email) ||
+                            '';
 
                         if (!email) {
                             logger.warn(`[LeadSync] Skipping lead with no email`, {
@@ -567,9 +581,14 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                             },
                             update: {
                                 assigned_campaign_id: campaignId,
+                                emails_sent: emailsSent > 0 ? emailsSent : undefined,
+                                emails_opened: emailsOpened > 0 ? emailsOpened : undefined,
+                                emails_clicked: emailsClicked > 0 ? emailsClicked : undefined,
+                                emails_replied: emailsReplied > 0 ? emailsReplied : undefined,
+                                last_activity_at: (emailsSent > 0 || emailsOpened > 0) ? new Date() : undefined,
                                 updated_at: new Date()
                                 // Note: Status is intentionally NOT updated here
-                                // - Smartlead leads are created as 'active' (line 304)
+                                // - Smartlead leads are created as 'active'
                                 // - Clay leads stay 'held' until execution gate approves them
                                 // - Status changes only via execution gate or monitoring service
                             },
@@ -580,6 +599,10 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                 source: 'smartlead',
                                 status: 'active', // Pre-existing leads in Smartlead campaigns are already approved
                                 health_classification: 'green',
+                                emails_sent: emailsSent,
+                                emails_opened: emailsOpened,
+                                emails_clicked: emailsClicked,
+                                emails_replied: emailsReplied,
                                 assigned_campaign_id: campaignId,
                                 organization_id: organizationId
                             }
@@ -728,6 +751,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 include: {
                     mailboxes: {
                         select: {
+                            status: true,
                             total_sent_count: true,
                             open_count_lifetime: true,
                             click_count_lifetime: true,
@@ -737,7 +761,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 }
             });
 
-            // Aggregate metrics for each domain
+            // Aggregate metrics for each domain & derive domain health from mailbox connection state
             for (const domain of domains) {
                 const totalSentLifetime = domain.mailboxes.reduce((sum, mb) => sum + mb.total_sent_count, 0);
                 const totalOpens = domain.mailboxes.reduce((sum, mb) => sum + mb.open_count_lifetime, 0);
@@ -747,9 +771,24 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     ? ((totalOpens + totalClicks + totalReplies) / totalSentLifetime) * 100
                     : 0;
 
+                // Derive domain status from aggregated mailbox connection state
+                const pausedMailboxes = domain.mailboxes.filter((mb: any) => mb.status === 'paused').length;
+                const totalMailboxes = domain.mailboxes.length;
+                let derivedDomainStatus = domain.status; // Keep current if no mailboxes
+                if (totalMailboxes > 0) {
+                    if (pausedMailboxes === totalMailboxes) {
+                        derivedDomainStatus = 'paused'; // All mailboxes disconnected
+                    } else if (pausedMailboxes > 0) {
+                        derivedDomainStatus = 'warning'; // Some mailboxes disconnected
+                    } else {
+                        derivedDomainStatus = 'healthy'; // All mailboxes connected
+                    }
+                }
+
                 await prisma.domain.update({
                     where: { id: domain.id },
                     data: {
+                        status: derivedDomainStatus,
                         total_sent_lifetime: totalSentLifetime,
                         total_opens: totalOpens,
                         total_clicks: totalClicks,
@@ -760,6 +799,9 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
 
                 logger.info('[DomainAggregation] Updated domain engagement metrics', {
                     domain: domain.domain,
+                    status: derivedDomainStatus,
+                    pausedMailboxes,
+                    totalMailboxes,
                     totalSentLifetime,
                     totalOpens,
                     totalClicks,

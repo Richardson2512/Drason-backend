@@ -199,6 +199,11 @@ model Mailbox {
   // Smartlead Integration
   smartlead_email_account_id Int?                            // Smartlead email account ID for warmup API calls
 
+  // Connection Diagnostics (from Smartlead sync)
+  smtp_status              Boolean         @default(true)    // SMTP connection healthy
+  imap_status              Boolean         @default(true)    // IMAP connection healthy
+  connection_error         String?                           // Raw error from Smartlead (e.g. "Failed to refresh Google token: invalid_grant")
+
   // Analytics Fields (SOFT SIGNALS - informational only)
   open_count_lifetime    Int             @default(0)         // Total opens from emails sent by this mailbox
   click_count_lifetime   Int             @default(0)         // Total clicks from emails sent by this mailbox
