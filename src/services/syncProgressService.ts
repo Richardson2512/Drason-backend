@@ -75,6 +75,12 @@ class SyncProgressService extends EventEmitter {
      * Emit completion event
      */
     emitComplete(sessionId: string, result: any) {
+        console.log('[SyncProgress] Emitting complete event', {
+            sessionId,
+            hasConnections: this.activeConnections.has(sessionId),
+            connectionCount: this.activeConnections.get(sessionId)?.length || 0
+        });
+
         const event: SyncProgressEvent = {
             sessionId,
             type: 'complete',
@@ -114,12 +120,30 @@ class SyncProgressService extends EventEmitter {
         const connections = this.activeConnections.get(sessionId) || [];
         const eventData = JSON.stringify(event);
 
+        console.log('[SyncProgress] Sending event', {
+            sessionId,
+            type: event.type,
+            connectionCount: connections.length
+        });
+
+        let successCount = 0;
+        let failCount = 0;
+
         connections.forEach(res => {
             try {
                 res.write(`data: ${eventData}\n\n`);
+                successCount++;
             } catch (error) {
-                // Connection might be closed, will be cleaned up on next operation
+                failCount++;
+                console.error('[SyncProgress] Failed to write to connection', { sessionId, error });
             }
+        });
+
+        console.log('[SyncProgress] Event sent', {
+            sessionId,
+            type: event.type,
+            successCount,
+            failCount
         });
     }
 

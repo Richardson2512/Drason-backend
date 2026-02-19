@@ -834,6 +834,14 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
         }
 
         // Emit completion event with results
+        logger.info('[SmartleadSync] About to emit completion event', {
+            sessionId,
+            hasSessionId: !!sessionId,
+            campaignCount,
+            mailboxCount,
+            leadCount
+        });
+
         if (sessionId) {
             syncProgressService.emitComplete(sessionId, {
                 campaigns_synced: campaignCount,
@@ -841,6 +849,9 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 leads_synced: leadCount,
                 health_check: healthCheckResult
             });
+            logger.info('[SmartleadSync] Completion event emitted', { sessionId });
+        } else {
+            logger.warn('[SmartleadSync] No sessionId provided, skipping SSE completion event');
         }
 
         return { campaigns: campaignCount, mailboxes: mailboxCount, leads: leadCount };
