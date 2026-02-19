@@ -565,12 +565,22 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         const company = lead.company_name || lead.company || '';
                         const persona = company || 'general';
 
-                        // Extract activity/engagement data from Smartlead (if available)
-                        const emailsSent = lead.emails_sent || lead.sent_count || 0;
-                        const emailsOpened = lead.emails_opened || lead.open_count || 0;
-                        const emailsClicked = lead.emails_clicked || lead.click_count || 0;
-                        const emailsReplied = lead.emails_replied || lead.reply_count || 0;
-                        const emailsBounced = lead.emails_bounced || lead.bounce_count || 0;
+                        // Extract activity/engagement data from Smartlead lead response
+                        // Smartlead /campaigns/{id}/leads returns open_count, click_count, reply_count per lead
+                        const emailsOpened = lead.open_count || 0;
+                        const emailsClicked = lead.click_count || 0;
+                        const emailsReplied = lead.reply_count || 0;
+
+                        // Log first lead to verify we're getting engagement data
+                        if (offset === 0 && leadCount === 0) {
+                            logger.info('[LeadSync] First lead engagement data sample', {
+                                email,
+                                open_count: lead.open_count,
+                                click_count: lead.click_count,
+                                reply_count: lead.reply_count,
+                                availableFields: Object.keys(lead)
+                            });
+                        }
 
                         const upsertedLead = await prisma.lead.upsert({
                             where: {
@@ -581,11 +591,10 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                             },
                             update: {
                                 assigned_campaign_id: campaignId,
-                                emails_sent: emailsSent > 0 ? emailsSent : undefined,
-                                emails_opened: emailsOpened > 0 ? emailsOpened : undefined,
-                                emails_clicked: emailsClicked > 0 ? emailsClicked : undefined,
-                                emails_replied: emailsReplied > 0 ? emailsReplied : undefined,
-                                last_activity_at: (emailsSent > 0 || emailsOpened > 0) ? new Date() : undefined,
+                                emails_opened: emailsOpened,
+                                emails_clicked: emailsClicked,
+                                emails_replied: emailsReplied,
+                                last_activity_at: (emailsOpened > 0 || emailsClicked > 0 || emailsReplied > 0) ? new Date() : undefined,
                                 updated_at: new Date()
                                 // Note: Status is intentionally NOT updated here
                                 // - Smartlead leads are created as 'active'
@@ -679,62 +688,6 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     campaignId,
                     campaignName: campaign.name
                 });
-
-                // ── Fetch and update lead engagement statistics ──
-                try {
-                    logger.info(`[LeadStats] Fetching engagement statistics for campaign ${campaignId}`);
-
-                    const statsRes = await smartleadBreaker.call(() =>
-                        axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/statistics`, {
-                            params: { api_key: apiKey }
-                        })
-                    );
-
-                    const leadStats = statsRes.data || [];
-                    logger.info(`[LeadStats] Received ${leadStats.length} lead stats for campaign ${campaignId}`);
-
-                    // Update each lead with their engagement data
-                    for (const stat of leadStats) {
-                        const leadEmail = stat.lead_email || stat.email;
-                        if (!leadEmail) continue;
-
-                        const openCount = stat.open_count || 0;
-                        const clickCount = stat.click_count || 0;
-                        const replyCount = stat.reply_count || 0;
-                        const sentCount = stat.sent_count || 1; // Default to 1 if they have stats
-
-                        // Determine last activity timestamp
-                        const replyTime = stat.reply_time ? new Date(stat.reply_time) : null;
-                        const clickTime = stat.click_time ? new Date(stat.click_time) : null;
-                        const openTime = stat.open_time ? new Date(stat.open_time) : null;
-                        const sentTime = stat.sent_time ? new Date(stat.sent_time) : null;
-
-                        const lastActivityAt = replyTime || clickTime || openTime || sentTime || null;
-
-                        await prisma.lead.updateMany({
-                            where: {
-                                organization_id: organizationId,
-                                email: leadEmail,
-                                assigned_campaign_id: campaignId
-                            },
-                            data: {
-                                emails_sent: { set: sentCount },
-                                emails_opened: { set: openCount },
-                                emails_clicked: { set: clickCount },
-                                emails_replied: { set: replyCount },
-                                last_activity_at: { set: lastActivityAt }
-                            }
-                        });
-                    }
-
-                    logger.info(`[LeadStats] Updated engagement stats for ${leadStats.length} leads in campaign ${campaignId}`);
-                } catch (statsError: any) {
-                    // Don't fail sync if stats fetching fails
-                    logger.warn(`[LeadStats] Failed to fetch stats for campaign ${campaignId}`, {
-                        error: statsError.message,
-                        status: statsError.response?.status
-                    });
-                }
             } catch (leadError: any) {
                 // Lead sync failure for one campaign doesn't block the others
                 // CRITICAL: Log full error details
