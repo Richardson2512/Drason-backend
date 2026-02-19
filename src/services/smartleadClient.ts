@@ -716,6 +716,70 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             syncProgressService.emitProgress(sessionId, 'health_check', 'completed', {});
         }
 
+        // ── 6. Aggregate mailbox engagement metrics to domains (PHASE 6) ──
+        try {
+            logger.info('[DomainAggregation] Starting domain-level engagement aggregation', {
+                organizationId
+            });
+
+            // Get all domains for this organization
+            const domains = await prisma.domain.findMany({
+                where: { organization_id: organizationId },
+                include: {
+                    mailboxes: {
+                        select: {
+                            total_sent_count: true,
+                            open_count_lifetime: true,
+                            click_count_lifetime: true,
+                            reply_count_lifetime: true
+                        }
+                    }
+                }
+            });
+
+            // Aggregate metrics for each domain
+            for (const domain of domains) {
+                const totalSentLifetime = domain.mailboxes.reduce((sum, mb) => sum + mb.total_sent_count, 0);
+                const totalOpens = domain.mailboxes.reduce((sum, mb) => sum + mb.open_count_lifetime, 0);
+                const totalClicks = domain.mailboxes.reduce((sum, mb) => sum + mb.click_count_lifetime, 0);
+                const totalReplies = domain.mailboxes.reduce((sum, mb) => sum + mb.reply_count_lifetime, 0);
+                const engagementRate = totalSentLifetime > 0
+                    ? ((totalOpens + totalClicks + totalReplies) / totalSentLifetime) * 100
+                    : 0;
+
+                await prisma.domain.update({
+                    where: { id: domain.id },
+                    data: {
+                        total_sent_lifetime: totalSentLifetime,
+                        total_opens: totalOpens,
+                        total_clicks: totalClicks,
+                        total_replies: totalReplies,
+                        engagement_rate: engagementRate
+                    }
+                });
+
+                logger.info('[DomainAggregation] Updated domain engagement metrics', {
+                    domain: domain.domain,
+                    totalSentLifetime,
+                    totalOpens,
+                    totalClicks,
+                    totalReplies,
+                    engagementRate: engagementRate.toFixed(2) + '%'
+                });
+            }
+
+            logger.info('[DomainAggregation] Completed domain aggregation', {
+                organizationId,
+                domainsUpdated: domains.length
+            });
+        } catch (aggregationError: any) {
+            // Don't fail sync if aggregation fails
+            logger.error('[DomainAggregation] Failed to aggregate domain metrics', aggregationError, {
+                organizationId,
+                error: aggregationError.message
+            });
+        }
+
         // ── Notify user of successful sync ──
         try {
             await notificationService.createNotification(organizationId, {
