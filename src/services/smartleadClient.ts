@@ -304,20 +304,42 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 }
             }
 
+            // Determine mailbox health status based on connection state
+            // CRITICAL: Check SMTP/IMAP connection status, not just account status
+            const isConnected = mailbox.is_smtp_success === true && mailbox.is_imap_success === true;
+            const connectionError = mailbox.smtp_failure_error || mailbox.imap_failure_error;
+
+            let mailboxStatus: string;
+            if (!isConnected) {
+                mailboxStatus = 'paused'; // Disconnected/suspended mailboxes are paused
+                if (connectionError) {
+                    logger.warn('[MailboxSync] Mailbox connection failure detected', {
+                        email,
+                        smtp_success: mailbox.is_smtp_success,
+                        imap_success: mailbox.is_imap_success,
+                        error: connectionError
+                    });
+                }
+            } else if (mailbox.status !== 'ACTIVE') {
+                mailboxStatus = 'paused';
+            } else {
+                mailboxStatus = 'healthy';
+            }
+
             // Upsert mailbox (stats tracked via webhooks, not synced from Smartlead)
             await prisma.mailbox.upsert({
                 where: { id: mailbox.id.toString() },
                 update: {
                     email,
                     smartlead_email_account_id: mailbox.id,
-                    status: mailbox.status === 'ACTIVE' ? 'healthy' : 'paused',
+                    status: mailboxStatus,
                     last_activity_at: new Date()
                 },
                 create: {
                     id: mailbox.id.toString(),
                     email,
                     smartlead_email_account_id: mailbox.id,
-                    status: mailbox.status === 'ACTIVE' ? 'healthy' : 'paused',
+                    status: mailboxStatus,
                     domain_id: domain.id,
                     organization_id: organizationId
                 }
