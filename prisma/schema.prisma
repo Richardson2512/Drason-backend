@@ -135,6 +135,17 @@ model Campaign {
   warning_count        Int          @default(0)
   total_sent           Int          @default(0)
   total_bounced        Int          @default(0)
+
+  // Analytics Fields (SOFT SIGNALS - display only, never trigger auto-pause)
+  open_count           Int          @default(0)
+  click_count          Int          @default(0)
+  reply_count          Int          @default(0)
+  unsubscribed_count   Int          @default(0)
+  open_rate            Float        @default(0)
+  click_rate           Float        @default(0)
+  reply_rate           Float        @default(0)
+  analytics_updated_at DateTime?
+
   organization_id      String
   last_synced_at       DateTime     @default(now())
   created_at           DateTime     @default(now())
@@ -179,6 +190,15 @@ model Mailbox {
   // Smartlead Integration
   smartlead_email_account_id Int?                            // Smartlead email account ID for warmup API calls
 
+  // Analytics Fields (SOFT SIGNALS - informational only)
+  open_count_lifetime    Int             @default(0)         // Total opens from emails sent by this mailbox
+  click_count_lifetime   Int             @default(0)         // Total clicks from emails sent by this mailbox
+  reply_count_lifetime   Int             @default(0)         // Total replies from emails sent by this mailbox
+  spam_count             Int             @default(0)         // Total spam reports
+  engagement_rate        Float           @default(0)         // (opens + clicks + replies) / total_sent
+  warmup_reputation      String?                             // Smartlead warmup reputation status
+  warmup_status          String?                             // Smartlead warmup enabled status
+
   domain_id              String
   organization_id        String
   created_at             DateTime        @default(now())
@@ -218,6 +238,14 @@ model Domain {
   blacklist_results            Json?                           // { spamhaus: 'CONFIRMED'|'NOT_LISTED'|'UNREACHABLE', ... }
   dns_checked_at               DateTime?                       // When DNS was last checked
   initial_assessment_score     Float?                          // REPORT-ONLY. Never use in execution gate logic.
+
+  // Domain-Level Analytics (SOFT SIGNALS - aggregated from all mailboxes)
+  total_sent_lifetime          Int          @default(0)       // Total emails sent across all mailboxes in this domain
+  total_opens                  Int          @default(0)       // Total opens across all mailboxes
+  total_clicks                 Int          @default(0)       // Total clicks across all mailboxes
+  total_replies                Int          @default(0)       // Total replies across all mailboxes
+  engagement_rate              Float        @default(0)       // Domain-wide engagement rate
+
   organization_id              String
   created_at                   DateTime     @default(now())
   updated_at                   DateTime     @updatedAt

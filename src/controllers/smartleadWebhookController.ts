@@ -450,10 +450,12 @@ async function handleSentEvent(orgId: string, event: any) {
 }
 
 /**
- * Handle email open events
+ * Handle email open events (SOFT SIGNAL - informational only, never triggers auto-pause)
  */
 async function handleOpenEvent(orgId: string, event: any) {
     const email = event.email || event.lead_email;
+    const campaignId = event.campaign_id;
+    const mailboxId = event.email_account_id || event.mailbox_id;
 
     if (email) {
         // Find the lead
@@ -489,13 +491,46 @@ async function handleOpenEvent(orgId: string, event: any) {
             });
         }
     }
+
+    // Update campaign open count (SOFT SIGNAL)
+    if (campaignId) {
+        await prisma.campaign.update({
+            where: { id: campaignId.toString() },
+            data: {
+                open_count: { increment: 1 },
+                analytics_updated_at: new Date()
+            }
+        }).catch(err => {
+            logger.warn('[SMARTLEAD-WEBHOOK] Failed to update campaign open count', {
+                campaignId,
+                error: err.message
+            });
+        });
+    }
+
+    // Update mailbox open count (SOFT SIGNAL)
+    if (mailboxId) {
+        await prisma.mailbox.update({
+            where: { id: mailboxId.toString() },
+            data: {
+                open_count_lifetime: { increment: 1 }
+            }
+        }).catch(err => {
+            logger.warn('[SMARTLEAD-WEBHOOK] Failed to update mailbox open count', {
+                mailboxId,
+                error: err.message
+            });
+        });
+    }
 }
 
 /**
- * Handle email click events
+ * Handle email click events (SOFT SIGNAL - informational only, never triggers auto-pause)
  */
 async function handleClickEvent(orgId: string, event: any) {
     const email = event.email || event.lead_email;
+    const campaignId = event.campaign_id;
+    const mailboxId = event.email_account_id || event.mailbox_id;
 
     if (email) {
         // Find the lead
@@ -531,13 +566,46 @@ async function handleClickEvent(orgId: string, event: any) {
             });
         }
     }
+
+    // Update campaign click count (SOFT SIGNAL)
+    if (campaignId) {
+        await prisma.campaign.update({
+            where: { id: campaignId.toString() },
+            data: {
+                click_count: { increment: 1 },
+                analytics_updated_at: new Date()
+            }
+        }).catch(err => {
+            logger.warn('[SMARTLEAD-WEBHOOK] Failed to update campaign click count', {
+                campaignId,
+                error: err.message
+            });
+        });
+    }
+
+    // Update mailbox click count (SOFT SIGNAL)
+    if (mailboxId) {
+        await prisma.mailbox.update({
+            where: { id: mailboxId.toString() },
+            data: {
+                click_count_lifetime: { increment: 1 }
+            }
+        }).catch(err => {
+            logger.warn('[SMARTLEAD-WEBHOOK] Failed to update mailbox click count', {
+                mailboxId,
+                error: err.message
+            });
+        });
+    }
 }
 
 /**
- * Handle reply events
+ * Handle reply events (SOFT SIGNAL - informational only, never triggers auto-pause)
  */
 async function handleReplyEvent(orgId: string, event: any) {
     const email = event.email || event.lead_email;
+    const campaignId = event.campaign_id;
+    const mailboxId = event.email_account_id || event.mailbox_id;
 
     if (email) {
         // Find the lead
@@ -574,13 +642,45 @@ async function handleReplyEvent(orgId: string, event: any) {
             });
         }
     }
+
+    // Update campaign reply count (SOFT SIGNAL)
+    if (campaignId) {
+        await prisma.campaign.update({
+            where: { id: campaignId.toString() },
+            data: {
+                reply_count: { increment: 1 },
+                analytics_updated_at: new Date()
+            }
+        }).catch(err => {
+            logger.warn('[SMARTLEAD-WEBHOOK] Failed to update campaign reply count', {
+                campaignId,
+                error: err.message
+            });
+        });
+    }
+
+    // Update mailbox reply count (SOFT SIGNAL)
+    if (mailboxId) {
+        await prisma.mailbox.update({
+            where: { id: mailboxId.toString() },
+            data: {
+                reply_count_lifetime: { increment: 1 }
+            }
+        }).catch(err => {
+            logger.warn('[SMARTLEAD-WEBHOOK] Failed to update mailbox reply count', {
+                mailboxId,
+                error: err.message
+            });
+        });
+    }
 }
 
 /**
- * Handle unsubscribe events
+ * Handle unsubscribe events (SOFT SIGNAL - informational only)
  */
 async function handleUnsubscribeEvent(orgId: string, event: any) {
     const email = event.email || event.lead_email;
+    const campaignId = event.campaign_id;
 
     if (email) {
         await prisma.lead.updateMany({
@@ -595,10 +695,26 @@ async function handleUnsubscribeEvent(orgId: string, event: any) {
             }
         });
     }
+
+    // Update campaign unsubscribe count (SOFT SIGNAL)
+    if (campaignId) {
+        await prisma.campaign.update({
+            where: { id: campaignId.toString() },
+            data: {
+                unsubscribed_count: { increment: 1 },
+                analytics_updated_at: new Date()
+            }
+        }).catch(err => {
+            logger.warn('[SMARTLEAD-WEBHOOK] Failed to update campaign unsubscribe count', {
+                campaignId,
+                error: err.message
+            });
+        });
+    }
 }
 
 /**
- * Handle spam complaint events
+ * Handle spam complaint events (SOFT SIGNAL - logged but doesn't auto-pause)
  */
 async function handleSpamEvent(orgId: string, event: any) {
     const email = event.email || event.lead_email;
@@ -619,8 +735,21 @@ async function handleSpamEvent(orgId: string, event: any) {
         });
     }
 
-    // Flag mailbox as potentially compromised (logged in audit trail)
+    // Update mailbox spam count (SOFT SIGNAL - logged but doesn't auto-pause)
     if (mailboxId) {
+        await prisma.mailbox.update({
+            where: { id: mailboxId.toString() },
+            data: {
+                spam_count: { increment: 1 }
+            }
+        }).catch(err => {
+            logger.warn('[SMARTLEAD-WEBHOOK] Failed to update mailbox spam count', {
+                mailboxId,
+                error: err.message
+            });
+        });
+
+        // Flag mailbox as potentially compromised (logged in audit trail)
         await auditLogService.logAction({
             organizationId: orgId,
             entity: 'mailbox',

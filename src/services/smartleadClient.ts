@@ -167,7 +167,15 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
 
             const totalSent = parseInt(String(analytics.sent_count || '0'));
             const totalBounced = parseInt(String(analytics.bounce_count || '0'));
+            const totalOpens = parseInt(String(analytics.open_count || '0'));
+            const totalClicks = parseInt(String(analytics.click_count || '0'));
+            const totalReplies = parseInt(String(analytics.reply_count || '0'));
+            const totalUnsubscribed = parseInt(String(analytics.unsubscribed_count || '0'));
+
             const bounceRate = totalSent > 0 ? (totalBounced / totalSent) * 100 : 0;
+            const openRate = totalSent > 0 ? (totalOpens / totalSent) * 100 : 0;
+            const clickRate = totalSent > 0 ? (totalClicks / totalSent) * 100 : 0;
+            const replyRate = totalSent > 0 ? (totalReplies / totalSent) * 100 : 0;
 
             await prisma.campaign.upsert({
                 where: { id: campaign.id.toString() },
@@ -177,6 +185,15 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     bounce_rate: bounceRate,
                     total_sent: totalSent,
                     total_bounced: totalBounced,
+                    // Analytics fields (SOFT SIGNALS - display only)
+                    open_count: totalOpens,
+                    click_count: totalClicks,
+                    reply_count: totalReplies,
+                    unsubscribed_count: totalUnsubscribed,
+                    open_rate: openRate,
+                    click_rate: clickRate,
+                    reply_rate: replyRate,
+                    analytics_updated_at: new Date(),
                     last_synced_at: new Date(),
                     organization_id: organizationId // Force ownership update
                 },
@@ -187,6 +204,15 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     bounce_rate: bounceRate,
                     total_sent: totalSent,
                     total_bounced: totalBounced,
+                    // Analytics fields (SOFT SIGNALS - display only)
+                    open_count: totalOpens,
+                    click_count: totalClicks,
+                    reply_count: totalReplies,
+                    unsubscribed_count: totalUnsubscribed,
+                    open_rate: openRate,
+                    click_rate: clickRate,
+                    reply_rate: replyRate,
+                    analytics_updated_at: new Date(),
                     organization_id: organizationId
                 }
             });
@@ -326,6 +352,10 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 mailboxStatus = 'healthy';
             }
 
+            // Extract warmup data if available (SOFT SIGNALS - informational only)
+            const warmupStatus = mailbox.warmup_status || mailbox.warmup_details?.status || null;
+            const warmupReputation = mailbox.warmup_reputation || mailbox.warmup_details?.warmup_reputation || null;
+
             // Upsert mailbox (stats tracked via webhooks, not synced from Smartlead)
             await prisma.mailbox.upsert({
                 where: { id: mailbox.id.toString() },
@@ -333,6 +363,8 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     email,
                     smartlead_email_account_id: mailbox.id,
                     status: mailboxStatus,
+                    warmup_status: warmupStatus,
+                    warmup_reputation: warmupReputation,
                     last_activity_at: new Date()
                 },
                 create: {
@@ -340,6 +372,8 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     email,
                     smartlead_email_account_id: mailbox.id,
                     status: mailboxStatus,
+                    warmup_status: warmupStatus,
+                    warmup_reputation: warmupReputation,
                     domain_id: domain.id,
                     organization_id: organizationId
                 }
