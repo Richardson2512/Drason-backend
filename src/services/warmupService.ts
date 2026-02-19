@@ -78,9 +78,9 @@ export const enableWarmupForRecovery = async (
         }
 
         // Get warmup config for this phase
-        const config = WARMUP_CONFIG[recoveryPhase];
+        const config = WARMUP_CONFIG[recoveryPhase as RecoveryPhase.RESTRICTED_SEND | RecoveryPhase.WARM_RECOVERY];
         if (!config) {
-            throw new Error(`Invalid recovery phase: ${recoveryPhase}`);
+            throw new Error(`Invalid recovery phase for warmup: ${recoveryPhase}`);
         }
 
         logger.info('[WARMUP] Enabling warmup for recovery', {
@@ -177,7 +177,7 @@ export const updateWarmupForPhaseTransition = async (
             return { success: false };
         }
 
-        const config = WARMUP_CONFIG[newPhase];
+        const config = WARMUP_CONFIG[newPhase as RecoveryPhase.RESTRICTED_SEND | RecoveryPhase.WARM_RECOVERY];
         if (!config) {
             logger.warn('[WARMUP] Invalid phase for warmup update', {
                 organizationId,
