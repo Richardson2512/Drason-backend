@@ -3,6 +3,7 @@ import { Request, Response } from 'express';
 import * as smartleadClient from '../services/smartleadClient';
 import { getOrgId } from '../middleware/orgContext';
 import { prisma } from '../index';
+import { logger } from '../utils/logger';
 
 const router = Router();
 
@@ -42,7 +43,7 @@ router.post('/', async (req: Request, res: Response) => {
             }
         });
     } catch (e: any) {
-        console.error('[SYNC ERROR]', e.message, e.stack);
+        logger.error('[SYNC ERROR]', e, { stack: e.stack });
         res.status(500).json({ success: false, error: e.message });
     }
 });
