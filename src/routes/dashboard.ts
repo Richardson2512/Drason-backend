@@ -41,4 +41,8 @@ router.get('/notifications/unread-count', notificationController.getUnreadCount)
 router.post('/notifications/:id/read', notificationController.markAsRead);
 router.post('/notifications/read-all', notificationController.markAllAsRead);
 
+// Warmup recovery endpoints
+router.get('/warmup-status', dashboardController.getWarmupStatus);
+router.post('/warmup/check', dashboardController.checkWarmupProgress);
+
 export default router;

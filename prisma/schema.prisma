@@ -103,6 +103,14 @@ model Lead {
   health_checked_at     DateTime?                       // Last health re-evaluation timestamp
   assigned_campaign_id  String?
   organization_id       String
+
+  // Activity Tracking (from Smartlead webhooks)
+  emails_sent           Int          @default(0)      // Total emails sent to this lead
+  emails_opened         Int          @default(0)      // Total opens
+  emails_clicked        Int          @default(0)      // Total link clicks
+  emails_replied        Int          @default(0)      // Total replies
+  last_activity_at      DateTime?                     // Last engagement timestamp
+
   created_at            DateTime     @default(now())
   updated_at            DateTime     @updatedAt
   deleted_at            DateTime?

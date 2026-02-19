@@ -469,3 +469,42 @@ export const resumeCampaign = async (req: Request, res: Response) => {
         res.status(500).json({ error: 'Failed to resume campaign' });
     }
 };
+
+/**
+ * Get warmup recovery status summary for organization
+ */
+export const getWarmupStatus = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const orgId = getOrgId(req);
+        const { getWarmupStatusSummary } = require('../workers/warmupTrackingWorker');
+
+        const summary = await getWarmupStatusSummary(orgId);
+
+        res.json({
+            success: true,
+            data: summary
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * Manually trigger warmup progress check for organization
+ */
+export const checkWarmupProgress = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const orgId = getOrgId(req);
+        const { checkWarmupProgress } = require('../workers/warmupTrackingWorker');
+
+        const result = await checkWarmupProgress();
+
+        res.json({
+            success: true,
+            data: result,
+            message: `Checked ${result.checked} mailboxes, graduated ${result.graduated}`
+        });
+    } catch (error) {
+        next(error);
+    }
+};

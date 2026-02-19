@@ -391,6 +391,17 @@ async function handleSentEvent(orgId: string, event: any) {
             }
         });
         leadId = lead?.id;
+
+        // Update lead activity stats
+        if (leadId) {
+            await prisma.lead.update({
+                where: { id: leadId },
+                data: {
+                    emails_sent: { increment: 1 },
+                    last_activity_at: new Date()
+                }
+            });
+        }
     }
 
     // Update campaign sent count
@@ -453,11 +464,13 @@ async function handleOpenEvent(orgId: string, event: any) {
         });
 
         if (lead) {
-            // Update lead engagement score
+            // Update lead engagement score and activity stats
             await prisma.lead.update({
                 where: { id: lead.id },
                 data: {
                     lead_score: { increment: 5 }, // +5 points for open
+                    emails_opened: { increment: 1 },
+                    last_activity_at: new Date(),
                     updated_at: new Date()
                 }
             });
@@ -493,11 +506,13 @@ async function handleClickEvent(orgId: string, event: any) {
         });
 
         if (lead) {
-            // Update lead engagement score
+            // Update lead engagement score and activity stats
             await prisma.lead.update({
                 where: { id: lead.id },
                 data: {
                     lead_score: { increment: 10 }, // +10 points for click
+                    emails_clicked: { increment: 1 },
+                    last_activity_at: new Date(),
                     updated_at: new Date()
                 }
             });
@@ -533,12 +548,14 @@ async function handleReplyEvent(orgId: string, event: any) {
         });
 
         if (lead) {
-            // Update lead engagement score and status
+            // Update lead engagement score, status, and activity stats
             await prisma.lead.update({
                 where: { id: lead.id },
                 data: {
                     lead_score: { increment: 20 }, // +20 points for reply
                     status: 'active', // Keep active on reply
+                    emails_replied: { increment: 1 },
+                    last_activity_at: new Date(),
                     updated_at: new Date()
                 }
             });
