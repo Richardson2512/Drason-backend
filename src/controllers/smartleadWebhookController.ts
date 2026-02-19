@@ -494,33 +494,65 @@ async function handleOpenEvent(orgId: string, event: any) {
 
     // Update campaign open count (SOFT SIGNAL)
     if (campaignId) {
-        await prisma.campaign.update({
+        const campaign = await prisma.campaign.findUnique({
             where: { id: campaignId.toString() },
-            data: {
-                open_count: { increment: 1 },
-                analytics_updated_at: new Date()
-            }
-        }).catch(err => {
-            logger.warn('[SMARTLEAD-WEBHOOK] Failed to update campaign open count', {
-                campaignId,
-                error: err.message
-            });
+            select: { total_sent: true, open_count: true }
         });
+
+        if (campaign) {
+            const newOpenCount = campaign.open_count + 1;
+            const openRate = campaign.total_sent > 0
+                ? (newOpenCount / campaign.total_sent) * 100
+                : 0;
+
+            await prisma.campaign.update({
+                where: { id: campaignId.toString() },
+                data: {
+                    open_count: newOpenCount,
+                    open_rate: openRate,
+                    analytics_updated_at: new Date()
+                }
+            }).catch(err => {
+                logger.warn('[SMARTLEAD-WEBHOOK] Failed to update campaign open count', {
+                    campaignId,
+                    error: err.message
+                });
+            });
+        }
     }
 
-    // Update mailbox open count (SOFT SIGNAL)
+    // Update mailbox open count and engagement rate (SOFT SIGNAL)
     if (mailboxId) {
-        await prisma.mailbox.update({
+        const mailbox = await prisma.mailbox.findUnique({
             where: { id: mailboxId.toString() },
-            data: {
-                open_count_lifetime: { increment: 1 }
+            select: {
+                total_sent_count: true,
+                open_count_lifetime: true,
+                click_count_lifetime: true,
+                reply_count_lifetime: true
             }
-        }).catch(err => {
-            logger.warn('[SMARTLEAD-WEBHOOK] Failed to update mailbox open count', {
-                mailboxId,
-                error: err.message
-            });
         });
+
+        if (mailbox) {
+            const newOpenCount = mailbox.open_count_lifetime + 1;
+            const totalEngagement = newOpenCount + mailbox.click_count_lifetime + mailbox.reply_count_lifetime;
+            const engagementRate = mailbox.total_sent_count > 0
+                ? (totalEngagement / mailbox.total_sent_count) * 100
+                : 0;
+
+            await prisma.mailbox.update({
+                where: { id: mailboxId.toString() },
+                data: {
+                    open_count_lifetime: newOpenCount,
+                    engagement_rate: engagementRate
+                }
+            }).catch(err => {
+                logger.warn('[SMARTLEAD-WEBHOOK] Failed to update mailbox open count', {
+                    mailboxId,
+                    error: err.message
+                });
+            });
+        }
     }
 }
 
@@ -569,33 +601,65 @@ async function handleClickEvent(orgId: string, event: any) {
 
     // Update campaign click count (SOFT SIGNAL)
     if (campaignId) {
-        await prisma.campaign.update({
+        const campaign = await prisma.campaign.findUnique({
             where: { id: campaignId.toString() },
-            data: {
-                click_count: { increment: 1 },
-                analytics_updated_at: new Date()
-            }
-        }).catch(err => {
-            logger.warn('[SMARTLEAD-WEBHOOK] Failed to update campaign click count', {
-                campaignId,
-                error: err.message
-            });
+            select: { total_sent: true, click_count: true }
         });
+
+        if (campaign) {
+            const newClickCount = campaign.click_count + 1;
+            const clickRate = campaign.total_sent > 0
+                ? (newClickCount / campaign.total_sent) * 100
+                : 0;
+
+            await prisma.campaign.update({
+                where: { id: campaignId.toString() },
+                data: {
+                    click_count: newClickCount,
+                    click_rate: clickRate,
+                    analytics_updated_at: new Date()
+                }
+            }).catch(err => {
+                logger.warn('[SMARTLEAD-WEBHOOK] Failed to update campaign click count', {
+                    campaignId,
+                    error: err.message
+                });
+            });
+        }
     }
 
-    // Update mailbox click count (SOFT SIGNAL)
+    // Update mailbox click count and engagement rate (SOFT SIGNAL)
     if (mailboxId) {
-        await prisma.mailbox.update({
+        const mailbox = await prisma.mailbox.findUnique({
             where: { id: mailboxId.toString() },
-            data: {
-                click_count_lifetime: { increment: 1 }
+            select: {
+                total_sent_count: true,
+                open_count_lifetime: true,
+                click_count_lifetime: true,
+                reply_count_lifetime: true
             }
-        }).catch(err => {
-            logger.warn('[SMARTLEAD-WEBHOOK] Failed to update mailbox click count', {
-                mailboxId,
-                error: err.message
-            });
         });
+
+        if (mailbox) {
+            const newClickCount = mailbox.click_count_lifetime + 1;
+            const totalEngagement = mailbox.open_count_lifetime + newClickCount + mailbox.reply_count_lifetime;
+            const engagementRate = mailbox.total_sent_count > 0
+                ? (totalEngagement / mailbox.total_sent_count) * 100
+                : 0;
+
+            await prisma.mailbox.update({
+                where: { id: mailboxId.toString() },
+                data: {
+                    click_count_lifetime: newClickCount,
+                    engagement_rate: engagementRate
+                }
+            }).catch(err => {
+                logger.warn('[SMARTLEAD-WEBHOOK] Failed to update mailbox click count', {
+                    mailboxId,
+                    error: err.message
+                });
+            });
+        }
     }
 }
 
@@ -645,33 +709,65 @@ async function handleReplyEvent(orgId: string, event: any) {
 
     // Update campaign reply count (SOFT SIGNAL)
     if (campaignId) {
-        await prisma.campaign.update({
+        const campaign = await prisma.campaign.findUnique({
             where: { id: campaignId.toString() },
-            data: {
-                reply_count: { increment: 1 },
-                analytics_updated_at: new Date()
-            }
-        }).catch(err => {
-            logger.warn('[SMARTLEAD-WEBHOOK] Failed to update campaign reply count', {
-                campaignId,
-                error: err.message
-            });
+            select: { total_sent: true, reply_count: true }
         });
+
+        if (campaign) {
+            const newReplyCount = campaign.reply_count + 1;
+            const replyRate = campaign.total_sent > 0
+                ? (newReplyCount / campaign.total_sent) * 100
+                : 0;
+
+            await prisma.campaign.update({
+                where: { id: campaignId.toString() },
+                data: {
+                    reply_count: newReplyCount,
+                    reply_rate: replyRate,
+                    analytics_updated_at: new Date()
+                }
+            }).catch(err => {
+                logger.warn('[SMARTLEAD-WEBHOOK] Failed to update campaign reply count', {
+                    campaignId,
+                    error: err.message
+                });
+            });
+        }
     }
 
-    // Update mailbox reply count (SOFT SIGNAL)
+    // Update mailbox reply count and engagement rate (SOFT SIGNAL)
     if (mailboxId) {
-        await prisma.mailbox.update({
+        const mailbox = await prisma.mailbox.findUnique({
             where: { id: mailboxId.toString() },
-            data: {
-                reply_count_lifetime: { increment: 1 }
+            select: {
+                total_sent_count: true,
+                open_count_lifetime: true,
+                click_count_lifetime: true,
+                reply_count_lifetime: true
             }
-        }).catch(err => {
-            logger.warn('[SMARTLEAD-WEBHOOK] Failed to update mailbox reply count', {
-                mailboxId,
-                error: err.message
-            });
         });
+
+        if (mailbox) {
+            const newReplyCount = mailbox.reply_count_lifetime + 1;
+            const totalEngagement = mailbox.open_count_lifetime + mailbox.click_count_lifetime + newReplyCount;
+            const engagementRate = mailbox.total_sent_count > 0
+                ? (totalEngagement / mailbox.total_sent_count) * 100
+                : 0;
+
+            await prisma.mailbox.update({
+                where: { id: mailboxId.toString() },
+                data: {
+                    reply_count_lifetime: newReplyCount,
+                    engagement_rate: engagementRate
+                }
+            }).catch(err => {
+                logger.warn('[SMARTLEAD-WEBHOOK] Failed to update mailbox reply count', {
+                    mailboxId,
+                    error: err.message
+                });
+            });
+        }
     }
 }
 

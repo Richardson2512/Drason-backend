@@ -200,7 +200,18 @@ export const getDomains = async (req: Request, res: Response, next: NextFunction
                 include: {
                     mailboxes: {
                         select: {
-                            id: true, email: true, status: true, hard_bounce_count: true, window_bounce_count: true
+                            id: true,
+                            email: true,
+                            status: true,
+                            hard_bounce_count: true,
+                            window_bounce_count: true,
+                            campaigns: {
+                                select: {
+                                    id: true,
+                                    name: true,
+                                    status: true
+                                }
+                            }
                         }
                     }
                 },
