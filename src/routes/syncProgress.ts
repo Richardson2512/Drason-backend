@@ -33,11 +33,21 @@ router.get('/:sessionId', (req: Request, res: Response) => {
     // Send initial connection confirmation
     res.write(`data: ${JSON.stringify({ type: 'connected', sessionId })}\n\n`);
 
+    // Heartbeat to keep connection alive through proxies
+    const heartbeat = setInterval(() => {
+        try {
+            res.write(`: heartbeat\n\n`);
+        } catch {
+            clearInterval(heartbeat);
+        }
+    }, 15000);
+
     // Register this connection with the progress service
     syncProgressService.registerConnection(sessionId, res);
 
     // Handle client disconnect
     req.on('close', () => {
+        clearInterval(heartbeat);
         logger.info('[SyncProgress] Client disconnected', { sessionId });
     });
 });
