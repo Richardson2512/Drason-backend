@@ -189,7 +189,7 @@ async function handleBounceEvent(orgId: string, event: any) {
                 const healingService = require('../services/healingService');
                 const notificationService = require('../services/notificationService');
 
-                logger.error('[WARMUP-RECOVERY] BOUNCE during recovery - ZERO TOLERANCE VIOLATED', {
+                logger.error('[WARMUP-RECOVERY] BOUNCE during recovery - ZERO TOLERANCE VIOLATED', undefined, {
                     organizationId: orgId,
                     mailboxId,
                     recoveryPhase: mailbox.recovery_phase,

@@ -45,7 +45,8 @@ export const checkWarmupProgress = async (): Promise<{
                 organization_id: true,
                 recovery_phase: true,
                 consecutive_pauses: true,
-                smartlead_email_account_id: true
+                smartlead_email_account_id: true,
+                resilience_score: true
             }
         });
 

@@ -14,7 +14,14 @@ import { RecoveryPhase } from '../types';
 /**
  * Warmup configuration for each recovery phase
  */
-const WARMUP_CONFIG = {
+const WARMUP_CONFIG: Record<RecoveryPhase.RESTRICTED_SEND | RecoveryPhase.WARM_RECOVERY, {
+    total_warmup_per_day: number;
+    daily_rampup: number;
+    reply_rate_percentage: number;
+    targetSends?: number;
+    targetSendsRepeat?: number;
+    minDays?: number;
+}> = {
     [RecoveryPhase.RESTRICTED_SEND]: {
         total_warmup_per_day: 10,       // Conservative start
         daily_rampup: 0,                 // Flat volume (no increase)
