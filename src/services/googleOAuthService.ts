@@ -116,9 +116,7 @@ export async function exchangeCodeForTokens(code: string): Promise<GoogleTokens>
             id_token: tokens.id_token || undefined
         };
     } catch (error: any) {
-        logger.error('[GoogleOAuth] Failed to exchange code for tokens', {
-            error: error.message
-        });
+        logger.error('[GoogleOAuth] Failed to exchange code for tokens', error);
         throw new Error('Failed to exchange authorization code for tokens');
     }
 }
@@ -153,9 +151,7 @@ export async function getUserInfo(accessToken: string): Promise<GoogleUserInfo> 
             locale: data.locale || 'en'
         };
     } catch (error: any) {
-        logger.error('[GoogleOAuth] Failed to get user info', {
-            error: error.message
-        });
+        logger.error('[GoogleOAuth] Failed to get user info', error);
         throw new Error('Failed to retrieve user information from Google');
     }
 }
@@ -181,9 +177,7 @@ export async function refreshAccessToken(refreshToken: string): Promise<GoogleTo
             expiry_date: credentials.expiry_date || undefined
         };
     } catch (error: any) {
-        logger.error('[GoogleOAuth] Failed to refresh access token', {
-            error: error.message
-        });
+        logger.error('[GoogleOAuth] Failed to refresh access token', error);
         throw new Error('Failed to refresh access token');
     }
 }
