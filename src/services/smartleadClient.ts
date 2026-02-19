@@ -679,6 +679,62 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     campaignId,
                     campaignName: campaign.name
                 });
+
+                // ── Fetch and update lead engagement statistics ──
+                try {
+                    logger.info(`[LeadStats] Fetching engagement statistics for campaign ${campaignId}`);
+
+                    const statsRes = await smartleadBreaker.call(() =>
+                        axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/statistics`, {
+                            params: { api_key: apiKey }
+                        })
+                    );
+
+                    const leadStats = statsRes.data || [];
+                    logger.info(`[LeadStats] Received ${leadStats.length} lead stats for campaign ${campaignId}`);
+
+                    // Update each lead with their engagement data
+                    for (const stat of leadStats) {
+                        const leadEmail = stat.lead_email || stat.email;
+                        if (!leadEmail) continue;
+
+                        const openCount = stat.open_count || 0;
+                        const clickCount = stat.click_count || 0;
+                        const replyCount = stat.reply_count || 0;
+                        const sentCount = stat.sent_count || 1; // Default to 1 if they have stats
+
+                        // Determine last activity timestamp
+                        const replyTime = stat.reply_time ? new Date(stat.reply_time) : null;
+                        const clickTime = stat.click_time ? new Date(stat.click_time) : null;
+                        const openTime = stat.open_time ? new Date(stat.open_time) : null;
+                        const sentTime = stat.sent_time ? new Date(stat.sent_time) : null;
+
+                        const lastActivityAt = replyTime || clickTime || openTime || sentTime || null;
+
+                        await prisma.lead.updateMany({
+                            where: {
+                                organization_id: organizationId,
+                                email: leadEmail,
+                                assigned_campaign_id: campaignId
+                            },
+                            data: {
+                                emails_sent: { set: sentCount },
+                                emails_opened: { set: openCount },
+                                emails_clicked: { set: clickCount },
+                                emails_replied: { set: replyCount },
+                                last_activity_at: { set: lastActivityAt }
+                            }
+                        });
+                    }
+
+                    logger.info(`[LeadStats] Updated engagement stats for ${leadStats.length} leads in campaign ${campaignId}`);
+                } catch (statsError: any) {
+                    // Don't fail sync if stats fetching fails
+                    logger.warn(`[LeadStats] Failed to fetch stats for campaign ${campaignId}`, {
+                        error: statsError.message,
+                        status: statsError.response?.status
+                    });
+                }
             } catch (leadError: any) {
                 // Lead sync failure for one campaign doesn't block the others
                 // CRITICAL: Log full error details
