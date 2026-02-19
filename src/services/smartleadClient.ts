@@ -21,6 +21,7 @@ import { smartleadBreaker } from '../utils/circuitBreaker';
 import { syncProgressService } from './syncProgressService';
 import { TIER_LIMITS } from './polarClient';
 import { decrypt } from '../utils/encryption';
+import { parse } from 'csv-parse/sync';
 
 const SMARTLEAD_API_BASE = 'https://server.smartlead.ai/api/v1';
 
@@ -565,23 +566,8 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         const company = lead.company_name || lead.company || '';
                         const persona = company || 'general';
 
-                        // Extract activity/engagement data from Smartlead lead response
-                        // Smartlead /campaigns/{id}/leads returns open_count, click_count, reply_count per lead
-                        const emailsOpened = lead.open_count || 0;
-                        const emailsClicked = lead.click_count || 0;
-                        const emailsReplied = lead.reply_count || 0;
-
-                        // Log first lead to verify we're getting engagement data
-                        if (offset === 0 && leadCount === 0) {
-                            logger.info('[LeadSync] First lead engagement data sample', {
-                                email,
-                                open_count: lead.open_count,
-                                click_count: lead.click_count,
-                                reply_count: lead.reply_count,
-                                availableFields: Object.keys(lead)
-                            });
-                        }
-
+                        // Note: /campaigns/{id}/leads endpoint does NOT include engagement stats
+                        // We'll fetch those separately using CSV export endpoint after contact sync completes
                         const upsertedLead = await prisma.lead.upsert({
                             where: {
                                 organization_id_email: {
@@ -591,10 +577,6 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                             },
                             update: {
                                 assigned_campaign_id: campaignId,
-                                emails_opened: emailsOpened,
-                                emails_clicked: emailsClicked,
-                                emails_replied: emailsReplied,
-                                last_activity_at: (emailsOpened > 0 || emailsClicked > 0 || emailsReplied > 0) ? new Date() : undefined,
                                 updated_at: new Date()
                                 // Note: Status is intentionally NOT updated here
                                 // - Smartlead leads are created as 'active'
@@ -608,68 +590,14 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                 source: 'smartlead',
                                 status: 'active', // Pre-existing leads in Smartlead campaigns are already approved
                                 health_classification: 'green',
-                                emails_sent: emailsSent,
-                                emails_opened: emailsOpened,
-                                emails_clicked: emailsClicked,
-                                emails_replied: emailsReplied,
+                                emails_sent: 0,
+                                emails_opened: 0,
+                                emails_clicked: 0,
+                                emails_replied: 0,
                                 assigned_campaign_id: campaignId,
                                 organization_id: organizationId
                             }
                         });
-
-                        // Backfill activity timeline from Smartlead historical data
-                        // This creates audit log entries for activity that happened before webhooks were configured
-                        if (emailsSent > 0 || emailsOpened > 0 || emailsClicked > 0 || emailsReplied > 0) {
-                            logger.info('[LeadSync] Found lead activity history', {
-                                email,
-                                campaignId,
-                                emailsSent,
-                                emailsOpened,
-                                emailsClicked,
-                                emailsReplied,
-                                emailsBounced
-                            });
-
-                            // Create audit log summary entry for historical activity
-                            await auditLogService.logAction({
-                                organizationId,
-                                entity: 'lead',
-                                entityId: upsertedLead.id,
-                                trigger: 'smartlead_sync',
-                                action: 'activity_backfill',
-                                details: `Historical activity: ${emailsSent} sent, ${emailsOpened} opened, ${emailsClicked} clicked, ${emailsReplied} replied${emailsBounced > 0 ? `, ${emailsBounced} bounced` : ''}`
-                            });
-
-                            // If lead has replies, boost engagement score
-                            if (emailsReplied > 0) {
-                                await prisma.lead.update({
-                                    where: { id: upsertedLead.id },
-                                    data: {
-                                        lead_score: { increment: emailsReplied * 20 } // +20 per reply
-                                    }
-                                });
-                            }
-
-                            // If lead has clicks, boost engagement score
-                            if (emailsClicked > 0) {
-                                await prisma.lead.update({
-                                    where: { id: upsertedLead.id },
-                                    data: {
-                                        lead_score: { increment: emailsClicked * 10 } // +10 per click
-                                    }
-                                });
-                            }
-
-                            // If lead has opens, boost engagement score
-                            if (emailsOpened > 0) {
-                                await prisma.lead.update({
-                                    where: { id: upsertedLead.id },
-                                    data: {
-                                        lead_score: { increment: emailsOpened * 5 } // +5 per open
-                                    }
-                                });
-                            }
-                        }
 
                         leadCount++;
                         campaignLeadCount++;
@@ -683,11 +611,114 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     }
                 }
 
-                logger.info(`Synced ${campaignLeadCount} leads for campaign ${campaignId}`, {
+                logger.info(`Synced ${campaignLeadCount} lead contacts for campaign ${campaignId}`, {
                     organizationId,
                     campaignId,
                     campaignName: campaign.name
                 });
+
+                // ── Fetch engagement stats from CSV export endpoint ──
+                // Note: /campaigns/{id}/leads-export returns CSV with open_count, click_count, reply_count
+                try {
+                    logger.info(`[LeadEngagement] Fetching engagement stats from CSV export for campaign ${campaignId}`);
+
+                    const csvRes = await smartleadBreaker.call(() =>
+                        axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/leads-export`, {
+                            params: { api_key: apiKey },
+                            responseType: 'text' // Important: Get raw text, not parsed JSON
+                        })
+                    );
+
+                    const csvData = csvRes.data;
+
+                    // Parse CSV data
+                    const records = parse(csvData, {
+                        columns: true, // Use first row as column names
+                        skip_empty_lines: true,
+                        trim: true
+                    });
+
+                    logger.info(`[LeadEngagement] Parsed ${records.length} leads from CSV for campaign ${campaignId}`);
+
+                    // Update each lead with engagement stats
+                    let updatedCount = 0;
+                    for (const record of records) {
+                        const email = record.email || record.Email || record.EMAIL;
+                        if (!email) continue;
+
+                        const openCount = parseInt(record.open_count || record.opens || '0');
+                        const clickCount = parseInt(record.click_count || record.clicks || '0');
+                        const replyCount = parseInt(record.reply_count || record.replies || '0');
+
+                        // Update lead with engagement stats
+                        try {
+                            await prisma.lead.update({
+                                where: {
+                                    organization_id_email: {
+                                        organization_id: organizationId,
+                                        email
+                                    }
+                                },
+                                data: {
+                                    emails_opened: openCount,
+                                    emails_clicked: clickCount,
+                                    emails_replied: replyCount,
+                                    last_activity_at: (openCount > 0 || clickCount > 0 || replyCount > 0) ? new Date() : undefined
+                                }
+                            });
+
+                            // Backfill activity for leads with engagement
+                            if (openCount > 0 || clickCount > 0 || replyCount > 0) {
+                                // Create audit log summary entry for historical activity
+                                await auditLogService.logAction({
+                                    organizationId,
+                                    entity: 'lead',
+                                    entityId: email,
+                                    trigger: 'smartlead_sync',
+                                    action: 'activity_backfill',
+                                    details: `Historical activity: ${openCount} opened, ${clickCount} clicked, ${replyCount} replied`
+                                });
+
+                                // Boost engagement score based on activity
+                                let scoreBoost = 0;
+                                if (replyCount > 0) scoreBoost += replyCount * 20; // +20 per reply
+                                if (clickCount > 0) scoreBoost += clickCount * 10; // +10 per click
+                                if (openCount > 0) scoreBoost += openCount * 5; // +5 per open
+
+                                if (scoreBoost > 0) {
+                                    await prisma.lead.update({
+                                        where: {
+                                            organization_id_email: {
+                                                organization_id: organizationId,
+                                                email
+                                            }
+                                        },
+                                        data: {
+                                            lead_score: { increment: scoreBoost }
+                                        }
+                                    });
+                                }
+                            }
+
+                            updatedCount++;
+                        } catch (updateError: any) {
+                            // Lead might not exist if it was filtered out during contact sync
+                            logger.debug(`[LeadEngagement] Skipping engagement update for ${email}`, {
+                                error: updateError.message
+                            });
+                        }
+                    }
+
+                    logger.info(`[LeadEngagement] Updated ${updatedCount} leads with engagement stats for campaign ${campaignId}`);
+                } catch (csvError: any) {
+                    // Don't fail the entire sync if CSV parsing fails - contact data is already synced
+                    logger.error(`[LeadEngagement] Failed to fetch engagement stats from CSV for campaign ${campaignId}`, csvError, {
+                        organizationId,
+                        campaignId,
+                        response: csvError.response?.data,
+                        status: csvError.response?.status
+                    });
+                }
             } catch (leadError: any) {
                 // Lead sync failure for one campaign doesn't block the others
                 // CRITICAL: Log full error details
