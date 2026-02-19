@@ -663,7 +663,7 @@ export function getPhaseVolumeLimit(
 /**
  * Execute a recovery phase transition with full audit trail.
  */
-async function transitionPhase(
+export async function transitionPhase(
     entityType: 'mailbox' | 'domain',
     entityId: string,
     organizationId: string,

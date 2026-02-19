@@ -165,8 +165,8 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 });
             }
 
-            const totalSent = parseInt(analytics.sent_count || '0');
-            const totalBounced = parseInt(analytics.bounce_count || '0');
+            const totalSent = parseInt(String(analytics.sent_count || '0'));
+            const totalBounced = parseInt(String(analytics.bounce_count || '0'));
             const bounceRate = totalSent > 0 ? (totalBounced / totalSent) * 100 : 0;
 
             await prisma.campaign.upsert({

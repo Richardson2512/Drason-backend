@@ -11,7 +11,7 @@ import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
 import * as warmupService from '../services/warmupService';
 import * as healingService from '../services/healingService';
-import { RecoveryPhase } from '@prisma/client';
+import { RecoveryPhase } from '../types';
 
 /**
  * Main warmup tracking function.
@@ -88,11 +88,13 @@ export const checkWarmupProgress = async (): Promise<{
                     });
 
                     await healingService.transitionPhase(
-                        mailbox.organization_id,
                         'mailbox',
                         mailbox.id,
+                        mailbox.organization_id,
+                        mailbox.recovery_phase as RecoveryPhase,
                         nextPhase,
-                        `Auto-graduated by warmup worker: ${result.reason}`
+                        `Auto-graduated by warmup worker: ${result.reason}`,
+                        mailbox.resilience_score || 50
                     );
 
                     graduated++;

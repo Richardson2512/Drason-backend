@@ -10,6 +10,7 @@ import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
 import * as auditLogService from '../services/auditLogService';
 import { getOrgId } from '../middleware/orgContext';
+import { RecoveryPhase } from '../types';
 
 /**
  * Handle Smartlead webhook events.
@@ -198,11 +199,13 @@ async function handleBounceEvent(orgId: string, event: any) {
 
                 // REGRESSION: Bounce during recovery = back to PAUSED
                 await healingService.transitionPhase(
-                    orgId,
                     'mailbox',
                     mailboxId.toString(),
-                    'paused',
-                    `Bounce during ${mailbox.recovery_phase} warmup recovery: ${bounceReason}`
+                    orgId,
+                    mailbox.recovery_phase as RecoveryPhase,
+                    RecoveryPhase.PAUSED,
+                    `Bounce during ${mailbox.recovery_phase} warmup recovery: ${bounceReason}`,
+                    mailbox.resilience_score || 50
                 );
 
                 // Notify user of recovery failure

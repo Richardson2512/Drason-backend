@@ -9,7 +9,7 @@ import { prisma } from '../index';
 import { logger } from './observabilityService';
 import * as smartleadClient from './smartleadClient';
 import * as notificationService from './notificationService';
-import { RecoveryPhase } from '@prisma/client';
+import { RecoveryPhase } from '../types';
 
 /**
  * Warmup configuration for each recovery phase
@@ -369,8 +369,8 @@ export const checkGraduationCriteria = async (
     if (mailbox.recovery_phase === RecoveryPhase.RESTRICTED_SEND) {
         const config = WARMUP_CONFIG[RecoveryPhase.RESTRICTED_SEND];
         const targetSends = mailbox.consecutive_pauses && mailbox.consecutive_pauses > 1
-            ? config.targetSendsRepeat
-            : config.targetSends;
+            ? (config.targetSendsRepeat || 25)
+            : (config.targetSends || 15);
 
         const readyForGraduation = totalSent >= targetSends && totalSpam === 0;
 
@@ -386,19 +386,21 @@ export const checkGraduationCriteria = async (
 
     } else if (mailbox.recovery_phase === RecoveryPhase.WARM_RECOVERY) {
         const config = WARMUP_CONFIG[RecoveryPhase.WARM_RECOVERY];
+        const minDays = config.minDays || 3;
+        const targetSends = config.targetSends || 50;
         const readyForGraduation =
-            totalSent >= config.targetSends &&
+            totalSent >= targetSends &&
             totalSpam === 0 &&
-            daysInPhase >= config.minDays;
+            daysInPhase >= minDays;
 
         return {
             readyForGraduation,
             currentSends: totalSent,
-            targetSends: config.targetSends,
+            targetSends,
             daysInPhase,
             reason: readyForGraduation
                 ? `Met criteria: ${totalSent} sends, 0 spam, ${daysInPhase} days, ${warmupReputation} reputation`
-                : `Need: ${Math.max(0, config.targetSends - totalSent)} more sends, ${Math.max(0, config.minDays - daysInPhase)} more days`
+                : `Need: ${Math.max(0, targetSends - totalSent)} more sends, ${Math.max(0, minDays - daysInPhase)} more days`
         };
     }
 
