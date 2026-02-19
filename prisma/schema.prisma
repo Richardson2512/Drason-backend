@@ -258,7 +258,9 @@ model Domain {
   total_opens                  Int          @default(0)       // Total opens across all mailboxes
   total_clicks                 Int          @default(0)       // Total clicks across all mailboxes
   total_replies                Int          @default(0)       // Total replies across all mailboxes
+  total_bounces                Int          @default(0)       // Total hard bounces across all mailboxes
   engagement_rate              Float        @default(0)       // Domain-wide engagement rate
+  bounce_rate                  Float        @default(0)       // Domain-wide bounce rate (total_bounces / total_sent_lifetime * 100)
 
   organization_id              String
   created_at                   DateTime     @default(now())

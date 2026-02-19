@@ -807,8 +807,14 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 const totalOpens = domain.mailboxes.reduce((sum, mb) => sum + mb.open_count_lifetime, 0);
                 const totalClicks = domain.mailboxes.reduce((sum, mb) => sum + mb.click_count_lifetime, 0);
                 const totalReplies = domain.mailboxes.reduce((sum, mb) => sum + mb.reply_count_lifetime, 0);
+                const totalBounces = domain.mailboxes.reduce((sum, mb) => sum + mb.hard_bounce_count, 0);
+
                 const engagementRate = totalSentLifetime > 0
                     ? ((totalOpens + totalClicks + totalReplies) / totalSentLifetime) * 100
+                    : 0;
+
+                const domainBounceRate = totalSentLifetime > 0
+                    ? (totalBounces / totalSentLifetime) * 100
                     : 0;
 
                 // Derive domain status from aggregated mailbox connection state
@@ -833,7 +839,9 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         total_opens: totalOpens,
                         total_clicks: totalClicks,
                         total_replies: totalReplies,
-                        engagement_rate: engagementRate
+                        total_bounces: totalBounces,
+                        engagement_rate: engagementRate,
+                        bounce_rate: domainBounceRate
                     }
                 });
 
@@ -846,7 +854,9 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     totalOpens,
                     totalClicks,
                     totalReplies,
-                    engagementRate: engagementRate.toFixed(2) + '%'
+                    totalBounces,
+                    engagementRate: engagementRate.toFixed(2) + '%',
+                    bounceRate: domainBounceRate.toFixed(2) + '%'
                 });
             }
 
