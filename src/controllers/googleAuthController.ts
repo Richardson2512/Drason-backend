@@ -65,7 +65,7 @@ export const initiateGoogleAuth = async (req: Request, res: Response) => {
         // Redirect user to Google consent screen
         res.redirect(url);
     } catch (error: any) {
-        logger.error('[GoogleAuth] Failed to initiate OAuth', { error: error.message });
+        logger.error('[GoogleAuth] Failed to initiate OAuth', error);
 
         // Redirect to login page with error
         const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
@@ -234,10 +234,7 @@ export const handleGoogleCallback = async (req: Request, res: Response) => {
         res.redirect(`${frontendUrl}/dashboard`);
 
     } catch (error: any) {
-        logger.error('[GoogleAuth] OAuth callback error', {
-            error: error.message,
-            stack: error.stack
-        });
+        logger.error('[GoogleAuth] OAuth callback error', error);
 
         // Redirect to login with error
         res.redirect(`${frontendUrl}/login?error=${encodeURIComponent('Failed to complete Google sign-in')}`);

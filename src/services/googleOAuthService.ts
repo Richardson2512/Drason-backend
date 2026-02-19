@@ -1,6 +1,6 @@
 import { google } from 'googleapis';
 import crypto from 'crypto';
-import logger from '../lib/logger';
+import { logger } from '../services/observabilityService';
 
 const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
@@ -111,9 +111,9 @@ export async function exchangeCodeForTokens(code: string): Promise<GoogleTokens>
 
         return {
             access_token: tokens.access_token,
-            refresh_token: tokens.refresh_token,
-            expiry_date: tokens.expiry_date,
-            id_token: tokens.id_token
+            refresh_token: tokens.refresh_token || undefined,
+            expiry_date: tokens.expiry_date || undefined,
+            id_token: tokens.id_token || undefined
         };
     } catch (error: any) {
         logger.error('[GoogleOAuth] Failed to exchange code for tokens', {
@@ -178,7 +178,7 @@ export async function refreshAccessToken(refreshToken: string): Promise<GoogleTo
         return {
             access_token: credentials.access_token,
             refresh_token: credentials.refresh_token || refreshToken, // Keep old refresh token if new one not provided
-            expiry_date: credentials.expiry_date
+            expiry_date: credentials.expiry_date || undefined
         };
     } catch (error: any) {
         logger.error('[GoogleOAuth] Failed to refresh access token', {

@@ -130,6 +130,12 @@ export const changePassword = async (req: Request, res: Response): Promise<void>
             return;
         }
 
+        // OAuth-only users cannot change password
+        if (!user.password_hash) {
+            res.status(403).json({ error: 'OAuth users cannot change password' });
+            return;
+        }
+
         // Verify current password
         const isValid = await bcrypt.compare(currentPassword, user.password_hash);
         if (!isValid) {

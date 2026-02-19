@@ -68,6 +68,11 @@ export const login = async (req: Request, res: Response) => {
             return res.status(401).json({ success: false, error: 'Invalid credentials' });
         }
 
+        // OAuth-only users don't have a password hash
+        if (!user.password_hash) {
+            return res.status(401).json({ success: false, error: 'Please sign in with Google' });
+        }
+
         const isValid = await bcrypt.compare(password, user.password_hash);
         if (!isValid) {
             return res.status(401).json({ success: false, error: 'Invalid credentials' });
