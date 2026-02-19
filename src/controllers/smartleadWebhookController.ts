@@ -182,15 +182,17 @@ async function handleBounceEvent(orgId: string, event: any) {
 
             // Auto-pause at 3% threshold (real-time protection)
             if (bounceRate >= 0.03 && updatedMailbox.status !== 'paused') {
+                // Step 1: Update mailbox status in our DB (mark as paused + cooldown)
                 await prisma.mailbox.update({
                     where: { id: mailboxId.toString() },
                     data: {
                         status: 'paused',
-                        recovery_phase: 'paused',
+                        recovery_phase: 'paused', // Triggers healing system entry
                         cooldown_until: new Date(Date.now() + 48 * 60 * 60 * 1000), // 48h cooldown
                         last_pause_at: new Date(),
                         consecutive_pauses: { increment: 1 },
-                        resilience_score: Math.max(0, (updatedMailbox.resilience_score || 50) - 15) // -15 penalty
+                        resilience_score: Math.max(0, (updatedMailbox.resilience_score || 50) - 15), // -15 penalty
+                        healing_origin: 'bounce_threshold' // Track why healing started
                     }
                 });
 
@@ -203,26 +205,55 @@ async function handleBounceEvent(orgId: string, event: any) {
                     totalBounced: updatedMailbox.hard_bounce_count
                 });
 
-                // Notify user of auto-pause
+                // Step 2: Remove mailbox from ALL campaigns in Smartlead (infrastructure hygiene)
+                // This ensures Mailbox A stops sending while B, C, D continue
+                const smartleadEmailAccountId = event.email_account_id || mailboxId;
+                if (smartleadEmailAccountId) {
+                    try {
+                        const smartleadClient = require('../services/smartleadClient');
+                        const result = await smartleadClient.removeMailboxFromCampaigns(
+                            orgId,
+                            mailboxId.toString(),
+                            smartleadEmailAccountId
+                        );
+
+                        logger.info('[SMARTLEAD-WEBHOOK] Removed mailbox from Smartlead campaigns', {
+                            organizationId: orgId,
+                            mailboxId,
+                            smartleadEmailAccountId,
+                            campaignsRemoved: result.campaignsRemoved,
+                            campaignsFailed: result.campaignsFailed
+                        });
+                    } catch (smartleadError: any) {
+                        logger.error('[SMARTLEAD-WEBHOOK] Failed to remove mailbox from Smartlead campaigns', smartleadError, {
+                            organizationId: orgId,
+                            mailboxId,
+                            smartleadEmailAccountId
+                        });
+                        // Continue even if Smartlead removal fails - we've paused locally
+                    }
+                }
+
+                // Step 3: Notify user of auto-pause
                 try {
                     const notificationService = require('../services/notificationService');
                     await notificationService.createNotification(orgId, {
                         type: 'WARNING',
-                        title: 'Mailbox Auto-Paused',
-                        message: `${updatedMailbox.email} paused due to ${(bounceRate * 100).toFixed(1)}% bounce rate (threshold: 3%). Review email list quality.`
+                        title: 'Mailbox Auto-Paused & Removed',
+                        message: `${updatedMailbox.email} paused and removed from campaigns due to ${(bounceRate * 100).toFixed(1)}% bounce rate (threshold: 3%). Other mailboxes continue sending. Review email list quality.`
                     });
                 } catch (notifError) {
                     logger.error('[SMARTLEAD-WEBHOOK] Failed to send auto-pause notification', notifError as Error);
                 }
 
-                // Audit log
+                // Step 4: Audit log
                 await auditLogService.logAction({
                     organizationId: orgId,
                     entity: 'mailbox',
                     entityId: mailboxId.toString(),
                     trigger: 'smartlead_webhook',
                     action: 'auto_paused_bounce_threshold',
-                    details: `Auto-paused at ${(bounceRate * 100).toFixed(1)}% bounce rate (${updatedMailbox.hard_bounce_count} bounces in ${updatedMailbox.total_sent_count} sends)`
+                    details: `Auto-paused and removed from Smartlead campaigns at ${(bounceRate * 100).toFixed(1)}% bounce rate (${updatedMailbox.hard_bounce_count} bounces in ${updatedMailbox.total_sent_count} sends). Entered healing system.`
                 });
             }
         }

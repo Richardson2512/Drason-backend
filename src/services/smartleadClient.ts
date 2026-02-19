@@ -810,6 +810,109 @@ export const pauseSmartleadCampaign = async (
 };
 
 /**
+ * Remove mailbox from all campaigns in Smartlead.
+ * Called when mailbox exceeds bounce threshold for infrastructure hygiene.
+ */
+export const removeMailboxFromCampaigns = async (
+    organizationId: string,
+    mailboxId: string,
+    smartleadEmailAccountId: number
+): Promise<{
+    success: boolean;
+    campaignsRemoved: number;
+    campaignsFailed: number;
+}> => {
+    const apiKey = await getApiKey(organizationId);
+    if (!apiKey) {
+        throw new Error('Smartlead API key not configured');
+    }
+
+    // Get all campaigns this mailbox is linked to
+    const mailbox = await prisma.mailbox.findUnique({
+        where: { id: mailboxId },
+        select: {
+            email: true,
+            campaigns: {
+                select: {
+                    id: true,
+                    name: true
+                }
+            }
+        }
+    });
+
+    if (!mailbox || !mailbox.campaigns || mailbox.campaigns.length === 0) {
+        logger.info(`[SMARTLEAD] No campaigns found for mailbox ${mailboxId}`, { organizationId });
+        return { success: true, campaignsRemoved: 0, campaignsFailed: 0 };
+    }
+
+    const campaigns = mailbox.campaigns;
+
+    // Fetch Smartlead campaigns to get their IDs
+    const smartleadCampaigns = await smartleadBreaker.call(() =>
+        axios.get(`${SMARTLEAD_API_BASE}/campaigns`, {
+            params: { api_key: apiKey }
+        })
+    );
+
+    let successCount = 0;
+    let failCount = 0;
+
+    // Remove from each campaign
+    for (const campaign of smartleadCampaigns.data) {
+        // Match by campaign name (since we don't store smartlead_campaign_id)
+        const ourCampaign = campaigns.find(c => c.name === campaign.name);
+        if (!ourCampaign) continue;
+
+        try {
+            await smartleadBreaker.call(() =>
+                axios.delete(
+                    `${SMARTLEAD_API_BASE}/campaigns/${campaign.id}/email-accounts`,
+                    {
+                        params: { api_key: apiKey },
+                        data: {
+                            email_account_ids: [smartleadEmailAccountId]
+                        }
+                    }
+                )
+            );
+
+            successCount++;
+
+            await auditLogService.logAction({
+                organizationId,
+                entity: 'mailbox',
+                entityId: mailboxId,
+                trigger: 'bounce_threshold',
+                action: 'removed_from_smartlead_campaign',
+                details: `Removed from campaign ${campaign.name} (Smartlead ID: ${campaign.id}) due to high bounce rate`
+            });
+
+            logger.info(`[SMARTLEAD] Removed mailbox from campaign ${campaign.name}`, {
+                organizationId,
+                mailboxId,
+                smartleadCampaignId: campaign.id,
+                smartleadEmailAccountId
+            });
+        } catch (error: any) {
+            failCount++;
+            logger.error(`[SMARTLEAD] Failed to remove mailbox from campaign ${campaign.name}`, error, {
+                organizationId,
+                mailboxId,
+                smartleadCampaignId: campaign.id,
+                response: error.response?.data
+            });
+        }
+    }
+
+    return {
+        success: successCount > 0,
+        campaignsRemoved: successCount,
+        campaignsFailed: failCount
+    };
+};
+
+/**
  * Resume a Smartlead campaign.
  * Called when Drason detects infrastructure health recovery.
  */
