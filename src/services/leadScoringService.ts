@@ -253,56 +253,32 @@ async function aggregateEngagementFromEvents(
         };
     });
 
-    // Query events from our event store
-    // This assumes we're storing email events (opens, clicks, replies, bounces)
-    // TODO: Implement Event model in Prisma schema
-    const events: Array<{ event_type: string; payload: any; created_at: Date }> = [];
-    // const events = await prisma.event.findMany({
-    //     where: {
-    //         organization_id: organizationId,
-    //         event_type: {
-    //             in: ['EmailSent', 'EmailOpened', 'EmailClicked', 'EmailReplied', 'HardBounce', 'SoftBounce']
-    //         }
-    //     },
-    //     select: {
-    //         event_type: true,
-    //         payload: true,
-    //         created_at: true
-    //     },
-    //     orderBy: {
-    //         created_at: 'desc'
-    //     }
-    // });
-
-    // Aggregate engagement by email
-    events.forEach((event: { event_type: string; payload: any; created_at: Date }) => {
-        const email = (event.payload as any)?.email || (event.payload as any)?.lead_email;
-
-        if (!email || !engagementMap[email]) {
-            return;
+    // Fetch lead activity data directly from Lead model
+    // Activity stats are synced from Smartlead API during sync
+    const leads = await prisma.lead.findMany({
+        where: {
+            organization_id: organizationId,
+            email: { in: emails }
+        },
+        select: {
+            email: true,
+            emails_opened: true,
+            emails_clicked: true,
+            emails_replied: true,
+            last_activity_at: true
         }
+    });
 
-        const engagement = engagementMap[email];
-
-        switch (event.event_type) {
-            case 'EmailOpened':
-                engagement.opens++;
-                break;
-            case 'EmailClicked':
-                engagement.clicks++;
-                break;
-            case 'EmailReplied':
-                engagement.replies++;
-                break;
-            case 'HardBounce':
-            case 'SoftBounce':
-                engagement.bounces++;
-                break;
-        }
-
-        // Track most recent engagement
-        if (!engagement.lastEngagementDate || event.created_at > engagement.lastEngagementDate) {
-            engagement.lastEngagementDate = event.created_at;
+    // Map lead activity to engagement data
+    leads.forEach(lead => {
+        if (lead.email && engagementMap[lead.email]) {
+            engagementMap[lead.email] = {
+                opens: lead.emails_opened || 0,
+                clicks: lead.emails_clicked || 0,
+                replies: lead.emails_replied || 0,
+                bounces: 0, // Bounce data not stored per-lead currently
+                lastEngagementDate: lead.last_activity_at || undefined
+            };
         }
     });
 
