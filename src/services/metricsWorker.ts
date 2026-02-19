@@ -143,7 +143,7 @@ async function processOrganization(
             organization_id: organizationId,
             status: { in: [MailboxState.HEALTHY, MailboxState.WARNING, MailboxState.RECOVERING] }
         },
-        select: { id: true, status: true, domain_id: true },
+        select: { id: true, status: true, domain_id: true, smtp_status: true, imap_status: true },
         take: WORKER_CONFIG.batchSize
     });
 
@@ -173,9 +173,15 @@ async function processOrganization(
  */
 async function processMailbox(
     organizationId: string,
-    mailbox: { id: string; status: string; domain_id: string },
+    mailbox: { id: string; status: string; domain_id: string; smtp_status: boolean; imap_status: boolean },
     systemMode: string
 ): Promise<void> {
+    // CRITICAL: Skip disconnected mailboxes — their status is managed by sync, not metrics
+    if (mailbox.smtp_status === false || mailbox.imap_status === false) {
+        logger.debug('Skipping disconnected mailbox', { mailboxId: mailbox.id, smtp: mailbox.smtp_status, imap: mailbox.imap_status });
+        return;
+    }
+
     // Get current risk assessment
     const risk = await metricsService.calculateAndUpdateRisk(mailbox.id);
 

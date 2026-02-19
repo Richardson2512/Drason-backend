@@ -492,6 +492,38 @@ export async function assessInfrastructure(
         const mailboxSummary = { total: mailboxes.length, healthy: 0, warning: 0, paused: 0 };
 
         for (const mailbox of mailboxes) {
+            // CRITICAL: Respect connection status from Smartlead sync
+            // Disconnected mailboxes must remain paused regardless of bounce metrics
+            if (mailbox.smtp_status === false || mailbox.imap_status === false) {
+                const connectionError = mailbox.connection_error || 'Unknown connection issue';
+                findings.push({
+                    severity: 'critical' as const,
+                    category: 'mailbox_health',
+                    entity: 'mailbox',
+                    entityId: mailbox.id,
+                    entityName: mailbox.email,
+                    title: `Connection Failed: ${mailbox.email}`,
+                    details: `SMTP: ${mailbox.smtp_status ? 'OK' : 'FAILED'}, IMAP: ${mailbox.imap_status ? 'OK' : 'FAILED'}. Error: ${connectionError}`,
+                    message: `Mailbox ${mailbox.email} has a broken connection and cannot send/receive email.`,
+                    remediation: `Re-authorize this email account in Smartlead → Email Accounts → Reconnect.`,
+                });
+
+                // Force paused — skip bounce rate logic entirely
+                await prisma.mailbox.update({
+                    where: { id: mailbox.id },
+                    data: {
+                        status: 'paused',
+                        initial_assessment_at: new Date(),
+                        ...(mailbox.status !== 'paused' ? {
+                            last_pause_at: new Date(),
+                            consecutive_pauses: mailbox.consecutive_pauses + 1,
+                        } : {}),
+                    },
+                });
+                mailboxSummary.paused++;
+                continue; // Skip bounce rate assessment for disconnected mailboxes
+            }
+
             // Calculate bounce rate from existing counters
             // (These are populated by Smartlead sync if getMailboxStats was called)
             const totalSent = mailbox.total_sent_count;
