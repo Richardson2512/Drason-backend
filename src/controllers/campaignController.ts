@@ -128,12 +128,26 @@ export const getStalledCampaignContext = async (req: Request, res: Response) => 
             return res.status(404).json({ success: false, error: 'Campaign not found' });
         }
 
-        // Count affected leads
+        // Count affected leads and get sample lead for smart matching
         const leadsCount = await prisma.lead.count({
             where: {
                 organization_id: orgId,
                 assigned_campaign_id: campaignId,
                 status: { notIn: ['completed', 'bounced', 'unsubscribed'] }
+            }
+        });
+
+        // Get a sample lead for smart campaign matching
+        const sampleLead = await prisma.lead.findFirst({
+            where: {
+                organization_id: orgId,
+                assigned_campaign_id: campaignId,
+                status: { notIn: ['completed', 'bounced', 'unsubscribed'] }
+            },
+            select: {
+                id: true,
+                persona: true,
+                lead_score: true
             }
         });
 
@@ -238,6 +252,9 @@ export const getStalledCampaignContext = async (req: Request, res: Response) => 
                 },
                 leads: {
                     total: leadsCount,
+                    sampleLeadId: sampleLead?.id || null,
+                    samplePersona: sampleLead?.persona || null,
+                    sampleScore: sampleLead?.lead_score || null,
                     message: leadsCount === 0 ? 'No active leads' : `${leadsCount} leads waiting`
                 },
                 mailboxes: {
