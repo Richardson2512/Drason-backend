@@ -16,6 +16,9 @@ import {
 } from '../services/smartleadClient';
 import { logger } from '../services/observabilityService';
 import { logAction } from '../services/auditLogService';
+import * as loadBalancingService from '../services/loadBalancingService';
+import * as predictiveMonitoringService from '../services/predictiveMonitoringService';
+import * as smartRoutingService from '../services/smartRoutingService';
 /**
  * Pause all active campaigns for an organization
  * Used by health enforcement when critical issues detected
@@ -579,6 +582,200 @@ export const archiveCampaign = async (req: Request, res: Response) => {
         return res.status(500).json({
             success: false,
             error: 'Failed to archive campaign',
+            message: error.message
+        });
+    }
+};
+
+/**
+ * Get load balancing analysis and suggestions
+ *
+ * @route GET /api/dashboard/campaigns/load-balancing
+ */
+export const getLoadBalancingSuggestions = async (req: Request, res: Response) => {
+    try {
+        const orgId = getOrgId(req);
+
+        logger.info(`[CAMPAIGNS] Getting load balancing analysis for org ${orgId}`);
+
+        const report = await loadBalancingService.analyzeLoadBalancing(orgId);
+
+        return res.json({
+            success: true,
+            report
+        });
+
+    } catch (error: any) {
+        logger.error('[CAMPAIGNS] Error getting load balancing suggestions', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to get load balancing suggestions',
+            message: error.message
+        });
+    }
+};
+
+/**
+ * Apply a load balancing suggestion
+ *
+ * @route POST /api/dashboard/campaigns/load-balancing/apply
+ */
+export const applyLoadBalancingSuggestion = async (req: Request, res: Response) => {
+    try {
+        const orgId = getOrgId(req);
+        const { suggestion } = req.body;
+
+        if (!suggestion) {
+            return res.status(400).json({
+                success: false,
+                error: 'Suggestion is required'
+            });
+        }
+
+        logger.info(`[CAMPAIGNS] Applying load balancing suggestion for org ${orgId}`, { suggestion });
+
+        const result = await loadBalancingService.applySuggestion(orgId, suggestion);
+
+        return res.json({
+            success: result.success,
+            message: result.message
+        });
+
+    } catch (error: any) {
+        logger.error('[CAMPAIGNS] Error applying load balancing suggestion', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to apply suggestion',
+            message: error.message
+        });
+    }
+};
+
+/**
+ * Get predictive risk analysis for all active campaigns
+ *
+ * @route GET /api/dashboard/campaigns/predictive-risks
+ */
+export const getPredictiveRisks = async (req: Request, res: Response) => {
+    try {
+        const orgId = getOrgId(req);
+
+        logger.info(`[CAMPAIGNS] Getting predictive risk analysis for org ${orgId}`);
+
+        const report = await predictiveMonitoringService.analyzePredictiveRisks(orgId);
+
+        return res.json({
+            success: true,
+            report
+        });
+
+    } catch (error: any) {
+        logger.error('[CAMPAIGNS] Error getting predictive risks', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to get predictive risks',
+            message: error.message
+        });
+    }
+};
+
+/**
+ * Trigger predictive alerts for high-risk campaigns
+ *
+ * @route POST /api/dashboard/campaigns/predictive-alerts
+ */
+export const triggerPredictiveAlerts = async (req: Request, res: Response) => {
+    try {
+        const orgId = getOrgId(req);
+
+        logger.info(`[CAMPAIGNS] Triggering predictive alerts for org ${orgId}`);
+
+        await predictiveMonitoringService.sendPredictiveAlerts(orgId);
+
+        return res.json({
+            success: true,
+            message: 'Predictive alerts sent'
+        });
+
+    } catch (error: any) {
+        logger.error('[CAMPAIGNS] Error triggering predictive alerts', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to trigger predictive alerts',
+            message: error.message
+        });
+    }
+};
+
+/**
+ * Get smart campaign recommendations for a lead
+ *
+ * @route GET /api/dashboard/leads/:leadId/campaign-recommendations
+ */
+export const getSmartCampaignRecommendations = async (req: Request, res: Response) => {
+    try {
+        const orgId = getOrgId(req);
+        const { leadId } = req.params;
+        const {
+            excludeCurrentCampaign = 'true',
+            minMatchScore = '40',
+            maxResults = '5'
+        } = req.query;
+
+        logger.info(`[CAMPAIGNS] Getting smart recommendations for lead ${leadId}`);
+
+        const report = await smartRoutingService.findBestCampaignsForLead(orgId, leadId, {
+            excludeCurrentCampaign: excludeCurrentCampaign === 'true',
+            minMatchScore: parseInt(minMatchScore as string),
+            maxResults: parseInt(maxResults as string)
+        });
+
+        return res.json({
+            success: true,
+            report
+        });
+
+    } catch (error: any) {
+        logger.error('[CAMPAIGNS] Error getting smart recommendations', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to get campaign recommendations',
+            message: error.message
+        });
+    }
+};
+
+/**
+ * Get smart campaign recommendations for multiple leads (batch)
+ *
+ * @route POST /api/dashboard/leads/campaign-recommendations
+ */
+export const getSmartCampaignRecommendationsBatch = async (req: Request, res: Response) => {
+    try {
+        const orgId = getOrgId(req);
+        const { leadIds, options = {} } = req.body;
+
+        if (!leadIds || !Array.isArray(leadIds) || leadIds.length === 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'leadIds array is required'
+            });
+        }
+
+        logger.info(`[CAMPAIGNS] Getting smart recommendations for ${leadIds.length} leads`);
+
+        const reports = await smartRoutingService.findBestCampaignsForLeads(orgId, leadIds, options);
+
+        return res.json({
+            success: true,
+            reports
+        });
+
+    } catch (error: any) {
+        logger.error('[CAMPAIGNS] Error getting batch smart recommendations', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to get campaign recommendations',
             message: error.message
         });
     }

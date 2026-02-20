@@ -34,6 +34,18 @@ router.post('/campaigns/:id/resolve-stalled', campaignController.resolveStalledC
 router.get('/campaigns/:id/export-leads', campaignController.exportCampaignLeads);
 router.post('/campaigns/:id/archive', campaignController.archiveCampaign);
 
+// Load balancing endpoints
+router.get('/campaigns/load-balancing', campaignController.getLoadBalancingSuggestions);
+router.post('/campaigns/load-balancing/apply', campaignController.applyLoadBalancingSuggestion);
+
+// Predictive monitoring endpoints
+router.get('/campaigns/predictive-risks', campaignController.getPredictiveRisks);
+router.post('/campaigns/predictive-alerts', campaignController.triggerPredictiveAlerts);
+
+// Smart routing endpoints
+router.get('/leads/:leadId/campaign-recommendations', campaignController.getSmartCampaignRecommendations);
+router.post('/leads/campaign-recommendations', campaignController.getSmartCampaignRecommendationsBatch);
+
 // Lead scoring endpoints
 import * as leadScoringController from '../controllers/leadScoringController';
 router.get('/campaigns/:campaignId/top-leads', leadScoringController.getTopLeadsForCampaign);
