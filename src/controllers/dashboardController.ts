@@ -745,3 +745,105 @@ export const checkWarmupProgress = async (req: Request, res: Response, next: Nex
         next(error);
     }
 };
+
+/**
+ * Manually resume a paused mailbox
+ * @route POST /api/infrastructure/mailbox/resume
+ */
+export const resumeMailbox = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const orgId = getOrgId(req);
+        const { mailboxId } = req.body;
+
+        if (!mailboxId) {
+            return res.status(400).json({
+                success: false,
+                error: 'mailboxId is required'
+            });
+        }
+
+        // Verify mailbox belongs to organization
+        const mailbox = await prisma.mailbox.findUnique({
+            where: { id: mailboxId }
+        });
+
+        if (!mailbox || mailbox.organization_id !== orgId) {
+            return res.status(404).json({
+                success: false,
+                error: 'Mailbox not found'
+            });
+        }
+
+        // Resume mailbox (set to healthy, clear paused fields)
+        await prisma.mailbox.update({
+            where: { id: mailboxId },
+            data: {
+                status: 'healthy',
+                paused_reason: null,
+                paused_at: null,
+                paused_by: null,
+                cooldown_until: null
+            }
+        });
+
+        logger.info(`[INFRASTRUCTURE] Mailbox ${mailboxId} manually resumed by user`);
+
+        res.json({
+            success: true,
+            message: 'Mailbox resumed successfully'
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * Manually resume a paused domain
+ * @route POST /api/infrastructure/domain/resume
+ */
+export const resumeDomain = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const orgId = getOrgId(req);
+        const { domainId } = req.body;
+
+        if (!domainId) {
+            return res.status(400).json({
+                success: false,
+                error: 'domainId is required'
+            });
+        }
+
+        // Verify domain belongs to organization
+        const domain = await prisma.domain.findUnique({
+            where: { id: domainId }
+        });
+
+        if (!domain || domain.organization_id !== orgId) {
+            return res.status(404).json({
+                success: false,
+                error: 'Domain not found'
+            });
+        }
+
+        // Resume domain (set to healthy, clear paused fields)
+        await prisma.domain.update({
+            where: { id: domainId },
+            data: {
+                status: 'healthy',
+                paused_reason: null,
+                paused_at: null,
+                paused_by: null,
+                warning_count: 0
+            }
+        });
+
+        logger.info(`[INFRASTRUCTURE] Domain ${domainId} manually resumed by user`);
+
+        res.json({
+            success: true,
+            message: 'Domain resumed successfully'
+        });
+    } catch (error) {
+        next(error);
+    }
+};
