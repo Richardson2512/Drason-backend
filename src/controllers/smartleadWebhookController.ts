@@ -480,6 +480,17 @@ async function handleOpenEvent(orgId: string, event: any) {
                 }
             });
 
+            // Fetch mailbox for context
+            const mailboxEmail = mailboxId ? await prisma.mailbox.findUnique({
+                where: { id: mailboxId.toString() },
+                select: { email: true }
+            }) : null;
+
+            const campaignName = campaignId ? await prisma.campaign.findUnique({
+                where: { id: campaignId.toString() },
+                select: { name: true }
+            }) : null;
+
             // Log to timeline
             await auditLogService.logAction({
                 organizationId: orgId,
@@ -487,7 +498,7 @@ async function handleOpenEvent(orgId: string, event: any) {
                 entityId: lead.id,
                 trigger: 'smartlead_webhook',
                 action: 'email_opened',
-                details: `Lead opened email (+5 engagement score)`
+                details: `Opened email${campaignName ? ` from campaign "${campaignName.name}"` : ''}${mailboxEmail ? ` via ${mailboxEmail.email}` : ''} (+5 engagement score)`
             });
         }
     }
@@ -587,6 +598,17 @@ async function handleClickEvent(orgId: string, event: any) {
                 }
             });
 
+            // Fetch mailbox for context
+            const mailboxEmail = mailboxId ? await prisma.mailbox.findUnique({
+                where: { id: mailboxId.toString() },
+                select: { email: true }
+            }) : null;
+
+            const campaignName = campaignId ? await prisma.campaign.findUnique({
+                where: { id: campaignId.toString() },
+                select: { name: true }
+            }) : null;
+
             // Log to timeline
             await auditLogService.logAction({
                 organizationId: orgId,
@@ -594,7 +616,7 @@ async function handleClickEvent(orgId: string, event: any) {
                 entityId: lead.id,
                 trigger: 'smartlead_webhook',
                 action: 'email_clicked',
-                details: `Lead clicked link in email (+10 engagement score)`
+                details: `Clicked link${campaignName ? ` in campaign "${campaignName.name}"` : ''}${mailboxEmail ? ` via ${mailboxEmail.email}` : ''} (+10 engagement score)`
             });
         }
     }
@@ -695,6 +717,17 @@ async function handleReplyEvent(orgId: string, event: any) {
                 }
             });
 
+            // Fetch mailbox for context
+            const mailboxEmail = mailboxId ? await prisma.mailbox.findUnique({
+                where: { id: mailboxId.toString() },
+                select: { email: true }
+            }) : null;
+
+            const campaignName = campaignId ? await prisma.campaign.findUnique({
+                where: { id: campaignId.toString() },
+                select: { name: true }
+            }) : null;
+
             // Log to timeline
             await auditLogService.logAction({
                 organizationId: orgId,
@@ -702,7 +735,7 @@ async function handleReplyEvent(orgId: string, event: any) {
                 entityId: lead.id,
                 trigger: 'smartlead_webhook',
                 action: 'email_replied',
-                details: `Lead replied to email (+20 engagement score)`
+                details: `Replied to email${campaignName ? ` from campaign "${campaignName.name}"` : ''}${mailboxEmail ? ` sent by ${mailboxEmail.email}` : ''} (+20 engagement score)`
             });
         }
     }
