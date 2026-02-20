@@ -81,9 +81,11 @@ export async function ensurePolarCustomer(orgId: string): Promise<string> {
     }
 
     // Create new Polar customer
+    const customerEmail = org.users[0]?.email || `${org.slug}@superkabe.com`;
+
     try {
         const response = await polarApi.post('/customers', {
-            email: org.users[0]?.email || `${org.slug}@superkabe.com`,
+            email: customerEmail,
             name: org.name,
             metadata: {
                 organization_id: orgId,
@@ -102,7 +104,31 @@ export async function ensurePolarCustomer(orgId: string): Promise<string> {
         logger.info(`[POLAR] Created customer for organization ${orgId}`, { customerId });
 
         return customerId;
-    } catch (error) {
+    } catch (error: any) {
+        // 422 = customer with this email already exists in Polar
+        // Look up the existing customer and link it
+        if (error?.response?.status === 422) {
+            logger.info(`[POLAR] Customer already exists for ${customerEmail}, looking up...`);
+            try {
+                const searchResponse = await polarApi.get('/customers', {
+                    params: { email: customerEmail, limit: 1 }
+                });
+
+                const existingCustomer = searchResponse.data?.items?.[0] || searchResponse.data?.result?.[0];
+                if (existingCustomer?.id) {
+                    await prisma.organization.update({
+                        where: { id: orgId },
+                        data: { polar_customer_id: existingCustomer.id }
+                    });
+
+                    logger.info(`[POLAR] Linked existing customer for ${orgId}`, { customerId: existingCustomer.id });
+                    return existingCustomer.id;
+                }
+            } catch (lookupError) {
+                logger.error('[POLAR] Failed to look up existing customer', lookupError instanceof Error ? lookupError : new Error(String(lookupError)));
+            }
+        }
+
         logger.error('[POLAR] Failed to create customer', error instanceof Error ? error : new Error(String(error)));
         throw new Error('Failed to create Polar customer');
     }
