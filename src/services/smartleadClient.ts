@@ -643,12 +643,13 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     // Update each lead with engagement stats
                     let updatedCount = 0;
                     for (const record of records) {
-                        const email = record.email || record.Email || record.EMAIL;
+                        const rec = record as any; // Type assertion for CSV record
+                        const email = rec.email || rec.Email || rec.EMAIL;
                         if (!email) continue;
 
-                        const openCount = parseInt(record.open_count || record.opens || '0');
-                        const clickCount = parseInt(record.click_count || record.clicks || '0');
-                        const replyCount = parseInt(record.reply_count || record.replies || '0');
+                        const openCount = parseInt(rec.open_count || rec.opens || '0');
+                        const clickCount = parseInt(rec.click_count || rec.clicks || '0');
+                        const replyCount = parseInt(rec.reply_count || rec.replies || '0');
 
                         // Update lead with engagement stats
                         try {
@@ -795,7 +796,8 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                             total_sent_count: true,
                             open_count_lifetime: true,
                             click_count_lifetime: true,
-                            reply_count_lifetime: true
+                            reply_count_lifetime: true,
+                            hard_bounce_count: true
                         }
                     }
                 }
