@@ -667,6 +667,14 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         const clickCount = parseInt(rec.click_count || rec.clicks || '0');
                         const replyCount = parseInt(rec.reply_count || rec.replies || '0');
 
+                        // Extract bounce data
+                        const bounceCount = parseInt(rec.bounce_count || rec.bounces || rec.bounced || '0');
+                        const bouncedStatus = rec.bounced === 'true' || rec.bounced === '1' || rec.bounced === 1;
+
+                        // Extract sender information (which mailbox sent to this lead)
+                        const senderEmail = rec.sender_email || rec.from_email || rec.sent_from || rec.email_account || rec.sender;
+                        const senderAccountId = rec.sender_account_id || rec.email_account_id || rec.from_account_id;
+
                         // Debug: Log first 3 records with details
                         if (updatedCount < 3) {
                             logger.info(`[LeadEngagement] Sample lead ${updatedCount + 1}:`, {
@@ -674,6 +682,11 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                 opens: openCount,
                                 clicks: clickCount,
                                 replies: replyCount,
+                                bounces: bounceCount,
+                                bounced: bouncedStatus,
+                                senderEmail,
+                                senderAccountId,
+                                availableFields: Object.keys(rec),
                                 rawRecord: rec
                             });
                         }
@@ -682,8 +695,22 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                             recordsWithEngagement++;
                         }
 
-                        // Update lead with engagement stats
+                        // Update lead with engagement stats including bounces
                         try {
+                            const leadUpdateData: any = {
+                                emails_opened: openCount,
+                                emails_clicked: clickCount,
+                                emails_replied: replyCount,
+                                last_activity_at: (openCount > 0 || clickCount > 0 || replyCount > 0) ? new Date() : undefined
+                            };
+
+                            // Add bounce data if lead bounced
+                            if (bouncedStatus || bounceCount > 0) {
+                                leadUpdateData.bounced = bouncedStatus;
+                                // Note: We don't have a bounce_count field on Lead model currently
+                                // This will be tracked via hard_bounce events in webhooks
+                            }
+
                             await prisma.lead.update({
                                 where: {
                                     organization_id_email: {
@@ -691,24 +718,25 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                         email
                                     }
                                 },
-                                data: {
-                                    emails_opened: openCount,
-                                    emails_clicked: clickCount,
-                                    emails_replied: replyCount,
-                                    last_activity_at: (openCount > 0 || clickCount > 0 || replyCount > 0) ? new Date() : undefined
-                                }
+                                data: leadUpdateData
                             });
 
                             // Backfill activity for leads with engagement
                             if (openCount > 0 || clickCount > 0 || replyCount > 0) {
                                 // Create audit log summary entry for historical activity
+                                const activityParts = [];
+                                if (openCount > 0) activityParts.push(`${openCount} opened`);
+                                if (clickCount > 0) activityParts.push(`${clickCount} clicked`);
+                                if (replyCount > 0) activityParts.push(`${replyCount} replied`);
+                                if (bounceCount > 0 || bouncedStatus) activityParts.push(`${bounceCount || 1} bounced`);
+
                                 await auditLogService.logAction({
                                     organizationId,
                                     entity: 'lead',
                                     entityId: email,
                                     trigger: 'smartlead_sync',
                                     action: 'activity_backfill',
-                                    details: `Historical activity: ${openCount} opened, ${clickCount} clicked, ${replyCount} replied`
+                                    details: `Historical activity: ${activityParts.join(', ')}${senderEmail ? ` (via ${senderEmail})` : ''}`
                                 });
 
                                 // Calculate engagement score (capped at 100)
@@ -732,6 +760,75 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                         lead_score: finalScore
                                     }
                                 });
+                            }
+
+                            // ── MAILBOX ATTRIBUTION: Update mailbox stats if sender is known ──
+                            // Only update mailbox stats if CSV provides accurate sender information
+                            if (senderEmail || senderAccountId) {
+                                try {
+                                    // Find the mailbox by email or Smartlead account ID
+                                    const mailbox = await prisma.mailbox.findFirst({
+                                        where: {
+                                            organization_id: organizationId,
+                                            OR: [
+                                                { email: senderEmail },
+                                                { smartlead_email_account_id: senderAccountId ? parseInt(senderAccountId) : undefined }
+                                            ].filter(condition => {
+                                                // Remove undefined conditions
+                                                if ('email' in condition) return !!condition.email;
+                                                if ('smartlead_email_account_id' in condition) return condition.smartlead_email_account_id !== undefined;
+                                                return false;
+                                            })
+                                        },
+                                        select: {
+                                            id: true,
+                                            email: true,
+                                            open_count_lifetime: true,
+                                            click_count_lifetime: true,
+                                            reply_count_lifetime: true,
+                                            total_sent_count: true
+                                        }
+                                    });
+
+                                    if (mailbox) {
+                                        // Calculate new stats
+                                        const newOpens = mailbox.open_count_lifetime + openCount;
+                                        const newClicks = mailbox.click_count_lifetime + clickCount;
+                                        const newReplies = mailbox.reply_count_lifetime + replyCount;
+                                        const totalEngagement = newOpens + newClicks + newReplies;
+                                        const engagementRate = mailbox.total_sent_count > 0
+                                            ? (totalEngagement / mailbox.total_sent_count) * 100
+                                            : 0;
+
+                                        await prisma.mailbox.update({
+                                            where: { id: mailbox.id },
+                                            data: {
+                                                open_count_lifetime: newOpens,
+                                                click_count_lifetime: newClicks,
+                                                reply_count_lifetime: newReplies,
+                                                engagement_rate: engagementRate
+                                            }
+                                        });
+
+                                        logger.debug(`[LeadEngagement] Updated mailbox ${mailbox.email} stats`, {
+                                            leadEmail: email,
+                                            opensAdded: openCount,
+                                            clicksAdded: clickCount,
+                                            repliesAdded: replyCount
+                                        });
+                                    } else {
+                                        logger.warn(`[LeadEngagement] Sender mailbox not found for lead ${email}`, {
+                                            senderEmail,
+                                            senderAccountId
+                                        });
+                                    }
+                                } catch (mailboxError: any) {
+                                    logger.error(`[LeadEngagement] Failed to update mailbox stats for lead ${email}`, mailboxError);
+                                }
+                            } else {
+                                // No sender info - can't attribute to specific mailbox
+                                // This is expected if CSV doesn't include sender fields
+                                logger.debug(`[LeadEngagement] No sender info for lead ${email} - skipping mailbox attribution`);
                             }
 
                             updatedCount++;

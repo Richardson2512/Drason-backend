@@ -34,11 +34,6 @@ router.post('/campaigns/pause-all', campaignController.pauseAllCampaigns);
 import * as leadScoringController from '../controllers/leadScoringController';
 router.get('/campaigns/:campaignId/top-leads', leadScoringController.getTopLeadsForCampaign);
 
-// Mailbox enrichment endpoints
-import * as mailboxEnrichmentController from '../controllers/mailboxEnrichmentController';
-router.post('/mailboxes/backfill-stats', mailboxEnrichmentController.backfillMailboxStats);
-router.post('/mailboxes/:mailboxId/backfill-stats', mailboxEnrichmentController.backfillSingleMailbox);
-
 // Notification endpoints
 import * as notificationController from '../controllers/notificationController';
 router.get('/notifications', notificationController.getNotifications);
