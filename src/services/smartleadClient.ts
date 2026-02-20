@@ -18,6 +18,7 @@ import * as notificationService from './notificationService';
 import { EventType } from '../types';
 import { logger } from './observabilityService';
 import { smartleadBreaker } from '../utils/circuitBreaker';
+import { calculateEngagementScore, calculateFinalScore } from './leadScoringService';
 import { syncProgressService } from './syncProgressService';
 import { TIER_LIMITS } from './polarClient';
 import { decrypt } from '../utils/encryption';
@@ -872,50 +873,66 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
 
                                 // Backfill activity for leads with engagement
                                 // Use lead UUID (not email) as entityId so frontend can query correctly
+                                // DEDUP: Only create backfill entries if none exist yet for this lead
                                 if (openCount > 0 || clickCount > 0 || replyCount > 0) {
                                     const leadUuid = updatedLead.id;
 
-                                    // Create per-event audit log entries matching webhook format
-                                    if (openCount > 0) {
-                                        await auditLogService.logAction({
-                                            organizationId,
+                                    // Check if backfill entries already exist for this lead
+                                    const existingBackfill = await prisma.auditLog.findFirst({
+                                        where: {
+                                            organization_id: organizationId,
                                             entity: 'lead',
-                                            entityId: leadUuid,
+                                            entity_id: leadUuid,
                                             trigger: 'smartlead_sync',
-                                            action: 'email_opened',
-                                            details: `Email opened ${openCount} time(s) (backfilled from sync)${senderEmail ? ` via ${senderEmail}` : ''}`
-                                        });
-                                    }
-                                    if (clickCount > 0) {
-                                        await auditLogService.logAction({
-                                            organizationId,
-                                            entity: 'lead',
-                                            entityId: leadUuid,
-                                            trigger: 'smartlead_sync',
-                                            action: 'email_clicked',
-                                            details: `Email link clicked ${clickCount} time(s) (backfilled from sync)${senderEmail ? ` via ${senderEmail}` : ''}`
-                                        });
-                                    }
-                                    if (replyCount > 0) {
-                                        await auditLogService.logAction({
-                                            organizationId,
-                                            entity: 'lead',
-                                            entityId: leadUuid,
-                                            trigger: 'smartlead_sync',
-                                            action: 'email_replied',
-                                            details: `Email replied ${replyCount} time(s) (backfilled from sync)${senderEmail ? ` via ${senderEmail}` : ''}`
-                                        });
+                                            action: { in: ['email_opened', 'email_clicked', 'email_replied'] }
+                                        },
+                                        select: { id: true }
+                                    });
+
+                                    // Only create backfill entries on first sync (no existing entries)
+                                    if (!existingBackfill) {
+                                        if (openCount > 0) {
+                                            await auditLogService.logAction({
+                                                organizationId,
+                                                entity: 'lead',
+                                                entityId: leadUuid,
+                                                trigger: 'smartlead_sync',
+                                                action: 'email_opened',
+                                                details: `Email opened ${openCount} time(s) (backfilled from sync)${senderEmail ? ` via ${senderEmail}` : ''}`
+                                            });
+                                        }
+                                        if (clickCount > 0) {
+                                            await auditLogService.logAction({
+                                                organizationId,
+                                                entity: 'lead',
+                                                entityId: leadUuid,
+                                                trigger: 'smartlead_sync',
+                                                action: 'email_clicked',
+                                                details: `Email link clicked ${clickCount} time(s) (backfilled from sync)${senderEmail ? ` via ${senderEmail}` : ''}`
+                                            });
+                                        }
+                                        if (replyCount > 0) {
+                                            await auditLogService.logAction({
+                                                organizationId,
+                                                entity: 'lead',
+                                                entityId: leadUuid,
+                                                trigger: 'smartlead_sync',
+                                                action: 'email_replied',
+                                                details: `Email replied ${replyCount} time(s) (backfilled from sync)${senderEmail ? ` via ${senderEmail}` : ''}`
+                                            });
+                                        }
                                     }
 
-                                    // Calculate engagement score (capped at 100)
-                                    // Formula: Base 50 + engagement points, capped at 100
-                                    let engagementScore = 50; // Base score
-                                    if (replyCount > 0) engagementScore += Math.min(replyCount * 15, 30); // Max +30 from replies
-                                    if (clickCount > 0) engagementScore += Math.min(clickCount * 5, 20); // Max +20 from clicks
-                                    if (openCount > 0) engagementScore += Math.min(openCount * 2, 15); // Max +15 from opens
-
-                                    // Clamp to 0-100 range
-                                    const finalScore = Math.max(0, Math.min(100, engagementScore));
+                                    // Calculate engagement score using canonical formula
+                                    // (same as getLeadScoreBreakdown so they always match)
+                                    const engagement = {
+                                        opens: openCount,
+                                        clicks: clickCount,
+                                        replies: replyCount,
+                                        bounces: 0
+                                    };
+                                    const breakdown = calculateEngagementScore(engagement);
+                                    const finalScore = calculateFinalScore(breakdown);
 
                                     await prisma.lead.update({
                                         where: {
