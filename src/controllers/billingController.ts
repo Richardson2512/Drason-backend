@@ -85,10 +85,27 @@ export const createCheckout = async (req: Request, res: Response): Promise<Respo
             return res.status(404).json({ error: 'Organization not found' });
         }
 
-        // Only allow upgrade if trialing, expired, or free
-        // Block if already have active paid subscription
+        // Allow upgrades for active subscriptions, but block downgrades and lateral moves
         if (org.subscription_status === 'active') {
-            return res.status(400).json({ error: 'Already have an active subscription. Cancel first to change tiers.' });
+            const tierOrder: Record<string, number> = {
+                'trial': 0,
+                'starter': 1,
+                'growth': 2,
+                'scale': 3,
+                'enterprise': 4
+            };
+
+            const currentTierRank = tierOrder[org.subscription_tier || 'trial'] || 0;
+            const requestedTierRank = tierOrder[tier] || 0;
+
+            // Block downgrades and lateral moves
+            if (requestedTierRank <= currentTierRank) {
+                return res.status(400).json({
+                    error: `Cannot downgrade or switch to same tier. Current tier: ${org.subscription_tier}. To change to ${tier}, please cancel your subscription first.`
+                });
+            }
+
+            // Allow upgrade - proceed to create checkout
         }
 
         // Create checkout session
