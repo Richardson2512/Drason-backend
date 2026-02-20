@@ -1670,6 +1670,80 @@ export const addMailboxToSmartleadCampaign = async (
 };
 
 /**
+ * Remove a lead from a Smartlead campaign.
+ * Called during inter-campaign rerouting.
+ */
+export const removeLeadFromSmartleadCampaign = async (
+    organizationId: string,
+    campaignId: string,
+    leadEmail: string
+): Promise<boolean> => {
+    const apiKey = await getApiKey(organizationId);
+    if (!apiKey) {
+        throw new Error('Smartlead API key not configured');
+    }
+
+    try {
+        await smartleadBreaker.call(() =>
+            axios.post(
+                `${SMARTLEAD_API_BASE}/campaigns/${campaignId}/leads/delete`, // Smartlead uses POST /delete usually for bulk, or a specific delete endpoint
+                {
+                    lead_list: [leadEmail]
+                },
+                { params: { api_key: apiKey } }
+            )
+        );
+
+        return true;
+    } catch (error: any) {
+        logger.error(`[SMARTLEAD] Failed to remove lead ${leadEmail} from campaign ${campaignId}`, error, {
+            organizationId,
+            response: error.response?.data
+        });
+        return false;
+    }
+};
+
+/**
+ * Add a lead to a Smartlead campaign (used for rerouting).
+ */
+export const addLeadToSmartleadCampaign = async (
+    organizationId: string,
+    campaignId: string,
+    leadData: { email: string; first_name?: string; last_name?: string; company_name?: string }
+): Promise<boolean> => {
+    const apiKey = await getApiKey(organizationId);
+    if (!apiKey) {
+        throw new Error('Smartlead API key not configured');
+    }
+
+    try {
+        await smartleadBreaker.call(() =>
+            axios.post(
+                `${SMARTLEAD_API_BASE}/campaigns/${campaignId}/leads`,
+                {
+                    lead_list: [leadData],
+                    settings: {
+                        ignore_global_block_list: false,
+                        ignore_unsubscribe_list: false,
+                        ignore_duplicate_leads_in_other_campaign: true
+                    }
+                },
+                { params: { api_key: apiKey } }
+            )
+        );
+
+        return true;
+    } catch (error: any) {
+        logger.error(`[SMARTLEAD] Failed to add lead ${leadData.email} to campaign ${campaignId}`, error, {
+            organizationId,
+            response: error.response?.data
+        });
+        return false;
+    }
+};
+
+/**
  * Remove all mailboxes from a domain from their assigned Smartlead campaigns.
  * Called when an entire domain is paused.
  */
@@ -1882,5 +1956,26 @@ export const getEmailAccountDetails = async (
             response: error.response?.data
         });
         throw error;
+    }
+};
+
+/**
+ * Get active campaigns from Smartlead
+ */
+export const getActiveCampaigns = async (organizationId: string): Promise<any[]> => {
+    const apiKey = await getApiKey(organizationId);
+    if (!apiKey) return [];
+
+    try {
+        const response = await smartleadBreaker.call(() =>
+            axios.get(`${SMARTLEAD_API_BASE}/campaigns`, { params: { api_key: apiKey } })
+        );
+        return response.data;
+    } catch (error: any) {
+        logger.error('[SMARTLEAD] Failed to fetch active campaigns', error, {
+            organizationId,
+            response: error.response?.data
+        });
+        return [];
     }
 };
