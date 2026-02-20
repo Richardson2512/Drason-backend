@@ -427,3 +427,159 @@ export const resolveStalledCampaign = async (req: Request, res: Response) => {
         });
     }
 };
+
+/**
+ * Export leads from a campaign as CSV
+ *
+ * @route GET /api/campaigns/:id/export-leads
+ */
+export const exportCampaignLeads = async (req: Request, res: Response) => {
+    try {
+        const orgId = getOrgId(req);
+        const campaignId = req.params.id as string;
+
+        // Get campaign
+        const campaign = await prisma.campaign.findUnique({
+            where: { id: campaignId, organization_id: orgId },
+            select: { name: true }
+        });
+
+        if (!campaign) {
+            return res.status(404).json({ success: false, error: 'Campaign not found' });
+        }
+
+        // Get all leads for this campaign
+        const leads = await prisma.lead.findMany({
+            where: {
+                organization_id: orgId,
+                assigned_campaign_id: campaignId
+            },
+            select: {
+                email: true,
+                persona: true,
+                lead_score: true,
+                status: true,
+                emails_opened: true,
+                emails_clicked: true,
+                emails_replied: true,
+                bounced: true,
+                created_at: true,
+                last_activity_at: true
+            },
+            orderBy: {
+                created_at: 'desc'
+            }
+        });
+
+        if (leads.length === 0) {
+            return res.status(404).json({ success: false, error: 'No leads found in this campaign' });
+        }
+
+        // Generate CSV
+        const headers = ['Email', 'Persona', 'Score', 'Status', 'Opens', 'Clicks', 'Replies', 'Bounced', 'Created', 'Last Activity'];
+        const rows = leads.map(lead => [
+            lead.email,
+            lead.persona || '',
+            lead.lead_score.toString(),
+            lead.status,
+            lead.emails_opened?.toString() || '0',
+            lead.emails_clicked?.toString() || '0',
+            lead.emails_replied?.toString() || '0',
+            lead.bounced ? 'Yes' : 'No',
+            lead.created_at.toISOString(),
+            lead.last_activity_at?.toISOString() || 'Never'
+        ]);
+
+        const csv = [
+            headers.join(','),
+            ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
+        ].join('\n');
+
+        // Set headers for file download
+        const filename = `${campaign.name.replace(/[^a-z0-9]/gi, '_')}_leads_${new Date().toISOString().split('T')[0]}.csv`;
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+        await logAction({
+            organizationId: orgId,
+            entity: 'campaign',
+            entityId: campaignId,
+            trigger: 'user_action',
+            action: 'export_leads',
+            details: `Exported ${leads.length} leads to CSV`
+        });
+
+        return res.send(csv);
+
+    } catch (error: any) {
+        logger.error('[CAMPAIGNS] Error exporting leads', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to export leads',
+            message: error.message
+        });
+    }
+};
+
+/**
+ * Archive a campaign
+ *
+ * @route POST /api/campaigns/:id/archive
+ */
+export const archiveCampaign = async (req: Request, res: Response) => {
+    try {
+        const orgId = getOrgId(req);
+        const campaignId = req.params.id as string;
+
+        // Get campaign
+        const campaign = await prisma.campaign.findUnique({
+            where: { id: campaignId, organization_id: orgId },
+            select: { name: true, status: true }
+        });
+
+        if (!campaign) {
+            return res.status(404).json({ success: false, error: 'Campaign not found' });
+        }
+
+        // Update campaign status to archived
+        await prisma.campaign.update({
+            where: { id: campaignId },
+            data: {
+                status: 'paused', // Keep as paused in Smartlead
+                paused_reason: 'Archived by user',
+                paused_at: new Date(),
+                paused_by: 'user'
+            }
+        });
+
+        // Optionally pause in Smartlead too
+        try {
+            await pauseSmartleadCampaign(orgId, campaignId);
+        } catch (smartleadError) {
+            logger.warn(`[CAMPAIGNS] Failed to pause archived campaign ${campaignId} in Smartlead`, smartleadError as Error);
+            // Don't block the archive if Smartlead fails
+        }
+
+        await logAction({
+            organizationId: orgId,
+            entity: 'campaign',
+            entityId: campaignId,
+            trigger: 'user_action',
+            action: 'archive_campaign',
+            details: `Campaign "${campaign.name}" archived by user`
+        });
+
+        return res.json({
+            success: true,
+            message: `Campaign "${campaign.name}" has been archived`
+        });
+
+    } catch (error: any) {
+        logger.error('[CAMPAIGNS] Error archiving campaign', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to archive campaign',
+            message: error.message
+        });
+    }
+};

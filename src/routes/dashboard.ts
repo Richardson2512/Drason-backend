@@ -31,6 +31,8 @@ router.post('/campaign/resume', validateBody(campaignActionSchema), dashboardCon
 router.post('/campaigns/pause-all', campaignController.pauseAllCampaigns);
 router.get('/campaigns/:id/stalled-context', campaignController.getStalledCampaignContext);
 router.post('/campaigns/:id/resolve-stalled', campaignController.resolveStalledCampaign);
+router.get('/campaigns/:id/export-leads', campaignController.exportCampaignLeads);
+router.post('/campaigns/:id/archive', campaignController.archiveCampaign);
 
 // Lead scoring endpoints
 import * as leadScoringController from '../controllers/leadScoringController';

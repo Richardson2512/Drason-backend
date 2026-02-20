@@ -825,6 +825,10 @@ export async function transitionPhase(
                     entityId,
                     campaignCount: campaigns.length
                 });
+
+                // ── AUTO-RESTART: Check if any campaigns were waiting for mailbox recovery ──
+                await checkAndRestartWaitingCampaigns(organizationId, campaigns);
+
             } catch (smartleadError: any) {
                 // Smartlead re-add failure doesn't block the recovery — mailbox is already healthy in Drason
                 logger.error(`[HEALING] Failed to re-add mailbox ${entityId} to Smartlead campaigns`, smartleadError, {
@@ -1009,4 +1013,100 @@ export async function getOrgSentToday(organizationId: string): Promise<number> {
     });
 
     return result._sum.window_sent_count ?? 0;
+}
+
+/**
+ * Check and auto-restart campaigns that were waiting for mailbox recovery
+ * Called when a mailbox graduates to healthy status
+ */
+async function checkAndRestartWaitingCampaigns(
+    organizationId: string,
+    recoveredCampaigns: Array<{ id: string; name?: string }>
+): Promise<void> {
+    try {
+        // Find campaigns that are paused and waiting for recovery
+        for (const campaign of recoveredCampaigns) {
+            const campaignData = await prisma.campaign.findUnique({
+                where: { id: campaign.id },
+                include: {
+                    mailboxes: {
+                        where: {
+                            status: { in: ['healthy', 'active'] }
+                        }
+                    }
+                }
+            });
+
+            if (!campaignData) continue;
+
+            // Check if campaign is paused due to infrastructure health
+            const isPausedForHealth = campaignData.status === 'paused' &&
+                (campaignData.paused_reason?.includes('Infrastructure health') ||
+                    campaignData.paused_reason?.includes('No healthy mailboxes') ||
+                    campaignData.paused_reason?.includes('mailbox'));
+
+            // If campaign has healthy mailboxes now and was paused for health, restart it
+            if (isPausedForHealth && campaignData.mailboxes.length > 0) {
+                logger.info(`[HEALING-AUTORESTART] Campaign ${campaign.id} now has ${campaignData.mailboxes.length} healthy mailboxes, auto-restarting`, {
+                    organizationId,
+                    campaignId: campaign.id,
+                    healthyMailboxCount: campaignData.mailboxes.length
+                });
+
+                // Resume campaign in Smartlead
+                try {
+                    await smartleadClient.resumeSmartleadCampaign(organizationId, campaign.id);
+
+                    // Update campaign status in database
+                    await prisma.campaign.update({
+                        where: { id: campaign.id },
+                        data: {
+                            status: 'active',
+                            paused_reason: null,
+                            paused_at: null
+                        }
+                    });
+
+                    await auditLogService.logAction({
+                        organizationId,
+                        entity: 'campaign',
+                        entityId: campaign.id,
+                        trigger: 'infrastructure_recovery',
+                        action: 'auto_restarted',
+                        details: `Campaign auto-restarted after mailbox recovery. ${campaignData.mailboxes.length} healthy mailboxes available.`
+                    });
+
+                    // Create notification for user
+                    await notificationService.createNotification(organizationId, {
+                        type: 'SUCCESS',
+                        title: 'Campaign Auto-Restarted',
+                        message: `Campaign "${campaignData.name || campaign.id}" has been automatically restarted after mailbox recovery.`
+                    });
+
+                    logger.info(`[HEALING-AUTORESTART] Successfully restarted campaign ${campaign.id}`, {
+                        organizationId,
+                        campaignId: campaign.id
+                    });
+
+                } catch (restartError: any) {
+                    logger.error(`[HEALING-AUTORESTART] Failed to restart campaign ${campaign.id}`, restartError, {
+                        organizationId,
+                        campaignId: campaign.id
+                    });
+
+                    // Don't throw - log and continue with other campaigns
+                    await notificationService.createNotification(organizationId, {
+                        type: 'WARNING',
+                        title: 'Auto-Restart Failed',
+                        message: `Failed to auto-restart campaign "${campaignData.name || campaign.id}". Please restart manually.`
+                    });
+                }
+            }
+        }
+    } catch (error: any) {
+        logger.error('[HEALING-AUTORESTART] Error checking for waiting campaigns', error, {
+            organizationId
+        });
+        // Don't throw - this is a background task
+    }
 }
