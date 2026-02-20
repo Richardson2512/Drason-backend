@@ -4,13 +4,11 @@
  * Calculates dynamic lead quality scores based on engagement data from Smartlead.
  * Scores range from 0-100 and help identify top-performing leads in campaigns.
  *
- * Scoring Formula:
- * - Base: 50 (neutral)
- * - Opens: +2 each (max +15)
- * - Clicks: +5 each (max +20)
- * - Replies: +15 each (max +30)
- * - Bounces: -20 each
- * - Recency multiplier (0.5x - 1.0x based on last engagement)
+ * Additive Scoring Formula (all components sum to final score):
+ * - Engagement (max 50): Base 20 + Opens(max +10) + Clicks(max +10) + Replies(max +15) - Bounces
+ * - Recency   (max 30): Based on days since last engagement
+ * - Frequency  (max 20): Based on total interaction count
+ * - Score = Engagement + Recency + Frequency (capped 0-100)
  */
 
 import { prisma } from '../index';
@@ -30,70 +28,61 @@ interface LeadScore {
     email: string;
     score: number;
     breakdown: {
-        base: number;
-        opensScore: number;
-        clicksScore: number;
-        repliesScore: number;
-        bouncePenalty: number;
-        recencyMultiplier: number;
+        engagement: number;   // max 50
+        recency: number;      // max 30
+        frequency: number;    // max 20
     };
 }
 
 /**
- * Calculate engagement score for a lead based on their interaction history.
+ * Calculate additive score components for a lead.
+ * Returns { engagement, recency, frequency } that SUM to the final score.
  */
 export function calculateEngagementScore(engagement: EngagementData): LeadScore['breakdown'] {
-    const base = 50;
+    // ── Engagement component (max 50) ──
+    const base = 20;
+    const opensScore = Math.min(engagement.opens * 2, 10);
+    const clicksScore = Math.min(engagement.clicks * 4, 10);
+    const repliesScore = Math.min(engagement.replies * 5, 15);
+    const bouncePenalty = engagement.bounces * -10;
+    const engagementTotal = Math.max(0, Math.min(50, base + opensScore + clicksScore + repliesScore + bouncePenalty));
 
-    // Opens: +2 each, capped at +15
-    const opensScore = Math.min(engagement.opens * 2, 15);
-
-    // Clicks: +5 each, capped at +20
-    const clicksScore = Math.min(engagement.clicks * 5, 20);
-
-    // Replies: +15 each, capped at +30
-    const repliesScore = Math.min(engagement.replies * 15, 30);
-
-    // Bounces: -20 each (heavily penalize)
-    const bouncePenalty = engagement.bounces * -20;
-
-    // Recency multiplier
-    let recencyMultiplier = 0.5; // Default: old engagement
-
+    // ── Recency component (max 30) ──
+    let recency = 5; // Default: no engagement data or very old
     if (engagement.lastEngagementDate) {
         const daysSinceEngagement = (Date.now() - engagement.lastEngagementDate.getTime()) / (1000 * 60 * 60 * 24);
-
-        if (daysSinceEngagement <= 30) {
-            recencyMultiplier = 1.0; // Recent engagement
+        if (daysSinceEngagement <= 7) {
+            recency = 30;
+        } else if (daysSinceEngagement <= 30) {
+            recency = 22;
         } else if (daysSinceEngagement <= 90) {
-            recencyMultiplier = 0.7; // Medium recency
+            recency = 12;
         }
-        // else: 0.5 (old engagement)
+        // else: 5 (old engagement)
     }
 
-    return {
-        base,
-        opensScore,
-        clicksScore,
-        repliesScore,
-        bouncePenalty,
-        recencyMultiplier
-    };
+    // ── Frequency component (max 20) ──
+    const totalInteractions = engagement.opens + engagement.clicks + engagement.replies;
+    let frequency = 0;
+    if (totalInteractions >= 11) {
+        frequency = 20;
+    } else if (totalInteractions >= 6) {
+        frequency = 15;
+    } else if (totalInteractions >= 3) {
+        frequency = 10;
+    } else if (totalInteractions >= 1) {
+        frequency = 6;
+    }
+
+    return { engagement: engagementTotal, recency, frequency };
 }
 
 /**
  * Calculate final score from breakdown components.
+ * Score = engagement + recency + frequency (capped 0-100).
  */
 export function calculateFinalScore(breakdown: LeadScore['breakdown']): number {
-    const rawScore = (
-        breakdown.base +
-        breakdown.opensScore +
-        breakdown.clicksScore +
-        breakdown.repliesScore +
-        breakdown.bouncePenalty
-    ) * breakdown.recencyMultiplier;
-
-    // Clamp to 0-100 range
+    const rawScore = breakdown.engagement + breakdown.recency + breakdown.frequency;
     return Math.max(0, Math.min(100, Math.round(rawScore)));
 }
 
@@ -363,32 +352,13 @@ export async function getLeadScoreBreakdown(
     const rawBreakdown = calculateEngagementScore(engagement);
     const score = calculateFinalScore(rawBreakdown);
 
-    // Transform to frontend-expected structure
-    // Engagement: Sum of all positive engagement scores (before recency multiplier)
-    const engagementScore = rawBreakdown.opensScore + rawBreakdown.clicksScore + rawBreakdown.repliesScore;
-
-    // Recency: Convert multiplier to a 0-30 score (max expected by frontend)
-    // 1.0 multiplier = 30 points, 0.7 = 21 points, 0.5 = 15 points
-    const recencyScore = Math.round(rawBreakdown.recencyMultiplier * 30);
-
-    // Frequency: Based on total interaction count
-    // Scale: 1-5 interactions = 5-10 points, 6-10 = 11-15 points, 11+ = 16-20 points
-    const totalInteractions = engagement.opens + engagement.clicks + engagement.replies;
-    let frequencyScore = 0;
-    if (totalInteractions >= 11) {
-        frequencyScore = Math.min(20, 16 + Math.floor((totalInteractions - 11) / 2));
-    } else if (totalInteractions >= 6) {
-        frequencyScore = 11 + (totalInteractions - 6);
-    } else if (totalInteractions >= 1) {
-        frequencyScore = 5 + (totalInteractions - 1);
-    }
-
+    // Breakdown components now directly sum to the score — no transformation needed
     return {
         score,
         breakdown: {
-            engagement: engagementScore,
-            recency: recencyScore,
-            frequency: frequencyScore
+            engagement: rawBreakdown.engagement,
+            recency: rawBreakdown.recency,
+            frequency: rawBreakdown.frequency
         },
         factors: {
             totalOpens: engagement.opens,
