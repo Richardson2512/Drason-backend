@@ -164,7 +164,7 @@ model Campaign {
   updated_at      DateTime @updatedAt
 
   organization Organization  @relation(fields: [organization_id], references: [id], onDelete: Cascade)
-  mailboxes    Mailbox[]     @relation("CampaignMailboxes")
+  mailboxes    Mailbox[]     @relation("CampaignToMailbox")
   routingRules RoutingRule[]
 
   @@index([organization_id, status])
@@ -227,7 +227,7 @@ model Mailbox {
   domain          Domain          @relation(fields: [domain_id], references: [id])
   organization    Organization    @relation(fields: [organization_id], references: [id], onDelete: Cascade)
   metrics         MailboxMetrics?
-  campaigns       Campaign[]      @relation("CampaignMailboxes")
+  campaigns       Campaign[]      @relation("CampaignToMailbox")
 
   @@index([organization_id, status])
   @@index([organization_id, domain_id])
