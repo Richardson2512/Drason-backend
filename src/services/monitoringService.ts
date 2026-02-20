@@ -615,6 +615,7 @@ const checkDomainHealth = async (domainId: string): Promise<void> => {
             data: {
                 status: 'paused',
                 paused_reason: reason,
+                paused_by: 'system',
                 warning_count: { increment: 1 },
                 last_pause_at: new Date(),
                 cooldown_until: cooldownUntil,
@@ -753,7 +754,12 @@ const pauseCampaign = async (campaignId: string, organizationId: string, reason:
 
     await prisma.campaign.update({
         where: { id: campaignId },
-        data: { status: 'paused' },
+        data: {
+            status: 'paused',
+            paused_reason: reason,
+            paused_at: new Date(),
+            paused_by: 'system'
+        },
     });
 
     await prisma.stateTransition.create({

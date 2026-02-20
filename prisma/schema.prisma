@@ -140,6 +140,7 @@ model Campaign {
   status               String       @default("active")
   paused_reason        String?
   paused_at            DateTime?
+  paused_by            String?      @default("system")
   bounce_rate          Float        @default(0)
   warning_count        Int          @default(0)
   total_sent           Int          @default(0)
@@ -244,6 +245,7 @@ model Domain {
   aggregated_bounce_rate_trend Float        @default(0.0)
   paused_reason                String?
   last_pause_at                DateTime?
+  paused_by                    String?      @default("system")
   cooldown_until               DateTime?
   consecutive_pauses           Int          @default(0)
   spf_valid                    Boolean?                        // SPF record check result

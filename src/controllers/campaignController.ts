@@ -69,7 +69,8 @@ export const pauseAllCampaigns = async (req: Request, res: Response) => {
                 data: {
                     status: 'paused',
                     paused_reason: 'Infrastructure health enforcement',
-                    paused_at: new Date()
+                    paused_at: new Date(),
+                    paused_by: 'system'
                 }
             });
         }

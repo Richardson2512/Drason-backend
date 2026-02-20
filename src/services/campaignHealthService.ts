@@ -136,7 +136,8 @@ export async function pauseCampaign(
         data: {
             status: 'paused',
             paused_reason: reason,
-            paused_at: new Date()
+            paused_at: new Date(),
+            paused_by: 'system'
         }
     });
 
