@@ -318,28 +318,49 @@ async function updateDomainHealth(
     if (!domain) return;
 
     const currentState = domain.status as DomainState;
-    const totalMailboxes = await prisma.mailbox.count({ where: { domain_id: domainId } });
-    const atRiskRatio = totalMailboxes > 0 ? domainMetrics.atRiskCount / totalMailboxes : 0;
+
+    // Count mailboxes by actual status (paused/warning = unhealthy)
+    const allMailboxes = await prisma.mailbox.findMany({
+        where: { domain_id: domainId },
+        select: { status: true }
+    });
+    const totalMailboxes = allMailboxes.length;
+    const unhealthyByStatus = allMailboxes.filter(m =>
+        m.status === 'paused' || m.status === 'warning' || m.status === 'quarantine'
+    ).length;
+
+    // Use the higher of: status-based unhealthy count vs risk-score-based at-risk count
+    const unhealthyCount = Math.max(unhealthyByStatus, domainMetrics.atRiskCount);
+    const unhealthyRatio = totalMailboxes > 0 ? unhealthyCount / totalMailboxes : 0;
 
     let targetState: DomainState | null = null;
     let reason = '';
 
     // Determine target state based on aggregate metrics (RATIO-BASED)
     if (currentState === DomainState.HEALTHY) {
-        if (atRiskRatio >= MONITORING_THRESHOLDS.DOMAIN_PAUSE_RATIO) {
+        if (unhealthyRatio >= MONITORING_THRESHOLDS.DOMAIN_PAUSE_RATIO) {
             targetState = DomainState.PAUSED;
-            reason = `${(atRiskRatio * 100).toFixed(0)}% mailboxes at risk (${domainMetrics.atRiskCount}/${totalMailboxes}) - exceeds ${(MONITORING_THRESHOLDS.DOMAIN_PAUSE_RATIO * 100).toFixed(0)}% threshold`;
-        } else if (atRiskRatio >= MONITORING_THRESHOLDS.DOMAIN_WARNING_RATIO || domainMetrics.averageRiskScore >= MONITORING_THRESHOLDS.RISK_SCORE_WARNING) {
+            reason = `${(unhealthyRatio * 100).toFixed(0)}% mailboxes unhealthy (${unhealthyCount}/${totalMailboxes}) - exceeds ${(MONITORING_THRESHOLDS.DOMAIN_PAUSE_RATIO * 100).toFixed(0)}% threshold`;
+        } else if (unhealthyRatio >= MONITORING_THRESHOLDS.DOMAIN_WARNING_RATIO || domainMetrics.averageRiskScore >= MONITORING_THRESHOLDS.RISK_SCORE_WARNING) {
             targetState = DomainState.WARNING;
-            reason = `Domain at ${(atRiskRatio * 100).toFixed(0)}% risk ratio or avg score ${domainMetrics.averageRiskScore.toFixed(0)} exceeds warning`;
+            reason = `Domain at ${(unhealthyRatio * 100).toFixed(0)}% unhealthy ratio or avg risk score ${domainMetrics.averageRiskScore.toFixed(0)} exceeds warning`;
         }
     } else if (currentState === DomainState.WARNING) {
-        if (atRiskRatio >= MONITORING_THRESHOLDS.DOMAIN_PAUSE_RATIO) {
+        if (unhealthyRatio >= MONITORING_THRESHOLDS.DOMAIN_PAUSE_RATIO) {
             targetState = DomainState.PAUSED;
-            reason = `${(atRiskRatio * 100).toFixed(0)}% mailboxes at risk - escalating to pause`;
-        } else if (atRiskRatio < MONITORING_THRESHOLDS.DOMAIN_WARNING_RATIO * 0.5 && domainMetrics.averageRiskScore < MONITORING_THRESHOLDS.RISK_SCORE_WARNING * 0.5) {
+            reason = `${(unhealthyRatio * 100).toFixed(0)}% mailboxes unhealthy - escalating to pause`;
+        } else if (unhealthyRatio < MONITORING_THRESHOLDS.DOMAIN_WARNING_RATIO * 0.5 && domainMetrics.averageRiskScore < MONITORING_THRESHOLDS.RISK_SCORE_WARNING * 0.5) {
             targetState = DomainState.HEALTHY;
             reason = 'Domain risk normalized';
+        }
+    } else if (currentState === DomainState.PAUSED) {
+        // Allow recovery from PAUSED if mailboxes have healed
+        if (unhealthyRatio < MONITORING_THRESHOLDS.DOMAIN_WARNING_RATIO * 0.5 && domainMetrics.averageRiskScore < MONITORING_THRESHOLDS.RISK_SCORE_WARNING * 0.5) {
+            targetState = DomainState.HEALTHY;
+            reason = 'Domain risk normalized - all mailboxes recovered';
+        } else if (unhealthyRatio < MONITORING_THRESHOLDS.DOMAIN_PAUSE_RATIO) {
+            targetState = DomainState.WARNING;
+            reason = `Unhealthy ratio dropped to ${(unhealthyRatio * 100).toFixed(0)}% - below pause threshold`;
         }
     }
 
