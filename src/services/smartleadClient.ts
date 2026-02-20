@@ -631,6 +631,12 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
 
                     const csvData = csvRes.data;
 
+                    // Debug: Log first 500 characters of CSV to see structure
+                    logger.info(`[LeadEngagement] CSV sample for campaign ${campaignId}:`, {
+                        sample: csvData.substring(0, 500),
+                        length: csvData.length
+                    });
+
                     // Parse CSV data
                     const records = parse(csvData, {
                         columns: true, // Use first row as column names
@@ -640,8 +646,18 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
 
                     logger.info(`[LeadEngagement] Parsed ${records.length} leads from CSV for campaign ${campaignId}`);
 
+                    // Debug: Log first record to see column structure
+                    if (records.length > 0) {
+                        const firstRecord = records[0] as any;
+                        logger.info(`[LeadEngagement] CSV columns for campaign ${campaignId}:`, {
+                            columns: Object.keys(firstRecord),
+                            sampleRecord: firstRecord
+                        });
+                    }
+
                     // Update each lead with engagement stats
                     let updatedCount = 0;
+                    let recordsWithEngagement = 0;
                     for (const record of records) {
                         const rec = record as any; // Type assertion for CSV record
                         const email = rec.email || rec.Email || rec.EMAIL;
@@ -650,6 +666,21 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         const openCount = parseInt(rec.open_count || rec.opens || '0');
                         const clickCount = parseInt(rec.click_count || rec.clicks || '0');
                         const replyCount = parseInt(rec.reply_count || rec.replies || '0');
+
+                        // Debug: Log first 3 records with details
+                        if (updatedCount < 3) {
+                            logger.info(`[LeadEngagement] Sample lead ${updatedCount + 1}:`, {
+                                email,
+                                opens: openCount,
+                                clicks: clickCount,
+                                replies: replyCount,
+                                rawRecord: rec
+                            });
+                        }
+
+                        if (openCount > 0 || clickCount > 0 || replyCount > 0) {
+                            recordsWithEngagement++;
+                        }
 
                         // Update lead with engagement stats
                         try {
@@ -710,7 +741,11 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         }
                     }
 
-                    logger.info(`[LeadEngagement] Updated ${updatedCount} leads with engagement stats for campaign ${campaignId}`);
+                    logger.info(`[LeadEngagement] Updated ${updatedCount} leads with engagement stats for campaign ${campaignId}`, {
+                        totalRecords: records.length,
+                        recordsWithEngagement,
+                        recordsWithoutEngagement: records.length - recordsWithEngagement
+                    });
                 } catch (csvError: any) {
                     // Don't fail the entire sync if CSV parsing fails - contact data is already synced
                     logger.error(`[LeadEngagement] Failed to fetch engagement stats from CSV for campaign ${campaignId}`, csvError, {
