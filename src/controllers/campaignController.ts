@@ -48,54 +48,44 @@ export const pauseAllCampaigns = async (req: Request, res: Response) => {
             });
         }
 
-        logger.info('[CAMPAIGNS] Pausing all campaigns', {
-            organizationId: orgId,
-            totalCampaigns: campaigns.length
-        });
+        // Attempt to pause each campaign
+        let pausedCount = 0;
+        let failedCount = 0;
 
-        // Pause each campaign in Smartlead
-        const results = await Promise.allSettled(
-            campaigns.map(c => pauseSmartleadCampaign(orgId, c.id))
-        );
-
-        // Count successes and failures
-        const successCount = results.filter(r => r.status === 'fulfilled' && r.value === true).length;
-        const failedCount = campaigns.length - successCount;
-
-        // Update local campaign status for successful pauses
-        const successfulIds = campaigns
-            .filter((_, index) => results[index].status === 'fulfilled' && (results[index] as PromiseFulfilledResult<boolean>).value === true)
-            .map(c => c.id);
-
-        if (successfulIds.length > 0) {
-            await prisma.campaign.updateMany({
-                where: {
-                    id: { in: successfulIds }
-                },
-                data: {
-                    status: 'paused',
-                    paused_reason: 'Infrastructure health enforcement',
-                    paused_at: new Date()
-                    // paused_by: 'system'
-                }
-            });
+        for (const campaign of campaigns) {
+            try {
+                await pauseSmartleadCampaign(orgId, campaign.id);
+                await prisma.campaign.update({
+                    where: { id: campaign.id },
+                    data: {
+                        status: 'paused',
+                        paused_reason: 'Health enforcement - all campaigns paused',
+                        paused_at: new Date(),
+                        paused_by: 'system'
+                    }
+                });
+                pausedCount++;
+            } catch (pauseError) {
+                logger.error(`[CAMPAIGNS] Failed to pause campaign ${campaign.id}`, pauseError as Error);
+                failedCount++;
+            }
         }
 
-        logger.info('[CAMPAIGNS] Pause all campaigns completed', {
+        await logAction({
             organizationId: orgId,
-            total: campaigns.length,
-            paused: successCount,
-            failed: failedCount
+            entity: 'organization',
+            entityId: orgId,
+            trigger: 'health_enforcement',
+            action: 'pause_all_campaigns',
+            details: `Paused ${pausedCount} of ${campaigns.length} campaigns. ${failedCount} failed.`
         });
 
         return res.json({
             success: true,
             total: campaigns.length,
-            paused: successCount,
+            paused: pausedCount,
             failed: failedCount,
-            message: failedCount > 0
-                ? `Paused ${successCount} of ${campaigns.length} campaigns. ${failedCount} failed.`
-                : `Successfully paused all ${successCount} campaigns`
+            message: `Successfully paused ${pausedCount} campaigns`
         });
 
     } catch (error: any) {
@@ -103,6 +93,174 @@ export const pauseAllCampaigns = async (req: Request, res: Response) => {
         return res.status(500).json({
             success: false,
             error: 'Failed to pause campaigns',
+            message: error.message
+        });
+    }
+};
+
+/**
+ * Get stalled campaign context with safety checks
+ *
+ * @route GET /api/campaigns/:id/stalled-context
+ */
+export const getStalledCampaignContext = async (req: Request, res: Response) => {
+    try {
+        const orgId = getOrgId(req);
+        const campaignId = req.params.id as string;
+
+        // Get campaign with mailboxes and routing rules
+        const campaign = await prisma.campaign.findUnique({
+            where: { id: campaignId, organization_id: orgId },
+            include: {
+                mailboxes: {
+                    include: {
+                        domain: true
+                    }
+                },
+                routingRules: true
+            }
+        });
+
+        if (!campaign) {
+            return res.status(404).json({ success: false, error: 'Campaign not found' });
+        }
+
+        // Count affected leads
+        const leadsCount = await prisma.lead.count({
+            where: {
+                organization_id: orgId,
+                assigned_campaign_id: campaignId,
+                status: { notIn: ['completed', 'bounced', 'unsubscribed'] }
+            }
+        });
+
+        // Get available healthy mailboxes
+        const healthyMailboxes = await prisma.mailbox.findMany({
+            where: {
+                organization_id: orgId,
+                status: { in: ['healthy', 'active'] },
+                domain: {
+                    status: { in: ['healthy', 'active'] }
+                }
+            },
+            include: {
+                domain: true,
+                campaigns: {
+                    select: {
+                        id: true,
+                        name: true
+                    }
+                }
+            }
+        });
+
+        // Filter out mailboxes already in this campaign
+        const attachedMailboxIds = campaign.mailboxes.map(m => m.id);
+        const availableMailboxes = healthyMailboxes.filter(m => !attachedMailboxIds.includes(m.id));
+
+        // Check mailbox capacity (warn if mailbox is in 5+ campaigns)
+        const mailboxWarnings = availableMailboxes.map(mb => ({
+            id: mb.id,
+            email: mb.email,
+            campaignCount: mb.campaigns.length,
+            warning: mb.campaigns.length >= 5 ? 'This mailbox is already in 5+ campaigns' : null
+        }));
+
+        // Get target campaign options for rerouting
+        const targetCampaigns = await prisma.campaign.findMany({
+            where: {
+                organization_id: orgId,
+                id: { not: campaignId },
+                status: 'active'
+            },
+            include: {
+                routingRules: true,
+                mailboxes: {
+                    where: {
+                        status: { in: ['healthy', 'active'] }
+                    }
+                }
+            }
+        });
+
+        // Calculate ICP compatibility for rerouting
+        const campaignPersonas = campaign.routingRules.map(r => r.persona.toLowerCase());
+        const rerouteWarnings = targetCampaigns.map(tc => {
+            const targetPersonas = tc.routingRules.map(r => r.persona.toLowerCase());
+            const personaMatch = targetPersonas.some(tp => campaignPersonas.includes(tp));
+
+            return {
+                id: tc.id,
+                name: tc.name,
+                healthyMailboxCount: tc.mailboxes.length,
+                personaMatch,
+                warning: !personaMatch ? 'Target campaign targets different persona/ICP' : (
+                    tc.mailboxes.length === 0 ? 'Target campaign has no healthy mailboxes' : null
+                )
+            };
+        });
+
+        // Calculate recovery ETA if mailboxes are in cooldown
+        const recoveringMailboxes = await prisma.mailbox.findMany({
+            where: {
+                organization_id: orgId,
+                status: { in: ['paused', 'recovering'] },
+                cooldown_until: { gte: new Date() }
+            },
+            select: {
+                id: true,
+                email: true,
+                cooldown_until: true,
+                recovery_phase: true
+            },
+            orderBy: {
+                cooldown_until: 'asc'
+            }
+        });
+
+        const earliestRecovery = recoveringMailboxes[0]?.cooldown_until || null;
+        const recoveryETA = earliestRecovery ?
+            Math.ceil((new Date(earliestRecovery).getTime() - Date.now()) / (1000 * 60 * 60)) : null; // hours
+
+        return res.json({
+            success: true,
+            context: {
+                campaign: {
+                    id: campaign.id,
+                    name: campaign.name,
+                    status: campaign.status,
+                    paused_reason: campaign.paused_reason,
+                    paused_at: campaign.paused_at,
+                    paused_by: campaign.paused_by
+                },
+                leads: {
+                    total: leadsCount,
+                    message: leadsCount === 0 ? 'No active leads' : `${leadsCount} leads waiting`
+                },
+                mailboxes: {
+                    available: mailboxWarnings.length,
+                    warnings: mailboxWarnings.filter(w => w.warning),
+                    list: mailboxWarnings
+                },
+                rerouteOptions: {
+                    available: rerouteWarnings.length,
+                    warnings: rerouteWarnings.filter(w => w.warning),
+                    list: rerouteWarnings
+                },
+                recovery: {
+                    eta_hours: recoveryETA,
+                    recovering_count: recoveringMailboxes.length,
+                    earliest_mailbox: recoveringMailboxes[0] || null,
+                    message: recoveryETA ? `${recoveringMailboxes.length} mailboxes recovering, ETA: ${recoveryETA}h` : 'No mailboxes currently recovering'
+                }
+            }
+        });
+
+    } catch (error: any) {
+        logger.error('[CAMPAIGNS] Error getting stalled campaign context', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to get campaign context',
             message: error.message
         });
     }

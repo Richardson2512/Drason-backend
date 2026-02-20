@@ -29,6 +29,7 @@ router.get('/lead-health-stats', dashboardController.getLeadHealthStats);
 router.post('/campaign/pause', validateBody(campaignActionSchema), dashboardController.pauseCampaign);
 router.post('/campaign/resume', validateBody(campaignActionSchema), dashboardController.resumeCampaign);
 router.post('/campaigns/pause-all', campaignController.pauseAllCampaigns);
+router.get('/campaigns/:id/stalled-context', campaignController.getStalledCampaignContext);
 router.post('/campaigns/:id/resolve-stalled', campaignController.resolveStalledCampaign);
 
 // Lead scoring endpoints
