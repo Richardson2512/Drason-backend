@@ -105,10 +105,21 @@ export async function ensurePolarCustomer(orgId: string): Promise<string> {
 
         return customerId;
     } catch (error: any) {
+        // Log the FULL Polar error response so we know exactly what was rejected
+        if (error?.response) {
+            logger.error('[POLAR] Customer creation rejected', new Error(JSON.stringify({
+                status: error.response.status,
+                body: error.response.data,
+                email: customerEmail,
+                orgId
+            })));
+        }
+
         // 422 = customer with this email already exists in Polar
+        // (can happen if a previous attempt created the customer but DB save failed)
         // Look up the existing customer and link it
         if (error?.response?.status === 422) {
-            logger.info(`[POLAR] Customer already exists for ${customerEmail}, looking up...`);
+            logger.info(`[POLAR] Customer may already exist for ${customerEmail}, looking up...`);
             try {
                 const searchResponse = await polarApi.get('/customers', {
                     params: { email: customerEmail, limit: 1 }
