@@ -343,12 +343,59 @@ async function updateDomainHealth(
         }
     }
 
-    // Update aggregated metrics
+    // Aggregate actual bounce data from mailboxes
+    const mailboxes = await prisma.mailbox.findMany({
+        where: { domain_id: domainId },
+        select: {
+            hard_bounce_count: true,
+            total_sent_count: true,
+            open_count_lifetime: true,
+            click_count_lifetime: true,
+            reply_count_lifetime: true,
+        }
+    });
+
+    const totalBounces = mailboxes.reduce((sum, m) => sum + (m.hard_bounce_count || 0), 0);
+    const totalSent = mailboxes.reduce((sum, m) => sum + (m.total_sent_count || 0), 0);
+    const totalOpens = mailboxes.reduce((sum, m) => sum + (m.open_count_lifetime || 0), 0);
+    const totalClicks = mailboxes.reduce((sum, m) => sum + (m.click_count_lifetime || 0), 0);
+    const totalReplies = mailboxes.reduce((sum, m) => sum + (m.reply_count_lifetime || 0), 0);
+    const bounceRate = totalSent > 0 ? (totalBounces / totalSent) * 100 : 0;
+    const engagementRate = totalSent > 0 ? ((totalOpens + totalClicks + totalReplies) / totalSent) * 100 : 0;
+
+    // Count actual warnings from infrastructure findings for this domain
+    let actualWarningCount = domainMetrics.atRiskCount; // fallback
+    try {
+        const latestReport = await prisma.infrastructureReport.findFirst({
+            where: { organization_id: organizationId },
+            orderBy: { created_at: 'desc' },
+            select: { findings: true }
+        });
+        if (latestReport?.findings) {
+            const allFindings = latestReport.findings as any[];
+            actualWarningCount = allFindings.filter((f: any) => {
+                const entityType = f.entity_type || f.entity;
+                const entityId = f.entity_id || f.entityId;
+                return entityType === 'domain' && entityId === domainId;
+            }).length;
+        }
+    } catch (e) {
+        // Fallback to atRiskCount if findings query fails
+    }
+
+    // Update aggregated metrics with real data
     await prisma.domain.update({
         where: { id: domainId },
         data: {
-            aggregated_bounce_rate_trend: domainMetrics.averageRiskScore,
-            warning_count: domainMetrics.atRiskCount
+            aggregated_bounce_rate_trend: Math.round(bounceRate * 100) / 100,
+            warning_count: actualWarningCount,
+            total_sent_lifetime: totalSent,
+            total_bounces: totalBounces,
+            total_opens: totalOpens,
+            total_clicks: totalClicks,
+            total_replies: totalReplies,
+            bounce_rate: Math.round(bounceRate * 100) / 100,
+            engagement_rate: Math.round(engagementRate * 100) / 100,
         }
     });
 
