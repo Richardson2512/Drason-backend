@@ -741,7 +741,7 @@ export const getSmartCampaignRecommendations = async (req: Request, res: Respons
 
         logger.info(`[CAMPAIGNS] Getting smart recommendations for lead ${leadId}`);
 
-        const report = await smartRoutingService.findBestCampaignsForLead(orgId, leadId, {
+        const report = await smartRoutingService.findBestCampaignsForLead(orgId, Array.isArray(leadId) ? leadId[0] : leadId, {
             excludeCurrentCampaign: excludeCurrentCampaign === 'true',
             minMatchScore: parseInt(minMatchScore as string),
             maxResults: parseInt(maxResults as string)

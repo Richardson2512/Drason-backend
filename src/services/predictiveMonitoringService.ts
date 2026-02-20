@@ -72,12 +72,8 @@ async function analyzeCampaignRisk(
         include: {
             mailboxes: {
                 include: {
-                    mailbox: {
-                        include: {
-                            domain: true,
-                            metrics: true
-                        }
-                    }
+                    domain: true,
+                    metrics: true
                 }
             }
         }
@@ -124,9 +120,7 @@ async function analyzeCampaignRisk(
     let avgBounceRate = 0;
     let mailboxMetricsCount = 0;
 
-    for (const relation of campaign.mailboxes) {
-        const mailbox = relation.mailbox;
-
+    for (const mailbox of campaign.mailboxes) {
         // Check status
         if (mailbox.status !== 'healthy') {
             unhealthyMailboxCount++;
@@ -231,8 +225,8 @@ async function analyzeCampaignRisk(
 
     // ── Signal 4: Domain Health ──
     const domains = new Map<string, any>();
-    for (const relation of campaign.mailboxes) {
-        const domain = relation.mailbox.domain;
+    for (const mailbox of campaign.mailboxes) {
+        const domain = mailbox.domain;
         if (domain && !domains.has(domain.id)) {
             domains.set(domain.id, domain);
         }
@@ -412,8 +406,7 @@ export const sendPredictiveAlerts = async (organizationId: string): Promise<void
         await notificationService.createNotification(organizationId, {
             type: campaign.risk_level === 'critical' ? 'ERROR' : 'WARNING',
             title: `⚠️ Campaign At Risk: ${campaign.campaign_name}`,
-            message,
-            action_url: `/dashboard/campaigns?highlight=${campaign.campaign_id}`
+            message
         });
 
         logger.info(`[PREDICTIVE] Sent alert for campaign ${campaign.campaign_name} (risk: ${campaign.risk_level})`);

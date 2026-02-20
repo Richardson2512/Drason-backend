@@ -117,14 +117,10 @@ export const analyzeLoadBalancing = async (
             domain: true,
             metrics: true,
             campaigns: {
-                include: {
-                    campaign: {
-                        select: {
-                            id: true,
-                            name: true,
-                            status: true
-                        }
-                    }
+                select: {
+                    id: true,
+                    name: true,
+                    status: true
                 }
             }
         }
@@ -134,11 +130,7 @@ export const analyzeLoadBalancing = async (
     const campaigns = await prisma.campaign.findMany({
         where: { organization_id: organizationId },
         include: {
-            mailboxes: {
-                include: {
-                    mailbox: true
-                }
-            }
+            mailboxes: true
         }
     });
 
@@ -199,7 +191,7 @@ export const analyzeLoadBalancing = async (
         if (underutilizedSameDomain.length > 0) {
             // Find campaigns where this overloaded mailbox is used
             const mailbox = mailboxes.find(m => m.id === overloadedMailbox.id);
-            const activeCampaigns = mailbox?.campaigns.filter(c => c.campaign.status === 'active') || [];
+            const activeCampaigns = mailbox?.campaigns.filter(c => c.status === 'active') || [];
 
             // Suggest moving some campaigns to underutilized mailboxes
             const excessCampaigns = overloadedMailbox.campaign_count - THRESHOLDS.OPTIMAL_MAX;
@@ -213,8 +205,8 @@ export const analyzeLoadBalancing = async (
                     type: 'move_mailbox',
                     mailbox_id: overloadedMailbox.id,
                     mailbox_email: overloadedMailbox.email,
-                    from_campaign_id: campaignToMove.campaign.id,
-                    from_campaign_name: campaignToMove.campaign.name || undefined,
+                    from_campaign_id: campaignToMove.id,
+                    from_campaign_name: campaignToMove.name || undefined,
                     to_campaign_id: undefined,
                     to_campaign_name: undefined,
                     reason: `Mailbox ${overloadedMailbox.email} is overloaded (${overloadedMailbox.campaign_count} campaigns). Move to ${targetMailbox.email} which has only ${targetMailbox.campaign_count} campaigns.`,
@@ -235,7 +227,7 @@ export const analyzeLoadBalancing = async (
         const availableMailboxes = underutilizedMailboxes.filter(m =>
             m.status === 'healthy' &&
             m.health_score >= 70 &&
-            !campaign.mailboxes.some(cm => cm.mailbox.id === m.id)
+            !campaign.mailboxes.some(cm => cm.id === m.id)
         );
 
         if (availableMailboxes.length > 0) {
@@ -258,15 +250,15 @@ export const analyzeLoadBalancing = async (
     for (const mailbox of mailboxLoads) {
         if (mailbox.status !== 'healthy' || mailbox.health_score < 50) {
             const mailboxData = mailboxes.find(m => m.id === mailbox.id);
-            const activeCampaigns = mailboxData?.campaigns.filter(c => c.campaign.status === 'active') || [];
+            const activeCampaigns = mailboxData?.campaigns.filter(c => c.status === 'active') || [];
 
             for (const campaignRel of activeCampaigns) {
                 suggestions.push({
                     type: 'remove_mailbox',
                     mailbox_id: mailbox.id,
                     mailbox_email: mailbox.email,
-                    from_campaign_id: campaignRel.campaign.id,
-                    from_campaign_name: campaignRel.campaign.name || undefined,
+                    from_campaign_id: campaignRel.id,
+                    from_campaign_name: campaignRel.name || undefined,
                     reason: `Mailbox ${mailbox.email} is unhealthy (status: ${mailbox.status}, health score: ${mailbox.health_score.toFixed(0)}). Remove from campaign to prevent deliverability issues.`,
                     expected_impact: 'Reduces risk of bounces and failures',
                     priority: 'high'
@@ -292,7 +284,7 @@ export const analyzeLoadBalancing = async (
         },
         mailbox_distribution: mailboxLoads,
         suggestions,
-        health_warnings
+        health_warnings: healthWarnings
     };
 
     logger.info(`[LOAD_BALANCING] Analysis complete: ${suggestions.length} suggestions, ${healthWarnings.length} warnings`);
@@ -316,10 +308,12 @@ export const applySuggestion = async (
                     throw new Error('to_campaign_id required for add_mailbox');
                 }
                 // Add mailbox to campaign (both in DB and Smartlead)
-                await prisma.campaignToMailbox.create({
+                await prisma.campaign.update({
+                    where: { id: suggestion.to_campaign_id },
                     data: {
-                        campaign_id: suggestion.to_campaign_id,
-                        mailbox_id: suggestion.mailbox_id
+                        mailboxes: {
+                            connect: { id: suggestion.mailbox_id }
+                        }
                     }
                 });
                 // TODO: Call Smartlead API to add mailbox to campaign
@@ -333,10 +327,12 @@ export const applySuggestion = async (
                     throw new Error('from_campaign_id required for remove_mailbox');
                 }
                 // Remove mailbox from campaign (both in DB and Smartlead)
-                await prisma.campaignToMailbox.deleteMany({
-                    where: {
-                        campaign_id: suggestion.from_campaign_id,
-                        mailbox_id: suggestion.mailbox_id
+                await prisma.campaign.update({
+                    where: { id: suggestion.from_campaign_id },
+                    data: {
+                        mailboxes: {
+                            disconnect: { id: suggestion.mailbox_id }
+                        }
                     }
                 });
                 // TODO: Call Smartlead API to remove mailbox from campaign
@@ -357,7 +353,7 @@ export const applySuggestion = async (
                 throw new Error(`Unknown suggestion type: ${suggestion.type}`);
         }
     } catch (error: any) {
-        logger.error(`[LOAD_BALANCING] Failed to apply suggestion:`, { error: error.message });
+        logger.error(`[LOAD_BALANCING] Failed to apply suggestion:`, error);
         return {
             success: false,
             message: `Failed to apply suggestion: ${error.message}`

@@ -182,15 +182,7 @@ export const findBestCampaignsForLead = async (
 
     // Fetch lead
     const lead = await prisma.lead.findUnique({
-        where: { id: leadId },
-        include: {
-            campaign: {
-                select: {
-                    id: true,
-                    name: true
-                }
-            }
-        }
+        where: { id: leadId }
     });
 
     if (!lead) {
@@ -209,25 +201,26 @@ export const findBestCampaignsForLead = async (
         include: {
             routingRules: true,
             mailboxes: {
-                include: {
-                    mailbox: {
-                        select: {
-                            id: true,
-                            status: true
-                        }
-                    }
-                }
-            },
-            leads: {
-                where: {
-                    status: { in: ['active', 'held', 'paused'] } // Active leads
-                },
                 select: {
-                    id: true
+                    id: true,
+                    status: true
                 }
             }
         }
     });
+
+    // Get lead counts for all campaigns
+    const leadCounts = await Promise.all(
+        campaigns.map(c =>
+            prisma.lead.count({
+                where: {
+                    assigned_campaign_id: c.id,
+                    status: { in: ['active', 'held', 'paused'] }
+                }
+            })
+        )
+    );
+    const leadCountMap = new Map(campaigns.map((c, i) => [c.id, leadCounts[i]]));
 
     const matches: CampaignMatch[] = [];
 
@@ -258,7 +251,7 @@ export const findBestCampaignsForLead = async (
 
         // 2. Capacity (30% weight)
         const mailboxCount = campaign.mailboxes.length;
-        const currentLoad = campaign.leads.length;
+        const currentLoad = leadCountMap.get(campaign.id) || 0;
         const capacityResult = calculateCapacityScore(currentLoad, mailboxCount);
         totalScore += capacityResult.score * 0.3;
         matchReasons.push(capacityResult.reason);
@@ -269,7 +262,7 @@ export const findBestCampaignsForLead = async (
 
         // 3. Health (30% weight)
         const healthyMailboxCount = campaign.mailboxes.filter(
-            m => m.mailbox.status === 'healthy'
+            m => m.status === 'healthy'
         ).length;
         const healthResult = calculateHealthScore(
             campaign.status,
@@ -315,7 +308,7 @@ export const findBestCampaignsForLead = async (
         lead_persona: lead.persona,
         lead_score: lead.lead_score,
         current_campaign_id: lead.assigned_campaign_id,
-        current_campaign_name: lead.campaign?.name || null,
+        current_campaign_name: null, // Lead model doesn't have campaign relation
         recommended_campaigns: filteredMatches,
         no_match_reason: filteredMatches.length === 0
             ? `No campaigns found matching minimum score threshold (${minMatchScore})`
@@ -348,7 +341,7 @@ export const findBestCampaignsForLeads = async (
             const report = await findBestCampaignsForLead(organizationId, leadId, options);
             reports.push(report);
         } catch (error: any) {
-            logger.error(`[SMART_ROUTING] Error finding campaigns for lead ${leadId}`, { error: error.message });
+            logger.error(`[SMART_ROUTING] Error finding campaigns for lead ${leadId}`, error);
         }
     }
 
