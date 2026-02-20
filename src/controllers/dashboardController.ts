@@ -189,6 +189,11 @@ export const getCampaigns = async (req: Request, res: Response, next: NextFuncti
         const limit = parseInt(req.query.limit as string) || 20;
         const status = req.query.status as string;
         const search = req.query.search as string;
+        const sortBy = req.query.sortBy as string || 'name_asc';
+        const minSent = req.query.minSent ? parseInt(req.query.minSent as string) : undefined;
+        const maxSent = req.query.maxSent ? parseInt(req.query.maxSent as string) : undefined;
+        const minOpenRate = req.query.minOpenRate ? parseFloat(req.query.minOpenRate as string) : undefined;
+        const maxOpenRate = req.query.maxOpenRate ? parseFloat(req.query.maxOpenRate as string) : undefined;
         const skip = (page - 1) * limit;
 
         const where: any = {
@@ -206,6 +211,55 @@ export const getCampaigns = async (req: Request, res: Response, next: NextFuncti
             };
         }
 
+        // Total sent range filter
+        if (minSent !== undefined || maxSent !== undefined) {
+            where.total_sent = {};
+            if (minSent !== undefined) where.total_sent.gte = minSent;
+            if (maxSent !== undefined) where.total_sent.lte = maxSent;
+        }
+
+        // Open rate range filter
+        if (minOpenRate !== undefined || maxOpenRate !== undefined) {
+            where.open_rate = {};
+            if (minOpenRate !== undefined) where.open_rate.gte = minOpenRate;
+            if (maxOpenRate !== undefined) where.open_rate.lte = maxOpenRate;
+        }
+
+        // Sorting
+        let orderBy: any = { name: 'asc' }; // Default
+        switch (sortBy) {
+            case 'name_asc':
+                orderBy = { name: 'asc' };
+                break;
+            case 'name_desc':
+                orderBy = { name: 'desc' };
+                break;
+            case 'sent_desc':
+                orderBy = { total_sent: 'desc' };
+                break;
+            case 'sent_asc':
+                orderBy = { total_sent: 'asc' };
+                break;
+            case 'open_rate_desc':
+                orderBy = { open_rate: 'desc' };
+                break;
+            case 'open_rate_asc':
+                orderBy = { open_rate: 'asc' };
+                break;
+            case 'reply_rate_desc':
+                orderBy = { reply_rate: 'desc' };
+                break;
+            case 'reply_rate_asc':
+                orderBy = { reply_rate: 'asc' };
+                break;
+            case 'bounce_rate_desc':
+                orderBy = { bounce_rate: 'desc' };
+                break;
+            case 'bounce_rate_asc':
+                orderBy = { bounce_rate: 'asc' };
+                break;
+        }
+
         const [campaigns, total] = await Promise.all([
             prisma.campaign.findMany({
                 where,
@@ -221,7 +275,7 @@ export const getCampaigns = async (req: Request, res: Response, next: NextFuncti
                         }
                     }
                 },
-                orderBy: { name: 'asc' },
+                orderBy,
                 take: limit,
                 skip
             }),
@@ -245,11 +299,69 @@ export const getDomains = async (req: Request, res: Response, next: NextFunction
         const orgId = getOrgId(req);
         const page = parseInt(req.query.page as string) || 1;
         const limit = parseInt(req.query.limit as string) || 20;
+        const sortBy = req.query.sortBy as string || 'domain_asc';
+        const status = req.query.status as string;
+        const minEngagement = req.query.minEngagement ? parseFloat(req.query.minEngagement as string) : undefined;
+        const maxEngagement = req.query.maxEngagement ? parseFloat(req.query.maxEngagement as string) : undefined;
+        const minBounceRate = req.query.minBounceRate ? parseFloat(req.query.minBounceRate as string) : undefined;
+        const maxBounceRate = req.query.maxBounceRate ? parseFloat(req.query.maxBounceRate as string) : undefined;
         const skip = (page - 1) * limit;
+
+        const where: any = {
+            organization_id: orgId
+        };
+
+        // Status filter
+        if (status && status !== 'all') {
+            where.status = status;
+        }
+
+        // Engagement rate range filter
+        if (minEngagement !== undefined || maxEngagement !== undefined) {
+            where.engagement_rate = {};
+            if (minEngagement !== undefined) where.engagement_rate.gte = minEngagement;
+            if (maxEngagement !== undefined) where.engagement_rate.lte = maxEngagement;
+        }
+
+        // Bounce rate range filter
+        if (minBounceRate !== undefined || maxBounceRate !== undefined) {
+            where.bounce_rate = {};
+            if (minBounceRate !== undefined) where.bounce_rate.gte = minBounceRate;
+            if (maxBounceRate !== undefined) where.bounce_rate.lte = maxBounceRate;
+        }
+
+        // Sorting
+        let orderBy: any = { domain: 'asc' }; // Default
+        switch (sortBy) {
+            case 'domain_asc':
+                orderBy = { domain: 'asc' };
+                break;
+            case 'domain_desc':
+                orderBy = { domain: 'desc' };
+                break;
+            case 'sent_desc':
+                orderBy = { total_sent_lifetime: 'desc' };
+                break;
+            case 'sent_asc':
+                orderBy = { total_sent_lifetime: 'asc' };
+                break;
+            case 'engagement_desc':
+                orderBy = { engagement_rate: 'desc' };
+                break;
+            case 'engagement_asc':
+                orderBy = { engagement_rate: 'asc' };
+                break;
+            case 'bounce_desc':
+                orderBy = { bounce_rate: 'desc' };
+                break;
+            case 'bounce_asc':
+                orderBy = { bounce_rate: 'asc' };
+                break;
+        }
 
         const [domains, total] = await Promise.all([
             prisma.domain.findMany({
-                where: { organization_id: orgId },
+                where,
                 include: {
                     mailboxes: {
                         select: {
@@ -268,11 +380,11 @@ export const getDomains = async (req: Request, res: Response, next: NextFunction
                         }
                     }
                 },
-                orderBy: { domain: 'asc' },
+                orderBy,
                 take: limit,
                 skip
             }),
-            prisma.domain.count({ where: { organization_id: orgId } })
+            prisma.domain.count({ where })
         ]);
 
         res.json({
@@ -292,11 +404,72 @@ export const getMailboxes = async (req: Request, res: Response, next: NextFuncti
         const orgId = getOrgId(req);
         const page = parseInt(req.query.page as string) || 1;
         const limit = parseInt(req.query.limit as string) || 20;
+        const sortBy = req.query.sortBy as string || 'email_asc';
+        const status = req.query.status as string;
+        const domainId = req.query.domainId as string;
+        const warmupStatus = req.query.warmupStatus as string;
+        const minEngagement = req.query.minEngagement ? parseFloat(req.query.minEngagement as string) : undefined;
+        const maxEngagement = req.query.maxEngagement ? parseFloat(req.query.maxEngagement as string) : undefined;
         const skip = (page - 1) * limit;
+
+        const where: any = {
+            organization_id: orgId
+        };
+
+        // Status filter
+        if (status && status !== 'all') {
+            where.status = status;
+        }
+
+        // Domain filter
+        if (domainId && domainId !== 'all') {
+            where.domain_id = domainId;
+        }
+
+        // Warmup status filter
+        if (warmupStatus && warmupStatus !== 'all') {
+            where.warmup_status = warmupStatus;
+        }
+
+        // Engagement rate range filter
+        if (minEngagement !== undefined || maxEngagement !== undefined) {
+            where.engagement_rate = {};
+            if (minEngagement !== undefined) where.engagement_rate.gte = minEngagement;
+            if (maxEngagement !== undefined) where.engagement_rate.lte = maxEngagement;
+        }
+
+        // Sorting
+        let orderBy: any = { email: 'asc' }; // Default
+        switch (sortBy) {
+            case 'email_asc':
+                orderBy = { email: 'asc' };
+                break;
+            case 'email_desc':
+                orderBy = { email: 'desc' };
+                break;
+            case 'sent_desc':
+                orderBy = { total_sent_count: 'desc' };
+                break;
+            case 'sent_asc':
+                orderBy = { total_sent_count: 'asc' };
+                break;
+            case 'engagement_desc':
+                orderBy = { engagement_rate: 'desc' };
+                break;
+            case 'engagement_asc':
+                orderBy = { engagement_rate: 'asc' };
+                break;
+            case 'bounce_desc':
+                orderBy = { hard_bounce_count: 'desc' };
+                break;
+            case 'bounce_asc':
+                orderBy = { hard_bounce_count: 'asc' };
+                break;
+        }
 
         const [mailboxes, total] = await Promise.all([
             prisma.mailbox.findMany({
-                where: { organization_id: orgId },
+                where,
                 include: {
                     domain: {
                         select: { id: true, domain: true, status: true }
@@ -305,11 +478,11 @@ export const getMailboxes = async (req: Request, res: Response, next: NextFuncti
                         select: { id: true, name: true, status: true }
                     }
                 },
-                orderBy: { email: 'asc' },
+                orderBy,
                 take: limit,
                 skip
             }),
-            prisma.mailbox.count({ where: { organization_id: orgId } })
+            prisma.mailbox.count({ where })
         ]);
 
         res.json({
