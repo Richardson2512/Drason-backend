@@ -1163,7 +1163,11 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         total_replies: totalReplies,
                         total_bounces: totalBounces,
                         engagement_rate: engagementRate,
-                        bounce_rate: domainBounceRate
+                        bounce_rate: domainBounceRate,
+                        ...(derivedDomainStatus === 'paused' && domain.status !== 'paused' ? {
+                            paused_reason: `${pausedMailboxes}/${totalMailboxes} mailboxes paused — domain auto-paused by health check`,
+                            last_pause_at: new Date()
+                        } : {})
                     }
                 });
 
