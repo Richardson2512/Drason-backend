@@ -353,11 +353,12 @@ export async function getLeadScoreBreakdown(
         [lead.email]
     );
 
-    const engagement = engagementData[lead.email];
-
-    if (!engagement) {
-        return null;
-    }
+    const engagement = engagementData[lead.email] || {
+        opens: 0,
+        clicks: 0,
+        replies: 0,
+        bounces: 0
+    };
 
     const rawBreakdown = calculateEngagementScore(engagement);
     const score = calculateFinalScore(rawBreakdown);

@@ -807,7 +807,7 @@ export async function assessInfrastructure(
 
         // ── Step 10: Notify user of assessment results ──
         try {
-            const notifType = criticalCount > 0 ? 'WARNING' as const : 'SUCCESS' as const;
+            const notifType = criticalCount > 0 ? 'ERROR' as const : warningCount > 0 ? 'WARNING' as const : 'SUCCESS' as const;
             const statusSummary = [
                 criticalCount > 0 ? `${criticalCount} critical` : null,
                 warningCount > 0 ? `${warningCount} warning` : null,

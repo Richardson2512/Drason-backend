@@ -14,6 +14,7 @@ import * as routingService from '../services/routingService';
 import * as auditLogService from '../services/auditLogService';
 import * as eventService from '../services/eventService';
 import * as leadHealthService from '../services/leadHealthService';
+import * as smartleadClient from '../services/smartleadClient';
 import { getOrgId } from '../middleware/orgContext';
 import { EventType, LeadState } from '../types';
 import { logger } from '../services/observabilityService';
@@ -124,8 +125,9 @@ export const ingestLead = async (req: Request, res: Response) => {
         // Resolve routing with org context
         const campaignId = await routingService.resolveCampaignForLead(organizationId, createdLead);
 
-        // Update lead with assigned campaign
+        // Update lead with assigned campaign and push to Smartlead
         if (campaignId) {
+            // Update database first
             await prisma.lead.update({
                 where: { id: createdLead.id },
                 data: { assigned_campaign_id: campaignId }
@@ -140,6 +142,39 @@ export const ingestLead = async (req: Request, res: Response) => {
                 action: 'assigned',
                 details: `Routed to campaign ${campaignId} based on rules.`
             });
+
+            // Push lead to Smartlead campaign
+            logger.info(`[INGEST] Pushing lead ${email} to Smartlead campaign ${campaignId}`);
+            const pushSuccess = await smartleadClient.pushLeadToCampaign(
+                organizationId,
+                campaignId,
+                {
+                    email,
+                    first_name: req.body.first_name,
+                    last_name: req.body.last_name,
+                    company: req.body.company
+                }
+            );
+
+            if (pushSuccess) {
+                // Mark lead as active since it's now in Smartlead
+                await prisma.lead.update({
+                    where: { id: createdLead.id },
+                    data: { status: LeadState.ACTIVE }
+                });
+                logger.info(`[INGEST] Successfully pushed lead ${email} to Smartlead campaign ${campaignId}`);
+            } else {
+                // Push failed - lead stays in HELD status
+                logger.error(`[INGEST] Failed to push lead ${email} to Smartlead campaign ${campaignId}`);
+                await auditLogService.logAction({
+                    organizationId,
+                    entity: 'lead',
+                    entityId: createdLead.id,
+                    trigger: 'ingestion',
+                    action: 'push_failed',
+                    details: `Failed to push lead to Smartlead campaign ${campaignId}. Lead remains in HELD status.`
+                });
+            }
         } else {
             logger.info(`[INGEST] No campaign matched for lead ${createdLead.id}`);
             await auditLogService.logAction({
@@ -157,7 +192,8 @@ export const ingestLead = async (req: Request, res: Response) => {
             data: {
                 message: 'Lead ingested successfully',
                 leadId: createdLead.id,
-                assignedCampaignId: campaignId
+                assignedCampaignId: campaignId,
+                pushedToSmartlead: campaignId ? true : false
             }
         });
 
@@ -349,6 +385,7 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
         const campaignId = await routingService.resolveCampaignForLead(organizationId, createdLead);
 
         if (campaignId) {
+            // Update database first
             await prisma.lead.update({
                 where: { id: createdLead.id },
                 data: { assigned_campaign_id: campaignId }
@@ -362,6 +399,43 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
                 action: 'assigned',
                 details: `Routed to campaign ${campaignId} via Clay webhook. Health: ${healthResult.classification}`
             });
+
+            // Push lead to Smartlead campaign
+            logger.info(`[INGEST CLAY] Pushing lead ${email} to Smartlead campaign ${campaignId}`);
+            const firstName = findVal(['first_name', 'firstname', 'first name', 'fname']);
+            const lastName = findVal(['last_name', 'lastname', 'last name', 'lname']);
+            const company = findVal(['company', 'company_name', 'company name', 'organization']);
+
+            const pushSuccess = await smartleadClient.pushLeadToCampaign(
+                organizationId,
+                campaignId,
+                {
+                    email,
+                    first_name: firstName,
+                    last_name: lastName,
+                    company
+                }
+            );
+
+            if (pushSuccess) {
+                // Mark lead as active since it's now in Smartlead
+                await prisma.lead.update({
+                    where: { id: createdLead.id },
+                    data: { status: LeadState.ACTIVE }
+                });
+                logger.info(`[INGEST CLAY] Successfully pushed lead ${email} to Smartlead campaign ${campaignId}`);
+            } else {
+                // Push failed - lead stays in HELD status
+                logger.error(`[INGEST CLAY] Failed to push lead ${email} to Smartlead campaign ${campaignId}`);
+                await auditLogService.logAction({
+                    organizationId,
+                    entity: 'lead',
+                    entityId: createdLead.id,
+                    trigger: 'ingestion',
+                    action: 'push_failed',
+                    details: `Failed to push Clay lead to Smartlead campaign ${campaignId}. Lead remains in HELD status.`
+                });
+            }
         } else {
             logger.info(`[INGEST CLAY] No campaign matched for lead ${createdLead.id}`);
             await auditLogService.logAction({
@@ -379,6 +453,7 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
             leadId: createdLead.id,
             healthClassification: healthResult.classification,
             healthScore: healthResult.score,
+            pushedToSmartlead: campaignId ? true : false,
             success: true
         });
 
