@@ -24,6 +24,10 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
         const status = req.query.status as string;
         const campaignId = req.query.campaignId as string;
         const search = req.query.search as string;
+        const sortBy = req.query.sortBy as string || 'created_desc';
+        const minScore = req.query.minScore ? parseInt(req.query.minScore as string) : undefined;
+        const maxScore = req.query.maxScore ? parseInt(req.query.maxScore as string) : undefined;
+        const hasEngagement = req.query.hasEngagement as string;
         const skip = (page - 1) * limit;
 
         const where: any = {
@@ -46,10 +50,59 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
             };
         }
 
+        // Score range filter
+        if (minScore !== undefined || maxScore !== undefined) {
+            where.lead_score = {};
+            if (minScore !== undefined) where.lead_score.gte = minScore;
+            if (maxScore !== undefined) where.lead_score.lte = maxScore;
+        }
+
+        // Engagement filter
+        if (hasEngagement === 'yes') {
+            where.OR = [
+                { emails_opened: { gt: 0 } },
+                { emails_clicked: { gt: 0 } },
+                { emails_replied: { gt: 0 } }
+            ];
+        } else if (hasEngagement === 'no') {
+            where.emails_opened = 0;
+            where.emails_clicked = 0;
+            where.emails_replied = 0;
+        }
+
+        // Sorting
+        let orderBy: any = { created_at: 'desc' }; // Default
+        switch (sortBy) {
+            case 'email_asc':
+                orderBy = { email: 'asc' };
+                break;
+            case 'email_desc':
+                orderBy = { email: 'desc' };
+                break;
+            case 'score_desc':
+                orderBy = { lead_score: 'desc' };
+                break;
+            case 'score_asc':
+                orderBy = { lead_score: 'asc' };
+                break;
+            case 'activity_desc':
+                orderBy = { last_activity_at: 'desc' };
+                break;
+            case 'activity_asc':
+                orderBy = { last_activity_at: 'asc' };
+                break;
+            case 'created_desc':
+                orderBy = { created_at: 'desc' };
+                break;
+            case 'created_asc':
+                orderBy = { created_at: 'asc' };
+                break;
+        }
+
         const [leads, total] = await Promise.all([
             prisma.lead.findMany({
                 where,
-                orderBy: { created_at: 'desc' },
+                orderBy,
                 take: limit,
                 skip
             }),
