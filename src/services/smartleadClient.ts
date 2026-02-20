@@ -711,25 +711,27 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                     details: `Historical activity: ${openCount} opened, ${clickCount} clicked, ${replyCount} replied`
                                 });
 
-                                // Boost engagement score based on activity
-                                let scoreBoost = 0;
-                                if (replyCount > 0) scoreBoost += replyCount * 20; // +20 per reply
-                                if (clickCount > 0) scoreBoost += clickCount * 10; // +10 per click
-                                if (openCount > 0) scoreBoost += openCount * 5; // +5 per open
+                                // Calculate engagement score (capped at 100)
+                                // Formula: Base 50 + engagement points, capped at 100
+                                let engagementScore = 50; // Base score
+                                if (replyCount > 0) engagementScore += Math.min(replyCount * 15, 30); // Max +30 from replies
+                                if (clickCount > 0) engagementScore += Math.min(clickCount * 5, 20); // Max +20 from clicks
+                                if (openCount > 0) engagementScore += Math.min(openCount * 2, 15); // Max +15 from opens
 
-                                if (scoreBoost > 0) {
-                                    await prisma.lead.update({
-                                        where: {
-                                            organization_id_email: {
-                                                organization_id: organizationId,
-                                                email
-                                            }
-                                        },
-                                        data: {
-                                            lead_score: { increment: scoreBoost }
+                                // Clamp to 0-100 range
+                                const finalScore = Math.max(0, Math.min(100, engagementScore));
+
+                                await prisma.lead.update({
+                                    where: {
+                                        organization_id_email: {
+                                            organization_id: organizationId,
+                                            email
                                         }
-                                    });
-                                }
+                                    },
+                                    data: {
+                                        lead_score: finalScore
+                                    }
+                                });
                             }
 
                             updatedCount++;
@@ -976,6 +978,9 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
 
 /**
  * Push a lead to a Smartlead campaign.
+ *
+ * Uses Smartlead API: POST /campaigns/{campaign_id}/leads
+ * Max 100 leads per request, rate limit: 10 requests per 2 seconds
  */
 export const pushLeadToCampaign = async (
     organizationId: string,
@@ -993,10 +998,25 @@ export const pushLeadToCampaign = async (
     }
 
     try {
+        // Transform to Smartlead API format
+        const smartleadLead = {
+            email: lead.email,
+            first_name: lead.first_name || '',
+            last_name: lead.last_name || '',
+            company_name: lead.company || '' // Smartlead expects 'company_name', not 'company'
+        };
+
         await smartleadBreaker.call(() =>
             axios.post(
                 `${SMARTLEAD_API_BASE}/campaigns/${campaignId}/leads?api_key=${apiKey}`,
-                { lead_list: [lead] }
+                {
+                    lead_list: [smartleadLead],
+                    settings: {
+                        ignore_global_block_list: false,
+                        ignore_unsubscribe_list: false,
+                        ignore_duplicate_leads_in_other_campaign: true
+                    }
+                }
             )
         );
 
@@ -1009,15 +1029,29 @@ export const pushLeadToCampaign = async (
             details: `Pushed to campaign ${campaignId}`
         });
 
+        logger.info(`[SMARTLEAD] Successfully pushed lead to campaign`, {
+            organizationId,
+            campaignId,
+            email: lead.email
+        });
+
         return true;
     } catch (error: any) {
+        logger.error(`[SMARTLEAD] Failed to push lead to campaign`, error, {
+            organizationId,
+            campaignId,
+            email: lead.email,
+            response: error.response?.data,
+            status: error.response?.status
+        });
+
         await auditLogService.logAction({
             organizationId,
             entity: 'lead',
             entityId: lead.email,
             trigger: 'execution',
             action: 'push_failed',
-            details: error.message
+            details: `Failed to push to campaign ${campaignId}: ${error.message}`
         });
         return false;
     }
