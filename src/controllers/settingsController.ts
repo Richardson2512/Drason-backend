@@ -57,6 +57,16 @@ export const updateSettings = async (req: Request, res: Response) => {
         const updates = Object.entries(settingsToUpdate).map(([key, value]) => {
             if (typeof value !== 'string') return null;
 
+            // If the user is removing the Smartlead API key, purge all synced data
+            if (key === 'SMARTLEAD_API_KEY' && (value === '' || value.trim() === '')) {
+                logger.info(`[SETTINGS] Smartlead API key removed for org ${orgId}. Purging all synced data.`);
+
+                // Fire off asynchronous purge (don't block the request)
+                purgeSmartleadData(orgId).catch(err => {
+                    logger.error(`[SETTINGS] Failed to purge Smartlead data for org ${orgId}:`, err);
+                });
+            }
+
             const isSecret = secretKeys.includes(key);
             // Encrypt secret values before storing
             const storedValue = isSecret ? encrypt(value) : value;
@@ -180,4 +190,35 @@ export const getClayWebhookUrl = async (req: Request, res: Response) => {
 function maskSecret(value: string): string {
     if (!value || value.length < 8) return '****';
     return value.substring(0, 4) + '****' + value.substring(value.length - 4);
+}
+
+/**
+ * Purge all Smartlead-synced data when the API key is removed.
+ */
+async function purgeSmartleadData(orgId: string) {
+    try {
+        await prisma.$transaction([
+            // Lead has a relation to Campaign, so delete Leads first or cascade will handle it, 
+            // but explicit deletion is safer for counting. However, Prisma handles relations.
+            prisma.lead.deleteMany({ where: { organization_id: orgId } }),
+
+            // Mailboxes belong to Campaigns and Domains
+            prisma.mailboxMetrics.deleteMany({ where: { mailbox: { organization_id: orgId } } }),
+            prisma.mailbox.deleteMany({ where: { organization_id: orgId } }),
+
+            // Routing rules belong to campaigns
+            prisma.routingRule.deleteMany({ where: { organization_id: orgId } }),
+
+            // Delete Campaigns
+            prisma.campaign.deleteMany({ where: { organization_id: orgId } }),
+
+            // Delete Domains last
+            prisma.domain.deleteMany({ where: { organization_id: orgId } })
+        ]);
+
+        logger.info(`[SETTINGS] Successfully purged all Smartlead data for org ${orgId}`);
+    } catch (error) {
+        logger.error(`[SETTINGS] Error during Smartlead data purge for org ${orgId}:`, error as Error);
+        throw error;
+    }
 }
