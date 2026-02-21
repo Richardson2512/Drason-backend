@@ -213,18 +213,7 @@ async function purgeSmartleadData(orgId: string) {
             prisma.campaign.deleteMany({ where: { organization_id: orgId } }),
 
             // Delete Domains last
-            prisma.domain.deleteMany({ where: { organization_id: orgId } }),
-
-            // Reset Organization counters
-            prisma.organization.update({
-                where: { id: orgId },
-                data: {
-                    current_lead_count: 0,
-                    current_domain_count: 0,
-                    current_mailbox_count: 0,
-                    usage_last_updated_at: new Date()
-                }
-            })
+            prisma.domain.deleteMany({ where: { organization_id: orgId } })
         ]);
 
         logger.info(`[SETTINGS] Successfully purged all Smartlead data for org ${orgId}`);

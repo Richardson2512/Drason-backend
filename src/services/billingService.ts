@@ -325,6 +325,15 @@ async function handlePaymentFailed(event: WebhookEvent): Promise<void> {
  * Called periodically or after significant changes.
  */
 export async function refreshUsageCounts(orgId: string): Promise<UsageCounts> {
+    const org = await prisma.organization.findUnique({
+        where: { id: orgId },
+        select: {
+            current_lead_count: true,
+            current_domain_count: true,
+            current_mailbox_count: true
+        }
+    });
+
     const [leadCount, domainCount, mailboxCount] = await Promise.all([
         prisma.lead.count({
             where: {
@@ -336,17 +345,22 @@ export async function refreshUsageCounts(orgId: string): Promise<UsageCounts> {
         prisma.mailbox.count({ where: { organization_id: orgId } })
     ]);
 
+    // Use a high-water mark approach so usage doesn't drop when data is purged or API keys are removed
+    const maxLeadCount = Math.max(org?.current_lead_count || 0, leadCount);
+    const maxDomainCount = Math.max(org?.current_domain_count || 0, domainCount);
+    const maxMailboxCount = Math.max(org?.current_mailbox_count || 0, mailboxCount);
+
     await prisma.organization.update({
         where: { id: orgId },
         data: {
-            current_lead_count: leadCount,
-            current_domain_count: domainCount,
-            current_mailbox_count: mailboxCount,
+            current_lead_count: maxLeadCount,
+            current_domain_count: maxDomainCount,
+            current_mailbox_count: maxMailboxCount,
             usage_last_updated_at: new Date()
         }
     });
 
-    return { leads: leadCount, domains: domainCount, mailboxes: mailboxCount };
+    return { leads: maxLeadCount, domains: maxDomainCount, mailboxes: maxMailboxCount };
 }
 
 /**
