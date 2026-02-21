@@ -20,12 +20,15 @@ import { classifyBounce } from './bounceClassifier';
 import * as healingService from './healingService';
 import * as correlationService from './correlationService';
 import * as smartleadClient from './smartleadClient';
+import * as executionGateService from './executionGateService';
+import * as notificationService from './notificationService';
 import { logger } from './observabilityService';
 import {
     EventType,
     MailboxState,
     DomainState,
     RecoveryPhase,
+    SystemMode,
     MONITORING_THRESHOLDS,
     STATE_TRANSITIONS
 } from '../types';
@@ -269,6 +272,7 @@ const slideWindow = async (mailboxId: string): Promise<void> => {
 /**
  * WARN a mailbox - early warning state before pause.
  * This gives operators time to react before damage occurs.
+ * Respects system mode (ENFORCE only).
  */
 const warnMailbox = async (mailboxId: string, reason: string): Promise<void> => {
     const mailbox = await prisma.mailbox.findUnique({ where: { id: mailboxId } });
@@ -276,6 +280,43 @@ const warnMailbox = async (mailboxId: string, reason: string): Promise<void> => 
 
     const orgId = mailbox.organization_id;
 
+    // ── CHECK SYSTEM MODE ──
+    const systemMode = await executionGateService.getSystemMode(orgId);
+
+    if (systemMode === SystemMode.OBSERVE) {
+        // OBSERVE mode: Log only, don't change state
+        await auditLogService.logAction({
+            organizationId: orgId,
+            entity: 'mailbox',
+            entityId: mailboxId,
+            trigger: 'monitor_warning',
+            action: 'would_warn_observe',
+            details: `⚠️ OBSERVE: Would warn mailbox - ${reason} (not enforcing in observe mode)`
+        });
+        logger.info(`[MONITOR] [OBSERVE] Would warn mailbox ${mailboxId}: ${reason}`);
+        return;
+    }
+
+    if (systemMode === SystemMode.SUGGEST) {
+        // SUGGEST mode: Create notification, don't change state
+        await notificationService.createNotification(orgId, {
+            type: 'WARNING',
+            title: 'Mailbox Warning Recommended',
+            message: `Mailbox ${mailbox.email || mailboxId} is showing early warning signs. Reason: ${reason}. Consider investigating.`
+        });
+        await auditLogService.logAction({
+            organizationId: orgId,
+            entity: 'mailbox',
+            entityId: mailboxId,
+            trigger: 'monitor_warning',
+            action: 'suggested_warn',
+            details: `⚠️ SUGGEST: Warning recommended - ${reason} (not enforcing in suggest mode)`
+        });
+        logger.info(`[MONITOR] [SUGGEST] Warning suggested for mailbox ${mailboxId}: ${reason}`);
+        return;
+    }
+
+    // ── ENFORCE MODE: Actually warn ──
     // Store warning event
     await eventService.storeEvent({
         organizationId: orgId,
@@ -312,21 +353,61 @@ const warnMailbox = async (mailboxId: string, reason: string): Promise<void> => 
         entityId: mailboxId,
         trigger: 'monitor_warning',
         action: 'warning',
-        details: `⚠️ WARNING: ${reason}`
+        details: `⚠️ [ENFORCE] WARNING: ${reason}`
     });
 
-    logger.info(`[MONITOR] ⚠️ Mailbox ${mailboxId} entered WARNING state: ${reason}`);
+    logger.info(`[MONITOR] [ENFORCE] ⚠️ Mailbox ${mailboxId} entered WARNING state: ${reason}`);
 };
 
 /**
  * Pause a mailbox due to threshold breach.
  * Implements cooldown calculation based on consecutive pauses.
+ * Respects system mode (ENFORCE only).
  */
 const pauseMailbox = async (mailboxId: string, reason: string): Promise<void> => {
     const mailbox = await prisma.mailbox.findUnique({ where: { id: mailboxId } });
     if (!mailbox) return;
 
     const orgId = mailbox.organization_id;
+
+    // ── CHECK SYSTEM MODE ──
+    const systemMode = await executionGateService.getSystemMode(orgId);
+
+    if (systemMode === SystemMode.OBSERVE) {
+        // OBSERVE mode: Log only, don't pause
+        await auditLogService.logAction({
+            organizationId: orgId,
+            entity: 'mailbox',
+            entityId: mailboxId,
+            trigger: 'monitor_threshold',
+            action: 'would_pause_observe',
+            details: `🛑 OBSERVE: Would pause mailbox - ${reason} (not enforcing in observe mode)`
+        });
+        logger.info(`[MONITOR] [OBSERVE] Would pause mailbox ${mailboxId}: ${reason}`);
+        return;
+    }
+
+    if (systemMode === SystemMode.SUGGEST) {
+        // SUGGEST mode: Create high-priority notification, don't pause
+        await notificationService.createNotification(orgId, {
+            type: 'ERROR',
+            title: 'Mailbox Pause Recommended',
+            message: `Mailbox ${mailbox.email || mailboxId} has exceeded bounce threshold and should be paused immediately. Reason: ${reason}. Manual intervention recommended.`
+        });
+        await auditLogService.logAction({
+            organizationId: orgId,
+            entity: 'mailbox',
+            entityId: mailboxId,
+            trigger: 'monitor_threshold',
+            action: 'suggested_pause',
+            details: `🛑 SUGGEST: Pause recommended - ${reason} (not enforcing in suggest mode)`
+        });
+        logger.warn(`[MONITOR] [SUGGEST] Pause recommended for mailbox ${mailboxId}: ${reason}`);
+        return;
+    }
+
+    // ── ENFORCE MODE: Actually pause ──
+    logger.info(`[MONITOR] [ENFORCE] Pausing mailbox ${mailboxId}: ${reason}`);
 
     // ── PRE-PAUSE CORRELATION CHECK ──
     // Before pausing, check if the root cause is at a different entity level
@@ -564,6 +645,43 @@ const checkDomainHealth = async (domainId: string): Promise<void> => {
 
     // Handle WARNING state
     if (shouldWarn && domain.status === 'healthy') {
+        // ── CHECK SYSTEM MODE ──
+        const systemMode = await executionGateService.getSystemMode(orgId);
+
+        if (systemMode === SystemMode.OBSERVE) {
+            // OBSERVE mode: Log only, don't warn
+            await auditLogService.logAction({
+                organizationId: orgId,
+                entity: 'domain',
+                entityId: domainId,
+                trigger: 'monitor_aggregation',
+                action: 'would_warn_observe',
+                details: `⚠️ OBSERVE: Would warn domain - ${reason} (not enforcing in observe mode)`
+            });
+            logger.info(`[MONITOR] [OBSERVE] Would warn domain ${domain.domain}: ${reason}`);
+            return;
+        }
+
+        if (systemMode === SystemMode.SUGGEST) {
+            // SUGGEST mode: Create notification, don't change state
+            await notificationService.createNotification(orgId, {
+                type: 'WARNING',
+                title: 'Domain Warning Recommended',
+                message: `Domain ${domain.domain} is showing warning signs. ${reason}. Consider monitoring closely.`
+            });
+            await auditLogService.logAction({
+                organizationId: orgId,
+                entity: 'domain',
+                entityId: domainId,
+                trigger: 'monitor_aggregation',
+                action: 'suggested_warn',
+                details: `⚠️ SUGGEST: Warning recommended - ${reason} (not enforcing in suggest mode)`
+            });
+            logger.info(`[MONITOR] [SUGGEST] Warning suggested for domain ${domain.domain}: ${reason}`);
+            return;
+        }
+
+        // ── ENFORCE MODE: Actually warn ──
         await prisma.domain.update({
             where: { id: domainId },
             data: { status: 'warning' }
@@ -587,14 +705,53 @@ const checkDomainHealth = async (domainId: string): Promise<void> => {
             entityId: domainId,
             trigger: 'monitor_aggregation',
             action: 'warning',
-            details: `⚠️ WARNING: ${reason}`
+            details: `⚠️ [ENFORCE] WARNING: ${reason}`
         });
 
-        logger.info(`[MONITOR] ⚠️ Domain ${domain.domain} entered WARNING state: ${reason}`);
+        logger.info(`[MONITOR] [ENFORCE] ⚠️ Domain ${domain.domain} entered WARNING state: ${reason}`);
     }
 
     // Handle PAUSE state
     if (shouldPause && domain.status !== 'paused') {
+        // ── CHECK SYSTEM MODE ──
+        const systemMode = await executionGateService.getSystemMode(orgId);
+
+        if (systemMode === SystemMode.OBSERVE) {
+            // OBSERVE mode: Log only, don't pause
+            await auditLogService.logAction({
+                organizationId: orgId,
+                entity: 'domain',
+                entityId: domainId,
+                trigger: 'monitor_aggregation',
+                action: 'would_pause_observe',
+                details: `🛑 OBSERVE: Would pause domain - ${reason} (not enforcing in observe mode)`
+            });
+            logger.info(`[MONITOR] [OBSERVE] Would pause domain ${domain.domain}: ${reason}`);
+            return;
+        }
+
+        if (systemMode === SystemMode.SUGGEST) {
+            // SUGGEST mode: Create notification, don't pause
+            await notificationService.createNotification(orgId, {
+                type: 'ERROR',
+                title: 'Domain Pause Recommended',
+                message: `Domain ${domain.domain} has ${unhealthyCount}/${totalMailboxes} unhealthy mailboxes and should be paused. Reason: ${reason}`
+            });
+            await auditLogService.logAction({
+                organizationId: orgId,
+                entity: 'domain',
+                entityId: domainId,
+                trigger: 'monitor_aggregation',
+                action: 'suggested_pause',
+                details: `🛑 SUGGEST: Pause recommended - ${reason} (not enforcing in suggest mode)`
+            });
+            logger.warn(`[MONITOR] [SUGGEST] Pause recommended for domain ${domain.domain}: ${reason}`);
+            return;
+        }
+
+        // ── ENFORCE MODE: Actually pause ──
+        logger.info(`[MONITOR] [ENFORCE] Pausing domain ${domain.domain}: ${reason}`);
+
         const consecutivePauses = domain.consecutive_pauses + 1;
         const cooldownMs = Math.min(
             COOLDOWN_MINIMUM_MS * Math.pow(COOLDOWN_MULTIPLIER, Math.min(consecutivePauses - 1, 5)),
@@ -641,7 +798,7 @@ const checkDomainHealth = async (domainId: string): Promise<void> => {
             entityId: domainId,
             trigger: 'monitor_aggregation',
             action: 'pause',
-            details: `🛑 PAUSED: ${reason} (cooldown: ${Math.round(cooldownMs / 3600000)}h)`
+            details: `🛑 [ENFORCE] PAUSED: ${reason} (cooldown: ${Math.round(cooldownMs / 3600000)}h)`
         });
 
         // Cascade pause to remaining active mailboxes
@@ -658,11 +815,11 @@ const checkDomainHealth = async (domainId: string): Promise<void> => {
                 entityId: domainId,
                 trigger: 'monitor_cascade',
                 action: 'pause_all',
-                details: `Cascaded pause to ${activeMailboxes.length} remaining mailboxes`
+                details: `[ENFORCE] Cascaded pause to ${activeMailboxes.length} remaining mailboxes`
             });
         }
 
-        logger.info(`[MONITOR] 🛑 Domain ${domain.domain} PAUSED: ${reason}`);
+        logger.info(`[MONITOR] [ENFORCE] 🛑 Domain ${domain.domain} PAUSED: ${reason}`);
     }
 };
 
@@ -672,6 +829,7 @@ const checkDomainHealth = async (domainId: string): Promise<void> => {
 
 /**
  * Pause a domain directly (called when correlation escalates mailbox pause to domain).
+ * Respects system mode (ENFORCE only).
  */
 const pauseDomain = async (domainId: string, reason: string): Promise<void> => {
     const domain = await prisma.domain.findUnique({
@@ -681,6 +839,45 @@ const pauseDomain = async (domainId: string, reason: string): Promise<void> => {
     if (!domain || domain.status === 'paused') return;
 
     const orgId = domain.organization_id;
+
+    // ── CHECK SYSTEM MODE ──
+    const systemMode = await executionGateService.getSystemMode(orgId);
+
+    if (systemMode === SystemMode.OBSERVE) {
+        // OBSERVE mode: Log only, don't pause
+        await auditLogService.logAction({
+            organizationId: orgId,
+            entity: 'domain',
+            entityId: domainId,
+            trigger: 'correlation_escalation',
+            action: 'would_pause_observe',
+            details: `🛑 OBSERVE: Would pause domain - ${reason} (not enforcing in observe mode)`
+        });
+        logger.info(`[MONITOR] [OBSERVE] Would pause domain ${domainId}: ${reason}`);
+        return;
+    }
+
+    if (systemMode === SystemMode.SUGGEST) {
+        // SUGGEST mode: Create critical notification, don't pause
+        await notificationService.createNotification(orgId, {
+            type: 'ERROR',
+            title: 'Domain Pause Recommended',
+            message: `Domain ${domain.domain} has critical health issues and should be paused. Reason: ${reason}. Immediate action required.`
+        });
+        await auditLogService.logAction({
+            organizationId: orgId,
+            entity: 'domain',
+            entityId: domainId,
+            trigger: 'correlation_escalation',
+            action: 'suggested_pause',
+            details: `🛑 SUGGEST: Pause recommended - ${reason} (not enforcing in suggest mode)`
+        });
+        logger.warn(`[MONITOR] [SUGGEST] Pause recommended for domain ${domainId}: ${reason}`);
+        return;
+    }
+
+    // ── ENFORCE MODE: Actually pause ──
+    logger.info(`[MONITOR] [ENFORCE] Pausing domain ${domainId}: ${reason}`);
     const consecutivePauses = domain.consecutive_pauses + 1;
     const cooldownMs = COOLDOWN_MINIMUM_MS * Math.pow(COOLDOWN_MULTIPLIER, Math.min(consecutivePauses - 1, 5));
     const cooldownUntil = new Date(Date.now() + cooldownMs);
@@ -747,10 +944,50 @@ const pauseDomain = async (domainId: string, reason: string): Promise<void> => {
 
 /**
  * Pause a campaign (called when correlation redirects mailbox pause to campaign).
+ * Respects system mode (ENFORCE only).
  */
 const pauseCampaign = async (campaignId: string, organizationId: string, reason: string): Promise<void> => {
     const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
     if (!campaign || campaign.status === 'paused') return;
+
+    // ── CHECK SYSTEM MODE ──
+    const systemMode = await executionGateService.getSystemMode(organizationId);
+
+    if (systemMode === SystemMode.OBSERVE) {
+        // OBSERVE mode: Log only, don't pause
+        await auditLogService.logAction({
+            organizationId,
+            entity: 'campaign',
+            entityId: campaignId,
+            trigger: 'correlation_redirect',
+            action: 'would_pause_observe',
+            details: `🛑 OBSERVE: Would pause campaign - ${reason} (not enforcing in observe mode)`
+        });
+        logger.info(`[MONITOR] [OBSERVE] Would pause campaign ${campaignId}: ${reason}`);
+        return;
+    }
+
+    if (systemMode === SystemMode.SUGGEST) {
+        // SUGGEST mode: Create notification, don't pause
+        await notificationService.createNotification(organizationId, {
+            type: 'ERROR',
+            title: 'Campaign Pause Recommended',
+            message: `Campaign ${campaign.name || campaignId} should be paused due to health correlation. Reason: ${reason}. Review recommended.`
+        });
+        await auditLogService.logAction({
+            organizationId,
+            entity: 'campaign',
+            entityId: campaignId,
+            trigger: 'correlation_redirect',
+            action: 'suggested_pause',
+            details: `🛑 SUGGEST: Pause recommended - ${reason} (not enforcing in suggest mode)`
+        });
+        logger.warn(`[MONITOR] [SUGGEST] Pause recommended for campaign ${campaignId}: ${reason}`);
+        return;
+    }
+
+    // ── ENFORCE MODE: Actually pause ──
+    logger.info(`[MONITOR] [ENFORCE] Pausing campaign ${campaignId}: ${reason}`);
 
     await prisma.campaign.update({
         where: { id: campaignId },
