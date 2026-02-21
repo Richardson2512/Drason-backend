@@ -19,6 +19,12 @@ import * as auditLogService from './auditLogService';
 import * as notificationService from './notificationService';
 import { logger } from './observabilityService';
 
+// ============================================================================
+// PERIODIC ASSESSMENT TIMERS
+// ============================================================================
+let periodicAssessmentInterval: NodeJS.Timeout | null = null;
+const ASSESSMENT_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
 const _resolveTxt = promisify(dns.resolveTxt);
 const _resolve4 = promisify(dns.resolve4);
 
@@ -36,36 +42,64 @@ interface CacheEntry<T> {
 const txtCache = new Map<string, CacheEntry<string[][] | null>>();
 const a4Cache = new Map<string, CacheEntry<string[] | null>>();
 
-async function resolveTxt(hostname: string): Promise<string[][]> {
+async function resolveTxt(hostname: string, retries = 3): Promise<string[][]> {
     const cached = txtCache.get(hostname);
     if (cached && cached.expiresAt > Date.now()) {
         if (cached.value === null) throw Object.assign(new Error('cached ENODATA'), { code: 'ENODATA' });
         return cached.value;
     }
-    try {
-        const result = await _resolveTxt(hostname);
-        txtCache.set(hostname, { value: result, expiresAt: Date.now() + DNS_CACHE_TTL_MS });
-        return result;
-    } catch (err) {
-        txtCache.set(hostname, { value: null, expiresAt: Date.now() + DNS_CACHE_TTL_MS });
-        throw err;
+
+    let lastErr: Error | null = null;
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            const result = await _resolveTxt(hostname);
+            txtCache.set(hostname, { value: result, expiresAt: Date.now() + DNS_CACHE_TTL_MS });
+            return result;
+        } catch (err: any) {
+            lastErr = err;
+            // ENODATA means record doesn't exist, which is a valid response, don't retry
+            if (err.code === 'ENODATA') break;
+
+            if (attempt < retries) {
+                // Exponential backoff with jitter: 500ms, 1000ms, 2000ms + random(0-500)
+                const delay = (500 * Math.pow(2, attempt - 1)) + Math.random() * 500;
+                logger.debug(`[DNS] resolveTxt attempt ${attempt} failed for ${hostname}, retrying in ${Math.round(delay)}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
     }
+
+    txtCache.set(hostname, { value: null, expiresAt: Date.now() + DNS_CACHE_TTL_MS });
+    throw lastErr || new Error(`Failed to resolve TXT for ${hostname}`);
 }
 
-async function resolve4(hostname: string): Promise<string[]> {
+async function resolve4(hostname: string, retries = 3): Promise<string[]> {
     const cached = a4Cache.get(hostname);
     if (cached && cached.expiresAt > Date.now()) {
         if (cached.value === null) throw Object.assign(new Error('cached ENODATA'), { code: 'ENODATA' });
         return cached.value;
     }
-    try {
-        const result = await _resolve4(hostname);
-        a4Cache.set(hostname, { value: result, expiresAt: Date.now() + DNS_CACHE_TTL_MS });
-        return result;
-    } catch (err) {
-        a4Cache.set(hostname, { value: null, expiresAt: Date.now() + DNS_CACHE_TTL_MS });
-        throw err;
+
+    let lastErr: Error | null = null;
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            const result = await _resolve4(hostname);
+            a4Cache.set(hostname, { value: result, expiresAt: Date.now() + DNS_CACHE_TTL_MS });
+            return result;
+        } catch (err: any) {
+            lastErr = err;
+            if (err.code === 'ENODATA') break;
+
+            if (attempt < retries) {
+                const delay = (500 * Math.pow(2, attempt - 1)) + Math.random() * 500;
+                logger.debug(`[DNS] resolve4 attempt ${attempt} failed for ${hostname}, retrying in ${Math.round(delay)}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
     }
+
+    a4Cache.set(hostname, { value: null, expiresAt: Date.now() + DNS_CACHE_TTL_MS });
+    throw lastErr || new Error(`Failed to resolve A vector for ${hostname}`);
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -904,4 +938,41 @@ function getWorstState(states: string[]): string {
         }
     }
     return worst;
+}
+
+// ============================================================================
+// PERIODIC SCHEDULING (Task #2: Domain health check sync intervals)
+// ============================================================================
+
+export function startPeriodicAssessment() {
+    if (periodicAssessmentInterval) {
+        clearInterval(periodicAssessmentInterval);
+    }
+    logger.info(`Starting periodic infrastructure assessment worker (interval: ${ASSESSMENT_INTERVAL_MS}ms)`);
+    periodicAssessmentInterval = setInterval(async () => {
+        try {
+            logger.info('[PeriodicAssessment] Running scheduled infrastructure assessment for all orgs');
+            // Fetch all active organizations
+            const orgs = await prisma.organization.findMany({ select: { id: true } });
+            for (const org of orgs) {
+                try {
+                    // Start assessment but do not block the gate permanently.
+                    // "manual_reassessment" creates report, metricsWorker picks it up.
+                    await assessInfrastructure(org.id, 'manual_reassessment');
+                } catch (orgErr) {
+                    logger.error(`[PeriodicAssessment] Error assessing org ${org.id}`, orgErr instanceof Error ? orgErr : new Error(String(orgErr)));
+                }
+            }
+        } catch (error) {
+            logger.error('[PeriodicAssessment] Error in periodic infrastructure assessment loop', error instanceof Error ? error : new Error(String(error)));
+        }
+    }, ASSESSMENT_INTERVAL_MS);
+}
+
+export function stopPeriodicAssessment() {
+    if (periodicAssessmentInterval) {
+        clearInterval(periodicAssessmentInterval);
+        periodicAssessmentInterval = null;
+        logger.info('Stopped periodic infrastructure assessment worker');
+    }
 }

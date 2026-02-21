@@ -129,6 +129,58 @@ export const campaignActionSchema = z.object({
     reason: z.string().optional()
 });
 
+export const resolveStalledCampaignSchema = z.object({
+    resolutionType: z.enum(['resume', 'reassign', 'archive']),
+    selectedMailboxIds: z.array(z.string()).optional(),
+    targetCampaignId: z.string().optional()
+});
+
+export const applyLoadBalancingSchema = z.object({
+    suggestion: z.object({
+        type: z.string(),
+        campaignId: z.string(),
+        targetMailboxes: z.number().optional(),
+        sourceCampaignId: z.string().optional()
+    })
+});
+
+export const campaignRecommendationsBatchSchema = z.object({
+    leadIds: z.array(z.string()).min(1, 'At least one lead ID is required'),
+    options: z.object({
+        persona: z.string().optional(),
+        minScore: z.number().optional()
+    }).optional()
+});
+
+// ============================================================================
+// SCHEMAS — Users
+// ============================================================================
+
+export const updateUserSchema = z.object({
+    name: z.string().min(1, 'Name is required').optional()
+});
+
+export const changePasswordSchema = z.object({
+    currentPassword: z.string().min(1, 'Current password is required'),
+    newPassword: z.string().min(8, 'New password must be at least 8 characters')
+});
+
+// ============================================================================
+// SCHEMAS — Billing
+// ============================================================================
+
+export const createCheckoutSchema = z.object({
+    tier: z.enum(['pro', 'enterprise'])
+});
+
+// ============================================================================
+// SCHEMAS — Healing
+// ============================================================================
+
+export const acknowledgeTransitionSchema = z.object({
+    transitionId: z.string().min(1, 'Transition ID is required')
+});
+
 // ============================================================================
 // SCHEMAS — Query Params (pagination)
 // ============================================================================

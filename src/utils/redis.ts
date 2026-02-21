@@ -90,3 +90,35 @@ export async function disconnectRedis(): Promise<void> {
         logger.info('Redis disconnected');
     }
 }
+
+/**
+ * Acquire a distributed lock.
+ * Returns true if lock was acquired, false if it's already held by another instance.
+ */
+export async function acquireLock(key: string, ttlSeconds: number = 600): Promise<boolean> {
+    if (!redisClient || !isConnected) {
+        // Fallback for local development without Redis: assume lock is granted
+        return true;
+    }
+    try {
+        const result = await redisClient.set(key, 'locked', 'EX', ttlSeconds, 'NX');
+        return result === 'OK';
+    } catch (err) {
+        logger.error(`Failed to acquire lock for key ${key}`, err as Error);
+        return false; // Fail closed if Redis throws an error
+    }
+}
+
+/**
+ * Release a previously acquired distributed lock.
+ */
+export async function releaseLock(key: string): Promise<void> {
+    if (!redisClient || !isConnected) {
+        return;
+    }
+    try {
+        await redisClient.del(key);
+    } catch (err) {
+        logger.error(`Failed to release lock for key ${key}`, err as Error);
+    }
+}

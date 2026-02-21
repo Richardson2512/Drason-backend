@@ -192,25 +192,23 @@ async function reclassifyLead(lead: {
     const newResult = await leadHealthService.classifyLeadHealth(lead.email);
     const newRank = CLASSIFICATION_RANK[newResult.classification as HealthClassification] ?? 0;
 
-    // Update the health_checked_at timestamp regardless
+    const updateData: any = {
+        health_checked_at: new Date(),
+        health_score_calc: newResult.score,
+        health_checks: newResult.checks as any,
+    };
+
+    const willUpgrade = newRank > currentRank;
+    if (willUpgrade) {
+        updateData.health_classification = newResult.classification;
+    }
+
     await prisma.lead.update({
         where: { id: lead.id },
-        data: {
-            health_checked_at: new Date(),
-            health_score_calc: newResult.score,
-            health_checks: newResult.checks as any,
-        },
+        data: updateData,
     });
 
-    // Only upgrade, never downgrade
-    if (newRank > currentRank) {
-        await prisma.lead.update({
-            where: { id: lead.id },
-            data: {
-                health_classification: newResult.classification,
-            },
-        });
-
+    if (willUpgrade) {
         await auditLogService.logAction({
             organizationId: lead.organization_id,
             entity: 'lead',

@@ -219,6 +219,7 @@ model Mailbox {
   engagement_rate      Float   @default(0) // (opens + clicks + replies) / total_sent
   warmup_reputation    String? // Smartlead warmup reputation status
   warmup_status        String? // Smartlead warmup enabled status
+  warmup_limit         Int     @default(0) // Smartlead daily warmup limit (total_warmup_per_day)
 
   domain_id       String
   organization_id String

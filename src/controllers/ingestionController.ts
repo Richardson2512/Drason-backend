@@ -123,6 +123,21 @@ export const ingestLead = async (req: Request, res: Response) => {
             });
         }
 
+        // === DEDUPLICATION CHECK ===
+        // If lead already exists and is assigned to a campaign, do not re-route
+        if (createdLead.assigned_campaign_id) {
+            logger.info(`[INGEST] Lead ${createdLead.email} already assigned to campaign ${createdLead.assigned_campaign_id}. Skipping routing.`);
+            return res.json({
+                success: true,
+                data: {
+                    message: 'Lead already exists and is active in a campaign',
+                    leadId: createdLead.id,
+                    assignedCampaignId: createdLead.assigned_campaign_id,
+                    pushedToSmartlead: false
+                }
+            });
+        }
+
         // Resolve routing with org context
         const campaignId = await routingService.resolveCampaignForLead(organizationId, createdLead);
 
@@ -406,6 +421,19 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
                 healthClassification: healthResult.classification,
                 healthScore: healthResult.score,
                 blockReasons: healthResult.reasons,
+                success: true
+            });
+        }
+
+        // === DEDUPLICATION CHECK ===
+        // If lead already exists and is assigned to a campaign, do not re-route
+        if (createdLead.assigned_campaign_id) {
+            logger.info(`[INGEST CLAY] Lead ${createdLead.email} already assigned to campaign ${createdLead.assigned_campaign_id}. Skipping routing.`);
+            return res.json({
+                message: 'Lead already exists and is active in a campaign',
+                leadId: createdLead.id,
+                assignedCampaignId: createdLead.assigned_campaign_id,
+                pushedToSmartlead: false,
                 success: true
             });
         }

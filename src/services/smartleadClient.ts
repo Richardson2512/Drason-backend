@@ -19,6 +19,7 @@ import { EventType, LeadState } from '../types';
 import { logger } from './observabilityService';
 import { smartleadBreaker } from '../utils/circuitBreaker';
 import { smartleadRateLimiter } from '../utils/rateLimiter';
+import { acquireLock, releaseLock } from '../utils/redis';
 import { calculateEngagementScore, calculateFinalScore } from './leadScoringService';
 import { syncProgressService } from './syncProgressService';
 import { TIER_LIMITS } from './polarClient';
@@ -57,6 +58,15 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
     const apiKey = await getApiKey(organizationId);
     if (!apiKey) {
         throw new Error('Smartlead API key not configured');
+    }
+
+    const lockKey = `sync:smartlead:org:${organizationId}`;
+    const acquired = await acquireLock(lockKey, 15 * 60); // 15 min TTL
+    if (!acquired) {
+        const errMsg = `Sync already in progress for organization ${organizationId}`;
+        logger.warn(`[SmartleadSync] ${errMsg}`);
+        if (sessionId) syncProgressService.emitError(sessionId, errMsg);
+        throw new Error(errMsg);
     }
 
     // Debug: Log API key format (first/last 4 chars only for security)
@@ -134,7 +144,9 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             });
         }
 
-        for (const campaign of campaigns) {
+        let campaignUpserts = [];
+        for (let i = 0; i < campaigns.length; i++) {
+            const campaign = campaigns[i];
             // ── Fetch detailed analytics from Smartlead (sent, opens, clicks, bounces) ──
             let analytics = {
                 sent_count: 0,
@@ -180,46 +192,6 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             const clickRate = totalSent > 0 ? (totalClicks / totalSent) * 100 : 0;
             const replyRate = totalSent > 0 ? (totalReplies / totalSent) * 100 : 0;
 
-            await prisma.campaign.upsert({
-                where: { id: campaign.id.toString() },
-                update: {
-                    name: campaign.name,
-                    status: campaign.status || 'active',
-                    bounce_rate: bounceRate,
-                    total_sent: totalSent,
-                    total_bounced: totalBounced,
-                    // Analytics fields (SOFT SIGNALS - display only)
-                    open_count: totalOpens,
-                    click_count: totalClicks,
-                    reply_count: totalReplies,
-                    unsubscribed_count: totalUnsubscribed,
-                    open_rate: openRate,
-                    click_rate: clickRate,
-                    reply_rate: replyRate,
-                    analytics_updated_at: new Date(),
-                    last_synced_at: new Date(),
-                    organization_id: organizationId // Force ownership update
-                },
-                create: {
-                    id: campaign.id.toString(),
-                    name: campaign.name,
-                    status: campaign.status || 'active',
-                    bounce_rate: bounceRate,
-                    total_sent: totalSent,
-                    total_bounced: totalBounced,
-                    // Analytics fields (SOFT SIGNALS - display only)
-                    open_count: totalOpens,
-                    click_count: totalClicks,
-                    reply_count: totalReplies,
-                    unsubscribed_count: totalUnsubscribed,
-                    open_rate: openRate,
-                    click_rate: clickRate,
-                    reply_rate: replyRate,
-                    analytics_updated_at: new Date(),
-                    organization_id: organizationId
-                }
-            });
-
             if (bounceRate > 0) {
                 logger.info('[CampaignSync] Campaign bounce rate synced', {
                     campaignId: campaign.id,
@@ -230,13 +202,57 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 });
             }
 
+            campaignUpserts.push(
+                prisma.campaign.upsert({
+                    where: { id: campaign.id.toString() },
+                    update: {
+                        name: campaign.name,
+                        status: campaign.status || 'active',
+                        bounce_rate: bounceRate,
+                        total_sent: totalSent,
+                        total_bounced: totalBounced,
+                        open_count: totalOpens,
+                        click_count: totalClicks,
+                        reply_count: totalReplies,
+                        unsubscribed_count: totalUnsubscribed,
+                        open_rate: openRate,
+                        click_rate: clickRate,
+                        reply_rate: replyRate,
+                        analytics_updated_at: new Date(),
+                        last_synced_at: new Date(),
+                        organization_id: organizationId
+                    },
+                    create: {
+                        id: campaign.id.toString(),
+                        name: campaign.name,
+                        status: campaign.status || 'active',
+                        bounce_rate: bounceRate,
+                        total_sent: totalSent,
+                        total_bounced: totalBounced,
+                        open_count: totalOpens,
+                        click_count: totalClicks,
+                        reply_count: totalReplies,
+                        unsubscribed_count: totalUnsubscribed,
+                        open_rate: openRate,
+                        click_rate: clickRate,
+                        reply_rate: replyRate,
+                        analytics_updated_at: new Date(),
+                        organization_id: organizationId
+                    }
+                })
+            );
+
             campaignCount++;
 
-            if (sessionId) {
-                syncProgressService.emitProgress(sessionId, 'campaigns', 'in_progress', {
-                    current: campaignCount,
-                    total: campaigns.length
-                });
+            if (campaignUpserts.length >= 50 || i === campaigns.length - 1) {
+                await prisma.$transaction(campaignUpserts);
+                campaignUpserts = [];
+                if (sessionId) {
+                    syncProgressService.emitProgress(sessionId, 'campaigns', 'in_progress', {
+                        current: campaignCount,
+                        total: campaigns.length
+                    });
+                }
             }
         }
 
@@ -268,25 +284,18 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             });
         }
 
-        for (const mailbox of mailboxes) {
-            // Extract domain from email
-            const email = mailbox.from_email || mailbox.email || '';
-            const domainName = email.split('@')[1] || 'unknown.com';
+        const existingDomains = await prisma.domain.findMany({ where: { organization_id: organizationId } });
+        const domainMap = new Map(existingDomains.map(d => [d.domain, d]));
 
-            // NOTE: Smartlead /email-accounts endpoint does NOT return send/bounce stats
-            // Mailbox stats are tracked via webhooks (email_sent, email_bounced events)
-            // Historical data must be aggregated from campaigns if needed
+        const existingMailboxes = await prisma.mailbox.findMany({ where: { organization_id: organizationId }, select: { id: true } });
+        const existingMailboxSet = new Set(existingMailboxes.map(m => m.id));
 
-            // Ensure domain exists
-            let domain = await prisma.domain.findFirst({
-                where: {
-                    organization_id: organizationId,
-                    domain: domainName
-                }
-            });
+        const uniqueDomainNames = [...new Set(mailboxes.map((m: any) => (m.from_email || m.email || '').split('@')[1] || 'unknown.com'))];
+        const newDomains = uniqueDomainNames.filter(d => !domainMap.has(d as string));
 
-            if (!domain) {
-                // Check domain capacity before creating
+        if (newDomains.length > 0) {
+            const domainsToCreate = [];
+            for (const domainName of newDomains) {
                 if (org.current_domain_count >= limits.domains) {
                     logger.warn('[Smartlead Sync] Domain capacity reached, skipping domain creation', {
                         organizationId,
@@ -295,31 +304,42 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         tier: org.subscription_tier,
                         skippedDomain: domainName
                     });
-                    continue; // Skip this mailbox if we can't create its domain
+                    continue; // Skip this domain
                 }
-
-                domain = await prisma.domain.create({
-                    data: {
-                        domain: domainName,
-                        status: 'healthy',
-                        organization_id: organizationId
-                    }
+                domainsToCreate.push({
+                    domain: domainName as string,
+                    status: 'healthy',
+                    organization_id: organizationId
                 });
-
-                // Increment domain count
+                org.current_domain_count++;
+            }
+            if (domainsToCreate.length > 0) {
+                await prisma.domain.createMany({ data: domainsToCreate });
                 await prisma.organization.update({
                     where: { id: organizationId },
-                    data: { current_domain_count: { increment: 1 } }
+                    data: { current_domain_count: org.current_domain_count }
                 });
-                org.current_domain_count++; // Update local copy
+                const updatedDomains = await prisma.domain.findMany({ where: { organization_id: organizationId } });
+                updatedDomains.forEach(d => domainMap.set(d.domain, d));
+            }
+        }
+
+        let mailboxUpserts = [];
+        let mailboxesToIncrement = 0;
+
+        for (let i = 0; i < mailboxes.length; i++) {
+            const mailbox = mailboxes[i];
+            // Extract domain from email
+            const email = mailbox.from_email || mailbox.email || '';
+            const domainName = email.split('@')[1] || 'unknown.com';
+            const domain = domainMap.get(domainName);
+
+            if (!domain) {
+                continue; // Domain was skipped due to capacity limits
             }
 
-            // Check if mailbox exists
-            const existingMailbox = await prisma.mailbox.findUnique({
-                where: { id: mailbox.id.toString() }
-            });
-
-            if (!existingMailbox) {
+            const isNewMailbox = !existingMailboxSet.has(mailbox.id.toString());
+            if (isNewMailbox) {
                 // Check mailbox capacity before creating
                 if (org.current_mailbox_count >= limits.mailboxes) {
                     logger.warn('[Smartlead Sync] Mailbox capacity reached, skipping mailbox creation', {
@@ -331,6 +351,8 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     });
                     continue; // Skip this mailbox
                 }
+                org.current_mailbox_count++;
+                mailboxesToIncrement++;
             }
 
             // Determine mailbox health status based on connection state
@@ -358,61 +380,68 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             // Extract warmup data if available (SOFT SIGNALS - informational only)
             const warmupStatus = mailbox.warmup_status || mailbox.warmup_details?.status || null;
             const warmupReputation = mailbox.warmup_reputation || mailbox.warmup_details?.warmup_reputation || null;
+            const warmupLimit = mailbox.warmup_details?.total_warmup_per_day || mailbox.total_warmup_per_day || 0;
 
             // Extract stats from Smartlead API response
             const dailySentCount = mailbox.daily_sent_count || 0;
             const warmupSpamCount = mailbox.warmup_details?.total_spam_count || 0;
 
             // Upsert mailbox with connection diagnostics and stats
-            await prisma.mailbox.upsert({
-                where: { id: mailbox.id.toString() },
-                update: {
-                    email,
-                    smartlead_email_account_id: mailbox.id,
-                    status: mailboxStatus,
-                    smtp_status: mailbox.is_smtp_success === true,
-                    imap_status: mailbox.is_imap_success === true,
-                    connection_error: connectionError || null,
-                    total_sent_count: dailySentCount,
-                    spam_count: warmupSpamCount,
-                    warmup_status: warmupStatus,
-                    warmup_reputation: warmupReputation,
-                    last_activity_at: new Date()
-                },
-                create: {
-                    id: mailbox.id.toString(),
-                    email,
-                    smartlead_email_account_id: mailbox.id,
-                    status: mailboxStatus,
-                    smtp_status: mailbox.is_smtp_success === true,
-                    imap_status: mailbox.is_imap_success === true,
-                    connection_error: connectionError || null,
-                    total_sent_count: dailySentCount,
-                    spam_count: warmupSpamCount,
-                    warmup_status: warmupStatus,
-                    warmup_reputation: warmupReputation,
-                    domain_id: domain.id,
-                    organization_id: organizationId
-                }
-            });
-
-            // Increment mailbox count if this was a new mailbox
-            if (!existingMailbox) {
-                await prisma.organization.update({
-                    where: { id: organizationId },
-                    data: { current_mailbox_count: { increment: 1 } }
-                });
-                org.current_mailbox_count++; // Update local copy
-            }
+            mailboxUpserts.push(
+                prisma.mailbox.upsert({
+                    where: { id: mailbox.id.toString() },
+                    update: {
+                        email,
+                        smartlead_email_account_id: mailbox.id,
+                        status: mailboxStatus,
+                        smtp_status: mailbox.is_smtp_success === true,
+                        imap_status: mailbox.is_imap_success === true,
+                        connection_error: connectionError || null,
+                        total_sent_count: dailySentCount,
+                        spam_count: warmupSpamCount,
+                        warmup_status: warmupStatus,
+                        warmup_reputation: warmupReputation,
+                        warmup_limit: warmupLimit,
+                        last_activity_at: new Date()
+                    },
+                    create: {
+                        id: mailbox.id.toString(),
+                        email,
+                        smartlead_email_account_id: mailbox.id,
+                        status: mailboxStatus,
+                        smtp_status: mailbox.is_smtp_success === true,
+                        imap_status: mailbox.is_imap_success === true,
+                        connection_error: connectionError || null,
+                        total_sent_count: dailySentCount,
+                        spam_count: warmupSpamCount,
+                        warmup_status: warmupStatus,
+                        warmup_reputation: warmupReputation,
+                        warmup_limit: warmupLimit,
+                        domain_id: domain.id,
+                        organization_id: organizationId
+                    }
+                })
+            );
 
             mailboxCount++;
 
-            if (sessionId) {
-                syncProgressService.emitProgress(sessionId, 'mailboxes', 'in_progress', {
-                    current: mailboxCount,
-                    total: mailboxes.length
-                });
+            if (mailboxUpserts.length >= 50 || i === mailboxes.length - 1) {
+                await prisma.$transaction(mailboxUpserts);
+                mailboxUpserts = [];
+                if (sessionId) {
+                    syncProgressService.emitProgress(sessionId, 'mailboxes', 'in_progress', {
+                        current: mailboxCount,
+                        total: mailboxes.length
+                    });
+                }
             }
+        }
+
+        if (mailboxesToIncrement > 0) {
+            await prisma.organization.update({
+                where: { id: organizationId },
+                data: { current_mailbox_count: org.current_mailbox_count }
+            });
         }
 
         if (sessionId) {
@@ -539,6 +568,8 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         });
                     }
 
+                    const leadUpserts = [];
+
                     for (const leadData of leadsList) {
                         // Smartlead returns leads wrapped in a container object with nested 'lead' property
                         const lead = leadData.lead || leadData;
@@ -570,39 +601,45 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
 
                         // Note: /campaigns/{id}/leads endpoint does NOT include engagement stats
                         // We'll fetch those separately using CSV export endpoint after contact sync completes
-                        const upsertedLead = await prisma.lead.upsert({
-                            where: {
-                                organization_id_email: {
-                                    organization_id: organizationId,
-                                    email
+                        leadUpserts.push(
+                            prisma.lead.upsert({
+                                where: {
+                                    organization_id_email: {
+                                        organization_id: organizationId,
+                                        email
+                                    }
+                                },
+                                update: {
+                                    assigned_campaign_id: campaignId,
+                                    updated_at: new Date()
+                                    // Note: Status is intentionally NOT updated here
+                                    // - Smartlead leads are created as 'active'
+                                    // - Clay leads stay 'held' until execution gate approves them
+                                    // - Status changes only via execution gate or monitoring service
+                                },
+                                create: {
+                                    email,
+                                    persona,
+                                    lead_score: 50, // Default neutral score
+                                    source: 'smartlead',
+                                    status: 'active', // Pre-existing leads in Smartlead campaigns are already approved
+                                    health_classification: 'green',
+                                    emails_sent: 0,
+                                    emails_opened: 0,
+                                    emails_clicked: 0,
+                                    emails_replied: 0,
+                                    assigned_campaign_id: campaignId,
+                                    organization_id: organizationId
                                 }
-                            },
-                            update: {
-                                assigned_campaign_id: campaignId,
-                                updated_at: new Date()
-                                // Note: Status is intentionally NOT updated here
-                                // - Smartlead leads are created as 'active'
-                                // - Clay leads stay 'held' until execution gate approves them
-                                // - Status changes only via execution gate or monitoring service
-                            },
-                            create: {
-                                email,
-                                persona,
-                                lead_score: 50, // Default neutral score
-                                source: 'smartlead',
-                                status: 'active', // Pre-existing leads in Smartlead campaigns are already approved
-                                health_classification: 'green',
-                                emails_sent: 0,
-                                emails_opened: 0,
-                                emails_clicked: 0,
-                                emails_replied: 0,
-                                assigned_campaign_id: campaignId,
-                                organization_id: organizationId
-                            }
-                        });
+                            })
+                        );
 
                         leadCount++;
                         campaignLeadCount++;
+                    }
+
+                    if (leadUpserts.length > 0) {
+                        await prisma.$transaction(leadUpserts);
                     }
 
                     // If we got fewer than the limit, no more pages
@@ -658,6 +695,9 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                             });
                         }
 
+                        let statsOps = [];
+                        let batchLeads = [];
+
                         for (const stat of leadStats) {
                             const statEmail = stat.email || stat.lead_email;
                             if (!statEmail) continue;
@@ -669,16 +709,26 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
 
                             if (openCount === 0 && clickCount === 0 && replyCount === 0 && sentCount === 0) continue;
 
-                            try {
-                                const leadUpdateData: any = {
-                                    emails_opened: openCount,
-                                    emails_clicked: clickCount,
-                                    emails_replied: replyCount,
-                                    ...(sentCount > 0 && { emails_sent: sentCount }),
-                                    last_activity_at: (openCount > 0 || clickCount > 0 || replyCount > 0) ? new Date() : undefined
-                                };
+                            // Calculate engagement score
+                            let engagementScore = 50;
+                            if (replyCount > 0) engagementScore += Math.min(replyCount * 15, 30);
+                            if (clickCount > 0) engagementScore += Math.min(clickCount * 5, 20);
+                            if (openCount > 0) engagementScore += Math.min(openCount * 2, 15);
+                            const finalScore = Math.max(0, Math.min(100, engagementScore));
 
-                                const updatedLead = await prisma.lead.update({
+                            const leadUpdateData: any = {
+                                emails_opened: openCount,
+                                emails_clicked: clickCount,
+                                emails_replied: replyCount,
+                                ...(sentCount > 0 && { emails_sent: sentCount }),
+                                last_activity_at: (openCount > 0 || clickCount > 0 || replyCount > 0) ? new Date() : undefined,
+                                lead_score: finalScore
+                            };
+
+                            batchLeads.push({ email: statEmail, openCount, clickCount, replyCount });
+
+                            statsOps.push(
+                                prisma.lead.update({
                                     where: {
                                         organization_id_email: {
                                             organization_id: organizationId,
@@ -686,62 +736,70 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                         }
                                     },
                                     data: leadUpdateData,
-                                    select: { id: true }
-                                });
+                                    select: { id: true, email: true }
+                                })
+                            );
+                        }
 
-                                // Create per-event audit log entries with correct UUID
-                                const leadUuid = updatedLead.id;
-                                if (openCount > 0) {
-                                    await auditLogService.logAction({
-                                        organizationId,
-                                        entity: 'lead',
-                                        entityId: leadUuid,
-                                        trigger: 'smartlead_sync',
-                                        action: 'email_opened',
-                                        details: `Email opened ${openCount} time(s) (from lead-statistics API)`
-                                    });
+                        if (statsOps.length > 0) {
+                            try {
+                                const updatedLeads = await prisma.$transaction(statsOps);
+                                statsUpdated += updatedLeads.length;
+
+                                // Batch Audit Logs
+                                const auditOps = [];
+                                for (const lead of updatedLeads) {
+                                    const stat = batchLeads.find(s => s.email === lead.email);
+                                    if (!stat) continue;
+
+                                    const leadUuid = lead.id;
+                                    if (stat.openCount > 0) {
+                                        auditOps.push(prisma.auditLog.create({
+                                            data: {
+                                                organization_id: organizationId,
+                                                entity: 'lead',
+                                                entity_id: leadUuid,
+                                                trigger: 'smartlead_sync',
+                                                action: 'email_opened',
+                                                details: `Email opened ${stat.openCount} time(s) (from lead-statistics API)`
+                                            }
+                                        }));
+                                    }
+                                    if (stat.clickCount > 0) {
+                                        auditOps.push(prisma.auditLog.create({
+                                            data: {
+                                                organization_id: organizationId,
+                                                entity: 'lead',
+                                                entity_id: leadUuid,
+                                                trigger: 'smartlead_sync',
+                                                action: 'email_clicked',
+                                                details: `Email link clicked ${stat.clickCount} time(s) (from lead-statistics API)`
+                                            }
+                                        }));
+                                    }
+                                    if (stat.replyCount > 0) {
+                                        auditOps.push(prisma.auditLog.create({
+                                            data: {
+                                                organization_id: organizationId,
+                                                entity: 'lead',
+                                                entity_id: leadUuid,
+                                                trigger: 'smartlead_sync',
+                                                action: 'email_replied',
+                                                details: `Email replied ${stat.replyCount} time(s) (from lead-statistics API)`
+                                            }
+                                        }));
+                                    }
                                 }
-                                if (clickCount > 0) {
-                                    await auditLogService.logAction({
-                                        organizationId,
-                                        entity: 'lead',
-                                        entityId: leadUuid,
-                                        trigger: 'smartlead_sync',
-                                        action: 'email_clicked',
-                                        details: `Email link clicked ${clickCount} time(s) (from lead-statistics API)`
-                                    });
+
+                                if (auditOps.length > 0) {
+                                    // Chunk audit operations to avoid large transaction memory footprint
+                                    const chunkSize = 100;
+                                    for (let j = 0; j < auditOps.length; j += chunkSize) {
+                                        await prisma.$transaction(auditOps.slice(j, j + chunkSize));
+                                    }
                                 }
-                                if (replyCount > 0) {
-                                    await auditLogService.logAction({
-                                        organizationId,
-                                        entity: 'lead',
-                                        entityId: leadUuid,
-                                        trigger: 'smartlead_sync',
-                                        action: 'email_replied',
-                                        details: `Email replied ${replyCount} time(s) (from lead-statistics API)`
-                                    });
-                                }
-
-                                // Calculate engagement score
-                                let engagementScore = 50;
-                                if (replyCount > 0) engagementScore += Math.min(replyCount * 15, 30);
-                                if (clickCount > 0) engagementScore += Math.min(clickCount * 5, 20);
-                                if (openCount > 0) engagementScore += Math.min(openCount * 2, 15);
-                                const finalScore = Math.max(0, Math.min(100, engagementScore));
-
-                                await prisma.lead.update({
-                                    where: {
-                                        organization_id_email: {
-                                            organization_id: organizationId,
-                                            email: statEmail
-                                        }
-                                    },
-                                    data: { lead_score: finalScore }
-                                });
-
-                                statsUpdated++;
                             } catch (updateError: any) {
-                                logger.debug(`[LeadEngagement] Skipping lead-statistics update for ${statEmail}`, {
+                                logger.debug(`[LeadEngagement] Batch lead-statistics update failed`, {
                                     error: updateError.message
                                 });
                             }
@@ -861,6 +919,18 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                     // This will be tracked via hard_bounce events in webhooks
                                 }
 
+                                // Calculate engagement score using canonical formula
+                                if (openCount > 0 || clickCount > 0 || replyCount > 0) {
+                                    const engagement = {
+                                        opens: openCount,
+                                        clicks: clickCount,
+                                        replies: replyCount,
+                                        bounces: 0
+                                    };
+                                    const breakdown = calculateEngagementScore(engagement);
+                                    leadUpdateData.lead_score = calculateFinalScore(breakdown);
+                                }
+
                                 const updatedLead = await prisma.lead.update({
                                     where: {
                                         organization_id_email: {
@@ -923,29 +993,6 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                             });
                                         }
                                     }
-
-                                    // Calculate engagement score using canonical formula
-                                    // (same as getLeadScoreBreakdown so they always match)
-                                    const engagement = {
-                                        opens: openCount,
-                                        clicks: clickCount,
-                                        replies: replyCount,
-                                        bounces: 0
-                                    };
-                                    const breakdown = calculateEngagementScore(engagement);
-                                    const finalScore = calculateFinalScore(breakdown);
-
-                                    await prisma.lead.update({
-                                        where: {
-                                            organization_id_email: {
-                                                organization_id: organizationId,
-                                                email
-                                            }
-                                        },
-                                        data: {
-                                            lead_score: finalScore
-                                        }
-                                    });
                                 }
 
                                 // ── MAILBOX ATTRIBUTION: Update mailbox stats if sender is known ──
@@ -1264,6 +1311,8 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
         }
 
         throw error;
+    } finally {
+        await releaseLock(lockKey);
     }
 };
 
@@ -1419,7 +1468,7 @@ export const pushLeadToCampaign = async (
         }
 
         // === HANDLE DUPLICATE LEAD ===
-        const isDuplicateError =  errorMessage.toLowerCase().includes('duplicate') ||
+        const isDuplicateError = errorMessage.toLowerCase().includes('duplicate') ||
             errorMessage.toLowerCase().includes('already exists') ||
             statusCode === 409; // Conflict status
 

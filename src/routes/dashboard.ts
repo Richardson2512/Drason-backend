@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import * as dashboardController from '../controllers/dashboardController';
 import * as campaignController from '../controllers/campaignController';
-import { validateBody, validateQuery, routingRuleSchema, campaignActionSchema, paginationSchema, auditLogQuerySchema } from '../middleware/validation';
+import { validateBody, validateQuery, routingRuleSchema, campaignActionSchema, paginationSchema, auditLogQuerySchema, resolveStalledCampaignSchema, applyLoadBalancingSchema, campaignRecommendationsBatchSchema } from '../middleware/validation';
 import { requireRole } from '../middleware/security';
 import { UserRole } from '../types';
 
@@ -30,13 +30,13 @@ router.post('/campaign/pause', validateBody(campaignActionSchema), dashboardCont
 router.post('/campaign/resume', validateBody(campaignActionSchema), dashboardController.resumeCampaign);
 router.post('/campaigns/pause-all', campaignController.pauseAllCampaigns);
 router.get('/campaigns/:id/stalled-context', campaignController.getStalledCampaignContext);
-router.post('/campaigns/:id/resolve-stalled', campaignController.resolveStalledCampaign);
+router.post('/campaigns/:id/resolve-stalled', validateBody(resolveStalledCampaignSchema), campaignController.resolveStalledCampaign);
 router.get('/campaigns/:id/export-leads', campaignController.exportCampaignLeads);
 router.post('/campaigns/:id/archive', campaignController.archiveCampaign);
 
 // Load balancing endpoints
 router.get('/campaigns/load-balancing', campaignController.getLoadBalancingSuggestions);
-router.post('/campaigns/load-balancing/apply', campaignController.applyLoadBalancingSuggestion);
+router.post('/campaigns/load-balancing/apply', validateBody(applyLoadBalancingSchema), campaignController.applyLoadBalancingSuggestion);
 
 // Predictive monitoring endpoints
 router.get('/campaigns/predictive-risks', campaignController.getPredictiveRisks);
@@ -44,7 +44,7 @@ router.post('/campaigns/predictive-alerts', campaignController.triggerPredictive
 
 // Smart routing endpoints
 router.get('/leads/:leadId/campaign-recommendations', campaignController.getSmartCampaignRecommendations);
-router.post('/leads/campaign-recommendations', campaignController.getSmartCampaignRecommendationsBatch);
+router.post('/leads/campaign-recommendations', validateBody(campaignRecommendationsBatchSchema), campaignController.getSmartCampaignRecommendationsBatch);
 
 // Lead scoring endpoints
 import * as leadScoringController from '../controllers/leadScoringController';

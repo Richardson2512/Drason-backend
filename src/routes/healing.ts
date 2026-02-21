@@ -6,6 +6,7 @@
 
 import { Router } from 'express';
 import * as healingController from '../controllers/healingController';
+import { validateBody, acknowledgeTransitionSchema } from '../middleware/validation';
 
 const router = Router();
 
@@ -13,7 +14,7 @@ const router = Router();
 router.get('/transition-gate', healingController.getTransitionGate);
 
 // Acknowledge low-score assessment to proceed
-router.post('/acknowledge-transition', healingController.acknowledgeTransition);
+router.post('/acknowledge-transition', validateBody(acknowledgeTransitionSchema), healingController.acknowledgeTransition);
 
 // Recovery status overview
 router.get('/recovery-status', healingController.getRecoveryStatus);

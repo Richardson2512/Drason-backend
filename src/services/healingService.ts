@@ -679,10 +679,56 @@ export async function transitionPhase(
         clean_sends_since_phase: 0,
     };
 
+    // === OPTIMISTIC LOCKING ===
+    // Only update if recovery_phase is still fromPhase (prevents race conditions)
+    // If another process (bounce handler, graduation worker) changed the phase,
+    // this update will affect 0 rows and we abort
+    let updateResult;
     if (entityType === 'mailbox') {
-        await prisma.mailbox.update({ where: { id: entityId }, data: updateData });
+        updateResult = await prisma.mailbox.updateMany({
+            where: {
+                id: entityId,
+                recovery_phase: fromPhase  // Condition: phase must still be fromPhase
+            },
+            data: updateData
+        });
     } else {
-        await prisma.domain.update({ where: { id: entityId }, data: updateData });
+        updateResult = await prisma.domain.updateMany({
+            where: {
+                id: entityId,
+                recovery_phase: fromPhase  // Condition: phase must still be fromPhase
+            },
+            data: updateData
+        });
+    }
+
+    // Check if update succeeded (count > 0)
+    if (updateResult.count === 0) {
+        // Phase changed concurrently - abort transition
+        logger.warn(`[HEALING] Phase transition aborted - concurrent modification detected`, {
+            entityType,
+            entityId,
+            expectedPhase: fromPhase,
+            targetPhase: toPhase,
+            reason: 'Recovery phase changed by another process (race condition prevented)'
+        });
+
+        await auditLogService.logAction({
+            organizationId,
+            entity: entityType,
+            entityId,
+            trigger: 'healing_graduation',
+            action: 'phase_transition_aborted',
+            details: `Transition ${fromPhase} → ${toPhase} aborted due to concurrent phase change`
+        });
+
+        return {
+            transitioned: false,
+            fromPhase,
+            toPhase,
+            reason: 'Concurrent modification detected',
+            resilienceScore: currentResilienceScore
+        };
     }
 
     // Record state transition

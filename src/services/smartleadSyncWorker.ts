@@ -16,6 +16,7 @@ import { prisma } from '../index';
 import { logger } from './observabilityService';
 import * as smartleadClient from './smartleadClient';
 import * as auditLogService from './auditLogService';
+import { acquireLock, releaseLock } from '../utils/redis';
 
 // ============================================================================
 // TYPES
@@ -110,6 +111,14 @@ export function getSmartleadSyncWorkerStatus(): WorkerStatus {
  * Run a full sync cycle for all organizations with Smartlead configured.
  */
 async function runSync(): Promise<void> {
+    const lockKey = 'worker:lock:smartlead_sync';
+    const acquired = await acquireLock(lockKey, 20 * 60); // 20 mins TTL
+
+    if (!acquired) {
+        logger.info('[SMARTLEAD-SYNC-WORKER] Sync already in progress by another instance. Skipping.');
+        return;
+    }
+
     const startTime = Date.now();
     logger.info('[SMARTLEAD-SYNC-WORKER] Starting sync cycle');
 
@@ -284,6 +293,8 @@ async function runSync(): Promise<void> {
         workerStatus.lastSyncDurationMs = Date.now() - startTime;
 
         logger.error('[SMARTLEAD-SYNC-WORKER] Sync cycle failed', error);
+    } finally {
+        await releaseLock('worker:lock:smartlead_sync');
     }
 }
 

@@ -127,20 +127,27 @@ async function sendExpirationWarnings(warningThreshold: Date): Promise<void> {
         );
 
         try {
-            await notificationService.createNotification(org.id, {
-                type: 'WARNING',
-                title: 'Trial Expiring Soon',
-                message: `Your trial expires in ${daysRemaining} day${daysRemaining !== 1 ? 's' : ''}. Upgrade now to continue using Superkabe without interruption.`
-            });
-
-            await auditLogService.logAction({
-                organizationId: org.id,
-                entity: 'subscription',
-                entityId: org.id,
-                trigger: 'trial_worker',
-                action: 'warning_sent',
-                details: `Trial expiration warning sent (${daysRemaining} days remaining)`
-            });
+            await prisma.$transaction([
+                prisma.notification.create({
+                    data: {
+                        organization_id: org.id,
+                        type: 'WARNING',
+                        title: 'Trial Expiring Soon',
+                        message: `Your trial expires in ${daysRemaining} day${daysRemaining !== 1 ? 's' : ''}. Upgrade now to continue using Superkabe without interruption.`,
+                        is_read: false
+                    }
+                }),
+                prisma.auditLog.create({
+                    data: {
+                        organization_id: org.id,
+                        entity: 'subscription',
+                        entity_id: org.id,
+                        trigger: 'trial_worker',
+                        action: 'warning_sent',
+                        details: `Trial expiration warning sent (${daysRemaining} days remaining)`
+                    }
+                })
+            ]);
 
             logger.info(`[TRIAL-WORKER] Sent warning to ${org.name} (${org.id})`);
         } catch (error) {
@@ -173,28 +180,34 @@ async function expireTrials(now: Date): Promise<void> {
 
     for (const org of expiredOrgs) {
         try {
-            await prisma.organization.update({
-                where: { id: org.id },
-                data: {
-                    subscription_status: 'expired',
-                    subscription_tier: 'free' // Downgrade to free tier (blocks all operations)
-                }
-            });
-
-            await notificationService.createNotification(org.id, {
-                type: 'ERROR',
-                title: 'Trial Expired',
-                message: 'Your trial has ended. Upgrade to a paid plan to continue using Superkabe.'
-            });
-
-            await auditLogService.logAction({
-                organizationId: org.id,
-                entity: 'subscription',
-                entityId: org.id,
-                trigger: 'trial_worker',
-                action: 'expired',
-                details: 'Trial expired automatically'
-            });
+            await prisma.$transaction([
+                prisma.organization.update({
+                    where: { id: org.id },
+                    data: {
+                        subscription_status: 'expired',
+                        subscription_tier: 'free' // Downgrade to free tier (blocks all operations)
+                    }
+                }),
+                prisma.notification.create({
+                    data: {
+                        organization_id: org.id,
+                        type: 'ERROR',
+                        title: 'Trial Expired',
+                        message: 'Your trial has ended. Upgrade to a paid plan to continue using Superkabe.',
+                        is_read: false
+                    }
+                }),
+                prisma.auditLog.create({
+                    data: {
+                        organization_id: org.id,
+                        entity: 'subscription',
+                        entity_id: org.id,
+                        trigger: 'trial_worker',
+                        action: 'expired',
+                        details: 'Trial expired automatically'
+                    }
+                })
+            ]);
 
             logger.info(`[TRIAL-WORKER] Expired trial for ${org.name} (${org.id})`);
         } catch (error) {
@@ -228,22 +241,25 @@ export async function extendTrial(orgId: string, additionalDays: number): Promis
     const currentEndDate = org.trial_ends_at || new Date();
     const newEndDate = new Date(currentEndDate.getTime() + additionalDays * 24 * 60 * 60 * 1000);
 
-    await prisma.organization.update({
-        where: { id: orgId },
-        data: {
-            trial_ends_at: newEndDate,
-            subscription_status: 'trialing' // Reactivate if expired
-        }
-    });
-
-    await auditLogService.logAction({
-        organizationId: orgId,
-        entity: 'subscription',
-        entityId: orgId,
-        trigger: 'manual',
-        action: 'trial_extended',
-        details: `Trial extended by ${additionalDays} days`
-    });
+    await prisma.$transaction([
+        prisma.organization.update({
+            where: { id: orgId },
+            data: {
+                trial_ends_at: newEndDate,
+                subscription_status: 'trialing' // Reactivate if expired
+            }
+        }),
+        prisma.auditLog.create({
+            data: {
+                organization_id: orgId,
+                entity: 'subscription',
+                entity_id: orgId,
+                trigger: 'manual',
+                action: 'trial_extended',
+                details: `Trial extended by ${additionalDays} days`
+            }
+        })
+    ]);
 
     logger.info(`[TRIAL-WORKER] Extended trial for ${orgId} by ${additionalDays} days`);
 }

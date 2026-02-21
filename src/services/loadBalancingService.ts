@@ -12,6 +12,7 @@
 
 import { prisma } from '../index';
 import { logger } from './observabilityService';
+import * as smartleadClient from './smartleadClient';
 
 interface MailboxLoad {
     id: string;
@@ -184,8 +185,8 @@ export const analyzeLoadBalancing = async (
         // Find underutilized mailboxes from the same domain
         const underutilizedSameDomain = underutilizedMailboxes.filter(
             m => m.domain_id === overloadedMailbox.domain_id &&
-                 m.status === 'healthy' &&
-                 m.health_score >= 70
+                m.status === 'healthy' &&
+                m.health_score >= 70
         );
 
         if (underutilizedSameDomain.length > 0) {
@@ -316,7 +317,22 @@ export const applySuggestion = async (
                         }
                     }
                 });
-                // TODO: Call Smartlead API to add mailbox to campaign
+
+                // Fetch mailbox to get Smartlead ID and Org ID
+                const mailboxAdd = await prisma.mailbox.findUnique({
+                    where: { id: suggestion.mailbox_id },
+                    select: { organization_id: true, smartlead_email_account_id: true }
+                });
+
+                if (mailboxAdd?.smartlead_email_account_id) {
+                    await smartleadClient.addMailboxToSmartleadCampaign(
+                        mailboxAdd.organization_id,
+                        suggestion.to_campaign_id,
+                        mailboxAdd.smartlead_email_account_id.toString()
+                    );
+                } else {
+                    logger.warn(`[LOAD_BALANCING] Mailbox ${suggestion.mailbox_id} missing Smartlead ID, skipping Smartlead API call`);
+                }
                 return {
                     success: true,
                     message: `Added ${suggestion.mailbox_email} to campaign ${suggestion.to_campaign_name}`
@@ -335,7 +351,21 @@ export const applySuggestion = async (
                         }
                     }
                 });
-                // TODO: Call Smartlead API to remove mailbox from campaign
+                // Fetch mailbox to get Smartlead ID and Org ID
+                const mailboxRemove = await prisma.mailbox.findUnique({
+                    where: { id: suggestion.mailbox_id },
+                    select: { organization_id: true, smartlead_email_account_id: true }
+                });
+
+                if (mailboxRemove?.smartlead_email_account_id) {
+                    await smartleadClient.removeMailboxFromSmartleadCampaign(
+                        mailboxRemove.organization_id,
+                        suggestion.from_campaign_id,
+                        mailboxRemove.smartlead_email_account_id.toString()
+                    );
+                } else {
+                    logger.warn(`[LOAD_BALANCING] Mailbox ${suggestion.mailbox_id} missing Smartlead ID, skipping Smartlead API call`);
+                }
                 return {
                     success: true,
                     message: `Removed ${suggestion.mailbox_email} from campaign ${suggestion.from_campaign_name}`

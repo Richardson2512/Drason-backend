@@ -7,6 +7,7 @@
 
 import { Router } from 'express';
 import * as billingController from '../controllers/billingController';
+import { validateBody, createCheckoutSchema } from '../middleware/validation';
 
 const router = Router();
 
@@ -31,12 +32,7 @@ router.post('/polar-webhook', billingController.handlePolarWebhook);
  */
 router.get('/subscription', billingController.getSubscriptionStatus);
 
-/**
- * POST /api/billing/create-checkout
- * Create a Polar checkout session for upgrading.
- * Body: { tier: 'starter' | 'growth' | 'scale' }
- */
-router.post('/create-checkout', billingController.createCheckout);
+router.post('/create-checkout', validateBody(createCheckoutSchema), billingController.createCheckout);
 
 /**
  * POST /api/billing/cancel

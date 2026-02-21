@@ -72,6 +72,7 @@ import { startLeadScoringWorker, stopLeadScoringWorker } from './services/leadSc
 import { startTrialWorker, stopTrialWorker } from './services/trialWorker';
 import { startSmartleadSyncWorker, stopSmartleadSyncWorker, getSmartleadSyncWorkerStatus } from './services/smartleadSyncWorker';
 import { scheduleWarmupTracking } from './workers/warmupTrackingWorker';
+import * as infrastructureAssessmentService from './services/infrastructureAssessmentService';
 
 import cookieParser from 'cookie-parser';
 
@@ -86,11 +87,14 @@ app.use(cors({
             return callback(null, true);
         }
 
-        // In production, allow both www and non-www versions of the domain
+        // In production, allow verified domains
         const allowedOrigins = [
             process.env.FRONTEND_URL,
             process.env.FRONTEND_URL?.replace('https://', 'https://www.'),
             process.env.FRONTEND_URL?.replace('https://www.', 'https://'),
+            'https://superkabe.com',
+            'https://www.superkabe.com',
+            'https://app.superkabe.com'
         ].filter(Boolean);
 
         if (allowedOrigins.includes(origin)) {
@@ -502,6 +506,16 @@ app.patch('/api/organization', asyncHandler(async (req, res) => {
         return res.status(400).json({ success: false, error: 'Invalid system_mode. Must be: observe, suggest, or enforce' });
     }
 
+    // Check if transitioning to enforce mode
+    let isSwitchingToEnforce = false;
+    if (system_mode === 'enforce') {
+        const previousOrg = await prisma.organization.findUnique({
+            where: { id: orgId },
+            select: { system_mode: true }
+        });
+        isSwitchingToEnforce = previousOrg?.system_mode !== 'enforce';
+    }
+
     const org = await prisma.organization.update({
         where: { id: orgId },
         data: {
@@ -509,6 +523,15 @@ app.patch('/api/organization', asyncHandler(async (req, res) => {
             ...(system_mode && { system_mode })
         }
     });
+
+    // #25: Mode switch timing - Trigger immediate assessment when switching to ENFORCE mode
+    if (isSwitchingToEnforce) {
+        logger.info(`[MODE-SWITCH] System mode switched to enforce for org ${orgId}. Triggering immediate infrastructure assessment.`);
+        // Run asynchronously so we don't block the API response
+        infrastructureAssessmentService.assessInfrastructure(orgId).catch(err => {
+            logger.error(`[MODE-SWITCH] Failed to run immediate assessment for org ${orgId}`, err instanceof Error ? err : new Error(String(err)));
+        });
+    }
 
     logger.info('Organization updated', { orgId, name, system_mode });
     res.json({ success: true, data: org });
@@ -600,7 +623,10 @@ const server = app.listen(PORT, () => {
 
     // Start warmup tracking worker for automated recovery
     scheduleWarmupTracking();
-    logger.info('Warmup tracking worker started (runs every 24h for auto-graduation)');
+    logger.info('Warmup tracking worker started (runs every 4h for auto-graduation)');
+
+    // Start periodic domain infrastructure assessment
+    infrastructureAssessmentService.startPeriodicAssessment();
 });
 
 // ============================================================================
@@ -619,6 +645,9 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
     stopSmartleadSyncWorker();
     logger.info('Smartlead sync worker stopped');
+
+    infrastructureAssessmentService.stopPeriodicAssessment();
+    logger.info('Periodic assessment worker stopped');
 
     // Stop accepting new connections
     server.close(() => {

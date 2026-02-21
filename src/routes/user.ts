@@ -6,6 +6,7 @@
 
 import { Router } from 'express';
 import * as userController from '../controllers/userController';
+import { validateBody, updateUserSchema, changePasswordSchema } from '../middleware/validation';
 
 const router = Router();
 
@@ -14,7 +15,7 @@ const router = Router();
  * Get current authenticated user's information.
  */
 router.get('/me', userController.getCurrentUser);
-router.patch('/me', userController.updateCurrentUser);
-router.post('/change-password', userController.changePassword);
+router.patch('/me', validateBody(updateUserSchema), userController.updateCurrentUser);
+router.post('/change-password', validateBody(changePasswordSchema), userController.changePassword);
 
 export default router;

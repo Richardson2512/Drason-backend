@@ -4,7 +4,7 @@
  * Periodically checks warmup progress for recovering mailboxes
  * and auto-graduates them through recovery phases.
  *
- * Run frequency: Every 24 hours (or can be triggered manually)
+ * Run frequency: Every 4 hours (or can be triggered manually)
  */
 
 import { prisma } from '../index';
@@ -129,21 +129,21 @@ export const checkWarmupProgress = async (): Promise<{
  * Call this function on server startup.
  */
 export const scheduleWarmupTracking = (): NodeJS.Timeout => {
-    const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
+    const RUN_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
-    logger.info('[WARMUP-WORKER] Scheduling warmup tracking (every 24 hours)');
+    logger.info('[WARMUP-WORKER] Scheduling warmup tracking (every 4 hours)');
 
     // Run immediately on startup
     checkWarmupProgress().catch(error => {
         logger.error('[WARMUP-WORKER] Initial run failed', error);
     });
 
-    // Then run every 24 hours
+    // Then run every 4 hours
     const interval = setInterval(() => {
         checkWarmupProgress().catch(error => {
             logger.error('[WARMUP-WORKER] Scheduled run failed', error);
         });
-    }, TWENTY_FOUR_HOURS);
+    }, RUN_INTERVAL_MS);
 
     return interval;
 };

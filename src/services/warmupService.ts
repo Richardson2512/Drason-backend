@@ -92,6 +92,20 @@ export const enableWarmupForRecovery = async (
             dailyRampup: config.daily_rampup
         });
 
+        // Fetch baseline stats for accurate phase tracking
+        let baselineSends = 0;
+        let baselineSpam = 0;
+        try {
+            const stats = await smartleadClient.getEmailAccountDetails(
+                organizationId,
+                mailbox.smartlead_email_account_id
+            );
+            baselineSends = stats.warmup_details?.total_sent_count || 0;
+            baselineSpam = stats.warmup_details?.total_spam_count || 0;
+        } catch (e) {
+            logger.warn('[WARMUP] Could not fetch baseline stats, using 0', { mailboxId });
+        }
+
         // Enable warmup via Smartlead API
         const result = await smartleadClient.updateMailboxWarmup(
             organizationId,
@@ -104,12 +118,12 @@ export const enableWarmupForRecovery = async (
             }
         );
 
-        // Reset phase tracking counters
+        // Reset phase tracking counters - using them as baselines for Smartlead lifetime stats
         await prisma.mailbox.update({
             where: { id: mailboxId },
             data: {
-                phase_clean_sends: 0,
-                phase_bounces: 0,
+                phase_clean_sends: baselineSends,
+                phase_bounces: baselineSpam,
                 phase_entered_at: new Date()
             }
         });
@@ -196,6 +210,20 @@ export const updateWarmupForPhaseTransition = async (
             newDailyRampup: config.daily_rampup
         });
 
+        // Fetch baseline stats
+        let baselineSends = 0;
+        let baselineSpam = 0;
+        try {
+            const stats = await smartleadClient.getEmailAccountDetails(
+                organizationId,
+                mailbox.smartlead_email_account_id
+            );
+            baselineSends = stats.warmup_details?.total_sent_count || 0;
+            baselineSpam = stats.warmup_details?.total_spam_count || 0;
+        } catch (e) {
+            logger.warn('[WARMUP] Could not fetch baseline stats for transition, using 0', { mailboxId });
+        }
+
         // Update warmup settings
         await smartleadClient.updateMailboxWarmup(
             organizationId,
@@ -208,12 +236,12 @@ export const updateWarmupForPhaseTransition = async (
             }
         );
 
-        // Reset phase tracking
+        // Reset phase tracking with new baselines
         await prisma.mailbox.update({
             where: { id: mailboxId },
             data: {
-                phase_clean_sends: 0,
-                phase_bounces: 0,
+                phase_clean_sends: baselineSends,
+                phase_bounces: baselineSpam,
                 phase_entered_at: new Date()
             }
         });
@@ -363,9 +391,12 @@ export const checkGraduationCriteria = async (
         mailbox.smartlead_email_account_id
     );
 
-    const totalSent = stats.warmup_details.total_sent_count;
-    const totalSpam = stats.warmup_details.total_spam_count;
-    const warmupReputation = stats.warmup_details.warmup_reputation;
+    // Calculate phase-specific counts using DB fields as baselines
+    const lifetimeSent = stats.warmup_details?.total_sent_count || 0;
+    const lifetimeSpam = stats.warmup_details?.total_spam_count || 0;
+    const totalSent = Math.max(0, lifetimeSent - mailbox.phase_clean_sends);
+    const totalSpam = Math.max(0, lifetimeSpam - mailbox.phase_bounces);
+    const warmupReputation = stats.warmup_details?.warmup_reputation || '0%';
 
     // Calculate days in current phase
     const daysInPhase = mailbox.phase_entered_at

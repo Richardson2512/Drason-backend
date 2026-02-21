@@ -646,6 +646,33 @@ const checkDomainHealth = async (domainId: string): Promise<void> => {
 
     // Handle WARNING state
     if (shouldWarn && domain.status === 'healthy') {
+        // ── RE-QUERY MAILBOXES FOR FRESH DATA ──
+        // Prevents stale data race condition: mailboxes may have changed status
+        // since initial query at start of function
+        const freshDomain = await prisma.domain.findUnique({
+            where: { id: domainId },
+            include: { mailboxes: true }
+        });
+
+        if (!freshDomain) return;
+
+        const freshUnhealthyCount = freshDomain.mailboxes.filter(
+            m => m.status !== 'active' && m.status !== 'healthy' && m.status !== 'warming'
+        ).length;
+        const freshUnhealthyRatio = freshUnhealthyCount / freshDomain.mailboxes.length;
+
+        // Re-check threshold with fresh data
+        const stillShouldWarn = freshDomain.mailboxes.length >= DOMAIN_MINIMUM_MAILBOXES
+            ? freshUnhealthyRatio >= DOMAIN_WARNING_RATIO
+            : (freshUnhealthyCount >= 1 && freshDomain.mailboxes.length <= 2);
+
+        if (!stillShouldWarn) {
+            logger.info(`[MONITOR] Domain ${domain.domain} warning threshold no longer met with fresh data (${freshUnhealthyCount}/${freshDomain.mailboxes.length})`);
+            return;
+        }
+
+        logger.info(`[MONITOR] Domain ${domain.domain} warning confirmed with fresh data: ${freshUnhealthyCount}/${freshDomain.mailboxes.length} unhealthy`);
+
         // ── CHECK SYSTEM MODE ──
         const systemMode = await executionGateService.getSystemMode(orgId);
 
@@ -714,6 +741,39 @@ const checkDomainHealth = async (domainId: string): Promise<void> => {
 
     // Handle PAUSE state
     if (shouldPause && domain.status !== 'paused') {
+        // ── RE-QUERY MAILBOXES FOR FRESH DATA ──
+        // Prevents stale data race condition: mailboxes may have changed status
+        // since initial query at start of function
+        const freshDomain = await prisma.domain.findUnique({
+            where: { id: domainId },
+            include: { mailboxes: true }
+        });
+
+        if (!freshDomain) return;
+
+        const freshUnhealthyCount = freshDomain.mailboxes.filter(
+            m => m.status !== 'active' && m.status !== 'healthy' && m.status !== 'warming'
+        ).length;
+        const freshTotalMailboxes = freshDomain.mailboxes.length;
+        const freshUnhealthyRatio = freshUnhealthyCount / freshTotalMailboxes;
+
+        // Re-check threshold with fresh data
+        const stillShouldPause = freshTotalMailboxes >= DOMAIN_MINIMUM_MAILBOXES
+            ? freshUnhealthyRatio >= DOMAIN_PAUSE_RATIO
+            : freshUnhealthyCount >= 2;
+
+        if (!stillShouldPause) {
+            logger.info(`[MONITOR] Domain ${domain.domain} pause threshold no longer met with fresh data (${freshUnhealthyCount}/${freshTotalMailboxes})`);
+            return;
+        }
+
+        logger.info(`[MONITOR] Domain ${domain.domain} pause confirmed with fresh data: ${freshUnhealthyCount}/${freshTotalMailboxes} unhealthy (${(freshUnhealthyRatio * 100).toFixed(1)}%)`);
+
+        // Update reason with fresh counts for accurate logging
+        reason = freshTotalMailboxes >= DOMAIN_MINIMUM_MAILBOXES
+            ? `${(freshUnhealthyRatio * 100).toFixed(0)}% mailboxes unhealthy (${freshUnhealthyCount}/${freshTotalMailboxes}) - exceeds ${(DOMAIN_PAUSE_RATIO * 100).toFixed(0)}% threshold`
+            : `${freshUnhealthyCount}/${freshTotalMailboxes} mailboxes unhealthy (small domain, absolute threshold)`;
+
         // ── CHECK SYSTEM MODE ──
         const systemMode = await executionGateService.getSystemMode(orgId);
 
@@ -736,7 +796,7 @@ const checkDomainHealth = async (domainId: string): Promise<void> => {
             await notificationService.createNotification(orgId, {
                 type: 'ERROR',
                 title: 'Domain Pause Recommended',
-                message: `Domain ${domain.domain} has ${unhealthyCount}/${totalMailboxes} unhealthy mailboxes and should be paused. Reason: ${reason}`
+                message: `Domain ${domain.domain} has ${freshUnhealthyCount}/${freshTotalMailboxes} unhealthy mailboxes and should be paused. Reason: ${reason}`
             });
             await auditLogService.logAction({
                 organizationId: orgId,
@@ -765,7 +825,7 @@ const checkDomainHealth = async (domainId: string): Promise<void> => {
             eventType: EventType.DOMAIN_PAUSED,
             entityType: 'domain',
             entityId: domainId,
-            payload: { unhealthyCount, unhealthyRatio, reason }
+            payload: { unhealthyCount: freshUnhealthyCount, unhealthyRatio: freshUnhealthyRatio, reason }
         });
 
         await prisma.domain.update({
