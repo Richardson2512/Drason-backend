@@ -18,6 +18,7 @@ import * as notificationService from './notificationService';
 import { EventType, LeadState } from '../types';
 import { logger } from './observabilityService';
 import { smartleadBreaker } from '../utils/circuitBreaker';
+import { smartleadRateLimiter } from '../utils/rateLimiter';
 import { calculateEngagementScore, calculateFinalScore } from './leadScoringService';
 import { syncProgressService } from './syncProgressService';
 import { TIER_LIMITS } from './polarClient';
@@ -1328,17 +1329,21 @@ export const pushLeadToCampaign = async (
             company_name: lead.company || '' // Smartlead expects 'company_name', not 'company'
         };
 
-        await smartleadBreaker.call(() =>
-            axios.post(
-                `${SMARTLEAD_API_BASE}/campaigns/${campaignId}/leads?api_key=${apiKey}`,
-                {
-                    lead_list: [smartleadLead],
-                    settings: {
-                        ignore_global_block_list: false,
-                        ignore_unsubscribe_list: false,
-                        ignore_duplicate_leads_in_other_campaign: true
+        // Rate limit: 10 requests per 2 seconds
+        // Wrap API call in rate limiter to prevent 429 errors during bulk operations
+        await smartleadRateLimiter.execute(() =>
+            smartleadBreaker.call(() =>
+                axios.post(
+                    `${SMARTLEAD_API_BASE}/campaigns/${campaignId}/leads?api_key=${apiKey}`,
+                    {
+                        lead_list: [smartleadLead],
+                        settings: {
+                            ignore_global_block_list: false,
+                            ignore_unsubscribe_list: false,
+                            ignore_duplicate_leads_in_other_campaign: true
+                        }
                     }
-                }
+                )
             )
         );
 
@@ -1359,11 +1364,64 @@ export const pushLeadToCampaign = async (
 
         return true;
     } catch (error: any) {
-        // Check if error is due to duplicate lead (Smartlead API might return specific error)
         const errorMessage = error.response?.data?.message || error.message || '';
+        const statusCode = error.response?.status;
+
+        // === HANDLE DELETED CAMPAIGN (404 Error) ===
+        const isCampaignNotFound = statusCode === 404 ||
+            errorMessage.toLowerCase().includes('not found') ||
+            errorMessage.toLowerCase().includes('campaign not found') ||
+            errorMessage.toLowerCase().includes('does not exist');
+
+        if (isCampaignNotFound) {
+            // Campaign deleted in Smartlead - mark as inactive in our DB
+            logger.error(`[SMARTLEAD] Campaign ${campaignId} not found in Smartlead (deleted externally)`, undefined, {
+                organizationId,
+                campaignId,
+                email: lead.email,
+                statusCode
+            });
+
+            try {
+                // Mark campaign as inactive to prevent future routing
+                await prisma.campaign.update({
+                    where: { id: campaignId },
+                    data: {
+                        status: 'inactive',
+                        paused_reason: 'Campaign deleted in Smartlead',
+                        paused_at: new Date()
+                    }
+                });
+
+                // Notify user about deleted campaign
+                await notificationService.createNotification(organizationId, {
+                    type: 'ERROR',
+                    title: 'Campaign Deleted in Smartlead',
+                    message: `Campaign ${campaignId} was deleted in Smartlead but still existed in Drason. It has been marked inactive. Please sync with Smartlead or update routing rules.`
+                });
+
+                await auditLogService.logAction({
+                    organizationId,
+                    entity: 'campaign',
+                    entityId: campaignId,
+                    trigger: 'external_deletion',
+                    action: 'marked_inactive',
+                    details: `Campaign not found in Smartlead (404 error). Marked as inactive to prevent routing failures.`
+                });
+            } catch (updateError: any) {
+                logger.error('[SMARTLEAD] Failed to mark deleted campaign as inactive', updateError, {
+                    organizationId,
+                    campaignId
+                });
+            }
+
+            return false; // Lead stays in HELD for potential rerouting
+        }
+
+        // === HANDLE DUPLICATE LEAD ===
         const isDuplicateError =  errorMessage.toLowerCase().includes('duplicate') ||
             errorMessage.toLowerCase().includes('already exists') ||
-            error.response?.status === 409; // Conflict status
+            statusCode === 409; // Conflict status
 
         if (isDuplicateError) {
             // Lead already in Smartlead - treat as idempotent success
@@ -1386,13 +1444,13 @@ export const pushLeadToCampaign = async (
             return true; // Idempotent - treat as success
         }
 
-        // Real error - log and return failure
+        // === HANDLE OTHER ERRORS ===
         logger.error(`[SMARTLEAD] Failed to push lead to campaign`, error, {
             organizationId,
             campaignId,
             email: lead.email,
             response: error.response?.data,
-            status: error.response?.status
+            status: statusCode
         });
 
         await auditLogService.logAction({
