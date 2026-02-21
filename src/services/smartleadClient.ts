@@ -94,7 +94,8 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             subscription_tier: true,
             subscription_status: true,
             current_domain_count: true,
-            current_mailbox_count: true
+            current_mailbox_count: true,
+            current_lead_count: true
         }
     });
 
@@ -569,6 +570,14 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     }
 
                     const leadUpserts = [];
+                    const existingLeads = await prisma.lead.findMany({
+                        where: {
+                            organization_id: organizationId,
+                            email: { in: leadsList.map((l: any) => (l.lead || l).email || (l.lead || l).lead_email || '').filter(Boolean) }
+                        },
+                        select: { email: true }
+                    });
+                    const existingLeadSet = new Set(existingLeads.map(l => l.email));
 
                     for (const leadData of leadsList) {
                         // Smartlead returns leads wrapped in a container object with nested 'lead' property
@@ -592,6 +601,22 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                 originalLeadData: leadData
                             });
                             continue;
+                        }
+
+                        const isNewLead = !existingLeadSet.has(email);
+                        if (isNewLead) {
+                            if (org.current_lead_count >= limits.leads) {
+                                logger.warn('[Smartlead Sync] Lead capacity reached, skipping lead creation', {
+                                    organizationId,
+                                    current: org.current_lead_count,
+                                    limit: limits.leads,
+                                    tier: org.subscription_tier,
+                                    skippedEmail: email
+                                });
+                                continue;
+                            }
+                            org.current_lead_count++;
+                            existingLeadSet.add(email); // Add to set so we don't count duplicate emails as new
                         }
 
                         const firstName = lead.first_name || lead.firstName || '';
@@ -640,6 +665,10 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
 
                     if (leadUpserts.length > 0) {
                         await prisma.$transaction(leadUpserts);
+                        await prisma.organization.update({
+                            where: { id: organizationId },
+                            data: { current_lead_count: org.current_lead_count }
+                        });
                     }
 
                     // If we got fewer than the limit, no more pages

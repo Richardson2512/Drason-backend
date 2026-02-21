@@ -58,6 +58,8 @@ import diagnosticsRoutes from './routes/diagnostics';
 import syncProgressRoutes from './routes/syncProgress';
 import infrastructureRoutes from './routes/infrastructure';
 
+import { checkLeadCapacity } from './middleware/featureGate';
+
 // Import controllers
 import * as monitoringController from './controllers/monitoringController';
 import * as ingestionController from './controllers/ingestionController';
@@ -219,8 +221,8 @@ app.use('/api/sync-progress', syncProgressRoutes);
 app.use('/api/infrastructure', infrastructureRoutes);
 
 // Ingestion endpoints
-app.post('/api/ingest', asyncHandler(ingestionController.ingestLead));
-app.post('/api/ingest/clay', asyncHandler(ingestionController.ingestClayWebhook));
+app.post('/api/ingest', checkLeadCapacity, asyncHandler(ingestionController.ingestLead));
+app.post('/api/ingest/clay', checkLeadCapacity, asyncHandler(ingestionController.ingestClayWebhook));
 
 // Monitoring endpoints
 app.post('/api/monitor/event', asyncHandler(monitoringController.triggerEvent));
