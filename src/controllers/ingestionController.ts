@@ -15,6 +15,7 @@ import * as auditLogService from '../services/auditLogService';
 import * as eventService from '../services/eventService';
 import * as leadHealthService from '../services/leadHealthService';
 import * as smartleadClient from '../services/smartleadClient';
+import * as leadAssignmentService from '../services/leadAssignmentService';
 import { getOrgId } from '../middleware/orgContext';
 import { EventType, LeadState } from '../types';
 import { logger } from '../services/observabilityService';
@@ -125,14 +126,42 @@ export const ingestLead = async (req: Request, res: Response) => {
         // Resolve routing with org context
         const campaignId = await routingService.resolveCampaignForLead(organizationId, createdLead);
 
-        // Update lead with assigned campaign and push to Smartlead
+        // Atomically assign lead to campaign with capacity checking
         if (campaignId) {
-            // Update database first
-            await prisma.lead.update({
-                where: { id: createdLead.id },
-                data: { assigned_campaign_id: campaignId }
-            });
-            logger.info(`[INGEST] Assigned lead ${createdLead.id} to campaign ${campaignId}`);
+            // Use atomic assignment to prevent capacity violations
+            const assignmentResult = await leadAssignmentService.assignLeadToCampaignWithCapacityCheck(
+                organizationId,
+                createdLead.id,
+                campaignId,
+                { allowOverCapacity: false }
+            );
+
+            if (!assignmentResult.assigned) {
+                // Assignment failed due to capacity or other issue
+                logger.warn(`[INGEST] Failed to assign lead ${createdLead.id} to campaign ${campaignId}: ${assignmentResult.reason}`);
+                await auditLogService.logAction({
+                    organizationId,
+                    entity: 'lead',
+                    entityId: createdLead.id,
+                    trigger: 'ingestion',
+                    action: 'assignment_failed',
+                    details: `Routing suggested campaign ${campaignId} but assignment failed: ${assignmentResult.reason}. Lead remains in holding pool.`
+                });
+
+                // Return success but indicate lead is in holding pool
+                return res.json({
+                    success: true,
+                    data: {
+                        message: 'Lead ingested but assignment failed due to capacity',
+                        leadId: createdLead.id,
+                        assignedCampaignId: null,
+                        pushedToSmartlead: false,
+                        capacityReason: assignmentResult.reason
+                    }
+                });
+            }
+
+            logger.info(`[INGEST] Assigned lead ${createdLead.id} to campaign ${campaignId} (${assignmentResult.currentLoad}/${assignmentResult.capacity})`);
 
             await auditLogService.logAction({
                 organizationId,
@@ -140,7 +169,7 @@ export const ingestLead = async (req: Request, res: Response) => {
                 entityId: createdLead.id,
                 trigger: 'ingestion',
                 action: 'assigned',
-                details: `Routed to campaign ${campaignId} based on rules.`
+                details: `Routed to campaign ${campaignId} based on rules (load: ${assignmentResult.currentLoad}/${assignmentResult.capacity}).`
             });
 
             // Push lead to Smartlead campaign
@@ -385,19 +414,43 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
         const campaignId = await routingService.resolveCampaignForLead(organizationId, createdLead);
 
         if (campaignId) {
-            // Update database first
-            await prisma.lead.update({
-                where: { id: createdLead.id },
-                data: { assigned_campaign_id: campaignId }
-            });
-            logger.info(`[INGEST CLAY] Assigned lead ${createdLead.id} to campaign ${campaignId}`);
+            // Atomically assign lead to campaign with capacity checking
+            const assignmentResult = await leadAssignmentService.assignLeadToCampaignWithCapacityCheck(
+                organizationId,
+                createdLead.id,
+                campaignId,
+                { allowOverCapacity: false }
+            );
+
+            if (!assignmentResult.assigned) {
+                // Assignment failed due to capacity or other issue
+                logger.warn(`[INGEST CLAY] Failed to assign lead ${createdLead.id} to campaign ${campaignId}: ${assignmentResult.reason}`);
+                await auditLogService.logAction({
+                    organizationId,
+                    entity: 'lead',
+                    entityId: createdLead.id,
+                    trigger: 'ingestion',
+                    action: 'assignment_failed',
+                    details: `Clay webhook routing suggested campaign ${campaignId} but assignment failed: ${assignmentResult.reason}. Lead remains in holding pool.`
+                });
+
+                // Return success but indicate lead is in holding pool
+                return res.json({
+                    message: 'Lead ingested but assignment failed due to capacity',
+                    leadId: createdLead.id,
+                    success: true,
+                    capacityReason: assignmentResult.reason
+                });
+            }
+
+            logger.info(`[INGEST CLAY] Assigned lead ${createdLead.id} to campaign ${campaignId} (${assignmentResult.currentLoad}/${assignmentResult.capacity})`);
             await auditLogService.logAction({
                 organizationId,
                 entity: 'lead',
                 entityId: createdLead.id,
                 trigger: 'ingestion',
                 action: 'assigned',
-                details: `Routed to campaign ${campaignId} via Clay webhook. Health: ${healthResult.classification}`
+                details: `Routed to campaign ${campaignId} via Clay webhook. Health: ${healthResult.classification} (load: ${assignmentResult.currentLoad}/${assignmentResult.capacity})`
             });
 
             // Push lead to Smartlead campaign

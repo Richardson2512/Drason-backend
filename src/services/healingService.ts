@@ -1055,9 +1055,27 @@ async function checkAndRestartWaitingCampaigns(
 
                 // Resume campaign in Smartlead
                 try {
-                    await smartleadClient.resumeSmartleadCampaign(organizationId, campaign.id);
+                    // CRITICAL: resumeSmartleadCampaign returns false on failure, doesn't throw
+                    // Must check return value before updating DB
+                    const resumeSuccess = await smartleadClient.resumeSmartleadCampaign(organizationId, campaign.id);
 
-                    // Update campaign status in database
+                    if (!resumeSuccess) {
+                        // Smartlead API call failed - DO NOT update DB
+                        logger.error(`[HEALING-AUTORESTART] Smartlead API failed to resume campaign ${campaign.id}`, undefined, {
+                            organizationId,
+                            campaignId: campaign.id
+                        });
+
+                        await notificationService.createNotification(organizationId, {
+                            type: 'WARNING',
+                            title: 'Auto-Restart Failed',
+                            message: `Failed to auto-restart campaign "${campaignData.name || campaign.id}" in Smartlead. Campaign remains paused. Please restart manually.`
+                        });
+
+                        continue; // Skip DB update, move to next campaign
+                    }
+
+                    // Smartlead API succeeded - now safe to update DB
                     await prisma.campaign.update({
                         where: { id: campaign.id },
                         data: {
@@ -1089,7 +1107,8 @@ async function checkAndRestartWaitingCampaigns(
                     });
 
                 } catch (restartError: any) {
-                    logger.error(`[HEALING-AUTORESTART] Failed to restart campaign ${campaign.id}`, restartError, {
+                    // Unexpected error during DB update or notification
+                    logger.error(`[HEALING-AUTORESTART] Unexpected error during campaign restart ${campaign.id}`, restartError, {
                         organizationId,
                         campaignId: campaign.id
                     });
@@ -1097,8 +1116,8 @@ async function checkAndRestartWaitingCampaigns(
                     // Don't throw - log and continue with other campaigns
                     await notificationService.createNotification(organizationId, {
                         type: 'WARNING',
-                        title: 'Auto-Restart Failed',
-                        message: `Failed to auto-restart campaign "${campaignData.name || campaign.id}". Please restart manually.`
+                        title: 'Auto-Restart Error',
+                        message: `Unexpected error during auto-restart of campaign "${campaignData.name || campaign.id}". Please check manually.`
                     });
                 }
             }

@@ -83,6 +83,59 @@ const SUSPICIOUS_TLDS = [
 ];
 
 // ============================================================================
+// EMAIL VALIDATION
+// ============================================================================
+
+/**
+ * Validate email format and check for obviously invalid emails.
+ * Returns null if valid, or an error reason if invalid.
+ */
+function validateEmailFormat(email: string): string | null {
+    // RFC 5322 compliant email regex (simplified but robust)
+    const emailRegex = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
+
+    if (!emailRegex.test(email)) {
+        return 'Email format invalid (malformed syntax)';
+    }
+
+    // Check for obviously fake/test domains
+    const domain = email.split('@')[1]?.toLowerCase();
+    if (!domain) {
+        return 'Email missing domain';
+    }
+
+    // Localhost and test domains
+    if (domain === 'localhost' || domain === 'test' || domain === 'example.com' || domain === 'example.org') {
+        return `Invalid test domain: ${domain}`;
+    }
+
+    // Check for IP address domains (usually spam)
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(domain)) {
+        return 'Email domain cannot be an IP address';
+    }
+
+    // Must have at least one dot in domain (e.g., test@test is invalid)
+    if (!domain.includes('.')) {
+        return 'Email domain must have TLD (e.g., .com)';
+    }
+
+    // Check for suspicious patterns
+    if (email.includes('..')) {
+        return 'Email contains consecutive dots';
+    }
+
+    if (email.startsWith('.') || email.endsWith('.')) {
+        return 'Email cannot start or end with dot';
+    }
+
+    if (email.includes('@.') || email.includes('.@')) {
+        return 'Email has dot adjacent to @';
+    }
+
+    return null; // Valid
+}
+
+// ============================================================================
 // MAIN CLASSIFICATION FUNCTION
 // ============================================================================
 
@@ -92,6 +145,18 @@ const SUSPICIOUS_TLDS = [
  */
 export async function classifyLeadHealth(email: string): Promise<LeadHealthResult> {
     const emailLower = email.toLowerCase().trim();
+
+    // ── VALIDATION: Email format must be valid ──
+    const validationError = validateEmailFormat(emailLower);
+    if (validationError) {
+        return {
+            classification: 'red',
+            score: 0,
+            checks: { isDisposable: false, isRoleEmail: false, isCatchAll: false, domainAgeDays: null },
+            reasons: [validationError]
+        };
+    }
+
     const [localPart, domain] = emailLower.split('@');
 
     if (!domain) {
@@ -99,7 +164,7 @@ export async function classifyLeadHealth(email: string): Promise<LeadHealthResul
             classification: 'red',
             score: 0,
             checks: { isDisposable: false, isRoleEmail: false, isCatchAll: false, domainAgeDays: null },
-            reasons: ['Invalid email format']
+            reasons: ['Invalid email format - missing domain']
         };
     }
 

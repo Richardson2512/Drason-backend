@@ -15,7 +15,7 @@ import * as auditLogService from './auditLogService';
 import * as eventService from './eventService';
 import * as assessmentService from './infrastructureAssessmentService';
 import * as notificationService from './notificationService';
-import { EventType } from '../types';
+import { EventType, LeadState } from '../types';
 import { logger } from './observabilityService';
 import { smartleadBreaker } from '../utils/circuitBreaker';
 import { calculateEngagementScore, calculateFinalScore } from './leadScoringService';
@@ -1288,6 +1288,38 @@ export const pushLeadToCampaign = async (
     }
 
     try {
+        // === IDEMPOTENCY CHECK ===
+        // Check if lead already exists in this campaign in our DB
+        const existingLead = await prisma.lead.findFirst({
+            where: {
+                organization_id: organizationId,
+                email: lead.email,
+                assigned_campaign_id: campaignId,
+                status: LeadState.ACTIVE // Already pushed and active
+            }
+        });
+
+        if (existingLead) {
+            // Lead already pushed to this campaign - skip duplicate push
+            logger.info(`[SMARTLEAD] Lead already exists in campaign (idempotent skip)`, {
+                organizationId,
+                campaignId,
+                email: lead.email,
+                leadId: existingLead.id
+            });
+
+            await auditLogService.logAction({
+                organizationId,
+                entity: 'lead',
+                entityId: lead.email,
+                trigger: 'execution',
+                action: 'push_skipped_duplicate',
+                details: `Lead already in campaign ${campaignId} (idempotent)`
+            });
+
+            return true; // Idempotent - treat as success
+        }
+
         // Transform to Smartlead API format
         const smartleadLead = {
             email: lead.email,
@@ -1327,6 +1359,34 @@ export const pushLeadToCampaign = async (
 
         return true;
     } catch (error: any) {
+        // Check if error is due to duplicate lead (Smartlead API might return specific error)
+        const errorMessage = error.response?.data?.message || error.message || '';
+        const isDuplicateError =  errorMessage.toLowerCase().includes('duplicate') ||
+            errorMessage.toLowerCase().includes('already exists') ||
+            error.response?.status === 409; // Conflict status
+
+        if (isDuplicateError) {
+            // Lead already in Smartlead - treat as idempotent success
+            logger.info(`[SMARTLEAD] Lead already in campaign (duplicate error caught)`, {
+                organizationId,
+                campaignId,
+                email: lead.email,
+                errorMessage
+            });
+
+            await auditLogService.logAction({
+                organizationId,
+                entity: 'lead',
+                entityId: lead.email,
+                trigger: 'execution',
+                action: 'push_duplicate_caught',
+                details: `Lead already in campaign ${campaignId} (Smartlead duplicate error)`
+            });
+
+            return true; // Idempotent - treat as success
+        }
+
+        // Real error - log and return failure
         logger.error(`[SMARTLEAD] Failed to push lead to campaign`, error, {
             organizationId,
             campaignId,

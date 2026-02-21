@@ -42,13 +42,51 @@ export const resolveCampaignForLead = async (
         logger.info(`[ROUTING] Match Result: Persona=${personaMatch}, Score=${scoreMatch}`);
 
         if (personaMatch && scoreMatch) {
+            // ── VALIDATE: Campaign must have at least one mailbox ──
+            // Prevents leads from being trapped in campaigns that can never send
+            const campaign = await prisma.campaign.findUnique({
+                where: { id: rule.target_campaign_id },
+                include: {
+                    _count: {
+                        select: { mailboxes: true }
+                    }
+                }
+            });
+
+            if (!campaign) {
+                logger.warn(`[ROUTING] Campaign ${rule.target_campaign_id} not found - skipping rule`);
+                await auditLogService.logAction({
+                    organizationId,
+                    entity: 'lead',
+                    entityId: lead.id,
+                    trigger: 'ingestion_routing',
+                    action: 'campaign_not_found',
+                    details: `Rule ${rule.id} points to non-existent campaign ${rule.target_campaign_id}`
+                });
+                continue; // Try next rule
+            }
+
+            if (campaign._count.mailboxes === 0) {
+                logger.warn(`[ROUTING] Campaign ${rule.target_campaign_id} has ZERO mailboxes - skipping rule`);
+                await auditLogService.logAction({
+                    organizationId,
+                    entity: 'lead',
+                    entityId: lead.id,
+                    trigger: 'ingestion_routing',
+                    action: 'campaign_no_mailboxes',
+                    details: `Rule ${rule.id} -> Campaign ${rule.target_campaign_id} has 0 mailboxes, cannot route`
+                });
+                continue; // Try next rule
+            }
+
+            // Campaign valid and has mailboxes - route to it
             await auditLogService.logAction({
                 organizationId,
                 entity: 'lead',
                 entityId: lead.id,
                 trigger: 'ingestion_routing',
                 action: 'route_matched',
-                details: `Matched rule ${rule.id} -> Campaign ${rule.target_campaign_id}`
+                details: `Matched rule ${rule.id} -> Campaign ${rule.target_campaign_id} (${campaign._count.mailboxes} mailboxes)`
             });
             return rule.target_campaign_id;
         }

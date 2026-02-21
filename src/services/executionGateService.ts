@@ -15,6 +15,7 @@
 import { prisma } from '../index';
 import * as auditLogService from './auditLogService';
 import * as healingService from './healingService';
+import * as notificationService from './notificationService';
 import { logger } from './observabilityService';
 import {
     SystemMode,
@@ -181,7 +182,45 @@ export const canExecuteLead = async (
         if (totalMailboxes === 0) {
             recommendations.push('No mailboxes configured. Sync with Smartlead.');
         } else {
+            // ── CRITICAL SITUATION: All mailboxes paused ──
+            // System completely unable to send leads - requires immediate attention
             recommendations.push('All mailboxes are paused or in cooldown. Wait for recovery.');
+
+            // Send CRITICAL notification to alert user
+            // This is a complete system failure - no leads can be processed
+            try {
+                const pausedCount = await prisma.mailbox.count({
+                    where: {
+                        organization_id: organizationId,
+                        status: 'paused'
+                    }
+                });
+
+                const cooldownCount = await prisma.mailbox.count({
+                    where: {
+                        organization_id: organizationId,
+                        cooldown_until: { gt: new Date() }
+                    }
+                });
+
+                await notificationService.createNotification(organizationId, {
+                    type: 'ERROR',
+                    title: '🚨 CRITICAL: All Mailboxes Unavailable',
+                    message: `All ${totalMailboxes} mailboxes are currently unavailable (${pausedCount} paused, ${cooldownCount} in cooldown). NO LEADS CAN BE SENT. Immediate action required. Check infrastructure health page for details.`
+                });
+
+                logger.error(`[CRITICAL] All mailboxes unavailable for org ${organizationId}`, undefined, {
+                    organizationId,
+                    totalMailboxes,
+                    pausedCount,
+                    cooldownCount
+                });
+            } catch (notifError: any) {
+                // Don't fail the gate check if notification fails
+                logger.error('[GATE] Failed to send critical notification', notifError, {
+                    organizationId
+                });
+            }
         }
 
         await auditLogService.logAction({

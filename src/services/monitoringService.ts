@@ -122,18 +122,21 @@ export const recordBounce = async (
         return; // Skip threshold checks entirely
     }
 
-    // ── Health-degrading bounce: update counters ──
-    const newBounceCount = mailbox.window_bounce_count + 1;
-    const totalBounces = mailbox.hard_bounce_count + 1;
-
-    await prisma.mailbox.update({
+    // ── Health-degrading bounce: update counters ATOMICALLY ──
+    // Using atomic increment prevents race conditions when multiple bounces arrive simultaneously
+    const updatedMailbox = await prisma.mailbox.update({
         where: { id: mailboxId },
         data: {
-            window_bounce_count: newBounceCount,
-            hard_bounce_count: totalBounces,
+            window_bounce_count: { increment: 1 },  // Atomic increment
+            hard_bounce_count: { increment: 1 },    // Atomic increment
             last_activity_at: new Date()
         }
     });
+
+    // Use the atomically updated counts (guaranteed accurate even with concurrent bounces)
+    const newBounceCount = updatedMailbox.window_bounce_count;
+    const totalBounces = updatedMailbox.hard_bounce_count;
+    const sentCount = updatedMailbox.window_sent_count;
 
     await auditLogService.logAction({
         organizationId: orgId,
@@ -141,7 +144,7 @@ export const recordBounce = async (
         entityId: mailboxId,
         trigger: 'monitor_bounce',
         action: 'stat_update',
-        details: `${classification.failureType} from ${classification.provider}. Window: ${newBounceCount}/${mailbox.window_sent_count}`
+        details: `${classification.failureType} from ${classification.provider}. Window: ${newBounceCount}/${sentCount}`
     });
 
     // ── Relapse detection: if entity is in recovery phases, handle relapse ──
@@ -150,7 +153,7 @@ export const recordBounce = async (
         RecoveryPhase.RESTRICTED_SEND,
         RecoveryPhase.WARM_RECOVERY,
     ];
-    const currentPhase = mailbox.recovery_phase as RecoveryPhase;
+    const currentPhase = updatedMailbox.recovery_phase as RecoveryPhase;
 
     if (recoveryPhases.includes(currentPhase)) {
         await healingService.resetCleanSends('mailbox', mailboxId);
@@ -165,11 +168,9 @@ export const recordBounce = async (
     }
 
     // ── Standard threshold logic for healthy/warning mailboxes ──
-    const sentCount = mailbox.window_sent_count;
-
     // PAUSE CHECK: 5 bounces within window
     if (newBounceCount >= MAILBOX_PAUSE_BOUNCES) {
-        if (mailbox.status !== 'paused') {
+        if (updatedMailbox.status !== 'paused') {
             await pauseMailbox(
                 mailboxId,
                 `Exceeded ${MAILBOX_PAUSE_BOUNCES} bounces (${newBounceCount}/${sentCount}). Cause: ${classification.failureType}, Provider: ${classification.provider}`
@@ -178,7 +179,7 @@ export const recordBounce = async (
     }
     // WARNING CHECK: 3 bounces within 60 sends
     else if (newBounceCount >= MAILBOX_WARNING_BOUNCES && sentCount <= MAILBOX_WARNING_WINDOW) {
-        if (mailbox.status === 'healthy') {
+        if (updatedMailbox.status === 'healthy') {
             await warnMailbox(
                 mailboxId,
                 `Early warning: ${newBounceCount}/${sentCount} (${((newBounceCount / sentCount) * 100).toFixed(1)}%). Cause: ${classification.failureType}`
