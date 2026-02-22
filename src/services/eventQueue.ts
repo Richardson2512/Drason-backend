@@ -20,6 +20,7 @@ import { logger } from './observabilityService';
 import * as monitoringService from './monitoringService';
 import * as eventService from './eventService';
 import * as notificationService from './notificationService';
+import { EventType } from '../types';
 
 // ============================================================================
 // TYPES
@@ -212,8 +213,8 @@ async function processEventJob(job: Job<EventJobData>): Promise<void> {
 async function processEventInline(data: EventJobData): Promise<void> {
     const { eventType, entityId, campaignId, smtpResponse, recipientEmail } = data;
 
-    switch (eventType.toUpperCase()) {
-        case 'HARD_BOUNCE':
+    switch (eventType) {
+        case EventType.HARD_BOUNCE:
         case 'EMAIL_BOUNCE':
         case 'BOUNCE':
             await monitoringService.recordBounce(
@@ -224,7 +225,7 @@ async function processEventInline(data: EventJobData): Promise<void> {
             );
             break;
 
-        case 'EMAIL_SENT':
+        case EventType.EMAIL_SENT:
         case 'SENT':
             await monitoringService.recordSent(entityId, campaignId || '');
             break;

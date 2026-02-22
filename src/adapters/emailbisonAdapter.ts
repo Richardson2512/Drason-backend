@@ -556,9 +556,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
     async pauseCampaign(organizationId: string, externalCampaignId: string): Promise<boolean> {
         try {
             const client = await this.getClient(organizationId);
-            await client.patch(`/api/campaigns/v1.1/${externalCampaignId}/status`, {
-                status: 'Paused',
-            });
+            await client.patch(`/api/campaigns/${externalCampaignId}/pause`);
             logger.info('[EmailBison] Campaign paused', { externalCampaignId, organizationId });
             return true;
         } catch (error: any) {
@@ -570,9 +568,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
     async resumeCampaign(organizationId: string, externalCampaignId: string): Promise<boolean> {
         try {
             const client = await this.getClient(organizationId);
-            await client.patch(`/api/campaigns/v1.1/${externalCampaignId}/status`, {
-                status: 'Active',
-            });
+            await client.patch(`/api/campaigns/${externalCampaignId}/resume`);
             logger.info('[EmailBison] Campaign resumed', { externalCampaignId, organizationId });
             return true;
         } catch (error: any) {
