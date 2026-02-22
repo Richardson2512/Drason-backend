@@ -239,10 +239,106 @@ async function processSlackCommand(text: string, responseUrl: string, orgId: str
             await sendSlackResponse(responseUrl, `Unknown command: \`${command}\`. Supported commands: \n• \`status <domain>\`\n• \`mailbox <email>\`\n• \`org\``);
         }
     } catch (error) {
-        logger.error(`[Slack] Error executing command ${command}`, error as Error);
-        await sendSlackResponse(responseUrl, 'An internal error occurred while processing your request.');
+        logger.error(`[Slack] Error executing org command`, error as Error);
+        await sendSlackResponse(responseUrl, 'An internal error occurred while fetching organization status.');
     }
 }
+
+// ============================================================================
+// APP SETTINGS API (Authenticated)
+// ============================================================================
+export const getSlackChannels = async (req: Request, res: Response) => {
+    const orgId = req.orgContext?.organizationId;
+    if (!orgId) return res.status(401).json({ success: false, error: 'Unauthorized' });
+
+    try {
+        const integration = await prisma.slackIntegration.findUnique({
+            where: { organization_id: orgId }
+        });
+
+        if (!integration) {
+            return res.status(404).json({ success: false, error: 'Slack not connected' });
+        }
+
+        const token = decryptToken(integration.bot_token_encrypted);
+
+        const response = await axios.get('https://slack.com/api/conversations.list', {
+            headers: { Authorization: `Bearer ${token}` },
+            params: {
+                types: 'public_channel,private_channel',
+                exclude_archived: true,
+                limit: 1000
+            }
+        });
+
+        if (!response.data.ok) {
+            return res.status(400).json({ success: false, error: response.data.error });
+        }
+
+        // Filter for channels where the bot is actually a member, per architectural review
+        const availableChannels = response.data.channels
+            .filter((c: any) => c.is_member)
+            .map((c: any) => ({
+                id: c.id,
+                name: `#${c.name}`
+            }));
+
+        res.json({ success: true, data: availableChannels });
+    } catch (error: any) {
+        logger.error('[Slack] Failed to fetch channels', error);
+        res.status(500).json({ success: false, error: 'Failed to fetch Slack channels' });
+    }
+};
+
+export const saveSlackChannel = async (req: Request, res: Response) => {
+    const orgId = req.orgContext?.organizationId;
+    const { channel_id } = req.body;
+
+    if (!orgId) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!channel_id) return res.status(400).json({ success: false, error: 'channel_id required' });
+
+    try {
+        const integration = await prisma.slackIntegration.findUnique({
+            where: { organization_id: orgId }
+        });
+
+        if (!integration) {
+            return res.status(404).json({ success: false, error: 'Slack not connected' });
+        }
+
+        const token = decryptToken(integration.bot_token_encrypted);
+
+        // Immediate Validation against Slack
+        // We verify the bot can actually post to this channel before saving it.
+        const testRes = await axios.post('https://slack.com/api/chat.postMessage', {
+            channel: channel_id,
+            text: "✅ Superkabe alerts successfully configured for this channel."
+        }, {
+            headers: { Authorization: `Bearer ${token}` }
+        });
+
+        if (!testRes.data.ok) {
+            logger.warn(`[Slack] Channel validation failed for Org ${orgId}. Slack error: ${testRes.data.error}`);
+            return res.status(400).json({ success: false, error: testRes.data.error, message: 'Could not post to the selected channel. Ensure the Superkabe bot is invited to it.' });
+        }
+
+        // Validation succeeded. Save safely.
+        await prisma.slackIntegration.update({
+            where: { organization_id: orgId },
+            data: {
+                alerts_channel_id: channel_id,
+                alerts_status: 'active',
+                alerts_last_error_at: null,
+                alerts_last_error_message: null
+            }
+        });
+
+        res.json({ success: true });
+    } catch (error: any) {
+        logger.error('[Slack] Failed to save channel', error);
+        res.status(500).json({ success: false, error: 'Failed to configure channel' });
+    }
+};
 
 // ----------------------------------------------------------------------------
 // HANDLERS FOR SPECIFIC COMMANDS (Phase 1)

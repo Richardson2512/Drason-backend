@@ -40,6 +40,15 @@ export const getSettings = async (req: Request, res: Response) => {
             is_secret: false
         } as any);
 
+        if (slackIntegration) {
+            maskedSettings.push(
+                { key: 'SLACK_ALERTS_CHANNEL', value: slackIntegration.alerts_channel_id || '', is_secret: false } as any,
+                { key: 'SLACK_ALERTS_STATUS', value: slackIntegration.alerts_status, is_secret: false } as any,
+                { key: 'SLACK_ALERTS_LAST_ERROR', value: slackIntegration.alerts_last_error_message || '', is_secret: false } as any,
+                { key: 'SLACK_ALERTS_LAST_ERROR_AT', value: slackIntegration.alerts_last_error_at ? slackIntegration.alerts_last_error_at.toISOString() : '', is_secret: false } as any
+            );
+        }
+
         res.json({ success: true, data: maskedSettings });
     } catch (error) {
         logger.error('[SETTINGS] getSettings error:', error as Error);

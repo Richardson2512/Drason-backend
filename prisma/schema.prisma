@@ -473,6 +473,13 @@ model SlackIntegration {
   slack_team_id        String       @unique
   bot_token_encrypted  String
   installed_by_user_id String
+
+  // Proactive Alerts Configuration
+  alerts_channel_id         String?
+  alerts_status             SlackAlertsStatus @default(active)
+  alerts_last_error_at      DateTime?
+  alerts_last_error_message String?
+
   created_at           DateTime     @default(now())
   updated_at           DateTime     @updatedAt
 
@@ -481,4 +488,21 @@ model SlackIntegration {
 
   @@index([organization_id])
   @@index([slack_team_id])
+}
+
+enum SlackAlertsStatus {
+  active
+  revoked
+  channel_not_found
+  auth_error
+}
+
+model SlackAlertLog {
+  id              String   @id @default(uuid())
+  organization_id String
+  event_type      String
+  event_hash      String   @unique
+  sent_at         DateTime @default(now())
+
+  @@index([organization_id, event_hash])
 }
