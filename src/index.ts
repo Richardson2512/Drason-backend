@@ -57,6 +57,7 @@ import analyticsRoutes from './routes/analytics';
 import diagnosticsRoutes from './routes/diagnostics';
 import syncProgressRoutes from './routes/syncProgress';
 import infrastructureRoutes from './routes/infrastructure';
+import slackRoutes from './routes/slack';
 
 import { checkLeadCapacity } from './middleware/featureGate';
 
@@ -110,7 +111,16 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Organization-ID'],
 }));
 app.use(cookieParser());
-app.use(express.json({ limit: '1mb' }));
+
+// Capture raw body for Slack signature verification 
+const verifyRawBody = (req: any, res: any, buf: Buffer) => {
+    if (req.url && req.originalUrl && req.originalUrl.startsWith('/slack')) {
+        req.rawBody = buf;
+    }
+};
+
+app.use(express.json({ limit: '1mb', verify: verifyRawBody }));
+app.use(express.urlencoded({ extended: true, limit: '1mb', verify: verifyRawBody }));
 
 // Security headers on all responses
 app.use(securityHeaders);
@@ -202,6 +212,9 @@ app.get('/metrics', (req, res) => {
 
 // Apply organization context middleware to all /api routes
 app.use('/api', extractOrgContext);
+
+// Slack Routes (Bypass /api and typical auth)
+app.use('/slack', slackRoutes);
 
 // API Routes
 app.use('/api/leads', leadRoutes);
