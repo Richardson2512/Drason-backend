@@ -275,9 +275,10 @@ export const getSlackChannels = async (req: Request, res: Response) => {
             return res.status(400).json({ success: false, error: response.data.error });
         }
 
-        // Filter for channels where the bot is actually a member, per architectural review
+        // Do not filter by is_member so users can see all public channels.
+        // If they select a channel the bot isn't in, the test postMessage will fail
+        // and instruct them to invite the bot.
         const availableChannels = response.data.channels
-            .filter((c: any) => c.is_member)
             .map((c: any) => ({
                 id: c.id,
                 name: `#${c.name}`
