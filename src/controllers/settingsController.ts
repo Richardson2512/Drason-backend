@@ -23,12 +23,22 @@ export const getSettings = async (req: Request, res: Response) => {
             where: { organization_id: orgId }
         });
 
+        const slackIntegration = await prisma.slackIntegration.findUnique({
+            where: { organization_id: orgId } // This is fine since it's 1-to-1
+        });
+
         // Mask secret values
         const maskedSettings = settings.map(s => ({
             key: s.key,
             value: s.is_secret ? maskSecret(s.value) : s.value,
             is_secret: s.is_secret
         }));
+
+        maskedSettings.push({
+            key: 'SLACK_CONNECTED',
+            value: slackIntegration ? 'true' : 'false',
+            is_secret: false
+        } as any);
 
         res.json({ success: true, data: maskedSettings });
     } catch (error) {
