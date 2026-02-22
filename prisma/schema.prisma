@@ -50,6 +50,7 @@ model Organization {
   notifications      Notification[]
   infraReports       InfrastructureReport[]
   subscriptionEvents SubscriptionEvent[]
+  slackIntegration   SlackIntegration?
 
   @@index([slug])
   @@index([subscription_status])
@@ -74,7 +75,8 @@ model User {
   google_token_expires_at DateTime? // Token expiry timestamp
   avatar_url              String? // Google profile picture URL
 
-  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  organization       Organization       @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  slackIntegrations  SlackIntegration[] // Integrations installed by this user
 
   @@index([organization_id])
   @@index([email])
@@ -463,4 +465,20 @@ model SubscriptionEvent {
   @@index([organization_id, created_at])
   @@index([event_type])
   @@index([polar_event_id])
+}
+
+model SlackIntegration {
+  id                   String       @id @default(uuid())
+  organization_id      String       @unique
+  slack_team_id        String       @unique
+  bot_token_encrypted  String
+  installed_by_user_id String
+  created_at           DateTime     @default(now())
+  updated_at           DateTime     @updatedAt
+
+  organization         Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  installed_by_user    User         @relation(fields: [installed_by_user_id], references: [id])
+
+  @@index([organization_id])
+  @@index([slack_team_id])
 }
