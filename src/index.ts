@@ -74,9 +74,12 @@ import { initEventQueue, getQueueStatus, shutdownEventQueue } from './services/e
 import { startLeadHealthWorker, getLeadHealthWorkerStatus } from './services/leadHealthWorker';
 import { startLeadScoringWorker, stopLeadScoringWorker } from './services/leadScoringWorker';
 import { startTrialWorker, stopTrialWorker } from './services/trialWorker';
-import { startSmartleadSyncWorker, stopSmartleadSyncWorker, getSmartleadSyncWorkerStatus } from './services/smartleadSyncWorker';
+import { startSmartleadSyncWorker, stopSmartleadSyncWorker, getSmartleadSyncWorkerStatus } from './services/platformSyncWorker';
 import { scheduleWarmupTracking } from './workers/warmupTrackingWorker';
 import * as infrastructureAssessmentService from './services/infrastructureAssessmentService';
+
+// Lead Processor — background job that pushes held leads through the execution gate
+import './processor';
 
 import cookieParser from 'cookie-parser';
 

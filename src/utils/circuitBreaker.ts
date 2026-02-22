@@ -230,10 +230,6 @@ export class CircuitBreaker {
     }
 }
 
-// ============================================================================
-// PRE-CONFIGURED CIRCUIT BREAKERS
-// ============================================================================
-
 /**
  * Circuit breaker for Smartlead API calls.
  * - Opens after 5 consecutive failures
@@ -256,3 +252,79 @@ export const smartleadBreaker = new CircuitBreaker({
         return true;
     },
 });
+
+/**
+ * Circuit breaker for EmailBison API calls.
+ * More aggressive thresholds since EB is a newer integration.
+ */
+export const emailbisonBreaker = new CircuitBreaker({
+    name: 'EmailBison API',
+    failureThreshold: 3,
+    resetTimeout: 45_000,      // 45 seconds
+    halfOpenSuccessThreshold: 2,
+    isFailure: (error: Error) => {
+        const message = error.message.toLowerCase();
+        if (message.includes('404') || message.includes('400')) {
+            return false;
+        }
+        return true;
+    },
+});
+
+/**
+ * Circuit breaker for Instantly API calls (future).
+ */
+export const instantlyBreaker = new CircuitBreaker({
+    name: 'Instantly API',
+    failureThreshold: 5,
+    resetTimeout: 60_000,
+    halfOpenSuccessThreshold: 2,
+    isFailure: (error: Error) => {
+        const message = error.message.toLowerCase();
+        return !message.includes('404') && !message.includes('400');
+    },
+});
+
+/**
+ * Circuit breaker for Reply.io API calls (future).
+ */
+export const replyioBreaker = new CircuitBreaker({
+    name: 'Reply.io API',
+    failureThreshold: 5,
+    resetTimeout: 60_000,
+    halfOpenSuccessThreshold: 2,
+    isFailure: (error: Error) => {
+        const message = error.message.toLowerCase();
+        return !message.includes('404') && !message.includes('400');
+    },
+});
+
+// ============================================================================
+// PLATFORM BREAKER REGISTRY
+// ============================================================================
+
+/**
+ * Map of platform names to their circuit breakers.
+ */
+export const platformBreakers: Record<string, CircuitBreaker> = {
+    smartlead: smartleadBreaker,
+    emailbison: emailbisonBreaker,
+    instantly: instantlyBreaker,
+    replyio: replyioBreaker,
+};
+
+/**
+ * Get the circuit breaker for a given platform.
+ * Falls back to Smartlead breaker for unknown platforms.
+ */
+export function getBreakerForPlatform(platform: string): CircuitBreaker {
+    return platformBreakers[platform] || smartleadBreaker;
+}
+
+/**
+ * Get status of all platform circuit breakers for health monitoring.
+ */
+export function getAllBreakerStatuses(): CircuitBreakerStatus[] {
+    return Object.values(platformBreakers).map(b => b.getStatus());
+}
+

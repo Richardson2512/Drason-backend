@@ -185,3 +185,56 @@ export const smartleadRateLimiter = new RateLimiter({
     windowMs: 2000,
     queueLimit: 5000 // Allow up to 5000 queued requests
 });
+
+/**
+ * EmailBison API rate limiter instance.
+ * Limit: 5 requests per 2 seconds (more conservative — newer integration)
+ */
+export const emailbisonRateLimiter = new RateLimiter({
+    maxRequests: 5,
+    windowMs: 2000,
+    queueLimit: 3000
+});
+
+/**
+ * Instantly API rate limiter instance (future).
+ * Limit: 10 requests per 2 seconds
+ */
+export const instantlyRateLimiter = new RateLimiter({
+    maxRequests: 10,
+    windowMs: 2000,
+    queueLimit: 5000
+});
+
+/**
+ * Reply.io API rate limiter instance (future).
+ * Limit: 10 requests per 2 seconds
+ */
+export const replyioRateLimiter = new RateLimiter({
+    maxRequests: 10,
+    windowMs: 2000,
+    queueLimit: 5000
+});
+
+// ============================================================================
+// PLATFORM RATE LIMITER REGISTRY
+// ============================================================================
+
+/**
+ * Map of platform names to their rate limiters.
+ */
+export const platformRateLimiters: Record<string, RateLimiter> = {
+    smartlead: smartleadRateLimiter,
+    emailbison: emailbisonRateLimiter,
+    instantly: instantlyRateLimiter,
+    replyio: replyioRateLimiter,
+};
+
+/**
+ * Get the rate limiter for a given platform.
+ * Falls back to Smartlead rate limiter for unknown platforms.
+ */
+export function getRateLimiterForPlatform(platform: string): RateLimiter {
+    return platformRateLimiters[platform] || smartleadRateLimiter;
+}
+

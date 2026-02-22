@@ -9,7 +9,7 @@
 
 import { prisma } from './index';
 import * as executionGateService from './services/executionGateService';
-import * as smartleadClient from './services/smartleadClient';
+import { getAdapterForCampaign } from './adapters/platformRegistry';
 import * as auditLogService from './services/auditLogService';
 import { logger } from './services/observabilityService';
 
@@ -70,18 +70,31 @@ const processHeldLeads = async () => {
                 });
                 logger.info(`[PROCESSOR] Lead ${lead.id} ACTIVATED.`);
 
-                // Push to Smartlead
-                logger.info(`[PROCESSOR] Pushing Lead ${lead.id} to Smartlead Campaign ${lead.assigned_campaign_id}...`);
-                const pushed = await smartleadClient.pushLeadToCampaign(
-                    orgId,
-                    lead.assigned_campaign_id,
-                    { email: lead.email }
-                );
+                // Push to campaign on external platform
+                logger.info(`[PROCESSOR] Pushing Lead ${lead.id} to campaign ${lead.assigned_campaign_id}...`);
+                try {
+                    const adapter = await getAdapterForCampaign(lead.assigned_campaign_id);
+                    const campaign = await prisma.campaign.findUnique({
+                        where: { id: lead.assigned_campaign_id },
+                        select: { external_id: true }
+                    });
+                    const externalCampaignId = campaign?.external_id || lead.assigned_campaign_id;
+                    const pushed = await adapter.pushLeadToCampaign(
+                        orgId,
+                        externalCampaignId,
+                        { email: lead.email }
+                    );
 
-                if (pushed) {
-                    logger.info(`[PROCESSOR] Lead ${lead.id} successfully pushed.`);
-                } else {
-                    logger.info(`[PROCESSOR] Failed to push Lead ${lead.id} (Check API Key).`);
+                    if (pushed) {
+                        logger.info(`[PROCESSOR] Lead ${lead.id} successfully pushed.`);
+                    } else {
+                        logger.info(`[PROCESSOR] Failed to push Lead ${lead.id} (Check API Key).`);
+                    }
+                } catch (pushError: any) {
+                    logger.error(`[PROCESSOR] Error pushing lead to campaign`, pushError, {
+                        leadId: lead.id,
+                        campaignId: lead.assigned_campaign_id
+                    });
                 }
 
             } else {

@@ -19,9 +19,10 @@ import * as eventService from './eventService';
 import { classifyBounce } from './bounceClassifier';
 import * as healingService from './healingService';
 import * as correlationService from './correlationService';
-import * as smartleadClient from './smartleadClient';
+import { getAdapterForMailbox, getAdapterForDomain, getAdapterForCampaign } from '../adapters/platformRegistry';
 import * as executionGateService from './executionGateService';
 import * as notificationService from './notificationService';
+import { SlackAlertService } from './SlackAlertService';
 import { logger } from './observabilityService';
 import {
     EventType,
@@ -492,32 +493,51 @@ const pauseMailbox = async (mailboxId: string, reason: string): Promise<void> =>
         details: `${reason}. Cooldown until ${cooldownUntil.toISOString()}. Resilience: ${newResilience}. Correlation: ${correlation.message}`
     });
 
-    // ── SMARTLEAD INTEGRATION: Remove mailbox from all assigned campaigns ──
+    // ── SLACK ALERT: Notify customer of mailbox pause ──
+    SlackAlertService.sendAlert({
+        organizationId: orgId,
+        eventType: 'mailbox_paused',
+        entityId: mailboxId,
+        severity: 'critical',
+        title: '🛑 Mailbox Paused',
+        message: `Mailbox \`${mailbox.email || mailboxId}\` has been auto-paused.\n*Reason:* ${reason}\n*Cooldown until:* ${cooldownUntil.toISOString()}`
+    }).catch(() => { }); // Non-blocking
+
+    // ── PLATFORM INTEGRATION: Remove mailbox from all assigned campaigns ──
     try {
+        const adapter = await getAdapterForMailbox(mailboxId);
+        const mailboxEntity = await prisma.mailbox.findUnique({
+            where: { id: mailboxId },
+            select: { external_email_account_id: true }
+        });
         const campaigns = await prisma.campaign.findMany({
             where: {
                 mailboxes: {
                     some: { id: mailboxId }
                 }
-            }
+            },
+            select: { id: true, external_id: true }
         });
 
         for (const campaign of campaigns) {
-            await smartleadClient.removeMailboxFromSmartleadCampaign(
+            const externalCampaignId = campaign.external_id || campaign.id;
+            const externalMailboxId = mailboxEntity?.external_email_account_id?.toString() || mailboxId;
+            await adapter.removeMailboxFromCampaign(
                 orgId,
-                campaign.id,
-                mailboxId
+                externalCampaignId,
+                externalMailboxId
             );
         }
 
-        logger.info(`[MONITOR] Removed mailbox ${mailboxId} from ${campaigns.length} Smartlead campaigns`, {
+        logger.info(`[MONITOR] Removed mailbox ${mailboxId} from ${campaigns.length} platform campaigns`, {
             organizationId: orgId,
             mailboxId,
-            campaignCount: campaigns.length
+            campaignCount: campaigns.length,
+            platform: adapter.platform
         });
-    } catch (smartleadError: any) {
-        // Smartlead removal failure doesn't block the pause — mailbox is already paused in Drason
-        logger.error(`[MONITOR] Failed to remove mailbox ${mailboxId} from Smartlead campaigns`, smartleadError, {
+    } catch (platformError: any) {
+        // Platform removal failure doesn't block the pause — mailbox is already paused in Drason
+        logger.error(`[MONITOR] Failed to remove mailbox ${mailboxId} from platform campaigns`, platformError, {
             organizationId: orgId,
             mailboxId
         });
@@ -881,6 +901,16 @@ const checkDomainHealth = async (domainId: string): Promise<void> => {
         }
 
         logger.info(`[MONITOR] [ENFORCE] 🛑 Domain ${domain.domain} PAUSED: ${reason}`);
+
+        // ── SLACK ALERT: Notify customer of domain pause ──
+        SlackAlertService.sendAlert({
+            organizationId: orgId,
+            eventType: 'domain_paused',
+            entityId: domainId,
+            severity: 'critical',
+            title: '🛑 Domain Paused',
+            message: `Domain \`${domain.domain}\` has been auto-paused.\n*Reason:* ${reason}\n*Unhealthy mailboxes:* ${freshUnhealthyCount}/${freshTotalMailboxes}`
+        }).catch(() => { }); // Non-blocking
     }
 };
 
@@ -985,18 +1015,20 @@ const pauseDomain = async (domainId: string, reason: string): Promise<void> => {
         details: `Domain paused via correlation escalation: ${reason}`,
     });
 
-    // ── SMARTLEAD INTEGRATION: Remove all domain mailboxes from campaigns ──
+    // ── PLATFORM INTEGRATION: Remove all domain mailboxes from campaigns ──
     try {
-        const result = await smartleadClient.removeDomainMailboxesFromSmartlead(orgId, domainId);
-        logger.info(`[MONITOR] Removed domain ${domainId} mailboxes from Smartlead`, {
+        const adapter = await getAdapterForDomain(domainId);
+        const result = await adapter.removeAllDomainMailboxes(orgId, domainId);
+        logger.info(`[MONITOR] Removed domain ${domainId} mailboxes from platform`, {
             organizationId: orgId,
             domainId,
             successCount: result.success,
-            failedCount: result.failed
+            failedCount: result.failed,
+            platform: adapter.platform
         });
-    } catch (smartleadError: any) {
-        // Smartlead removal failure doesn't block the pause — domain is already paused in Drason
-        logger.error(`[MONITOR] Failed to remove domain ${domainId} mailboxes from Smartlead`, smartleadError, {
+    } catch (platformError: any) {
+        // Platform removal failure doesn't block the pause — domain is already paused in Drason
+        logger.error(`[MONITOR] Failed to remove domain ${domainId} mailboxes from platform`, platformError, {
             organizationId: orgId,
             domainId
         });
@@ -1081,16 +1113,19 @@ const pauseCampaign = async (campaignId: string, organizationId: string, reason:
         details: `Campaign paused via correlation redirect: ${reason}`,
     });
 
-    // ── SMARTLEAD INTEGRATION: Pause campaign in Smartlead ──
+    // ── PLATFORM INTEGRATION: Pause campaign on external platform ──
     try {
-        await smartleadClient.pauseSmartleadCampaign(organizationId, campaignId);
-        logger.info(`[MONITOR] Paused campaign ${campaignId} in Smartlead`, {
+        const adapter = await getAdapterForCampaign(campaignId);
+        const externalCampaignId = campaign.external_id || campaignId;
+        await adapter.pauseCampaign(organizationId, externalCampaignId);
+        logger.info(`[MONITOR] Paused campaign ${campaignId} on platform`, {
             organizationId,
-            campaignId
+            campaignId,
+            platform: adapter.platform
         });
-    } catch (smartleadError: any) {
-        // Smartlead pause failure doesn't block the pause — campaign is already paused in Drason
-        logger.error(`[MONITOR] Failed to pause campaign ${campaignId} in Smartlead`, smartleadError, {
+    } catch (platformError: any) {
+        // Platform pause failure doesn't block the pause — campaign is already paused in Drason
+        logger.error(`[MONITOR] Failed to pause campaign ${campaignId} on platform`, platformError, {
             organizationId,
             campaignId
         });

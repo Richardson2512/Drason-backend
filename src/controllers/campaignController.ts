@@ -7,13 +7,7 @@
 import { Request, Response } from 'express';
 import { prisma } from '../index';
 import { getOrgId } from '../middleware/orgContext';
-import {
-    pauseSmartleadCampaign,
-    resumeSmartleadCampaign,
-    addMailboxToSmartleadCampaign,
-    removeLeadFromSmartleadCampaign,
-    addLeadToSmartleadCampaign
-} from '../services/smartleadClient';
+import { getAdapterForCampaign, getAdapterForMailbox } from '../adapters/platformRegistry';
 import { logger } from '../services/observabilityService';
 import { logAction } from '../services/auditLogService';
 import * as loadBalancingService from '../services/loadBalancingService';
@@ -57,7 +51,13 @@ export const pauseAllCampaigns = async (req: Request, res: Response) => {
 
         for (const campaign of campaigns) {
             try {
-                await pauseSmartleadCampaign(orgId, campaign.id);
+                const adapter = await getAdapterForCampaign(campaign.id);
+                const campaignData = await prisma.campaign.findUnique({
+                    where: { id: campaign.id },
+                    select: { external_id: true }
+                });
+                const externalId = campaignData?.external_id || campaign.id;
+                await adapter.pauseCampaign(orgId, externalId);
                 await prisma.campaign.update({
                     where: { id: campaign.id },
                     data: {
@@ -321,12 +321,27 @@ export const resolveStalledCampaign = async (req: Request, res: Response) => {
 
             let successCount = 0;
             for (const mailboxId of selectedMailboxIds) {
-                const added = await addMailboxToSmartleadCampaign(orgId, campaignId, mailboxId);
-                if (added) successCount++;
+                try {
+                    const adapter = await getAdapterForCampaign(campaignId);
+                    const campaignData = await prisma.campaign.findUnique({
+                        where: { id: campaignId },
+                        select: { external_id: true }
+                    });
+                    const mailboxData = await prisma.mailbox.findUnique({
+                        where: { id: mailboxId },
+                        select: { external_email_account_id: true }
+                    });
+                    const externalCampaignId = campaignData?.external_id || campaignId;
+                    const externalMailboxId = mailboxData?.external_email_account_id?.toString() || mailboxId;
+                    await adapter.addMailboxToCampaign(orgId, externalCampaignId, externalMailboxId);
+                    successCount++;
+                } catch (addError) {
+                    logger.warn(`[CAMPAIGNS] Failed to add mailbox ${mailboxId} to campaign`, addError as Error);
+                }
             }
 
             if (successCount === 0) {
-                return res.status(500).json({ success: false, error: 'Failed to add any mailboxes to Smartlead' });
+                return res.status(500).json({ success: false, error: 'Failed to add any mailboxes to campaign' });
             }
 
             // Sync Database
@@ -343,8 +358,18 @@ export const resolveStalledCampaign = async (req: Request, res: Response) => {
                 }
             });
 
-            // Start the campaign in Smartlead
-            await resumeSmartleadCampaign(orgId, campaignId);
+            // Start the campaign on the platform
+            try {
+                const adapter = await getAdapterForCampaign(campaignId);
+                const campaignData = await prisma.campaign.findUnique({
+                    where: { id: campaignId },
+                    select: { external_id: true }
+                });
+                const externalId = campaignData?.external_id || campaignId;
+                await adapter.resumeCampaign(orgId, externalId);
+            } catch (resumeError) {
+                logger.warn(`[CAMPAIGNS] Failed to resume campaign on platform`, resumeError as Error);
+            }
 
             await logAction({
                 organizationId: orgId,
@@ -379,22 +404,38 @@ export const resolveStalledCampaign = async (req: Request, res: Response) => {
 
             let reroutedCount = 0;
             for (const lead of leadsToMove) {
-                // Remove from old
-                await removeLeadFromSmartleadCampaign(orgId, campaignId, lead.email);
-
-                // Add to new
-                const added = await addLeadToSmartleadCampaign(orgId, targetCampaignId, {
-                    email: lead.email,
-                    first_name: lead.persona, // Basic mapping, full details would require Smartlead sync
-                    last_name: ''
-                });
-
-                if (added) {
-                    await prisma.lead.update({
-                        where: { id: lead.id },
-                        data: { assigned_campaign_id: targetCampaignId }
+                try {
+                    // Remove from old campaign on platform
+                    const sourceAdapter = await getAdapterForCampaign(campaignId);
+                    const sourceCampaign = await prisma.campaign.findUnique({
+                        where: { id: campaignId },
+                        select: { external_id: true }
                     });
-                    reroutedCount++;
+                    const sourceExternalId = sourceCampaign?.external_id || campaignId;
+                    await sourceAdapter.removeLeadFromCampaign(orgId, sourceExternalId, lead.email);
+
+                    // Add to new campaign on platform
+                    const targetAdapter = await getAdapterForCampaign(targetCampaignId);
+                    const targetCampaign = await prisma.campaign.findUnique({
+                        where: { id: targetCampaignId },
+                        select: { external_id: true }
+                    });
+                    const targetExternalId = targetCampaign?.external_id || targetCampaignId;
+                    const added = await targetAdapter.pushLeadToCampaign(orgId, targetExternalId, {
+                        email: lead.email,
+                        first_name: lead.persona,
+                        last_name: ''
+                    });
+
+                    if (added) {
+                        await prisma.lead.update({
+                            where: { id: lead.id },
+                            data: { assigned_campaign_id: targetCampaignId }
+                        });
+                        reroutedCount++;
+                    }
+                } catch (rerouteError) {
+                    logger.warn(`[CAMPAIGNS] Failed to reroute lead ${lead.id}`, rerouteError as Error);
                 }
             }
 
@@ -565,19 +606,25 @@ export const archiveCampaign = async (req: Request, res: Response) => {
         await prisma.campaign.update({
             where: { id: campaignId },
             data: {
-                status: 'paused', // Keep as paused in Smartlead
+                status: 'paused', // Keep as paused on platform
                 paused_reason: 'Archived by user',
                 paused_at: new Date(),
                 paused_by: 'user'
             }
         });
 
-        // Optionally pause in Smartlead too
+        // Optionally pause on the platform too
         try {
-            await pauseSmartleadCampaign(orgId, campaignId);
-        } catch (smartleadError) {
-            logger.warn(`[CAMPAIGNS] Failed to pause archived campaign ${campaignId} in Smartlead`, smartleadError as Error);
-            // Don't block the archive if Smartlead fails
+            const adapter = await getAdapterForCampaign(campaignId);
+            const campaignData = await prisma.campaign.findUnique({
+                where: { id: campaignId },
+                select: { external_id: true }
+            });
+            const externalId = campaignData?.external_id || campaignId;
+            await adapter.pauseCampaign(orgId, externalId);
+        } catch (platformError) {
+            logger.warn(`[CAMPAIGNS] Failed to pause archived campaign ${campaignId} on platform`, platformError as Error);
+            // Don't block the archive if platform API fails
         }
 
         await logAction({

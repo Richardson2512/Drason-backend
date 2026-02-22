@@ -2155,23 +2155,4 @@ export const getEmailAccountDetails = async (
     }
 };
 
-/**
- * Get active campaigns from Smartlead
- */
-export const getActiveCampaigns = async (organizationId: string): Promise<any[]> => {
-    const apiKey = await getApiKey(organizationId);
-    if (!apiKey) return [];
 
-    try {
-        const response = await smartleadBreaker.call(() =>
-            axios.get(`${SMARTLEAD_API_BASE}/campaigns`, { params: { api_key: apiKey } })
-        );
-        return response.data;
-    } catch (error: any) {
-        logger.error('[SMARTLEAD] Failed to fetch active campaigns', error, {
-            organizationId,
-            response: error.response?.data
-        });
-        return [];
-    }
-};

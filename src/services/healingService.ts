@@ -21,7 +21,8 @@ import {
 } from '../types';
 import * as auditLogService from './auditLogService';
 import * as notificationService from './notificationService';
-import * as smartleadClient from './smartleadClient';
+import { getAdapterForMailbox, getAdapterForCampaign } from '../adapters/platformRegistry';
+import { SlackAlertService } from './SlackAlertService';
 import logger from '../utils/logger';
 
 // ============================================================================
@@ -846,73 +847,85 @@ export async function transitionPhase(
                 });
             }
 
-            // Step 2: Re-add mailbox to production campaigns in Smartlead
+            // Step 2: Re-add mailbox to production campaigns on external platform
             try {
+                const adapter = await getAdapterForMailbox(entityId);
+                const mailboxEntity = await prisma.mailbox.findUnique({
+                    where: { id: entityId },
+                    select: { external_email_account_id: true }
+                });
                 // Get all campaigns this mailbox is assigned to in Drason
                 const campaigns = await prisma.campaign.findMany({
                     where: {
                         mailboxes: {
                             some: { id: entityId }
                         }
-                    }
+                    },
+                    select: { id: true, external_id: true, name: true }
                 });
 
-                // Re-add the mailbox to each campaign in Smartlead
+                // Re-add the mailbox to each campaign on the platform
+                const externalMailboxId = mailboxEntity?.external_email_account_id?.toString() || entityId;
                 for (const campaign of campaigns) {
-                    await smartleadClient.addMailboxToSmartleadCampaign(
+                    const externalCampaignId = campaign.external_id || campaign.id;
+                    await adapter.addMailboxToCampaign(
                         organizationId,
-                        campaign.id,
-                        entityId
+                        externalCampaignId,
+                        externalMailboxId
                     );
                 }
 
-                logger.info(`[HEALING] Re-added mailbox ${entityId} to ${campaigns.length} production Smartlead campaigns`, {
+                logger.info(`[HEALING] Re-added mailbox ${entityId} to ${campaigns.length} production campaigns`, {
                     organizationId,
                     entityId,
-                    campaignCount: campaigns.length
+                    campaignCount: campaigns.length,
+                    platform: adapter.platform
                 });
 
                 // ── AUTO-RESTART: Check if any campaigns were waiting for mailbox recovery ──
                 await checkAndRestartWaitingCampaigns(organizationId, campaigns);
 
-            } catch (smartleadError: any) {
-                // Smartlead re-add failure doesn't block the recovery — mailbox is already healthy in Drason
-                logger.error(`[HEALING] Failed to re-add mailbox ${entityId} to Smartlead campaigns`, smartleadError, {
+            } catch (platformError: any) {
+                // Platform re-add failure doesn't block the recovery — mailbox is already healthy in Drason
+                logger.error(`[HEALING] Failed to re-add mailbox ${entityId} to platform campaigns`, platformError, {
                     organizationId,
                     entityId
                 });
             }
         }
 
-        // ── SMARTLEAD INTEGRATION: Re-add domain mailboxes when domain recovers ──
+        // ── PLATFORM INTEGRATION: Re-add domain mailboxes when domain recovers ──
         if (entityType === 'domain') {
             try {
                 // Get all mailboxes for this domain with their campaign assignments
                 const mailboxes = await prisma.mailbox.findMany({
                     where: { domain_id: entityId, status: 'healthy' },
-                    include: { campaigns: true }
+                    include: { campaigns: { select: { id: true, external_id: true } } }
                 });
 
                 let addedCount = 0;
                 for (const mailbox of mailboxes) {
+                    const adapter = await getAdapterForMailbox(mailbox.id);
+                    const externalMailboxId = mailbox.external_email_account_id?.toString() || mailbox.id;
                     for (const campaign of mailbox.campaigns) {
-                        await smartleadClient.addMailboxToSmartleadCampaign(
+                        const externalCampaignId = campaign.external_id || campaign.id;
+                        await adapter.addMailboxToCampaign(
                             organizationId,
-                            campaign.id,
-                            mailbox.id
+                            externalCampaignId,
+                            externalMailboxId
                         );
                         addedCount++;
                     }
                 }
 
-                logger.info(`[HEALING] Re-added domain ${entityId} mailboxes to Smartlead campaigns`, {
+                logger.info(`[HEALING] Re-added domain ${entityId} mailboxes to platform campaigns`, {
                     organizationId,
                     domainId: entityId,
                     mailboxCount: mailboxes.length,
                     addedCount
                 });
-            } catch (smartleadError: any) {
-                logger.error(`[HEALING] Failed to re-add domain ${entityId} mailboxes to Smartlead`, smartleadError, {
+            } catch (platformError: any) {
+                logger.error(`[HEALING] Failed to re-add domain ${entityId} mailboxes to platform`, platformError, {
                     organizationId,
                     domainId: entityId
                 });
@@ -921,6 +934,18 @@ export async function transitionPhase(
     }
 
     logger.info(`[HEALING] ${entityType} ${entityId}: ${fromPhase} → ${toPhase}. Reason: ${reason}`);
+
+    // ── SLACK ALERT: Notify customer of successful recovery ──
+    if (toPhase === RecoveryPhase.HEALTHY) {
+        SlackAlertService.sendAlert({
+            organizationId,
+            eventType: `${entityType}_recovered`,
+            entityId,
+            severity: 'info',
+            title: `✅ ${entityType === 'mailbox' ? 'Mailbox' : 'Domain'} Recovered`,
+            message: `${entityType === 'mailbox' ? 'Mailbox' : 'Domain'} \`${entityId}\` has completed recovery and is back in full production.`
+        }).catch(() => { }); // Non-blocking
+    }
 
     return {
         transitioned: true,
@@ -1099,23 +1124,24 @@ async function checkAndRestartWaitingCampaigns(
                     healthyMailboxCount: campaignData.mailboxes.length
                 });
 
-                // Resume campaign in Smartlead
+                // Resume campaign on external platform
                 try {
-                    // CRITICAL: resumeSmartleadCampaign returns false on failure, doesn't throw
-                    // Must check return value before updating DB
-                    const resumeSuccess = await smartleadClient.resumeSmartleadCampaign(organizationId, campaign.id);
+                    const adapter = await getAdapterForCampaign(campaign.id);
+                    const externalCampaignId = campaignData.external_id || campaign.id;
+                    const resumeSuccess = await adapter.resumeCampaign(organizationId, externalCampaignId);
 
                     if (!resumeSuccess) {
-                        // Smartlead API call failed - DO NOT update DB
-                        logger.error(`[HEALING-AUTORESTART] Smartlead API failed to resume campaign ${campaign.id}`, undefined, {
+                        // Platform API call failed - DO NOT update DB
+                        logger.error(`[HEALING-AUTORESTART] Platform API failed to resume campaign ${campaign.id}`, undefined, {
                             organizationId,
-                            campaignId: campaign.id
+                            campaignId: campaign.id,
+                            platform: adapter.platform
                         });
 
                         await notificationService.createNotification(organizationId, {
                             type: 'WARNING',
                             title: 'Auto-Restart Failed',
-                            message: `Failed to auto-restart campaign "${campaignData.name || campaign.id}" in Smartlead. Campaign remains paused. Please restart manually.`
+                            message: `Failed to auto-restart campaign "${campaignData.name || campaign.id}" on ${adapter.platform}. Campaign remains paused. Please restart manually.`
                         });
 
                         continue; // Skip DB update, move to next campaign

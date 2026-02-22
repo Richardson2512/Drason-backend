@@ -1,13 +1,13 @@
 /**
  * Warmup Service
  *
- * Manages Smartlead warmup integration for automated mailbox recovery.
- * Warmup is used instead of healing campaigns for simpler, more effective recovery.
+ * Manages warmup integration for automated mailbox recovery.
+ * Works across all platforms via the PlatformAdapter interface.
  */
 
 import { prisma } from '../index';
 import { logger } from './observabilityService';
-import * as smartleadClient from './smartleadClient';
+import { getAdapterForMailbox } from '../adapters/platformRegistry';
 import * as notificationService from './notificationService';
 import { RecoveryPhase } from '../types';
 
@@ -54,11 +54,12 @@ export const enableWarmupForRecovery = async (
     warmupEnabled: boolean;
 }> => {
     try {
-        // Get mailbox with Smartlead email account ID
+        // Get mailbox with external account ID
         const mailbox = await prisma.mailbox.findUnique({
             where: { id: mailboxId },
             select: {
                 email: true,
+                external_email_account_id: true,
                 smartlead_email_account_id: true,
                 consecutive_pauses: true
             }
@@ -68,8 +69,9 @@ export const enableWarmupForRecovery = async (
             throw new Error(`Mailbox ${mailboxId} not found`);
         }
 
-        if (!mailbox.smartlead_email_account_id) {
-            logger.warn('[WARMUP] Cannot enable warmup - no Smartlead email account ID', {
+        const externalAccountId = mailbox.external_email_account_id ?? mailbox.smartlead_email_account_id;
+        if (!externalAccountId) {
+            logger.warn('[WARMUP] Cannot enable warmup - no external email account ID', {
                 organizationId,
                 mailboxId,
                 mailboxEmail: mailbox.email
@@ -93,23 +95,24 @@ export const enableWarmupForRecovery = async (
         });
 
         // Fetch baseline stats for accurate phase tracking
+        const adapter = await getAdapterForMailbox(mailboxId);
         let baselineSends = 0;
         let baselineSpam = 0;
         try {
-            const stats = await smartleadClient.getEmailAccountDetails(
+            const stats = await adapter.getMailboxDetails(
                 organizationId,
-                mailbox.smartlead_email_account_id
+                externalAccountId
             );
-            baselineSends = stats.warmup_details?.total_sent_count || 0;
-            baselineSpam = stats.warmup_details?.total_spam_count || 0;
+            baselineSends = stats?.dailySentCount || 0;
+            baselineSpam = stats?.spamCount || 0;
         } catch (e) {
             logger.warn('[WARMUP] Could not fetch baseline stats, using 0', { mailboxId });
         }
 
-        // Enable warmup via Smartlead API
-        const result = await smartleadClient.updateMailboxWarmup(
+        // Enable warmup via platform API
+        const result = await adapter.updateWarmupSettings(
             organizationId,
-            mailbox.smartlead_email_account_id,
+            externalAccountId,
             {
                 warmup_enabled: true,
                 total_warmup_per_day: config.total_warmup_per_day,
@@ -136,13 +139,13 @@ export const enableWarmupForRecovery = async (
         await notificationService.createNotification(organizationId, {
             type: 'INFO',
             title: 'Automated Recovery Started',
-            message: `Warmup enabled for ${mailbox.email}. System will automatically send ${targetSends} clean emails via Smartlead's warmup network at ${config.total_warmup_per_day}/day.`
+            message: `Warmup enabled for ${mailbox.email}. System will automatically send ${targetSends} clean emails via warmup network at ${config.total_warmup_per_day}/day.`
         });
 
         logger.info('[WARMUP] Successfully enabled warmup', {
             organizationId,
             mailboxId,
-            warmupKey: result.warmupKey,
+            ok: result.ok,
             recoveryPhase
         });
 
@@ -179,11 +182,13 @@ export const updateWarmupForPhaseTransition = async (
             where: { id: mailboxId },
             select: {
                 email: true,
+                external_email_account_id: true,
                 smartlead_email_account_id: true
             }
         });
 
-        if (!mailbox || !mailbox.smartlead_email_account_id) {
+        const externalAccountId = mailbox?.external_email_account_id ?? mailbox?.smartlead_email_account_id;
+        if (!mailbox || !externalAccountId) {
             logger.warn('[WARMUP] Cannot update warmup - mailbox or email account ID not found', {
                 organizationId,
                 mailboxId
@@ -211,23 +216,24 @@ export const updateWarmupForPhaseTransition = async (
         });
 
         // Fetch baseline stats
+        const adapter = await getAdapterForMailbox(mailboxId);
         let baselineSends = 0;
         let baselineSpam = 0;
         try {
-            const stats = await smartleadClient.getEmailAccountDetails(
+            const stats = await adapter.getMailboxDetails(
                 organizationId,
-                mailbox.smartlead_email_account_id
+                externalAccountId
             );
-            baselineSends = stats.warmup_details?.total_sent_count || 0;
-            baselineSpam = stats.warmup_details?.total_spam_count || 0;
+            baselineSends = stats?.dailySentCount || 0;
+            baselineSpam = stats?.spamCount || 0;
         } catch (e) {
             logger.warn('[WARMUP] Could not fetch baseline stats for transition, using 0', { mailboxId });
         }
 
         // Update warmup settings
-        await smartleadClient.updateMailboxWarmup(
+        await adapter.updateWarmupSettings(
             organizationId,
-            mailbox.smartlead_email_account_id,
+            externalAccountId,
             {
                 warmup_enabled: true,
                 total_warmup_per_day: config.total_warmup_per_day,
@@ -286,11 +292,13 @@ export const disableWarmup = async (
             where: { id: mailboxId },
             select: {
                 email: true,
+                external_email_account_id: true,
                 smartlead_email_account_id: true
             }
         });
 
-        if (!mailbox || !mailbox.smartlead_email_account_id) {
+        const externalAccountId = mailbox?.external_email_account_id ?? mailbox?.smartlead_email_account_id;
+        if (!mailbox || !externalAccountId) {
             logger.warn('[WARMUP] Cannot disable warmup - mailbox or email account ID not found', {
                 organizationId,
                 mailboxId
@@ -305,11 +313,13 @@ export const disableWarmup = async (
             keepMaintenance: keepMaintenanceWarmup
         });
 
+        const adapter = await getAdapterForMailbox(mailboxId);
+
         if (keepMaintenanceWarmup) {
             // Keep low-volume warmup for ongoing maintenance
-            await smartleadClient.updateMailboxWarmup(
+            await adapter.updateWarmupSettings(
                 organizationId,
-                mailbox.smartlead_email_account_id,
+                externalAccountId,
                 {
                     warmup_enabled: true,
                     total_warmup_per_day: 10,
@@ -324,9 +334,9 @@ export const disableWarmup = async (
             });
         } else {
             // Fully disable warmup
-            await smartleadClient.updateMailboxWarmup(
+            await adapter.updateWarmupSettings(
                 organizationId,
-                mailbox.smartlead_email_account_id,
+                externalAccountId,
                 {
                     warmup_enabled: false
                 }
@@ -370,12 +380,14 @@ export const checkGraduationCriteria = async (
             phase_bounces: true,
             phase_entered_at: true,
             consecutive_pauses: true,
+            external_email_account_id: true,
             smartlead_email_account_id: true,
             organization_id: true
         }
     });
 
-    if (!mailbox || !mailbox.smartlead_email_account_id) {
+    const externalAccountId = mailbox?.external_email_account_id ?? mailbox?.smartlead_email_account_id;
+    if (!mailbox || !externalAccountId) {
         return {
             readyForGraduation: false,
             currentSends: 0,
@@ -385,18 +397,19 @@ export const checkGraduationCriteria = async (
         };
     }
 
-    // Get warmup stats from Smartlead
-    const stats = await smartleadClient.getEmailAccountDetails(
+    // Get warmup stats from platform
+    const adapter = await getAdapterForMailbox(mailboxId);
+    const stats = await adapter.getMailboxDetails(
         mailbox.organization_id,
-        mailbox.smartlead_email_account_id
+        externalAccountId
     );
 
     // Calculate phase-specific counts using DB fields as baselines
-    const lifetimeSent = stats.warmup_details?.total_sent_count || 0;
-    const lifetimeSpam = stats.warmup_details?.total_spam_count || 0;
+    const lifetimeSent = stats?.dailySentCount || 0;
+    const lifetimeSpam = stats?.spamCount || 0;
     const totalSent = Math.max(0, lifetimeSent - mailbox.phase_clean_sends);
     const totalSpam = Math.max(0, lifetimeSpam - mailbox.phase_bounces);
-    const warmupReputation = stats.warmup_details?.warmup_reputation || '0%';
+    const warmupReputation = stats?.warmupReputation || '0%';
 
     // Calculate days in current phase
     const daysInPhase = mailbox.phase_entered_at

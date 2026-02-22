@@ -12,7 +12,7 @@
 
 import { prisma } from '../index';
 import { logger } from './observabilityService';
-import * as smartleadClient from './smartleadClient';
+import { getAdapterForMailbox } from '../adapters/platformRegistry';
 
 interface MailboxLoad {
     id: string;
@@ -318,20 +318,30 @@ export const applySuggestion = async (
                     }
                 });
 
-                // Fetch mailbox to get Smartlead ID and Org ID
+                // Fetch mailbox for platform adapter resolution
                 const mailboxAdd = await prisma.mailbox.findUnique({
                     where: { id: suggestion.mailbox_id },
-                    select: { organization_id: true, smartlead_email_account_id: true }
+                    select: { organization_id: true, external_email_account_id: true }
                 });
 
-                if (mailboxAdd?.smartlead_email_account_id) {
-                    await smartleadClient.addMailboxToSmartleadCampaign(
-                        mailboxAdd.organization_id,
-                        suggestion.to_campaign_id,
-                        mailboxAdd.smartlead_email_account_id.toString()
-                    );
+                if (mailboxAdd?.external_email_account_id) {
+                    try {
+                        const adapter = await getAdapterForMailbox(suggestion.mailbox_id);
+                        const campaign = await prisma.campaign.findUnique({
+                            where: { id: suggestion.to_campaign_id },
+                            select: { external_id: true }
+                        });
+                        const externalCampaignId = campaign?.external_id || suggestion.to_campaign_id;
+                        await adapter.addMailboxToCampaign(
+                            mailboxAdd.organization_id,
+                            externalCampaignId,
+                            mailboxAdd.external_email_account_id.toString()
+                        );
+                    } catch (adapterError: any) {
+                        logger.warn(`[LOAD_BALANCING] Platform API call failed for add`, { error: adapterError.message });
+                    }
                 } else {
-                    logger.warn(`[LOAD_BALANCING] Mailbox ${suggestion.mailbox_id} missing Smartlead ID, skipping Smartlead API call`);
+                    logger.warn(`[LOAD_BALANCING] Mailbox ${suggestion.mailbox_id} missing external ID, skipping platform API call`);
                 }
                 return {
                     success: true,
@@ -351,20 +361,30 @@ export const applySuggestion = async (
                         }
                     }
                 });
-                // Fetch mailbox to get Smartlead ID and Org ID
+                // Fetch mailbox for platform adapter resolution
                 const mailboxRemove = await prisma.mailbox.findUnique({
                     where: { id: suggestion.mailbox_id },
-                    select: { organization_id: true, smartlead_email_account_id: true }
+                    select: { organization_id: true, external_email_account_id: true }
                 });
 
-                if (mailboxRemove?.smartlead_email_account_id) {
-                    await smartleadClient.removeMailboxFromSmartleadCampaign(
-                        mailboxRemove.organization_id,
-                        suggestion.from_campaign_id,
-                        mailboxRemove.smartlead_email_account_id.toString()
-                    );
+                if (mailboxRemove?.external_email_account_id) {
+                    try {
+                        const adapter = await getAdapterForMailbox(suggestion.mailbox_id);
+                        const campaign = await prisma.campaign.findUnique({
+                            where: { id: suggestion.from_campaign_id },
+                            select: { external_id: true }
+                        });
+                        const externalCampaignId = campaign?.external_id || suggestion.from_campaign_id;
+                        await adapter.removeMailboxFromCampaign(
+                            mailboxRemove.organization_id,
+                            externalCampaignId,
+                            mailboxRemove.external_email_account_id.toString()
+                        );
+                    } catch (adapterError: any) {
+                        logger.warn(`[LOAD_BALANCING] Platform API call failed for remove`, { error: adapterError.message });
+                    }
                 } else {
-                    logger.warn(`[LOAD_BALANCING] Mailbox ${suggestion.mailbox_id} missing Smartlead ID, skipping Smartlead API call`);
+                    logger.warn(`[LOAD_BALANCING] Mailbox ${suggestion.mailbox_id} missing external ID, skipping platform API call`);
                 }
                 return {
                     success: true,

@@ -101,22 +101,23 @@ model ApiKey {
 }
 
 model Lead {
-  id                    String    @id @default(uuid())
+  id                    String          @id @default(uuid())
   email                 String
   persona               String
   lead_score            Int
-  source                String    @default("clay")
-  status                String    @default("held")
-  health_state          String    @default("healthy")
-  health_classification String    @default("green") // green, yellow, red
-  health_score_calc     Float     @default(100) // 0-100 calculated health score
+  source                String          @default("clay") // Origin: clay, manual, csv
+  source_platform       SourcePlatform? // Platform managing this lead (null = unassigned/legacy)
+  status                String          @default("held")
+  health_state          String          @default("healthy")
+  health_classification String          @default("green") // green, yellow, red
+  health_score_calc     Float           @default(100) // 0-100 calculated health score
   health_checks         Json? // { disposable, catchAll, roleEmail, domainAge }
   health_checked_at     DateTime? // Last health re-evaluation timestamp
   assigned_campaign_id  String?
   organization_id       String
-  bounced               Boolean   @default(false) // Has this lead bounced
+  bounced               Boolean         @default(false) // Has this lead bounced
 
-  // Activity Tracking (from Smartlead webhooks)
+  // Activity Tracking (from platform webhooks)
   emails_sent      Int       @default(0) // Total emails sent to this lead
   emails_opened    Int       @default(0) // Total opens
   emails_clicked   Int       @default(0) // Total link clicks
@@ -132,23 +133,26 @@ model Lead {
   @@index([organization_id, status])
   @@index([organization_id, assigned_campaign_id])
   @@index([organization_id, health_classification])
+  @@index([organization_id, source_platform])
   @@index([health_classification, health_checked_at]) // For health worker queries
   @@index([status])
   @@index([bounced])
 }
 
 model Campaign {
-  id            String    @id
-  name          String
-  channel       String    @default("email")
-  status        String    @default("active")
-  paused_reason String?
-  paused_at     DateTime?
-  paused_by     String?   @default("system")
-  bounce_rate   Float     @default(0)
-  warning_count Int       @default(0)
-  total_sent    Int       @default(0)
-  total_bounced Int       @default(0)
+  id              String         @id
+  name            String
+  channel         String         @default("email")
+  status          String         @default("active")
+  source_platform SourcePlatform @default(smartlead)
+  external_id     String?        // Original ID from the platform
+  paused_reason   String?
+  paused_at       DateTime?
+  paused_by       String?        @default("system")
+  bounce_rate     Float          @default(0)
+  warning_count   Int            @default(0)
+  total_sent      Int            @default(0)
+  total_bounced   Int            @default(0)
 
   // Analytics Fields (SOFT SIGNALS - display only, never trigger auto-pause)
   open_count           Int       @default(0)
@@ -169,49 +173,53 @@ model Campaign {
   mailboxes    Mailbox[]     @relation("CampaignToMailbox")
   routingRules RoutingRule[]
 
+  @@unique([organization_id, source_platform, external_id])
   @@index([organization_id, status])
+  @@index([organization_id, source_platform])
   @@index([organization_id])
 }
 
 model Mailbox {
-  id                      String    @id
+  id                      String         @id
   email                   String
-  status                  String    @default("healthy")
-  recovery_phase          String    @default("healthy") // RecoveryPhase: healthy|paused|quarantine|restricted_send|warm_recovery
+  status                  String         @default("healthy")
+  source_platform         SourcePlatform @default(smartlead)
+  external_email_account_id Int?         // Generic external ID from any platform
+  recovery_phase          String         @default("healthy") // RecoveryPhase: healthy|paused|quarantine|restricted_send|warm_recovery
   healing_origin          String? // HealingOrigin: rehab|recovery
   phase_entered_at        DateTime? // When the entity entered its current recovery phase
-  clean_sends_since_phase Int       @default(0) // Clean sends (0 hard bounces) since entering current phase
-  resilience_score        Int       @default(50) // 0-100, drives healing speed multipliers
-  relapse_count           Int       @default(0) // Total relapses for escalating penalties
-  trend_state             String    @default("stable") // TrendState: stable|degrading|accelerating|oscillating|recovering
+  clean_sends_since_phase Int            @default(0) // Clean sends (0 hard bounces) since entering current phase
+  resilience_score        Int            @default(50) // 0-100, drives healing speed multipliers
+  relapse_count           Int            @default(0) // Total relapses for escalating penalties
+  trend_state             String         @default("stable") // TrendState: stable|degrading|accelerating|oscillating|recovering
   provider_restrictions   Json? // Per-provider restrictions: { gmail: { restricted: true, bounce_rate: 0.15 } }
-  hard_bounce_count       Int       @default(0)
-  delivery_failure_count  Int       @default(0)
-  total_sent_count        Int       @default(0)
-  window_sent_count       Int       @default(0)
-  window_bounce_count     Int       @default(0)
-  window_start_at         DateTime  @default(now())
+  hard_bounce_count       Int            @default(0)
+  delivery_failure_count  Int            @default(0)
+  total_sent_count        Int            @default(0)
+  window_sent_count       Int            @default(0)
+  window_bounce_count     Int            @default(0)
+  window_start_at         DateTime       @default(now())
   paused_reason           String?
   paused_at               DateTime?
-  paused_by               String?   @default("system")
+  paused_by               String?        @default("system")
   last_pause_at           DateTime?
   cooldown_until          DateTime?
-  consecutive_pauses      Int       @default(0)
-  last_activity_at        DateTime  @default(now())
-  initial_bounce_rate     Float? // Historical bounce rate at import from Smartlead
+  consecutive_pauses      Int            @default(0)
+  last_activity_at        DateTime       @default(now())
+  initial_bounce_rate     Float? // Historical bounce rate at import
   initial_assessment_at   DateTime? // When initial assessment was performed
 
   // Healing Tracking Fields
   phase_clean_sends Int @default(0) // Clean sends in current healing phase (separate from clean_sends_since_phase)
   phase_bounces     Int @default(0) // Bounces in current healing phase
 
-  // Smartlead Integration
-  smartlead_email_account_id Int? // Smartlead email account ID for warmup API calls
+  // Legacy Smartlead field — kept for backward compat, use external_email_account_id for new code
+  smartlead_email_account_id Int?
 
-  // Connection Diagnostics (from Smartlead sync)
+  // Connection Diagnostics (from platform sync)
   smtp_status      Boolean @default(true) // SMTP connection healthy
   imap_status      Boolean @default(true) // IMAP connection healthy
-  connection_error String? // Raw error from Smartlead (e.g. "Failed to refresh Google token: invalid_grant")
+  connection_error String? // Raw error from platform (e.g. "Failed to refresh Google token: invalid_grant")
 
   // Analytics Fields (SOFT SIGNALS - informational only)
   open_count_lifetime  Int     @default(0) // Total opens from emails sent by this mailbox
@@ -219,9 +227,9 @@ model Mailbox {
   reply_count_lifetime Int     @default(0) // Total replies from emails sent by this mailbox
   spam_count           Int     @default(0) // Total spam reports
   engagement_rate      Float   @default(0) // (opens + clicks + replies) / total_sent
-  warmup_reputation    String? // Smartlead warmup reputation status
-  warmup_status        String? // Smartlead warmup enabled status
-  warmup_limit         Int     @default(0) // Smartlead daily warmup limit (total_warmup_per_day)
+  warmup_reputation    String? // Platform warmup reputation status
+  warmup_status        String? // Platform warmup enabled status
+  warmup_limit         Int     @default(0) // Daily warmup limit (total_warmup_per_day)
 
   domain_id       String
   organization_id String
@@ -233,31 +241,33 @@ model Mailbox {
   campaigns       Campaign[]      @relation("CampaignToMailbox")
 
   @@index([organization_id, status])
+  @@index([organization_id, source_platform])
   @@index([organization_id, domain_id])
   @@index([domain_id])
   @@index([recovery_phase])
 }
 
 model Domain {
-  id                           String    @id @default(uuid())
+  id                           String         @id @default(uuid())
   domain                       String
-  status                       String    @default("healthy")
-  recovery_phase               String    @default("healthy") // RecoveryPhase
+  status                       String         @default("healthy")
+  source_platform              SourcePlatform @default(smartlead)
+  recovery_phase               String         @default("healthy") // RecoveryPhase
   healing_origin               String? // HealingOrigin: rehab|recovery
   phase_entered_at             DateTime? // When entered current recovery phase
-  clean_sends_since_phase      Int       @default(0) // Clean sends since entering current phase
-  resilience_score             Int       @default(50) // 0-100, drives healing speed multipliers
-  relapse_count                Int       @default(0) // Total relapses
-  trend_state                  String    @default("stable") // TrendState
+  clean_sends_since_phase      Int            @default(0) // Clean sends since entering current phase
+  resilience_score             Int            @default(50) // 0-100, drives healing speed multipliers
+  relapse_count                Int            @default(0) // Total relapses
+  trend_state                  String         @default("stable") // TrendState
   provider_restrictions        Json? // Per-provider restriction state
-  warning_count                Int       @default(0)
-  aggregated_bounce_rate_trend Float     @default(0.0)
+  warning_count                Int            @default(0)
+  aggregated_bounce_rate_trend Float          @default(0.0)
   paused_reason                String?
   paused_at                    DateTime?
   last_pause_at                DateTime?
-  paused_by                    String?   @default("system")
+  paused_by                    String?        @default("system")
   cooldown_until               DateTime?
-  consecutive_pauses           Int       @default(0)
+  consecutive_pauses           Int            @default(0)
   spf_valid                    Boolean? // SPF record check result
   dkim_valid                   Boolean? // DKIM record check result
   dmarc_policy                 String? // DMARC policy: 'none' | 'quarantine' | 'reject'
@@ -282,6 +292,7 @@ model Domain {
 
   @@unique([organization_id, domain])
   @@index([organization_id, status])
+  @@index([organization_id, source_platform])
   @@index([organization_id])
   @@index([recovery_phase])
 }
@@ -495,6 +506,13 @@ enum SlackAlertsStatus {
   revoked
   channel_not_found
   auth_error
+}
+
+enum SourcePlatform {
+  smartlead
+  emailbison
+  instantly
+  replyio
 }
 
 model SlackAlertLog {

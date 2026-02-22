@@ -88,7 +88,7 @@ export class SlackAlertService {
             const botToken = decryptTokenIsolated(integration.bot_token_encrypted);
 
             // 4. Construct Block Kit Payload
-            const blocks = [
+            const blocks: any[] = [
                 {
                     type: 'section',
                     text: {

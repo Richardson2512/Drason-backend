@@ -13,7 +13,7 @@
 
 import { prisma } from '../index';
 import { logger } from './observabilityService';
-import * as smartleadClient from './smartleadClient';
+// Platform adapter now handles lead operations via PlatformAdapter interface
 
 interface EngagementData {
     opens: number;
