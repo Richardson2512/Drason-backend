@@ -112,8 +112,10 @@ export const handleSmartleadWebhook = async (req: Request, res: Response) => {
  * Handle bounce events - CRITICAL for infrastructure health
  */
 async function handleBounceEvent(orgId: string, event: any) {
-    const mailboxId = event.email_account_id || event.mailbox_id;
-    const campaignId = event.campaign_id;
+    const mailboxIdRaw = event.email_account_id || event.mailbox_id;
+    const campaignIdRaw = event.campaign_id;
+    const mailboxId = mailboxIdRaw ? `sl-${mailboxIdRaw}` : undefined;
+    const campaignId = campaignIdRaw ? `sl-${campaignIdRaw}` : undefined;
     const email = event.email || event.lead_email;
     const bounceType = event.bounce_type || 'hard'; // hard | soft
     const bounceReason = event.bounce_reason || event.reason || '';
@@ -371,8 +373,10 @@ async function handleBounceEvent(orgId: string, event: any) {
  * Handle email sent events
  */
 async function handleSentEvent(orgId: string, event: any) {
-    const campaignId = event.campaign_id;
-    const mailboxId = event.email_account_id || event.mailbox_id;
+    const campaignIdRaw = event.campaign_id;
+    const mailboxIdRaw = event.email_account_id || event.mailbox_id;
+    const campaignId = campaignIdRaw ? `sl-${campaignIdRaw}` : undefined;
+    const mailboxId = mailboxIdRaw ? `sl-${mailboxIdRaw}` : undefined;
     const email = event.email || event.lead_email;
 
     logger.info('[SMARTLEAD-WEBHOOK] Processing sent event', {
@@ -454,8 +458,10 @@ async function handleSentEvent(orgId: string, event: any) {
  */
 async function handleOpenEvent(orgId: string, event: any) {
     const email = event.email || event.lead_email;
-    const campaignId = event.campaign_id;
-    const mailboxId = event.email_account_id || event.mailbox_id;
+    const campaignIdRaw = event.campaign_id;
+    const mailboxIdRaw = event.email_account_id || event.mailbox_id;
+    const campaignId = campaignIdRaw ? `sl-${campaignIdRaw}` : undefined;
+    const mailboxId = mailboxIdRaw ? `sl-${mailboxIdRaw}` : undefined;
 
     if (email) {
         // Find the lead
@@ -572,8 +578,10 @@ async function handleOpenEvent(orgId: string, event: any) {
  */
 async function handleClickEvent(orgId: string, event: any) {
     const email = event.email || event.lead_email;
-    const campaignId = event.campaign_id;
-    const mailboxId = event.email_account_id || event.mailbox_id;
+    const campaignIdRaw = event.campaign_id;
+    const mailboxIdRaw = event.email_account_id || event.mailbox_id;
+    const campaignId = campaignIdRaw ? `sl-${campaignIdRaw}` : undefined;
+    const mailboxId = mailboxIdRaw ? `sl-${mailboxIdRaw}` : undefined;
 
     if (email) {
         // Find the lead
@@ -690,8 +698,10 @@ async function handleClickEvent(orgId: string, event: any) {
  */
 async function handleReplyEvent(orgId: string, event: any) {
     const email = event.email || event.lead_email;
-    const campaignId = event.campaign_id;
-    const mailboxId = event.email_account_id || event.mailbox_id;
+    const campaignIdRaw = event.campaign_id;
+    const mailboxIdRaw = event.email_account_id || event.mailbox_id;
+    const campaignId = campaignIdRaw ? `sl-${campaignIdRaw}` : undefined;
+    const mailboxId = mailboxIdRaw ? `sl-${mailboxIdRaw}` : undefined;
 
     if (email) {
         // Find the lead
@@ -809,7 +819,8 @@ async function handleReplyEvent(orgId: string, event: any) {
  */
 async function handleUnsubscribeEvent(orgId: string, event: any) {
     const email = event.email || event.lead_email;
-    const campaignId = event.campaign_id;
+    const campaignIdRaw = event.campaign_id;
+    const campaignId = campaignIdRaw ? `sl-${campaignIdRaw}` : undefined;
 
     if (email) {
         await prisma.lead.updateMany({
@@ -847,7 +858,8 @@ async function handleUnsubscribeEvent(orgId: string, event: any) {
  */
 async function handleSpamEvent(orgId: string, event: any) {
     const email = event.email || event.lead_email;
-    const mailboxId = event.email_account_id || event.mailbox_id;
+    const mailboxIdRaw = event.email_account_id || event.mailbox_id;
+    const mailboxId = mailboxIdRaw ? `sl-${mailboxIdRaw}` : undefined;
 
     if (email) {
         await prisma.lead.updateMany({
