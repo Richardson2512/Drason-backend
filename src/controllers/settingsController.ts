@@ -241,3 +241,34 @@ async function purgeSmartleadData(orgId: string) {
         throw error;
     }
 }
+
+/**
+ * Disconnect Slack Integration for the organization.
+ * POST /api/user/settings/slack/disconnect
+ */
+export const disconnectSlack = async (req: Request, res: Response) => {
+    try {
+        const orgId = getOrgId(req);
+
+        // Check if an integration exists
+        const existingIntegration = await prisma.slackIntegration.findUnique({
+            where: { organization_id: orgId }
+        });
+
+        if (!existingIntegration) {
+            return res.status(404).json({ error: 'No active Slack integration found for this organization.' });
+        }
+
+        // Delete the slack integration record
+        await prisma.slackIntegration.delete({
+            where: { organization_id: orgId }
+        });
+
+        logger.info(`[SETTINGS] Slack integration disconnected for org ${orgId}`);
+
+        res.json({ success: true, message: 'Slack integration disconnected successfully.' });
+    } catch (error) {
+        logger.error('[SETTINGS] disconnectSlack error:', error as Error);
+        res.status(500).json({ error: 'Failed to disconnect Slack integration' });
+    }
+};
