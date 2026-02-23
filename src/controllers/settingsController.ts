@@ -267,8 +267,8 @@ export const disconnectSlack = async (req: Request, res: Response) => {
                 headers: { Authorization: `Bearer ${tokenStr}` }
             });
             logger.info(`[SETTINGS] Slack token revoked for org ${orgId}`);
-        } catch (revokeErr) {
-            logger.warn(`[SETTINGS] Failed to revoke Slack token during disconnect for org ${orgId}`, revokeErr);
+        } catch (revokeErr: any) {
+            logger.warn(`[SETTINGS] Failed to revoke Slack token during disconnect for org ${orgId}`, { error: revokeErr.message || String(revokeErr) });
         }
 
         // Delete the slack integration record
