@@ -10,6 +10,7 @@ import { prisma } from '../index';
 import { getOrgId } from '../middleware/orgContext';
 import { logger } from '../services/observabilityService';
 import { encrypt, decrypt, isEncrypted } from '../utils/encryption';
+import axios from 'axios';
 
 /**
  * Get all settings for the organization.
@@ -257,6 +258,17 @@ export const disconnectSlack = async (req: Request, res: Response) => {
 
         if (!existingIntegration) {
             return res.status(404).json({ error: 'No active Slack integration found for this organization.' });
+        }
+
+        // Revoke the Slack token to cleanly uninstall the bot from the workspace
+        try {
+            const tokenStr = decrypt(existingIntegration.bot_token_encrypted);
+            await axios.post('https://slack.com/api/auth.revoke', null, {
+                headers: { Authorization: `Bearer ${tokenStr}` }
+            });
+            logger.info(`[SETTINGS] Slack token revoked for org ${orgId}`);
+        } catch (revokeErr) {
+            logger.warn(`[SETTINGS] Failed to revoke Slack token during disconnect for org ${orgId}`, revokeErr);
         }
 
         // Delete the slack integration record
