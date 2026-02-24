@@ -15,24 +15,32 @@ import {
     PushLeadResult,
 } from './platformAdapter';
 import * as smartleadClient from '../services/smartleadClient';
-
+import { syncSmartlead } from '../services/smartleadSyncWorker';
+import {
+    pauseSmartleadCampaign,
+    resumeSmartleadCampaign,
+    addMailboxToSmartleadCampaign,
+    removeMailboxFromSmartleadCampaign,
+    removeLeadFromSmartleadCampaign,
+    removeDomainMailboxesFromSmartlead
+} from '../services/smartleadInfrastructureMutator';
 export class SmartleadAdapter implements PlatformAdapter {
     readonly platform = SourcePlatform.smartlead;
 
     // ── SYNC ───────────────────────────────────────────────────────────
 
     async sync(organizationId: string, sessionId?: string): Promise<SyncResult> {
-        return smartleadClient.syncSmartlead(organizationId, sessionId);
+        return syncSmartlead(organizationId, sessionId);
     }
 
     // ── HEALING ACTIONS ────────────────────────────────────────────────
 
     async pauseCampaign(organizationId: string, externalCampaignId: string): Promise<boolean> {
-        return smartleadClient.pauseSmartleadCampaign(organizationId, externalCampaignId);
+        return pauseSmartleadCampaign(organizationId, externalCampaignId);
     }
 
     async resumeCampaign(organizationId: string, externalCampaignId: string): Promise<boolean> {
-        return smartleadClient.resumeSmartleadCampaign(organizationId, externalCampaignId);
+        return resumeSmartleadCampaign(organizationId, externalCampaignId);
     }
 
     async addMailboxToCampaign(
@@ -40,7 +48,7 @@ export class SmartleadAdapter implements PlatformAdapter {
         externalCampaignId: string,
         externalMailboxId: string
     ): Promise<boolean> {
-        return smartleadClient.addMailboxToSmartleadCampaign(
+        return addMailboxToSmartleadCampaign(
             organizationId,
             externalCampaignId,
             externalMailboxId
@@ -52,7 +60,7 @@ export class SmartleadAdapter implements PlatformAdapter {
         externalCampaignId: string,
         externalMailboxId: string
     ): Promise<boolean> {
-        return smartleadClient.removeMailboxFromSmartleadCampaign(
+        return removeMailboxFromSmartleadCampaign(
             organizationId,
             externalCampaignId,
             externalMailboxId
@@ -131,7 +139,7 @@ export class SmartleadAdapter implements PlatformAdapter {
         externalCampaignId: string,
         leadEmail: string
     ): Promise<boolean> {
-        return smartleadClient.removeLeadFromSmartleadCampaign(
+        return removeLeadFromSmartleadCampaign(
             organizationId,
             externalCampaignId,
             leadEmail
@@ -144,6 +152,6 @@ export class SmartleadAdapter implements PlatformAdapter {
         organizationId: string,
         domainId: string
     ): Promise<{ success: number; failed: number }> {
-        return smartleadClient.removeDomainMailboxesFromSmartlead(organizationId, domainId);
+        return removeDomainMailboxesFromSmartlead(organizationId, domainId);
     }
 }
