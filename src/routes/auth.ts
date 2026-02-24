@@ -15,4 +15,7 @@ router.post('/logout', authController.logout);
 router.get('/google', googleAuthController.initiateGoogleAuth);
 router.get('/google/callback', googleAuthController.handleGoogleCallback);
 
+// Google OAuth onboarding (personal Gmail users — org name collection)
+router.post('/onboarding/complete', googleAuthController.completeOnboarding);
+
 export default router;

@@ -8,9 +8,15 @@ const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_REDIRECT_URI
 );
 
-// Store state parameters in memory with TTL
-// In production, use Redis for distributed systems
-const stateStore = new Map<string, { timestamp: number }>();
+// Metadata stored alongside CSRF state tokens
+export interface StateMetadata {
+    timestamp: number;
+    plan?: string;   // Selected plan from pricing (starter/growth/scale)
+    source?: string; // Origin page (signup/login)
+}
+
+// Store state parameters in memory with TTL and associated metadata
+const stateStore = new Map<string, StateMetadata>();
 
 // Clean up expired state parameters every 5 minutes
 setInterval(() => {
@@ -24,7 +30,7 @@ setInterval(() => {
     }
 }, 5 * 60 * 1000);
 
-interface GoogleUserInfo {
+export interface GoogleUserInfo {
     id: string;
     email: string;
     verified_email: boolean;
@@ -33,9 +39,10 @@ interface GoogleUserInfo {
     family_name: string;
     picture: string;
     locale: string;
+    hd?: string; // Hosted domain — present for Google Workspace accounts (e.g., "acmecorp.com")
 }
 
-interface GoogleTokens {
+export interface GoogleTokens {
     access_token: string;
     refresh_token?: string;
     expiry_date?: number;
@@ -43,14 +50,19 @@ interface GoogleTokens {
 }
 
 /**
- * Generate Google OAuth authorization URL with state parameter for CSRF protection
+ * Generate Google OAuth authorization URL with state parameter for CSRF protection.
+ * Accepts optional metadata (plan, source) to pass through the OAuth flow.
  */
-export function generateAuthUrl(): { url: string; state: string } {
+export function generateAuthUrl(options?: { plan?: string; source?: string }): { url: string; state: string } {
     // Generate cryptographically secure random state parameter
     const state = crypto.randomBytes(32).toString('hex');
 
-    // Store state with timestamp for validation
-    stateStore.set(state, { timestamp: Date.now() });
+    // Store state with timestamp and metadata for validation
+    stateStore.set(state, {
+        timestamp: Date.now(),
+        plan: options?.plan,
+        source: options?.source,
+    });
 
     const url = oauth2Client.generateAuthUrl({
         access_type: 'offline', // Get refresh token
@@ -63,20 +75,21 @@ export function generateAuthUrl(): { url: string; state: string } {
         state
     });
 
-    logger.info('[GoogleOAuth] Generated auth URL', { state });
+    logger.info('[GoogleOAuth] Generated auth URL', { state, plan: options?.plan, source: options?.source });
 
     return { url, state };
 }
 
 /**
- * Validate state parameter to prevent CSRF attacks
+ * Validate state parameter to prevent CSRF attacks.
+ * Returns the stored metadata if valid, or null if invalid/expired.
  */
-export function validateState(state: string): boolean {
+export function validateState(state: string): StateMetadata | null {
     const storedState = stateStore.get(state);
 
     if (!storedState) {
         logger.warn('[GoogleOAuth] Invalid state parameter', { state });
-        return false;
+        return null;
     }
 
     // Check if state is expired (5 minutes)
@@ -86,14 +99,14 @@ export function validateState(state: string): boolean {
     if (now - storedState.timestamp > FIVE_MINUTES) {
         logger.warn('[GoogleOAuth] Expired state parameter', { state });
         stateStore.delete(state);
-        return false;
+        return null;
     }
 
     // State is valid, remove it (one-time use)
     stateStore.delete(state);
 
-    logger.info('[GoogleOAuth] State validated successfully', { state });
-    return true;
+    logger.info('[GoogleOAuth] State validated successfully', { state, plan: storedState.plan });
+    return storedState;
 }
 
 /**
@@ -122,7 +135,8 @@ export async function exchangeCodeForTokens(code: string): Promise<GoogleTokens>
 }
 
 /**
- * Get user profile information from Google
+ * Get user profile information from Google.
+ * Returns the `hd` (hosted domain) field for Workspace accounts.
  */
 export async function getUserInfo(accessToken: string): Promise<GoogleUserInfo> {
     try {
@@ -137,7 +151,8 @@ export async function getUserInfo(accessToken: string): Promise<GoogleUserInfo> 
 
         logger.info('[GoogleOAuth] Successfully retrieved user info', {
             email: data.email,
-            google_id: data.id
+            google_id: data.id,
+            hd: data.hd || 'none (personal Gmail)'
         });
 
         return {
@@ -148,7 +163,8 @@ export async function getUserInfo(accessToken: string): Promise<GoogleUserInfo> 
             given_name: data.given_name || '',
             family_name: data.family_name || '',
             picture: data.picture || '',
-            locale: data.locale || 'en'
+            locale: data.locale || 'en',
+            hd: data.hd || undefined
         };
     } catch (error: any) {
         logger.error('[GoogleOAuth] Failed to get user info', error);
@@ -196,4 +212,28 @@ export function isTokenExpired(expiryDate: Date | null): boolean {
     const expiry = new Date(expiryDate).getTime();
 
     return expiry - now < FIVE_MINUTES;
+}
+
+/**
+ * Determine if a Google account is a Workspace account or a personal Gmail account.
+ * Returns true if the user belongs to a Google Workspace organization.
+ */
+export function isWorkspaceAccount(hd?: string): boolean {
+    if (!hd) return false;
+    // gmail.com and googlemail.com are personal accounts, everything else is Workspace
+    const personalDomains = ['gmail.com', 'googlemail.com'];
+    return !personalDomains.includes(hd.toLowerCase());
+}
+
+/**
+ * Derive a human-readable organization name from a Workspace domain.
+ * e.g., "acmecorp.com" → "Acme Corp", "my-company.io" → "My Company"
+ */
+export function deriveOrgNameFromDomain(domain: string): string {
+    // Strip TLD
+    const baseName = domain.split('.')[0];
+    // Convert hyphens/underscores to spaces, then title-case
+    return baseName
+        .replace(/[-_]/g, ' ')
+        .replace(/\b\w/g, (char) => char.toUpperCase());
 }

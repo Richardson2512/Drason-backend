@@ -524,3 +524,21 @@ model SlackAlertLog {
 
   @@index([organization_id, event_hash])
 }
+
+model PendingRegistration {
+  id                     String    @id @default(uuid())
+  token                  String    @unique            // Opaque one-time-use token sent to client
+  google_id              String                       // Google user ID (sub claim)
+  email                  String                       // Google email
+  name                   String?                      // Google display name
+  avatar_url             String?                      // Google profile picture
+  google_access_token    String                       // Encrypted access token (server-side only)
+  google_refresh_token   String?                      // Encrypted refresh token (server-side only)
+  google_token_expires_at DateTime?                   // Token expiry timestamp
+  selected_plan          String?                      // Plan selected on pricing page (starter/growth/scale)
+  expires_at             DateTime                     // Hard expiry — 10 minutes from creation
+  created_at             DateTime  @default(now())
+
+  @@index([token])
+  @@index([expires_at])
+}
