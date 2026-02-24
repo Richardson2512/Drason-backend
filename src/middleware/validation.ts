@@ -170,7 +170,7 @@ export const changePasswordSchema = z.object({
 // ============================================================================
 
 export const createCheckoutSchema = z.object({
-    tier: z.enum(['pro', 'enterprise'])
+    tier: z.enum(['starter', 'growth', 'scale', 'enterprise'])
 });
 
 // ============================================================================
