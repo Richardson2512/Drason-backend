@@ -197,22 +197,23 @@ async function checkSPF(domainName: string): Promise<boolean | null> {
 }
 
 /**
- * Check if a domain has a DKIM record by trying common selectors.
+ * Check if a domain has a DKIM record by trying common selectors in parallel.
  */
 async function checkDKIM(domainName: string): Promise<boolean | null> {
-    for (const selector of DKIM_SELECTORS) {
-        try {
-            const records = await resolveTxt(`${selector}._domainkey.${domainName}`);
-            const flat = records.map(r => r.join('')).join(' ');
+    const results = await Promise.allSettled(
+        DKIM_SELECTORS.map(selector => resolveTxt(`${selector}._domainkey.${domainName}`))
+    );
+
+    for (const result of results) {
+        if (result.status === 'fulfilled') {
+            const flat = result.value.map(r => r.join('')).join(' ');
             if (flat.includes('v=DKIM1') || flat.includes('k=rsa') || flat.includes('p=')) {
                 return true;
             }
-        } catch {
-            // Try next selector
         }
     }
 
-    // None of the selectors resolved — could be DKIM not configured or custom selector
+    // None of the selectors matched — DKIM not configured on known selectors
     return false;
 }
 
@@ -370,8 +371,33 @@ export async function assessInfrastructure(
 
         const domainSummary = { total: domains.length, healthy: 0, warning: 0, paused: 0 };
 
-        for (const domain of domains) {
-            const dnsResult = await assessDomainDNS(domain.domain);
+        // Assess all domains in parallel — DNS lookups are I/O bound and independent
+        const dnsResults = await Promise.allSettled(
+            domains.map(domain => assessDomainDNS(domain.domain))
+        );
+
+        // Process results and write DB updates in parallel
+        await Promise.allSettled(domains.map(async (domain, i) => {
+            const settled = dnsResults[i];
+
+            if (settled.status === 'rejected') {
+                // Entire DNS assessment failed for this domain — treat conservatively as warning
+                findings.push({
+                    severity: 'warning',
+                    category: 'domain_dns',
+                    entity: 'domain',
+                    entityId: domain.id,
+                    entityName: domain.domain,
+                    title: `DNS Assessment Failed: ${domain.domain}`,
+                    details: `Could not assess DNS for this domain. Trigger a manual re-assessment.`,
+                    message: `Domain ${domain.domain}: DNS assessment failed — ${settled.reason?.message || 'unknown error'}.`,
+                    remediation: `Verify DNS is accessible and trigger a manual re-assessment.`,
+                });
+                domainSummary.warning++;
+                return;
+            }
+
+            const dnsResult = settled.value;
 
             // Determine domain state from DNS results
             let domainState = 'healthy';
@@ -515,7 +541,7 @@ export async function assessInfrastructure(
             if (domainState === 'healthy') domainSummary.healthy++;
             else if (domainState === 'warning') domainSummary.warning++;
             else if (domainState === 'paused') domainSummary.paused++;
-        }
+        }));
 
         // ── Step 3: Assess all mailboxes (historical data) ──
         const mailboxes = await prisma.mailbox.findMany({

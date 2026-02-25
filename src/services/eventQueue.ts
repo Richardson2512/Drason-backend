@@ -21,6 +21,7 @@ import * as monitoringService from './monitoringService';
 import * as eventService from './eventService';
 import * as notificationService from './notificationService';
 import { EventType } from '../types';
+import { prisma } from '../index';
 
 // ============================================================================
 // TYPES
@@ -188,6 +189,100 @@ export async function enqueueEvent(data: EventJobData): Promise<boolean> {
 // ============================================================================
 
 /**
+ * Platform-agnostic engagement event handler.
+ * Used for EmailBison (and any future platform) where IDs are already
+ * pre-prefixed by the webhook controller (e.g., 'eb-123').
+ */
+async function recordEngagementEvent(
+    organizationId: string,
+    mailboxId: string,
+    campaignId: string | undefined,
+    recipientEmail: string | undefined,
+    type: 'open' | 'click' | 'reply'
+): Promise<void> {
+    // 1. Update Lead engagement counter
+    if (recipientEmail) {
+        try {
+            const leadField = type === 'open' ? 'emails_opened'
+                : type === 'click' ? 'emails_clicked'
+                : 'emails_replied';
+            await prisma.lead.updateMany({
+                where: { organization_id: organizationId, email: recipientEmail },
+                data: {
+                    [leadField]: { increment: 1 },
+                    last_activity_at: new Date(),
+                },
+            });
+        } catch (err: any) {
+            logger.warn(`[QUEUE] Failed to update lead engagement for ${recipientEmail}`, { error: err.message });
+        }
+    }
+
+    // 2. Update Campaign engagement counter + recalculate rates
+    if (campaignId) {
+        try {
+            const campaign = await prisma.campaign.findUnique({
+                where: { id: campaignId },
+                select: { id: true, open_count: true, click_count: true, reply_count: true, total_sent: true },
+            });
+            if (campaign) {
+                const newOpens = campaign.open_count + (type === 'open' ? 1 : 0);
+                const newClicks = campaign.click_count + (type === 'click' ? 1 : 0);
+                const newReplies = campaign.reply_count + (type === 'reply' ? 1 : 0);
+                const totalSent = Math.max(campaign.total_sent || 0, 1);
+                await prisma.campaign.update({
+                    where: { id: campaignId },
+                    data: {
+                        open_count: newOpens,
+                        click_count: newClicks,
+                        reply_count: newReplies,
+                        open_rate: (newOpens / totalSent) * 100,
+                        reply_rate: (newReplies / totalSent) * 100,
+                        analytics_updated_at: new Date(),
+                    },
+                });
+            }
+        } catch (err: any) {
+            logger.warn(`[QUEUE] Failed to update campaign engagement for ${campaignId}`, { error: err.message });
+        }
+    }
+
+    // 3. Update Mailbox lifetime engagement counters + recalculate engagement_rate
+    try {
+        const mailbox = await prisma.mailbox.findUnique({
+            where: { id: mailboxId },
+            select: {
+                id: true,
+                open_count_lifetime: true,
+                click_count_lifetime: true,
+                reply_count_lifetime: true,
+                total_sent_count: true,
+            },
+        });
+        if (mailbox) {
+            const newOpens = mailbox.open_count_lifetime + (type === 'open' ? 1 : 0);
+            const newClicks = mailbox.click_count_lifetime + (type === 'click' ? 1 : 0);
+            const newReplies = mailbox.reply_count_lifetime + (type === 'reply' ? 1 : 0);
+            const totalEngagement = newOpens + newClicks + newReplies;
+            const engagementRate = mailbox.total_sent_count > 0
+                ? (totalEngagement / mailbox.total_sent_count) * 100
+                : 0;
+            await prisma.mailbox.update({
+                where: { id: mailbox.id },
+                data: {
+                    open_count_lifetime: newOpens,
+                    click_count_lifetime: newClicks,
+                    reply_count_lifetime: newReplies,
+                    engagement_rate: engagementRate,
+                },
+            });
+        }
+    } catch (err: any) {
+        logger.warn(`[QUEUE] Failed to update mailbox engagement for ${mailboxId}`, { error: err.message });
+    }
+}
+
+/**
  * Process a single event job from the queue.
  * This is the BullMQ job handler — runs in the worker.
  */
@@ -211,7 +306,7 @@ async function processEventJob(job: Job<EventJobData>): Promise<void> {
  * Inline event processing — shared between async worker and sync fallback.
  */
 async function processEventInline(data: EventJobData): Promise<void> {
-    const { eventType, entityId, campaignId, smtpResponse, recipientEmail } = data;
+    const { eventType, entityId, campaignId, smtpResponse, recipientEmail, organizationId } = data;
 
     switch (eventType) {
         case EventType.HARD_BOUNCE:
@@ -228,6 +323,18 @@ async function processEventInline(data: EventJobData): Promise<void> {
         case EventType.EMAIL_SENT:
         case 'SENT':
             await monitoringService.recordSent(entityId, campaignId || '');
+            break;
+
+        case 'EmailOpened':
+            await recordEngagementEvent(organizationId, entityId, campaignId, recipientEmail, 'open');
+            break;
+
+        case 'EmailClicked':
+            await recordEngagementEvent(organizationId, entityId, campaignId, recipientEmail, 'click');
+            break;
+
+        case 'EmailReplied':
+            await recordEngagementEvent(organizationId, entityId, campaignId, recipientEmail, 'reply');
             break;
 
         case 'SPAM_COMPLAINT':

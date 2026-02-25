@@ -173,7 +173,17 @@ export const canExecuteLead = async (
         }
     });
 
-    if (healthyMailboxes.length === 0) {
+    // Filter out mailboxes that have hit their warmup daily send cap.
+    // warmup_limit > 0 means a daily cap is configured; window_sent_count tracks today's sends.
+    const availableMailboxes = healthyMailboxes.filter(mb => {
+        if (mb.warmup_status === 'enabled' && mb.warmup_limit > 0) {
+            return mb.window_sent_count < mb.warmup_limit;
+        }
+        return true;
+    });
+    const warmupCappedCount = healthyMailboxes.length - availableMailboxes.length;
+
+    if (availableMailboxes.length === 0) {
         // Check why no mailboxes are available
         const totalMailboxes = await prisma.mailbox.count({
             where: { organization_id: organizationId }
@@ -181,6 +191,14 @@ export const canExecuteLead = async (
 
         if (totalMailboxes === 0) {
             recommendations.push('No mailboxes configured. Sync with Smartlead.');
+        } else if (warmupCappedCount > 0 && healthyMailboxes.length > 0) {
+            // All healthy mailboxes have hit their warmup daily limit — soft block
+            recommendations.push(`All ${warmupCappedCount} healthy mailbox(es) have reached their warmup send limit for today. Leads will be deferred until tomorrow.`);
+            logger.info('[GATE] All mailboxes at warmup capacity', {
+                organizationId,
+                warmupCappedCount,
+                healthyTotal: healthyMailboxes.length,
+            });
         } else {
             // ── CRITICAL SITUATION: All mailboxes paused ──
             // System completely unable to send leads - requires immediate attention
@@ -223,25 +241,31 @@ export const canExecuteLead = async (
             }
         }
 
+        const isWarmupCapBlock = warmupCappedCount > 0 && healthyMailboxes.length > 0;
         await auditLogService.logAction({
             organizationId,
             entity: 'lead',
             entityId: leadId,
             trigger: 'gate_check',
             action: 'gate_failed',
-            details: 'No healthy mailboxes available'
+            details: isWarmupCapBlock
+                ? `No available mailboxes: ${warmupCappedCount} at warmup daily limit`
+                : 'No healthy mailboxes available'
         });
         return {
             allowed: false,
-            reason: 'No healthy mailboxes available',
+            reason: isWarmupCapBlock
+                ? 'All mailboxes at warmup daily limit'
+                : 'No healthy mailboxes available',
             riskScore: 100,
             recommendations,
             mode: systemMode,
             checks,
-            // FAILURE CLASSIFICATION: Health issue - mailboxes degraded
-            failureType: totalMailboxes === 0 ? FailureType.SYNC_ISSUE : FailureType.HEALTH_ISSUE,
+            // Warmup cap is a transient condition — deferrable until tomorrow
+            failureType: isWarmupCapBlock ? FailureType.HEALTH_ISSUE
+                : totalMailboxes === 0 ? FailureType.SYNC_ISSUE : FailureType.HEALTH_ISSUE,
             retryable: false,
-            deferrable: totalMailboxes === 0  // Deferrable if just needs sync
+            deferrable: isWarmupCapBlock || totalMailboxes === 0
         };
     }
     checks.mailboxAvailable = true;
@@ -253,7 +277,7 @@ export const canExecuteLead = async (
     // =========================================================================
 
     // Check domain-level aggregate cap
-    const selectedMailbox = healthyMailboxes[0]; // Best available mailbox
+    const selectedMailbox = availableMailboxes[0]; // Best available mailbox (warmup-cap-filtered)
     if (selectedMailbox?.domain_id) {
         const domainLimit = await healingService.getDomainAggregateLimit(selectedMailbox.domain_id);
         if (domainLimit !== Infinity) {
@@ -295,7 +319,7 @@ export const canExecuteLead = async (
     let totalSoftScore = 0;
     let mailboxesWithMetrics = 0;
 
-    for (const mailbox of healthyMailboxes) {
+    for (const mailbox of availableMailboxes) {
         if (mailbox.metrics) {
             mailboxesWithMetrics++;
 
@@ -407,12 +431,12 @@ export const canExecuteLead = async (
         entityId: leadId,
         trigger: 'gate_check',
         action: 'gate_passed',
-        details: `Mode: enforce. ${healthyMailboxes.length} mailboxes available. Risk: ${avgRiskScore.toFixed(1)}`
+        details: `Mode: enforce. ${availableMailboxes.length} mailboxes available. Risk: ${avgRiskScore.toFixed(1)}`
     });
 
     return {
         allowed: true,
-        reason: `Gate passed. ${healthyMailboxes.length} healthy mailboxes, risk score: ${avgRiskScore.toFixed(1)}`,
+        reason: `Gate passed. ${availableMailboxes.length} healthy mailboxes, risk score: ${avgRiskScore.toFixed(1)}`,
         riskScore: avgRiskScore,
         recommendations: [],
         mode: systemMode,

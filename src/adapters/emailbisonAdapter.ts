@@ -21,9 +21,10 @@ import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
 import { decrypt } from '../utils/encryption';
 import { syncProgressService } from '../services/syncProgressService';
-import * as auditLogService from '../services/auditLogService';
 import * as assessmentService from '../services/infrastructureAssessmentService';
 import { TIER_LIMITS } from '../services/polarClient';
+import { acquireLock, releaseLock } from '../utils/redis';
+import { emailbisonRateLimiter } from '../utils/rateLimiter';
 import {
     PlatformAdapter,
     SyncResult,
@@ -74,6 +75,16 @@ export class EmailBisonAdapter implements PlatformAdapter {
     // ── SYNC ───────────────────────────────────────────────────────────
 
     async sync(organizationId: string, sessionId?: string): Promise<SyncResult> {
+        // ── Issue C: Redis mutex — prevents concurrent syncs for the same org ──
+        const lockKey = `sync:emailbison:org:${organizationId}`;
+        const acquired = await acquireLock(lockKey, 15 * 60); // 15 min TTL
+        if (!acquired) {
+            const errMsg = `EmailBison sync already in progress for organization ${organizationId}`;
+            logger.warn(`[EmailBisonSync] ${errMsg}`);
+            throw new Error(errMsg);
+        }
+
+        try {
         const client = await this.getClient(organizationId);
 
         let campaignCount = 0;
@@ -100,14 +111,14 @@ export class EmailBisonAdapter implements PlatformAdapter {
 
         const limits = TIER_LIMITS[org.subscription_tier] || TIER_LIMITS.trial;
 
-        try {
-            // ── 1. Fetch campaigns ─────────────────────────────────────
+        // ── 1. Fetch campaigns ─────────────────────────────────────
 
             if (sessionId) {
                 syncProgressService.emitProgress(sessionId, 'campaigns', 'in_progress', { total: 0 });
             }
 
-            const campaignsRes = await client.get('/api/campaigns');
+            // ── Issue D: Rate-limited API call ──
+            const campaignsRes = await emailbisonRateLimiter.execute(() => client.get('/api/campaigns'));
             const campaigns = campaignsRes.data?.data || campaignsRes.data || [];
 
             logger.info('[EmailBisonSync] Fetched campaigns', {
@@ -206,7 +217,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
 
             // ── 2. Fetch sender-emails (mailboxes) ─────────────────────
 
-            const mailboxesRes = await client.get('/api/sender-emails');
+            const mailboxesRes = await emailbisonRateLimiter.execute(() => client.get('/api/sender-emails'));
             const mailboxes = mailboxesRes.data?.data || mailboxesRes.data || [];
 
             logger.info('[EmailBisonSync] Fetched sender-emails', {
@@ -363,7 +374,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
                 const internalCampaignId = `eb-${externalCampaignId}`;
 
                 try {
-                    const senderEmailsRes = await client.get(`/api/campaigns/${externalCampaignId}/sender-emails`);
+                    const senderEmailsRes = await emailbisonRateLimiter.execute(() => client.get(`/api/campaigns/${externalCampaignId}/sender-emails`));
                     const senderEmails = senderEmailsRes.data?.data || senderEmailsRes.data || [];
 
                     const mailboxIds = senderEmails
@@ -415,9 +426,9 @@ export class EmailBisonAdapter implements PlatformAdapter {
                     let campaignLeadCount = 0;
 
                     while (hasMore) {
-                        const leadsRes = await client.get(`/api/campaigns/${externalCampaignId}/leads`, {
-                            params: { page, per_page: 100 }
-                        });
+                        const leadsRes = await emailbisonRateLimiter.execute(() =>
+                            client.get(`/api/campaigns/${externalCampaignId}/leads`, { params: { page, per_page: 100 } })
+                        );
 
                         const leadsData = leadsRes.data?.data || leadsRes.data || [];
                         const leadsList = Array.isArray(leadsData) ? leadsData : [];
@@ -528,7 +539,74 @@ export class EmailBisonAdapter implements PlatformAdapter {
                 syncProgressService.emitProgress(sessionId, 'leads', 'completed', { count: leadCount });
             }
 
-            // ── 5. Post-sync assessment ────────────────────────────────
+            // ── 5. Aggregate mailbox engagement from campaign-level stats (Issue B) ──
+            // Distribute each campaign's open/click/reply counts proportionally across
+            // its linked mailboxes. This is an approximation since EmailBison does not
+            // expose per-mailbox engagement breakdowns in its API.
+            try {
+                const syncedCampaignIds = campaigns.map((c: any) => `eb-${c.id}`);
+                const mailboxesWithCampaigns = await prisma.mailbox.findMany({
+                    where: {
+                        organization_id: organizationId,
+                        source_platform: SourcePlatform.emailbison,
+                        campaigns: { some: { id: { in: syncedCampaignIds } } },
+                    },
+                    select: {
+                        id: true,
+                        total_sent_count: true,
+                        campaigns: {
+                            where: { id: { in: syncedCampaignIds } },
+                            select: { id: true, open_count: true, click_count: true, reply_count: true },
+                        },
+                    },
+                });
+
+                for (const mb of mailboxesWithCampaigns) {
+                    let totalOpens = 0;
+                    let totalClicks = 0;
+                    let totalReplies = 0;
+
+                    for (const campaign of mb.campaigns) {
+                        // Count how many mailboxes share this campaign (in-memory, no extra query)
+                        const sharedCount = Math.max(
+                            mailboxesWithCampaigns.filter(m =>
+                                m.campaigns.some(c => c.id === campaign.id)
+                            ).length,
+                            1
+                        );
+                        totalOpens += Math.round(campaign.open_count / sharedCount);
+                        totalClicks += Math.round(campaign.click_count / sharedCount);
+                        totalReplies += Math.round(campaign.reply_count / sharedCount);
+                    }
+
+                    const totalEngagement = totalOpens + totalClicks + totalReplies;
+                    const engagementRate = mb.total_sent_count > 0
+                        ? Math.min((totalEngagement / mb.total_sent_count) * 100, 100)
+                        : 0;
+
+                    await prisma.mailbox.update({
+                        where: { id: mb.id },
+                        data: {
+                            open_count_lifetime: totalOpens,
+                            click_count_lifetime: totalClicks,
+                            reply_count_lifetime: totalReplies,
+                            engagement_rate: engagementRate,
+                        },
+                    });
+                }
+
+                logger.info('[EmailBisonSync] Updated mailbox engagement stats', {
+                    organizationId,
+                    mailboxesUpdated: mailboxesWithCampaigns.length,
+                });
+            } catch (engagementError: any) {
+                // Non-fatal — don't fail the sync if engagement aggregation fails
+                logger.warn('[EmailBisonSync] Failed to aggregate mailbox engagement stats', {
+                    error: engagementError.message,
+                });
+            }
+
+            // ── 6. Post-sync assessment ────────────────────────────────
 
             try {
                 await assessmentService.assessInfrastructure(organizationId);
@@ -548,6 +626,9 @@ export class EmailBisonAdapter implements PlatformAdapter {
         } catch (error: any) {
             logger.error('[EmailBisonSync] Sync failed', error, { organizationId });
             throw error;
+        } finally {
+            // ── Issue C: Always release the sync lock ──
+            await releaseLock(lockKey);
         }
     }
 

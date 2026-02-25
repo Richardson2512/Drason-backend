@@ -27,6 +27,204 @@ import { decrypt } from '../utils/encryption';
 import { parse } from 'csv-parse/sync';
 
 import { getApiKey, SMARTLEAD_API_BASE } from './smartleadClient';
+
+// ============================================================================
+// HISTORICAL BOUNCE BACKFILL
+// ============================================================================
+
+/**
+ * One-time per-campaign historical bounce backfill.
+ *
+ * Uses Smartlead's statistics endpoint to fetch all historically bounced leads
+ * then calls the message-history endpoint to reverse-engineer which mailbox
+ * sent to each lead. Creates BounceEvent records and increments mailbox
+ * hard_bounce_count for accurate deliverability assessment from day one.
+ *
+ * A completed-flag is persisted in OrganizationSetting so the backfill only
+ * runs once per campaign even across multiple syncs.
+ */
+async function backfillBouncesForCampaign(
+    campaignId: string,
+    organizationId: string,
+    apiKey: string,
+    sessionId?: string
+): Promise<void> {
+    const backfillKey = `sl_bounce_backfill:${campaignId}`;
+
+    // Skip if already backfilled for this campaign
+    const alreadyDone = await prisma.organizationSetting.findFirst({
+        where: { organization_id: organizationId, key: backfillKey },
+        select: { id: true },
+    });
+    if (alreadyDone) return;
+
+    logger.info(`[HistoricalBackfill] Starting for campaign ${campaignId}`, { organizationId });
+
+    // ── 1. Fetch all bounced leads (paginated) ──────────────────────────────
+    let offset = 0;
+    const PAGE_SIZE = 100;
+    let totalBounces = 0;
+    const allBouncedLeads: any[] = [];
+
+    try {
+        while (true) {
+            const statsRes = await smartleadRateLimiter.execute(() =>
+                smartleadBreaker.call(() =>
+                    axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/statistics`, {
+                        params: { api_key: apiKey, email_status: 'bounced', offset, limit: PAGE_SIZE },
+                    })
+                )
+            );
+
+            const body = statsRes.data;
+            totalBounces = parseInt(String(body?.total_stats || 0));
+            const page: any[] = body?.data || [];
+
+            if (page.length === 0) break;
+            allBouncedLeads.push(...page);
+            if (allBouncedLeads.length >= totalBounces) break;
+            offset += PAGE_SIZE;
+        }
+    } catch (fetchErr: any) {
+        // Non-fatal: statistics endpoint may not be available for all account types
+        logger.warn(`[HistoricalBackfill] Could not fetch bounced leads for campaign ${campaignId}`, {
+            error: fetchErr.message,
+        });
+        return;
+    }
+
+    // Mark as completed even when 0 bounces (avoids re-checking every sync)
+    if (allBouncedLeads.length === 0) {
+        await prisma.organizationSetting.upsert({
+            where: { organization_id_key: { organization_id: organizationId, key: backfillKey } },
+            update: { value: new Date().toISOString() },
+            create: { organization_id: organizationId, key: backfillKey, value: new Date().toISOString() },
+        });
+        return;
+    }
+
+    logger.info(`[HistoricalBackfill] Found ${totalBounces} historical bounces for campaign ${campaignId}`, { organizationId });
+
+    // ── 2. Process bounces with rate limiting ───────────────────────────────
+    const internalCampaignId = `sl-${campaignId}`;
+    const BATCH_SIZE = 10;
+    let processed = 0;
+    let attributed = 0;
+
+    for (let i = 0; i < allBouncedLeads.length; i += BATCH_SIZE) {
+        const batch = allBouncedLeads.slice(i, i + BATCH_SIZE);
+
+        if (sessionId) {
+            syncProgressService.emitProgress(sessionId, 'historical_bounces', 'in_progress', {
+                current: i,
+                total: allBouncedLeads.length,
+                message: `Backfilling historical bounces: ${i}/${allBouncedLeads.length}`,
+            });
+        }
+
+        await Promise.all(batch.map(async (bouncedLead: any) => {
+            const leadEmail: string = bouncedLead.lead_email || bouncedLead.email || '';
+            if (!leadEmail) return;
+
+            const bouncedAt = new Date(bouncedLead.sent_time || bouncedLead.bounced_at || Date.now());
+            // Smartlead's statistics response typically includes the numeric lead ID
+            const smartleadLeadId: string | number | undefined = bouncedLead.id || bouncedLead.lead_id;
+
+            // ── Dedup: skip if this exact bounce is already recorded ──
+            const existing = await prisma.bounceEvent.findFirst({
+                where: { organization_id: organizationId, email_address: leadEmail, bounced_at: bouncedAt },
+                select: { id: true },
+            });
+            if (existing) { processed++; return; }
+
+            // ── Resolve sender mailbox via message-history ──────────────────
+            let mailboxId: string | null = null;
+            if (smartleadLeadId) {
+                try {
+                    const historyRes = await smartleadRateLimiter.execute(() =>
+                        smartleadBreaker.call(() =>
+                            axios.get(
+                                `${SMARTLEAD_API_BASE}/campaigns/${campaignId}/leads/${smartleadLeadId}/message-history`,
+                                { params: { api_key: apiKey } }
+                            )
+                        )
+                    );
+                    const senderEmail: string | undefined = historyRes.data?.from;
+                    if (senderEmail) {
+                        const mailbox = await prisma.mailbox.findFirst({
+                            where: { organization_id: organizationId, email: senderEmail },
+                            select: { id: true },
+                        });
+                        if (mailbox) {
+                            mailboxId = mailbox.id;
+                            attributed++;
+                        } else {
+                            logger.warn(`[HistoricalBackfill] Sender mailbox not in DB: ${senderEmail}`, { organizationId });
+                        }
+                    }
+                } catch (histErr: any) {
+                    // Non-fatal: message-history may 404 for old/deleted leads
+                    logger.debug(`[HistoricalBackfill] message-history failed for lead ${leadEmail}`, {
+                        error: histErr.message,
+                    });
+                }
+            }
+
+            // ── Look up our DB lead ID for the BounceEvent FK ──────────────
+            const dbLead = await prisma.lead.findFirst({
+                where: { organization_id: organizationId, email: leadEmail },
+                select: { id: true },
+            });
+
+            // ── Create BounceEvent ──────────────────────────────────────────
+            await prisma.bounceEvent.create({
+                data: {
+                    organization_id: organizationId,
+                    lead_id: dbLead?.id ?? null,
+                    mailbox_id: mailboxId,
+                    campaign_id: internalCampaignId,
+                    bounce_type: 'HARD',
+                    email_address: leadEmail,
+                    bounced_at: bouncedAt,
+                },
+            });
+
+            // ── Increment mailbox hard_bounce_count if attributed ───────────
+            if (mailboxId) {
+                await prisma.mailbox.update({
+                    where: { id: mailboxId },
+                    data: { hard_bounce_count: { increment: 1 } },
+                });
+            }
+
+            processed++;
+        }));
+
+        // Respect rate limit between batches (10 req / 2 s)
+        if (i + BATCH_SIZE < allBouncedLeads.length) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+
+        if ((i + BATCH_SIZE) % 100 === 0 || i + BATCH_SIZE >= allBouncedLeads.length) {
+            logger.info(`[HistoricalBackfill] Progress: ${Math.min(i + BATCH_SIZE, allBouncedLeads.length)}/${allBouncedLeads.length} bounces`, {
+                organizationId,
+                campaignId,
+            });
+        }
+    }
+
+    // ── Mark backfill as completed ──────────────────────────────────────────
+    await prisma.organizationSetting.upsert({
+        where: { organization_id_key: { organization_id: organizationId, key: backfillKey } },
+        update: { value: new Date().toISOString() },
+        create: { organization_id: organizationId, key: backfillKey, value: new Date().toISOString() },
+    });
+
+    logger.info(`[HistoricalBackfill] Completed for campaign ${campaignId}: ${processed} processed, ${attributed} mailbox-attributed`, {
+        organizationId,
+    });
+}
+
 /**
  * Sync campaigns, mailboxes, AND leads from Smartlead.
  */
@@ -711,6 +909,11 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     // Update each lead with engagement stats
                     let updatedCount = 0;
                     let recordsWithEngagement = 0;
+                    // Tracks leads with engagement but no sender info (for proportional fallback)
+                    let unattributedCount = 0;
+                    let totalUnattributedOpens = 0;
+                    let totalUnattributedClicks = 0;
+                    let totalUnattributedReplies = 0;
                     for (const record of records) {
                         const rec = record as any; // Type assertion for CSV record
                         const email = rec.email || rec.Email || rec.EMAIL;
@@ -904,8 +1107,14 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                     logger.error(`[LeadEngagement] Failed to update mailbox stats for lead ${email}`, mailboxError);
                                 }
                             } else {
-                                // No sender info - can't attribute to specific mailbox
-                                // This is expected if CSV doesn't include sender fields
+                                // No sender info - can't attribute to specific mailbox.
+                                // Track engagement totals for proportional fallback below.
+                                if (openCount > 0 || clickCount > 0 || replyCount > 0) {
+                                    unattributedCount++;
+                                    totalUnattributedOpens += openCount;
+                                    totalUnattributedClicks += clickCount;
+                                    totalUnattributedReplies += replyCount;
+                                }
                                 logger.debug(`[LeadEngagement] No sender info for lead ${email} - skipping mailbox attribution`);
                             }
 
@@ -918,9 +1127,85 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         }
                     }
 
+                    // ── Issue H: Proportional fallback for unattributed engagement ──
+                    // When the CSV lacks sender fields, distribute aggregate engagement
+                    // equally across all mailboxes linked to this campaign.
+                    if (unattributedCount > 0) {
+                        if (sessionId) {
+                            syncProgressService.emitProgress(sessionId, 'leads', 'in_progress', {
+                                warning: `${unattributedCount} leads had engagement but no sender attribution. Stats distributed proportionally across campaign mailboxes.`,
+                                current: campaignIndex,
+                                total: campaigns.length,
+                            });
+                        }
+
+                        try {
+                            const internalCampaignId = `sl-${campaignId}`;
+                            const campaignMailboxes = await prisma.mailbox.findMany({
+                                where: {
+                                    campaigns: { some: { id: internalCampaignId } },
+                                    organization_id: organizationId,
+                                },
+                                select: {
+                                    id: true,
+                                    open_count_lifetime: true,
+                                    click_count_lifetime: true,
+                                    reply_count_lifetime: true,
+                                    total_sent_count: true,
+                                },
+                            });
+
+                            if (campaignMailboxes.length > 0) {
+                                const divisor = campaignMailboxes.length;
+                                const perMailboxOpens = Math.round(totalUnattributedOpens / divisor);
+                                const perMailboxClicks = Math.round(totalUnattributedClicks / divisor);
+                                const perMailboxReplies = Math.round(totalUnattributedReplies / divisor);
+
+                                for (const mb of campaignMailboxes) {
+                                    const newOpens = mb.open_count_lifetime + perMailboxOpens;
+                                    const newClicks = mb.click_count_lifetime + perMailboxClicks;
+                                    const newReplies = mb.reply_count_lifetime + perMailboxReplies;
+                                    const totalEngagement = newOpens + newClicks + newReplies;
+                                    const engagementRate = mb.total_sent_count > 0
+                                        ? (totalEngagement / mb.total_sent_count) * 100
+                                        : 0;
+
+                                    await prisma.mailbox.update({
+                                        where: { id: mb.id },
+                                        data: {
+                                            open_count_lifetime: newOpens,
+                                            click_count_lifetime: newClicks,
+                                            reply_count_lifetime: newReplies,
+                                            engagement_rate: engagementRate,
+                                        },
+                                    });
+                                }
+
+                                logger.info(`[LeadEngagement] Distributed unattributed engagement proportionally for campaign ${campaignId}`, {
+                                    organizationId,
+                                    unattributedLeads: unattributedCount,
+                                    mailboxCount: campaignMailboxes.length,
+                                    perMailboxOpens,
+                                    perMailboxClicks,
+                                    perMailboxReplies,
+                                });
+                            } else {
+                                logger.warn(`[LeadEngagement] No mailboxes linked to campaign ${campaignId} — proportional fallback skipped`, {
+                                    organizationId,
+                                    unattributedCount,
+                                });
+                            }
+                        } catch (fallbackErr: any) {
+                            logger.error(`[LeadEngagement] Proportional fallback failed for campaign ${campaignId}`, fallbackErr, {
+                                organizationId,
+                            });
+                        }
+                    }
+
                     logger.info(`[LeadEngagement] Updated ${updatedCount} leads with engagement stats for campaign ${campaignId}`, {
                         totalRecords: records.length,
                         recordsWithEngagement,
+                        unattributedCount,
                         recordsWithoutEngagement: records.length - recordsWithEngagement
                     });
                 } catch (csvError: any) {
@@ -940,6 +1225,16 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     campaignId,
                     response: leadError.response?.data,
                     status: leadError.response?.status
+                });
+            }
+
+            // ── Historical bounce backfill (Issue G) ─────────────────────────
+            // One-time per campaign; idempotent; non-blocking.
+            try {
+                await backfillBouncesForCampaign(campaignId.toString(), organizationId, apiKey, sessionId);
+            } catch (backfillErr: any) {
+                logger.warn(`[HistoricalBackfill] Non-fatal error for campaign ${campaignId}`, {
+                    error: backfillErr.message,
                 });
             }
 
