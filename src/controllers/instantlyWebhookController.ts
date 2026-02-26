@@ -1,0 +1,137 @@
+/**
+ * Instantly Webhook Controller
+ *
+ * Handles real-time events from Instantly API V2.
+ * Event types: email_sent, email_opened, email_clicked, email_bounced,
+ *              email_replied, lead_unsubscribed
+ *
+ * Uses BullMQ eventQueue for async, decoupled processing (same as EmailBison).
+ * Returns 200 immediately so Instantly does not retry on slow processing.
+ */
+
+import { Request, Response } from 'express';
+import { logger } from '../services/observabilityService';
+import { getOrgId } from '../middleware/orgContext';
+import { enqueueEvent } from '../services/eventQueue';
+import { storeEvent } from '../services/eventService';
+import { EventType } from '../types';
+
+/**
+ * Maps Instantly webhook event_type strings to Drason internal EventType.
+ * Instantly V2 event names follow snake_case conventions.
+ */
+function mapInstantlyEventType(eventName: string): EventType | string | null {
+    switch (eventName) {
+        case 'email_sent':
+            return EventType.EMAIL_SENT;
+        case 'email_opened':
+            return 'EmailOpened';
+        case 'email_clicked':
+            return 'EmailClicked';
+        case 'email_replied':
+            return 'EmailReplied';
+        case 'email_bounced':
+        case 'bounced':
+            return EventType.HARD_BOUNCE;
+        case 'lead_unsubscribed':
+        case 'email_unsubscribed':
+            return 'EmailUnsubscribed';
+        case 'spam_block':
+        case 'spam_complaint':
+            return 'SpamComplaint';
+        default:
+            return null; // Ignore unsupported events
+    }
+}
+
+/**
+ * Instantly Webhook Handler
+ *
+ * Instantly delivers one event object per POST.
+ * Payload shape (V2):
+ *  {
+ *    event_type: "email_bounced",
+ *    campaign_id: "uuid",
+ *    email_account: "sender@domain.com",   // the sending mailbox
+ *    lead_email: "recipient@domain.com",
+ *    timestamp: "2026-02-27T12:00:00Z",
+ *    bounce_type: "hard" | "soft",
+ *    smtp_response: "550 ...",
+ *    ... (other event-specific fields)
+ *  }
+ */
+export const handleInstantlyWebhook = async (req: Request, res: Response) => {
+    try {
+        const orgId = getOrgId(req);
+        const body = req.body;
+
+        // Instantly can send a single event or a batch array
+        const events: any[] = Array.isArray(body) ? body : [body];
+
+        logger.info(`[INSTANTLY-WEBHOOK] Received ${events.length} event(s)`, {
+            organizationId: orgId,
+        });
+
+        for (const event of events) {
+            const rawEventType = event.event_type || event.type || event.event;
+            if (!rawEventType) continue;
+
+            const internalEventType = mapInstantlyEventType(rawEventType);
+            if (!internalEventType) {
+                logger.debug(`[INSTANTLY-WEBHOOK] Skipping unmapped event: ${rawEventType}`);
+                continue;
+            }
+
+            // Extract identifiers — Instantly uses email address as account ID
+            const senderEmail = event.email_account || event.from_email || event.account;
+            const campaignIdRaw = event.campaign_id;
+            const recipientEmail = event.lead_email || event.to_email || event.email;
+            const smtpResponse =
+                event.smtp_response || event.bounce_reason || event.error_message;
+            const eventId =
+                event.id ||
+                event.event_id ||
+                `inst-evt-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+            // Prefix IDs to match our multi-platform schema
+            const mailboxId = senderEmail ? `inst-${senderEmail}` : undefined;
+            const campaignId = campaignIdRaw ? `inst-${campaignIdRaw}` : undefined;
+
+            if (!mailboxId) {
+                logger.warn('[INSTANTLY-WEBHOOK] Event missing email_account, skipping', { event });
+                continue;
+            }
+
+            // 1. Store raw event for audit trail (immutable event sourcing)
+            const { eventId: internalDbEventId } = await storeEvent({
+                organizationId: orgId,
+                eventType: internalEventType as EventType,
+                entityType: 'mailbox',
+                entityId: mailboxId,
+                payload: event,
+                idempotencyKey: eventId,
+            });
+
+            // 2. Enqueue to BullMQ for async processing
+            await enqueueEvent({
+                eventId: internalDbEventId,
+                eventType: internalEventType,
+                entityType: 'mailbox',
+                entityId: mailboxId,
+                organizationId: orgId,
+                campaignId,
+                recipientEmail,
+                smtpResponse,
+            });
+        }
+
+        // Fast 200 to prevent Instantly retry storms
+        res.json({ success: true, processed: events.length });
+    } catch (err: any) {
+        logger.error('[INSTANTLY-WEBHOOK] Error processing webhook payload', err, {
+            body: req.body,
+        });
+        // Return 200 even on error to prevent infinite retries from malformed payloads
+        res.json({ success: false, error: err.message });
+    }
+};

@@ -14,6 +14,7 @@ import { prisma } from '../index';
 import { PlatformAdapter } from './platformAdapter';
 import { SmartleadAdapter } from './smartleadAdapter';
 import { EmailBisonAdapter } from './emailbisonAdapter';
+import { InstantlyAdapter } from './instantlyAdapter';
 import { logger } from '../services/observabilityService';
 
 // ============================================================================
@@ -23,7 +24,7 @@ import { logger } from '../services/observabilityService';
 const adapters: Record<SourcePlatform, PlatformAdapter> = {
     smartlead: new SmartleadAdapter(),
     emailbison: new EmailBisonAdapter(),
-    instantly: null as any,  // Stub — not yet implemented
+    instantly: new InstantlyAdapter(),
     replyio: null as any,    // Stub — not yet implemented
 };
 
