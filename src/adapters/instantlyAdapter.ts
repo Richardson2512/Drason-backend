@@ -725,9 +725,8 @@ export class InstantlyAdapter implements PlatformAdapter {
                 where: { id: domain.id },
                 data: {
                     bounce_rate: bounceRate,
-                    // Store raw counts for dashboard display
-                    total_sent_count: stats.sent,
-                    total_bounced_count: stats.bounced,
+                    total_sent_lifetime: stats.sent,
+                    total_bounces: stats.bounced,
                 },
             }).catch(() => { /* non-fatal if columns don't exist */ });
         }
@@ -1007,13 +1006,13 @@ export class InstantlyAdapter implements PlatformAdapter {
                 },
                 select: {
                     id: true,
-                    external_email_account_id: true,
+                    email: true,
                     campaigns: { select: { external_id: true } },
                 },
             });
 
             for (const mailbox of mailboxes) {
-                if (!mailbox.external_email_account_id) continue;
+                if (!mailbox.email) continue;
 
                 for (const campaign of mailbox.campaigns) {
                     if (!campaign.external_id) continue;
@@ -1021,7 +1020,7 @@ export class InstantlyAdapter implements PlatformAdapter {
                     const ok = await this.removeMailboxFromCampaign(
                         organizationId,
                         campaign.external_id,
-                        mailbox.external_email_account_id
+                        mailbox.email
                     );
 
                     if (ok) successCount++;
@@ -1031,7 +1030,7 @@ export class InstantlyAdapter implements PlatformAdapter {
                 // Also pause the account itself at the platform level
                 try {
                     const client = await this.getClient(organizationId);
-                    const email = mailbox.external_email_account_id;
+                    const email = mailbox.email;
                     await instantlyRateLimiter.execute(() =>
                         client.post(`/accounts/${encodeURIComponent(email)}/pause`)
                     );
