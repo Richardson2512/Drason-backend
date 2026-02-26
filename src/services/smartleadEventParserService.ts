@@ -65,22 +65,34 @@ export async function handleBounceEvent(orgId: string, event: any) {
     });
 
     // Update mailbox bounce count
+    // Guard against P2025 (record not found) so campaign + lead updates still run
     if (mailboxId) {
-        const mailbox = await prisma.mailbox.update({
-            where: { id: mailboxId.toString() },
-            data: {
-                hard_bounce_count: { increment: 1 },
-                window_bounce_count: { increment: 1 }
-            },
-            select: {
-                recovery_phase: true,
-                email: true,
-                status: true,
-                resilience_score: true,
-                total_sent_count: true,
-                hard_bounce_count: true
+        let mailbox: { recovery_phase: string; email: string; status: string; resilience_score: number; total_sent_count: number; hard_bounce_count: number } | null = null;
+        try {
+            mailbox = await prisma.mailbox.update({
+                where: { id: mailboxId.toString() },
+                data: {
+                    hard_bounce_count: { increment: 1 },
+                    window_bounce_count: { increment: 1 }
+                },
+                select: {
+                    recovery_phase: true,
+                    email: true,
+                    status: true,
+                    resilience_score: true,
+                    total_sent_count: true,
+                    hard_bounce_count: true
+                }
+            });
+        } catch (mailboxErr: any) {
+            if (mailboxErr.code === 'P2025') {
+                logger.warn('[SMARTLEAD-WEBHOOK] Mailbox not found for bounce event, skipping mailbox stat update', { mailboxId, orgId });
+            } else {
+                throw mailboxErr;
             }
-        });
+        }
+
+        if (mailbox) {
 
         // ── WARMUP RECOVERY: Track bounces during recovery (CRITICAL - ZERO TOLERANCE) ──
         if (mailbox.recovery_phase &&
@@ -214,7 +226,8 @@ export async function handleBounceEvent(orgId: string, event: any) {
                 });
             }
         }
-    }
+        } // end if (mailbox)
+    } // end if (mailboxId)
 
     // Update campaign bounce stats
     if (campaignId) {
@@ -311,24 +324,30 @@ export async function handleSentEvent(orgId: string, event: any) {
     }
 
     // Update campaign sent count
+    // Use updateMany to avoid P2025 if campaign hasn't been synced yet
     if (campaignId) {
-        await prisma.campaign.update({
+        await prisma.campaign.updateMany({
             where: { id: campaignId.toString() },
             data: {
                 total_sent: { increment: 1 }
             }
+        }).catch(err => {
+            logger.warn('[SMARTLEAD-WEBHOOK] Failed to update campaign sent count', { campaignId, error: err.message });
         });
     }
 
     // Update mailbox sent count
+    // Use updateMany to avoid P2025 if mailbox hasn't been synced yet
     if (mailboxId) {
-        await prisma.mailbox.update({
+        await prisma.mailbox.updateMany({
             where: { id: mailboxId.toString() },
             data: {
                 total_sent_count: { increment: 1 },
                 window_sent_count: { increment: 1 },
                 last_activity_at: new Date()
             }
+        }).catch(err => {
+            logger.warn('[SMARTLEAD-WEBHOOK] Failed to update mailbox sent count', { mailboxId, error: err.message });
         });
     }
 
