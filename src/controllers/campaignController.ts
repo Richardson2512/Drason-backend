@@ -67,6 +67,17 @@ export const pauseAllCampaigns = async (req: Request, res: Response) => {
                         paused_by: 'system'
                     }
                 });
+                await prisma.stateTransition.create({
+                    data: {
+                        organization_id: orgId,
+                        entity_type: 'campaign',
+                        entity_id: campaign.id,
+                        from_state: 'active',
+                        to_state: 'paused',
+                        reason: 'Health enforcement - all campaigns paused',
+                        triggered_by: 'manual',
+                    }
+                });
                 pausedCount++;
             } catch (pauseError) {
                 logger.error(`[CAMPAIGNS] Failed to pause campaign ${campaign.id}`, pauseError as Error);
@@ -345,16 +356,27 @@ export const resolveStalledCampaign = async (req: Request, res: Response) => {
             }
 
             // Sync Database
+            const prevCampaign = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { status: true } });
             await prisma.campaign.update({
                 where: { id: campaignId },
                 data: {
                     status: 'active',
                     paused_reason: null,
                     paused_at: null,
-                    // paused_by: null, // removing as it might not be generated depending on Prisma version
                     mailboxes: {
                         connect: selectedMailboxIds.map(id => ({ id: id as string }))
                     }
+                }
+            });
+            await prisma.stateTransition.create({
+                data: {
+                    organization_id: orgId,
+                    entity_type: 'campaign',
+                    entity_id: campaignId,
+                    from_state: prevCampaign?.status || 'unknown',
+                    to_state: 'active',
+                    reason: `Stalled campaign resolved with ${selectedMailboxIds.length} mailboxes`,
+                    triggered_by: 'manual',
                 }
             });
 
@@ -606,10 +628,21 @@ export const archiveCampaign = async (req: Request, res: Response) => {
         await prisma.campaign.update({
             where: { id: campaignId },
             data: {
-                status: 'paused', // Keep as paused on platform
+                status: 'paused',
                 paused_reason: 'Archived by user',
                 paused_at: new Date(),
                 paused_by: 'user'
+            }
+        });
+        await prisma.stateTransition.create({
+            data: {
+                organization_id: orgId,
+                entity_type: 'campaign',
+                entity_id: campaignId,
+                from_state: campaign.status,
+                to_state: 'paused',
+                reason: 'Archived by user',
+                triggered_by: 'manual',
             }
         });
 

@@ -419,3 +419,318 @@ export const getEmailAccountDetails = async (
 };
 
 
+// ============================================================================
+// WEBHOOK MANAGEMENT
+// ============================================================================
+
+/**
+ * List all webhooks registered for a campaign.
+ * Uses Smartlead API: GET /campaigns/{campaign_id}/webhooks
+ */
+export const listCampaignWebhooks = async (
+    organizationId: string,
+    campaignId: string
+): Promise<Array<{ id: number; name: string; webhook_url: string; event_types: string[] }>> => {
+    const apiKey = await getApiKey(organizationId);
+    if (!apiKey) throw new Error('Smartlead API key not configured');
+
+    try {
+        const response = await smartleadRateLimiter.execute(() =>
+            smartleadBreaker.call(() =>
+                axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/webhooks`, {
+                    params: { api_key: apiKey }
+                })
+            )
+        );
+        return response.data || [];
+    } catch (error: any) {
+        logger.error('[SMARTLEAD-WEBHOOK-MGMT] Failed to list webhooks', error, {
+            organizationId,
+            campaignId,
+            response: error.response?.data
+        });
+        return [];
+    }
+};
+
+/**
+ * Register a webhook for a campaign.
+ * Uses Smartlead API: POST /campaigns/{campaign_id}/webhooks
+ *
+ * Event types: EMAIL_SENT, EMAIL_OPEN, EMAIL_LINK_CLICK, EMAIL_REPLY,
+ *              LEAD_UNSUBSCRIBED, LEAD_CATEGORY_UPDATED,
+ *              CAMPAIGN_STATUS_CHANGED, Email Bounce
+ */
+export const registerCampaignWebhook = async (
+    organizationId: string,
+    campaignId: string,
+    webhookUrl: string,
+    eventTypes?: string[]
+): Promise<boolean> => {
+    const apiKey = await getApiKey(organizationId);
+    if (!apiKey) throw new Error('Smartlead API key not configured');
+
+    const defaultEventTypes = [
+        'EMAIL_SENT',
+        'EMAIL_OPEN',
+        'EMAIL_LINK_CLICK',
+        'EMAIL_REPLY',
+        'LEAD_UNSUBSCRIBED',
+        'LEAD_CATEGORY_UPDATED',
+        'CAMPAIGN_STATUS_CHANGED',
+        'Email Bounce',
+    ];
+
+    try {
+        await smartleadRateLimiter.execute(() =>
+            smartleadBreaker.call(() =>
+                axios.post(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/webhooks`, {
+                    name: 'Drason Webhook',
+                    webhook_url: webhookUrl,
+                    event_types: eventTypes || defaultEventTypes,
+                }, {
+                    params: { api_key: apiKey }
+                })
+            )
+        );
+
+        logger.info('[SMARTLEAD-WEBHOOK-MGMT] Registered webhook for campaign', {
+            organizationId,
+            campaignId,
+            webhookUrl,
+            eventTypes: eventTypes || defaultEventTypes
+        });
+
+        return true;
+    } catch (error: any) {
+        logger.error('[SMARTLEAD-WEBHOOK-MGMT] Failed to register webhook', error, {
+            organizationId,
+            campaignId,
+            webhookUrl,
+            response: error.response?.data
+        });
+        return false;
+    }
+};
+
+/**
+ * Delete a webhook from a campaign.
+ * Uses Smartlead API: DELETE /campaigns/{campaign_id}/webhooks/{webhook_id}
+ */
+export const deleteCampaignWebhook = async (
+    organizationId: string,
+    campaignId: string,
+    webhookId: number
+): Promise<boolean> => {
+    const apiKey = await getApiKey(organizationId);
+    if (!apiKey) throw new Error('Smartlead API key not configured');
+
+    try {
+        await smartleadRateLimiter.execute(() =>
+            smartleadBreaker.call(() =>
+                axios.delete(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/webhooks/${webhookId}`, {
+                    params: { api_key: apiKey }
+                })
+            )
+        );
+
+        logger.info('[SMARTLEAD-WEBHOOK-MGMT] Deleted webhook', {
+            organizationId,
+            campaignId,
+            webhookId
+        });
+
+        return true;
+    } catch (error: any) {
+        logger.error('[SMARTLEAD-WEBHOOK-MGMT] Failed to delete webhook', error, {
+            organizationId,
+            campaignId,
+            webhookId,
+            response: error.response?.data
+        });
+        return false;
+    }
+};
+
+/**
+ * Ensure webhooks are registered for all campaigns.
+ * Checks existing webhooks and only registers where missing.
+ * Called during sync to keep webhooks in sync with our infrastructure.
+ */
+export const ensureWebhooksRegistered = async (
+    organizationId: string,
+    campaignIds: string[],
+    webhookUrl: string
+): Promise<{ registered: number; skipped: number; failed: number }> => {
+    let registered = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    for (const campaignId of campaignIds) {
+        try {
+            // Check if our webhook is already registered
+            const existingWebhooks = await listCampaignWebhooks(organizationId, campaignId);
+            const alreadyRegistered = existingWebhooks.some(
+                wh => wh.webhook_url === webhookUrl
+            );
+
+            if (alreadyRegistered) {
+                skipped++;
+                continue;
+            }
+
+            const success = await registerCampaignWebhook(
+                organizationId,
+                campaignId,
+                webhookUrl
+            );
+
+            if (success) {
+                registered++;
+            } else {
+                failed++;
+            }
+        } catch (error: any) {
+            failed++;
+            logger.error('[SMARTLEAD-WEBHOOK-MGMT] Failed to ensure webhook for campaign', error, {
+                organizationId,
+                campaignId
+            });
+        }
+    }
+
+    logger.info('[SMARTLEAD-WEBHOOK-MGMT] Webhook registration complete', {
+        organizationId,
+        registered,
+        skipped,
+        failed,
+        total: campaignIds.length
+    });
+
+    return { registered, skipped, failed };
+};
+
+// ============================================================================
+// ANALYTICS & STATISTICS
+// ============================================================================
+
+/**
+ * Get analytics by date for a campaign.
+ * Uses Smartlead API: GET /campaigns/{campaign_id}/analytics-by-date
+ * Returns date-bucketed historical analytics data.
+ */
+export const getAnalyticsByDate = async (
+    organizationId: string,
+    campaignId: string,
+    startDate?: string,
+    endDate?: string
+): Promise<Array<{
+    date: string;
+    sent_count: number;
+    open_count: number;
+    click_count: number;
+    reply_count: number;
+    bounce_count: number;
+    unsubscribe_count: number;
+}>> => {
+    const apiKey = await getApiKey(organizationId);
+    if (!apiKey) throw new Error('Smartlead API key not configured');
+
+    try {
+        const params: any = { api_key: apiKey };
+        if (startDate) params.start_date = startDate;
+        if (endDate) params.end_date = endDate;
+
+        const response = await smartleadRateLimiter.execute(() =>
+            smartleadBreaker.call(() =>
+                axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/analytics-by-date`, {
+                    params
+                })
+            )
+        );
+
+        return response.data || [];
+    } catch (error: any) {
+        logger.error('[SMARTLEAD-ANALYTICS] Failed to fetch analytics-by-date', error, {
+            organizationId,
+            campaignId,
+            response: error.response?.data
+        });
+        return [];
+    }
+};
+
+/**
+ * Get campaign statistics with full email status support.
+ * Uses Smartlead API: GET /campaigns/{campaign_id}/statistics
+ *
+ * @param emailStatus - Filter by status: 'sent', 'opened', 'clicked', 'replied', 'bounced', 'unsubscribed'
+ */
+export const getCampaignStatistics = async (
+    organizationId: string,
+    campaignId: string,
+    emailStatus: string,
+    offset: number = 0,
+    limit: number = 100
+): Promise<{ total_stats: number; data: any[] }> => {
+    const apiKey = await getApiKey(organizationId);
+    if (!apiKey) throw new Error('Smartlead API key not configured');
+
+    try {
+        const response = await smartleadRateLimiter.execute(() =>
+            smartleadBreaker.call(() =>
+                axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/statistics`, {
+                    params: {
+                        api_key: apiKey,
+                        email_status: emailStatus,
+                        offset,
+                        limit
+                    }
+                })
+            )
+        );
+
+        return response.data || { total_stats: 0, data: [] };
+    } catch (error: any) {
+        logger.error('[SMARTLEAD-STATISTICS] Failed to fetch campaign statistics', error, {
+            organizationId,
+            campaignId,
+            emailStatus,
+            response: error.response?.data
+        });
+        return { total_stats: 0, data: [] };
+    }
+};
+
+/**
+ * Get all campaigns a lead is enrolled in.
+ * Uses Smartlead API: GET /leads/{lead_id}/campaigns
+ *
+ * Useful for cross-campaign tracking and preventing over-emailing.
+ */
+export const getLeadCampaigns = async (
+    organizationId: string,
+    leadId: string
+): Promise<Array<{ campaign_id: string; campaign_name: string; status: string }>> => {
+    const apiKey = await getApiKey(organizationId);
+    if (!apiKey) throw new Error('Smartlead API key not configured');
+
+    try {
+        const response = await smartleadRateLimiter.execute(() =>
+            smartleadBreaker.call(() =>
+                axios.get(`${SMARTLEAD_API_BASE}/leads/${leadId}/campaigns`, {
+                    params: { api_key: apiKey }
+                })
+            )
+        );
+
+        return response.data || [];
+    } catch (error: any) {
+        logger.error('[SMARTLEAD-LEADS] Failed to fetch lead campaigns', error, {
+            organizationId,
+            leadId,
+            response: error.response?.data
+        });
+        return [];
+    }
+};

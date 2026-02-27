@@ -21,6 +21,8 @@ import {
 } from '../types';
 import * as auditLogService from './auditLogService';
 import * as notificationService from './notificationService';
+import * as entityStateService from './entityStateService';
+import { MailboxState, DomainState } from '../types';
 import { getAdapterForMailbox, getAdapterForCampaign } from '../adapters/platformRegistry';
 import { SlackAlertService } from './SlackAlertService';
 import logger from '../utils/logger';
@@ -363,38 +365,46 @@ export async function handleRelapse(
         reason = `RELAPSE #${relapseCount}: ${reason}`;
     }
 
-    // Update entity
-    const updateData: any = {
-        relapse_count: relapseCount,
-        resilience_score: resAdj.newScore,
-        recovery_phase: targetPhase,
-        phase_entered_at: new Date(),
-        clean_sends_since_phase: 0,
-        healing_origin: entity.healing_origin || HealingOrigin.RECOVERY,
-        cooldown_until: new Date(Date.now() + cooldownMs),
-        status: targetPhase === RecoveryPhase.PAUSED ? 'paused' : targetPhase,
-    };
+    // Determine target status from recovery phase
+    const targetStatus = targetPhase === RecoveryPhase.PAUSED ? 'paused' : targetPhase;
 
+    // Update status via state machine (setInitial bypasses validation for healing phase jumps)
     if (entityType === 'mailbox') {
-        await prisma.mailbox.update({ where: { id: entityId }, data: updateData });
+        await entityStateService.setInitialMailboxStatus(
+            organizationId, entityId, targetStatus as MailboxState,
+            `Relapse #${relapseCount}: ${reason}`, TriggerType.THRESHOLD_BREACH
+        );
+        // Set operational fields (status already handled above)
+        await prisma.mailbox.update({
+            where: { id: entityId },
+            data: {
+                relapse_count: relapseCount,
+                resilience_score: resAdj.newScore,
+                recovery_phase: targetPhase,
+                phase_entered_at: new Date(),
+                clean_sends_since_phase: 0,
+                healing_origin: entity.healing_origin || HealingOrigin.RECOVERY,
+                cooldown_until: new Date(Date.now() + cooldownMs),
+            }
+        });
     } else {
-        await prisma.domain.update({ where: { id: entityId }, data: updateData });
+        await entityStateService.setInitialDomainStatus(
+            organizationId, entityId, targetStatus as DomainState,
+            `Relapse #${relapseCount}: ${reason}`, TriggerType.THRESHOLD_BREACH
+        );
+        await prisma.domain.update({
+            where: { id: entityId },
+            data: {
+                relapse_count: relapseCount,
+                resilience_score: resAdj.newScore,
+                recovery_phase: targetPhase,
+                phase_entered_at: new Date(),
+                clean_sends_since_phase: 0,
+                healing_origin: entity.healing_origin || HealingOrigin.RECOVERY,
+                cooldown_until: new Date(Date.now() + cooldownMs),
+            }
+        });
     }
-
-    await auditLogService.logAction({
-        organizationId,
-        entity: entityType,
-        entityId,
-        trigger: 'healing_relapse',
-        action: `relapse_to_${targetPhase}`,
-        details: JSON.stringify({
-            reason,
-            relapseCount,
-            resilienceScore: resAdj.newScore,
-            cooldownMs,
-            previousPhase: currentPhase,
-        }),
-    });
 
     logger.warn(`[HEALING] Relapse for ${entityType} ${entityId}: ${reason}. New phase: ${targetPhase}, resilience: ${resAdj.newScore}`);
 
@@ -1154,6 +1164,19 @@ async function checkAndRestartWaitingCampaigns(
                             status: 'active',
                             paused_reason: null,
                             paused_at: null
+                        }
+                    });
+
+                    // Record state transition for traceability
+                    await prisma.stateTransition.create({
+                        data: {
+                            organization_id: organizationId,
+                            entity_type: 'campaign',
+                            entity_id: campaign.id,
+                            from_state: 'paused',
+                            to_state: 'active',
+                            reason: `Auto-restarted after mailbox recovery. ${campaignData.mailboxes.length} healthy mailboxes available.`,
+                            triggered_by: 'cooldown_complete',
                         }
                     });
 

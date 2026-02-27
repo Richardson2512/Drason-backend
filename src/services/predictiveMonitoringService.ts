@@ -196,31 +196,33 @@ async function analyzeCampaignRisk(
         }
     }
 
-    // ── Signal 3: Bounce Rate ──
+    // ── Signal 3: Mailbox Bounce Rate (informational — campaigns are NOT paused on bounce rate) ──
+    // NOTE: Bounce rate is tracked per-mailbox. Campaign-level avg is shown for awareness only.
+    // Campaigns only pause when ALL mailboxes are paused/removed, never on bounce rate.
     if (avgBounceRate >= 10) {
         signals.push({
             type: 'bounce_rate',
-            severity: 'critical',
-            message: `High bounce rate: ${avgBounceRate.toFixed(1)}% (threshold: 10%)`,
-            score_impact: 35
-        });
-        totalRiskScore += 35;
-    } else if (avgBounceRate >= 5) {
-        signals.push({
-            type: 'bounce_rate',
             severity: 'high',
-            message: `Elevated bounce rate: ${avgBounceRate.toFixed(1)}% (threshold: 5%)`,
+            message: `Mailbox avg bounce rate: ${avgBounceRate.toFixed(1)}%. Individual mailboxes may auto-pause at 3%.`,
             score_impact: 20
         });
         totalRiskScore += 20;
-    } else if (avgBounceRate >= 3) {
+    } else if (avgBounceRate >= 5) {
         signals.push({
             type: 'bounce_rate',
             severity: 'medium',
-            message: `Warning: bounce rate ${avgBounceRate.toFixed(1)}% (approaching 5% threshold)`,
+            message: `Mailbox avg bounce rate: ${avgBounceRate.toFixed(1)}%. Monitor individual mailbox health.`,
             score_impact: 10
         });
         totalRiskScore += 10;
+    } else if (avgBounceRate >= 3) {
+        signals.push({
+            type: 'bounce_rate',
+            severity: 'low',
+            message: `Mailbox avg bounce rate: ${avgBounceRate.toFixed(1)}%. Some mailboxes approaching 3% auto-pause threshold.`,
+            score_impact: 5
+        });
+        totalRiskScore += 5;
     }
 
     // ── Signal 4: Domain Health ──

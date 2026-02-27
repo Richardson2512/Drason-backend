@@ -487,9 +487,10 @@ export const STATE_TRANSITIONS = {
         recovering: ['healthy', 'warning', 'quarantine']
     },
     lead: {
-        held: ['active', 'paused'],
-        active: ['paused', 'completed'],
-        paused: ['active', 'completed'],
+        held: ['active', 'paused', 'blocked'],
+        active: ['paused', 'completed', 'blocked'],
+        paused: ['active', 'completed', 'blocked'],
+        blocked: [],  // Terminal state — health gate rejection
         completed: []  // Terminal state
     }
 } as const;

@@ -10,4 +10,11 @@ const router = Router();
  */
 router.get('/bounces', analyticsController.getBounceAnalytics);
 
+/**
+ * GET /api/analytics/daily
+ * Get date-bucketed campaign analytics for trend visualization
+ * Query params: campaign_id, start_date, end_date
+ */
+router.get('/daily', analyticsController.getDailyAnalytics);
+
 export default router;

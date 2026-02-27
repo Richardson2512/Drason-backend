@@ -1,19 +1,22 @@
 /**
  * Campaign Health Service
- * 
+ *
  * Implements Campaign-Level Pause functionality.
- * Detects when a campaign is "poisoning" mailboxes and pauses the campaign
- * rather than just the individual mailboxes.
- * 
+ *
+ * RULE: Campaigns are NEVER paused based on bounce rate directly.
+ *       Only MAILBOXES get paused for bounce rate thresholds.
+ *       Campaigns pause ONLY when ALL their mailboxes are paused/removed.
+ *
  * Features:
- * - Campaign bounce rate tracking
+ * - Campaign infrastructure health tracking (mailbox/domain health)
  * - Campaign-level pause/resume
- * - Campaign poisoning detection
+ * - Warning when majority of mailboxes are degraded
  */
 
 import { prisma } from '../index';
 import * as auditLogService from './auditLogService';
 import * as notificationService from './notificationService';
+import { getAdapterForCampaign } from '../adapters/platformRegistry';
 import { logger } from './observabilityService';
 
 // ============================================================================
@@ -36,20 +39,21 @@ export interface CampaignHealthResult {
 // CONSTANTS
 // ============================================================================
 
-// Campaign health thresholds
-const BOUNCE_RATE_WARNING = 0.05;  // 5% bounce rate → WARNING
-const BOUNCE_RATE_PAUSE = 0.10;    // 10% bounce rate → PAUSE
-const MIN_SENDS_FOR_EVALUATION = 20;  // Need at least 20 sends to evaluate
-
-// Poisoning detection: if campaign causes bounces on N+ different mailboxes
-const POISONING_MAILBOX_THRESHOLD = 3;
+// RULE: Campaigns are NOT paused based on bounce rate.
+// Campaign pause is driven purely by infrastructure health (mailbox/domain states).
+// Threshold: Campaign pauses when ALL mailboxes are paused/removed.
+// Warning: Campaign warns when >50% of mailboxes are unhealthy.
 
 // ============================================================================
 // CAMPAIGN HEALTH CHECK
 // ============================================================================
 
 /**
- * Check campaign health and determine if action is needed.
+ * Check campaign health based on infrastructure state (mailbox/domain health).
+ *
+ * RULE: Campaigns are NEVER paused based on bounce rate.
+ *       Campaigns pause ONLY when ALL mailboxes are paused/removed.
+ *       Campaigns warn when >50% of mailboxes are unhealthy.
  */
 export async function checkCampaignHealth(
     organizationId: string,
@@ -79,31 +83,31 @@ export async function checkCampaignHealth(
         ? campaign.total_bounced / campaign.total_sent
         : 0;
 
-    // Count mailboxes that have bounces from this campaign
     const affectedMailboxes = campaign.mailboxes.filter(mb => mb.window_bounce_count > 0).length;
-    const isPoisoning = affectedMailboxes >= POISONING_MAILBOX_THRESHOLD && campaign.total_bounced > 5;
 
+    // ── INFRASTRUCTURE-ONLY CAMPAIGN STATUS ──
+    // Campaign status is determined SOLELY by mailbox/domain health:
+    //   - ALL mailboxes paused/removed → campaign PAUSED
+    //   - >50% mailboxes paused/warning → campaign WARNING
+    //   - Otherwise → campaign ACTIVE
     let status: CampaignStatus = 'active';
-    if (campaign.total_sent >= MIN_SENDS_FOR_EVALUATION) {
-        if (bounceRate >= BOUNCE_RATE_PAUSE) {
-            status = 'paused';
-        } else if (bounceRate >= BOUNCE_RATE_WARNING) {
-            status = 'warning';
-        }
-    }
 
-    // ── INVARIANT: Campaign can NEVER be healthier than its infrastructure ──
-    // Check worst domain and mailbox states. Campaign status ceiling is
-    // capped at the worst infrastructure state.
-    if (campaign.mailboxes.length > 0) {
-        const hasAnyPausedDomain = campaign.mailboxes.some(m => m.domain.status === 'paused');
-        const hasAnyPausedMailbox = campaign.mailboxes.some(m => m.status === 'paused');
-        const hasAnyWarningDomain = campaign.mailboxes.some(m => m.domain.status === 'warning');
-        const hasAnyWarningMailbox = campaign.mailboxes.some(m => m.status === 'warning');
+    if (campaign.mailboxes.length === 0) {
+        // No mailboxes at all — campaign cannot send, pause it
+        status = 'paused';
+    } else {
+        const healthyMailboxes = campaign.mailboxes.filter(m =>
+            m.status === 'healthy' && m.domain.status !== 'paused'
+        );
+        const pausedOrRemovedMailboxes = campaign.mailboxes.filter(m =>
+            m.status === 'paused' || m.domain.status === 'paused'
+        );
 
-        if ((hasAnyPausedDomain || hasAnyPausedMailbox) && status !== 'paused') {
+        if (healthyMailboxes.length === 0) {
+            // ALL mailboxes are paused/removed — pause campaign
             status = 'paused';
-        } else if ((hasAnyWarningDomain || hasAnyWarningMailbox) && status === 'active') {
+        } else if (pausedOrRemovedMailboxes.length > campaign.mailboxes.length * 0.5) {
+            // >50% of mailboxes are degraded — warn
             status = 'warning';
         }
     }
@@ -114,7 +118,7 @@ export async function checkCampaignHealth(
         totalSent: campaign.total_sent,
         totalBounced: campaign.total_bounced,
         warningCount: campaign.warning_count,
-        isPoisoning,
+        isPoisoning: false, // Poisoning detection removed — bounce rate doesn't pause campaigns
         affectedMailboxes
     };
 }
@@ -124,13 +128,21 @@ export async function checkCampaignHealth(
 // ============================================================================
 
 /**
- * Pause a campaign.
+ * Pause a campaign — updates local DB AND syncs to external platform.
  */
 export async function pauseCampaign(
     organizationId: string,
     campaignId: string,
     reason: string
 ): Promise<void> {
+    const campaign = await prisma.campaign.findUnique({
+        where: { id: campaignId },
+        select: { name: true, external_id: true, status: true }
+    });
+
+    if (!campaign || campaign.status === 'paused') return;
+
+    const previousStatus = campaign.status;
     await prisma.campaign.update({
         where: { id: campaignId },
         data: {
@@ -138,6 +150,19 @@ export async function pauseCampaign(
             paused_reason: reason,
             paused_at: new Date(),
             paused_by: 'system'
+        }
+    });
+
+    // Record state transition for traceability
+    await prisma.stateTransition.create({
+        data: {
+            organization_id: organizationId,
+            entity_type: 'campaign',
+            entity_id: campaignId,
+            from_state: previousStatus,
+            to_state: 'paused',
+            reason,
+            triggered_by: 'threshold_breach',
         }
     });
 
@@ -152,13 +177,23 @@ export async function pauseCampaign(
 
     logger.info(`[CAMPAIGN] Paused campaign ${campaignId}: ${reason}`);
 
+    // ── PLATFORM SYNC: Pause campaign on external platform (Smartlead etc.) ──
+    try {
+        const adapter = await getAdapterForCampaign(campaignId);
+        const externalCampaignId = campaign.external_id || campaignId;
+        await adapter.pauseCampaign(organizationId, externalCampaignId);
+        logger.info(`[CAMPAIGN] Paused campaign ${campaignId} on platform`, { organizationId, platform: adapter.platform });
+    } catch (platformError: any) {
+        // Platform sync failure is non-blocking — campaign is paused locally
+        logger.error(`[CAMPAIGN] Failed to pause campaign ${campaignId} on platform`, platformError, { organizationId });
+    }
+
     // Notify user
     try {
-        const campaign = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { name: true } });
         await notificationService.createNotification(organizationId, {
             type: 'WARNING',
             title: 'Campaign Paused',
-            message: `Campaign "${campaign?.name || campaignId}" has been automatically paused. Reason: ${reason}`,
+            message: `Campaign "${campaign.name || campaignId}" has been automatically paused. Reason: ${reason}`,
         });
     } catch (notifError) {
         logger.warn('Failed to create campaign pause notification', { campaignId });
@@ -166,12 +201,18 @@ export async function pauseCampaign(
 }
 
 /**
- * Resume a campaign.
+ * Resume a campaign — updates local DB AND syncs to external platform.
  */
 export async function resumeCampaign(
     organizationId: string,
     campaignId: string
 ): Promise<void> {
+    const campaign = await prisma.campaign.findUnique({
+        where: { id: campaignId },
+        select: { name: true, external_id: true, status: true }
+    });
+
+    const previousStatus = campaign?.status || 'unknown';
     await prisma.campaign.update({
         where: { id: campaignId },
         data: {
@@ -179,6 +220,19 @@ export async function resumeCampaign(
             paused_reason: null,
             paused_at: null,
             warning_count: 0  // Reset warning count on resume
+        }
+    });
+
+    // Record state transition for traceability
+    await prisma.stateTransition.create({
+        data: {
+            organization_id: organizationId,
+            entity_type: 'campaign',
+            entity_id: campaignId,
+            from_state: previousStatus,
+            to_state: 'active',
+            reason: 'Campaign resumed',
+            triggered_by: 'manual',
         }
     });
 
@@ -193,9 +247,18 @@ export async function resumeCampaign(
 
     logger.info(`[CAMPAIGN] Resumed campaign ${campaignId}`);
 
+    // ── PLATFORM SYNC: Resume campaign on external platform ──
+    try {
+        const adapter = await getAdapterForCampaign(campaignId);
+        const externalCampaignId = campaign?.external_id || campaignId;
+        await adapter.resumeCampaign(organizationId, externalCampaignId);
+        logger.info(`[CAMPAIGN] Resumed campaign ${campaignId} on platform`, { organizationId, platform: adapter.platform });
+    } catch (platformError: any) {
+        logger.error(`[CAMPAIGN] Failed to resume campaign ${campaignId} on platform`, platformError, { organizationId });
+    }
+
     // Notify user
     try {
-        const campaign = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { name: true } });
         await notificationService.createNotification(organizationId, {
             type: 'SUCCESS',
             title: 'Campaign Resumed',
@@ -214,11 +277,29 @@ export async function warnCampaign(
     campaignId: string,
     reason: string
 ): Promise<void> {
+    const campaign = await prisma.campaign.findUnique({
+        where: { id: campaignId },
+        select: { status: true }
+    });
+
     await prisma.campaign.update({
         where: { id: campaignId },
         data: {
             status: 'warning',
             warning_count: { increment: 1 }
+        }
+    });
+
+    // Record state transition for traceability
+    await prisma.stateTransition.create({
+        data: {
+            organization_id: organizationId,
+            entity_type: 'campaign',
+            entity_id: campaignId,
+            from_state: campaign?.status || 'unknown',
+            to_state: 'warning',
+            reason,
+            triggered_by: 'threshold_breach',
         }
     });
 
@@ -253,6 +334,10 @@ export async function warnCampaign(
 /**
  * Record a bounce for a campaign.
  * Called when a bounce event is received from Smartlead.
+ *
+ * NOTE: This only updates bounce STATS (for reporting).
+ * It does NOT pause/warn the campaign — campaigns are paused based on
+ * infrastructure health (all mailboxes paused/removed), never bounce rate.
  */
 export async function recordCampaignBounce(
     organizationId: string,
@@ -262,25 +347,22 @@ export async function recordCampaignBounce(
         where: { id: campaignId },
         data: {
             total_bounced: { increment: 1 },
-            bounce_rate: {
-                // Recalculate bounce rate
-                // This is a simplified approach; could use a computed field
-            }
         }
     });
 
-    // Check if campaign should be warned or paused
-    const healthResult = await checkCampaignHealth(organizationId, campaignId);
+    // Recalculate bounce rate for reporting only (does NOT trigger pause/warn)
+    const campaign = await prisma.campaign.findUnique({
+        where: { id: campaignId },
+        select: { total_sent: true, total_bounced: true }
+    });
 
-    if (healthResult.isPoisoning) {
-        await pauseCampaign(organizationId, campaignId,
-            `Campaign poisoning detected: causing bounces on ${healthResult.affectedMailboxes} mailboxes`);
-    } else if (healthResult.status === 'paused' && healthResult.bounceRate >= BOUNCE_RATE_PAUSE) {
-        await pauseCampaign(organizationId, campaignId,
-            `Bounce rate exceeded threshold: ${(healthResult.bounceRate * 100).toFixed(1)}%`);
-    } else if (healthResult.status === 'warning') {
-        await warnCampaign(organizationId, campaignId,
-            `Elevated bounce rate: ${(healthResult.bounceRate * 100).toFixed(1)}%`);
+    if (campaign && campaign.total_sent > 0) {
+        // Store as percentage (0-100) — consistent with smartleadEventParserService
+        const bounceRate = (campaign.total_bounced / campaign.total_sent) * 100;
+        await prisma.campaign.update({
+            where: { id: campaignId },
+            data: { bounce_rate: bounceRate }
+        });
     }
 }
 
@@ -298,9 +380,9 @@ export async function recordCampaignSent(
         }
     });
 
-    // Recalculate bounce rate
+    // Recalculate bounce rate (stored as percentage 0-100)
     if (campaign.total_sent > 0) {
-        const bounceRate = campaign.total_bounced / campaign.total_sent;
+        const bounceRate = (campaign.total_bounced / campaign.total_sent) * 100;
         await prisma.campaign.update({
             where: { id: campaignId },
             data: { bounce_rate: bounceRate }

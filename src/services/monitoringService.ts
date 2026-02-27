@@ -23,6 +23,8 @@ import { getAdapterForMailbox, getAdapterForDomain, getAdapterForCampaign } from
 import * as executionGateService from './executionGateService';
 import * as notificationService from './notificationService';
 import { SlackAlertService } from './SlackAlertService';
+import * as entityStateService from './entityStateService';
+import * as campaignHealthService from './campaignHealthService';
 import { logger } from './observabilityService';
 import {
     EventType,
@@ -30,6 +32,7 @@ import {
     DomainState,
     RecoveryPhase,
     SystemMode,
+    TriggerType,
     MONITORING_THRESHOLDS,
     STATE_TRANSITIONS
 } from '../types';
@@ -328,35 +331,11 @@ const warnMailbox = async (mailboxId: string, reason: string): Promise<void> => 
         payload: { reason, state: 'warning' }
     });
 
-    // Update mailbox to warning state
-    await prisma.mailbox.update({
-        where: { id: mailboxId },
-        data: {
-            status: 'warning'
-        }
-    });
-
-    // Record state transition
-    await prisma.stateTransition.create({
-        data: {
-            organization_id: orgId,
-            entity_type: 'mailbox',
-            entity_id: mailboxId,
-            from_state: mailbox.status,
-            to_state: 'warning',
-            reason,
-            triggered_by: 'threshold_warning'
-        }
-    });
-
-    await auditLogService.logAction({
-        organizationId: orgId,
-        entity: 'mailbox',
-        entityId: mailboxId,
-        trigger: 'monitor_warning',
-        action: 'warning',
-        details: `⚠️ [ENFORCE] WARNING: ${reason}`
-    });
+    // Transition mailbox to WARNING via centralized state machine
+    await entityStateService.transitionMailbox(
+        orgId, mailboxId, MailboxState.WARNING,
+        `[ENFORCE] WARNING: ${reason}`, TriggerType.THRESHOLD_BREACH
+    );
 
     logger.info(`[MONITOR] [ENFORCE] ⚠️ Mailbox ${mailboxId} entered WARNING state: ${reason}`);
 };
@@ -438,12 +417,6 @@ const pauseMailbox = async (mailboxId: string, reason: string): Promise<void> =>
     }
 
     // ── Standard mailbox pause (no correlation redirected) ──
-    const consecutivePauses = mailbox.consecutive_pauses + 1;
-
-    // Calculate cooldown with exponential backoff
-    const cooldownMs = COOLDOWN_MINIMUM_MS * Math.pow(COOLDOWN_MULTIPLIER, Math.min(consecutivePauses - 1, 5));
-    const cooldownUntil = new Date(Date.now() + cooldownMs);
-
     // Adjust resilience score on pause
     const newResilience = Math.max(0, (mailbox.resilience_score || 50) - 15);
 
@@ -453,45 +426,28 @@ const pauseMailbox = async (mailboxId: string, reason: string): Promise<void> =>
         eventType: EventType.MAILBOX_PAUSED,
         entityType: 'mailbox',
         entityId: mailboxId,
-        payload: { reason, cooldownUntil, consecutivePauses, correlation: correlation.message }
+        payload: { reason, correlation: correlation.message }
     });
 
-    // Update mailbox
-    await prisma.mailbox.update({
-        where: { id: mailboxId },
-        data: {
-            status: 'paused',
-            recovery_phase: 'paused',
-            last_pause_at: new Date(),
-            cooldown_until: cooldownUntil,
-            consecutive_pauses: consecutivePauses,
-            resilience_score: newResilience,
-            clean_sends_since_phase: 0,
-            phase_entered_at: new Date(),
-        }
-    });
+    // Transition via centralized state machine (handles status, cooldown, consecutive_pauses, audit, state history)
+    const transitionResult = await entityStateService.transitionMailbox(
+        orgId, mailboxId, MailboxState.PAUSED,
+        `[${action.action}] ${reason}. Correlation: ${correlation.message}`,
+        TriggerType.THRESHOLD_BREACH
+    );
 
-    // Record state transition
-    await prisma.stateTransition.create({
-        data: {
-            organization_id: orgId,
-            entity_type: 'mailbox',
-            entity_id: mailboxId,
-            from_state: mailbox.status,
-            to_state: 'paused',
-            reason: `[${action.action}] ${reason}`,
-            triggered_by: 'threshold_breach'
-        }
-    });
-
-    await auditLogService.logAction({
-        organizationId: orgId,
-        entity: 'mailbox',
-        entityId: mailboxId,
-        trigger: 'monitor_threshold',
-        action: 'pause',
-        details: `${reason}. Cooldown until ${cooldownUntil.toISOString()}. Resilience: ${newResilience}. Correlation: ${correlation.message}`
-    });
+    if (transitionResult.success) {
+        // Set operational fields not managed by state machine
+        await prisma.mailbox.update({
+            where: { id: mailboxId },
+            data: {
+                recovery_phase: 'paused',
+                resilience_score: newResilience,
+                clean_sends_since_phase: 0,
+                phase_entered_at: new Date(),
+            }
+        });
+    }
 
     // ── SLACK ALERT: Notify customer of mailbox pause ──
     SlackAlertService.sendAlert({
@@ -500,7 +456,7 @@ const pauseMailbox = async (mailboxId: string, reason: string): Promise<void> =>
         entityId: mailboxId,
         severity: 'critical',
         title: '🛑 Mailbox Paused',
-        message: `Mailbox \`${mailbox.email || mailboxId}\` has been auto-paused.\n*Reason:* ${reason}\n*Cooldown until:* ${cooldownUntil.toISOString()}`
+        message: `Mailbox \`${mailbox.email || mailboxId}\` has been auto-paused.\n*Reason:* ${reason}`
     }).catch(() => { }); // Non-blocking
 
     // ── PLATFORM INTEGRATION: Remove mailbox from all assigned campaigns ──
@@ -730,22 +686,10 @@ const checkDomainHealth = async (domainId: string): Promise<void> => {
         }
 
         // ── ENFORCE MODE: Actually warn ──
-        await prisma.domain.update({
-            where: { id: domainId },
-            data: { status: 'warning' }
-        });
-
-        await prisma.stateTransition.create({
-            data: {
-                organization_id: orgId,
-                entity_type: 'domain',
-                entity_id: domainId,
-                from_state: domain.status,
-                to_state: 'warning',
-                reason,
-                triggered_by: 'ratio_warning'
-            }
-        });
+        await entityStateService.transitionDomain(
+            orgId, domainId, DomainState.WARNING,
+            `[ENFORCE] ${reason}`, TriggerType.THRESHOLD_BREACH
+        );
 
         await auditLogService.logAction({
             organizationId: orgId,
@@ -833,13 +777,6 @@ const checkDomainHealth = async (domainId: string): Promise<void> => {
         // ── ENFORCE MODE: Actually pause ──
         logger.info(`[MONITOR] [ENFORCE] Pausing domain ${domain.domain}: ${reason}`);
 
-        const consecutivePauses = domain.consecutive_pauses + 1;
-        const cooldownMs = Math.min(
-            COOLDOWN_MINIMUM_MS * Math.pow(COOLDOWN_MULTIPLIER, Math.min(consecutivePauses - 1, 5)),
-            COOLDOWN_MAX_MS
-        );
-        const cooldownUntil = new Date(Date.now() + cooldownMs);
-
         await eventService.storeEvent({
             organizationId: orgId,
             eventType: EventType.DOMAIN_PAUSED,
@@ -848,56 +785,31 @@ const checkDomainHealth = async (domainId: string): Promise<void> => {
             payload: { unhealthyCount: freshUnhealthyCount, unhealthyRatio: freshUnhealthyRatio, reason }
         });
 
-        await prisma.domain.update({
-            where: { id: domainId },
-            data: {
-                status: 'paused',
-                paused_reason: reason,
-                paused_by: 'system',
-                warning_count: { increment: 1 },
-                last_pause_at: new Date(),
-                cooldown_until: cooldownUntil,
-                consecutive_pauses: consecutivePauses
-            }
-        });
+        // Transition via centralized state machine (handles status, cooldown, consecutive_pauses, audit, state history)
+        const domainTransition = await entityStateService.transitionDomain(
+            orgId, domainId, DomainState.PAUSED,
+            `[ENFORCE] ${reason}`, TriggerType.THRESHOLD_BREACH
+        );
 
-        await prisma.stateTransition.create({
-            data: {
-                organization_id: orgId,
-                entity_type: 'domain',
-                entity_id: domainId,
-                from_state: domain.status,
-                to_state: 'paused',
-                reason,
-                triggered_by: 'ratio_threshold_breach'
-            }
-        });
-
-        await auditLogService.logAction({
-            organizationId: orgId,
-            entity: 'domain',
-            entityId: domainId,
-            trigger: 'monitor_aggregation',
-            action: 'pause',
-            details: `🛑 [ENFORCE] PAUSED: ${reason} (cooldown: ${Math.round(cooldownMs / 3600000)}h)`
-        });
-
-        // Cascade pause to remaining active mailboxes
-        const activeMailboxes = domain.mailboxes.filter(m => m.status === 'active' || m.status === 'healthy');
-        if (activeMailboxes.length > 0) {
-            await prisma.mailbox.updateMany({
-                where: { domain_id: domainId, status: { in: ['active', 'healthy'] } },
-                data: { status: 'paused' }
+        if (domainTransition.success) {
+            // Set operational fields not managed by state machine
+            await prisma.domain.update({
+                where: { id: domainId },
+                data: {
+                    paused_reason: reason,
+                    paused_by: 'system',
+                    warning_count: { increment: 1 },
+                }
             });
 
-            await auditLogService.logAction({
-                organizationId: orgId,
-                entity: 'domain',
-                entityId: domainId,
-                trigger: 'monitor_cascade',
-                action: 'pause_all',
-                details: `[ENFORCE] Cascaded pause to ${activeMailboxes.length} remaining mailboxes`
-            });
+            // Cascade pause to remaining healthy/warning mailboxes via state machine
+            const activeMailboxes = domain.mailboxes.filter(m => m.status === 'healthy' || m.status === 'warning');
+            for (const mb of activeMailboxes) {
+                await entityStateService.transitionMailbox(
+                    orgId, mb.id, MailboxState.PAUSED,
+                    `Cascaded from domain pause: ${reason}`, TriggerType.THRESHOLD_BREACH
+                );
+            }
         }
 
         logger.info(`[MONITOR] [ENFORCE] 🛑 Domain ${domain.domain} PAUSED: ${reason}`);
@@ -969,51 +881,42 @@ const pauseDomain = async (domainId: string, reason: string): Promise<void> => {
 
     // ── ENFORCE MODE: Actually pause ──
     logger.info(`[MONITOR] [ENFORCE] Pausing domain ${domainId}: ${reason}`);
-    const consecutivePauses = domain.consecutive_pauses + 1;
-    const cooldownMs = COOLDOWN_MINIMUM_MS * Math.pow(COOLDOWN_MULTIPLIER, Math.min(consecutivePauses - 1, 5));
-    const cooldownUntil = new Date(Date.now() + cooldownMs);
+    const newResilience = Math.max(0, (domain.resilience_score || 50) - 15);
 
-    await prisma.domain.update({
-        where: { id: domainId },
-        data: {
-            status: 'paused',
-            recovery_phase: 'paused',
-            paused_reason: reason,
-            last_pause_at: new Date(),
-            cooldown_until: cooldownUntil,
-            consecutive_pauses: consecutivePauses,
-            resilience_score: Math.max(0, (domain.resilience_score || 50) - 15),
-            clean_sends_since_phase: 0,
-            phase_entered_at: new Date(),
-        },
-    });
+    // Transition via centralized state machine (handles status, cooldown, consecutive_pauses, audit, state history)
+    const domainTransition = await entityStateService.transitionDomain(
+        orgId, domainId, DomainState.PAUSED,
+        `[correlation_escalation] ${reason}`, TriggerType.THRESHOLD_BREACH
+    );
 
-    // Cascade pause to active mailboxes
-    await prisma.mailbox.updateMany({
-        where: { domain_id: domainId, status: { in: ['active', 'healthy', 'warning'] } },
-        data: { status: 'paused', recovery_phase: 'paused' },
-    });
+    if (domainTransition.success) {
+        // Set operational fields not managed by state machine
+        await prisma.domain.update({
+            where: { id: domainId },
+            data: {
+                recovery_phase: 'paused',
+                paused_reason: reason,
+                resilience_score: newResilience,
+                clean_sends_since_phase: 0,
+                phase_entered_at: new Date(),
+            },
+        });
 
-    await prisma.stateTransition.create({
-        data: {
-            organization_id: orgId,
-            entity_type: 'domain',
-            entity_id: domainId,
-            from_state: domain.status,
-            to_state: 'paused',
-            reason: `[correlation_escalation] ${reason}`,
-            triggered_by: 'correlation_check',
-        },
-    });
-
-    await auditLogService.logAction({
-        organizationId: orgId,
-        entity: 'domain',
-        entityId: domainId,
-        trigger: 'correlation_escalation',
-        action: 'pause',
-        details: `Domain paused via correlation escalation: ${reason}`,
-    });
+        // Cascade pause to healthy/warning mailboxes via state machine
+        const cascadeMailboxes = domain.mailboxes.filter(m => m.status === 'healthy' || m.status === 'warning');
+        for (const mb of cascadeMailboxes) {
+            const mbResult = await entityStateService.transitionMailbox(
+                orgId, mb.id, MailboxState.PAUSED,
+                `Cascaded from domain pause: ${reason}`, TriggerType.THRESHOLD_BREACH
+            );
+            if (mbResult.success) {
+                await prisma.mailbox.update({
+                    where: { id: mb.id },
+                    data: { recovery_phase: 'paused' }
+                });
+            }
+        }
+    }
 
     // ── PLATFORM INTEGRATION: Remove all domain mailboxes from campaigns ──
     try {
@@ -1079,57 +982,9 @@ const pauseCampaign = async (campaignId: string, organizationId: string, reason:
         return;
     }
 
-    // ── ENFORCE MODE: Actually pause ──
+    // ── ENFORCE MODE: Pause via campaignHealthService (central authority for campaign status + platform sync) ──
     logger.info(`[MONITOR] [ENFORCE] Pausing campaign ${campaignId}: ${reason}`);
-
-    await prisma.campaign.update({
-        where: { id: campaignId },
-        data: {
-            status: 'paused',
-            paused_reason: reason,
-            paused_at: new Date(),
-            paused_by: 'system'
-        },
-    });
-
-    await prisma.stateTransition.create({
-        data: {
-            organization_id: organizationId,
-            entity_type: 'campaign',
-            entity_id: campaignId,
-            from_state: campaign.status,
-            to_state: 'paused',
-            reason: `[correlation_redirect] ${reason}`,
-            triggered_by: 'correlation_check',
-        },
-    });
-
-    await auditLogService.logAction({
-        organizationId,
-        entity: 'campaign',
-        entityId: campaignId,
-        trigger: 'correlation_redirect',
-        action: 'pause',
-        details: `Campaign paused via correlation redirect: ${reason}`,
-    });
-
-    // ── PLATFORM INTEGRATION: Pause campaign on external platform ──
-    try {
-        const adapter = await getAdapterForCampaign(campaignId);
-        const externalCampaignId = campaign.external_id || campaignId;
-        await adapter.pauseCampaign(organizationId, externalCampaignId);
-        logger.info(`[MONITOR] Paused campaign ${campaignId} on platform`, {
-            organizationId,
-            campaignId,
-            platform: adapter.platform
-        });
-    } catch (platformError: any) {
-        // Platform pause failure doesn't block the pause — campaign is already paused in Drason
-        logger.error(`[MONITOR] Failed to pause campaign ${campaignId} on platform`, platformError, {
-            organizationId,
-            campaignId
-        });
-    }
+    await campaignHealthService.pauseCampaign(organizationId, campaignId, `[correlation_redirect] ${reason}`);
 };
 
 /**

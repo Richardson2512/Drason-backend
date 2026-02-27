@@ -17,6 +17,9 @@ import { promisify } from 'util';
 import { prisma } from '../index';
 import * as auditLogService from './auditLogService';
 import * as notificationService from './notificationService';
+import * as entityStateService from './entityStateService';
+import * as campaignHealthService from './campaignHealthService';
+import { MailboxState, DomainState, TriggerType } from '../types';
 import { logger } from './observabilityService';
 
 // ============================================================================
@@ -126,12 +129,9 @@ const MAILBOX_THRESHOLDS = {
     MIN_SENDS_FOR_WARNING: 20,      // Minimum sends before warning
 };
 
-/** Campaign classification thresholds - Aligned with mailbox protection */
-const CAMPAIGN_THRESHOLDS = {
-    PAUSE_BOUNCE_RATE: 0.03,        // 3% → paused (after 60 sends)
-    WARNING_BOUNCE_RATE: 0.02,      // 2% → warning
-    MIN_SENDS_FOR_PAUSE: 60,        // Minimum sends before judgment
-};
+// CAMPAIGN_THRESHOLDS removed — campaigns are NEVER paused based on bounce rate.
+// Campaigns pause only when ALL mailboxes are paused/removed.
+// See campaignHealthService.ts for the canonical rule.
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -519,11 +519,10 @@ export async function assessInfrastructure(
                 });
             }
 
-            // Update domain with DNS results
+            // Update domain DNS results (operational fields)
             await prisma.domain.update({
                 where: { id: domain.id },
                 data: {
-                    status: domainState,
                     spf_valid: dnsResult.spfValid,
                     dkim_valid: dnsResult.dkimValid,
                     dmarc_policy: dnsResult.dmarcPolicy,
@@ -532,10 +531,17 @@ export async function assessInfrastructure(
                     initial_assessment_score: dnsResult.score,
                     ...(domainState === 'paused' ? {
                         paused_reason: 'Infrastructure assessment: domain health issues detected',
-                        last_pause_at: new Date(),
                     } : {}),
                 },
             });
+
+            // Set domain status via state machine (assessment uses setInitial to bypass transition validation)
+            if (domainState !== domain.status) {
+                await entityStateService.setInitialDomainStatus(
+                    organizationId, domain.id, domainState as DomainState,
+                    `Infrastructure assessment: DNS health check`, TriggerType.SYSTEM
+                );
+            }
 
             // Count states
             if (domainState === 'healthy') domainSummary.healthy++;
@@ -568,17 +574,17 @@ export async function assessInfrastructure(
                     remediation: `Re-authorize this email account in Smartlead → Email Accounts → Reconnect.`,
                 });
 
-                // Force paused — skip bounce rate logic entirely
+                // Force paused via state machine — skip bounce rate logic entirely
+                if (mailbox.status !== 'paused') {
+                    await entityStateService.setInitialMailboxStatus(
+                        organizationId, mailbox.id, MailboxState.PAUSED,
+                        `Connection failed: SMTP=${mailbox.smtp_status}, IMAP=${mailbox.imap_status}`,
+                        TriggerType.SYSTEM
+                    );
+                }
                 await prisma.mailbox.update({
                     where: { id: mailbox.id },
-                    data: {
-                        status: 'paused',
-                        initial_assessment_at: new Date(),
-                        ...(mailbox.status !== 'paused' ? {
-                            last_pause_at: new Date(),
-                            consecutive_pauses: mailbox.consecutive_pauses + 1,
-                        } : {}),
-                    },
+                    data: { initial_assessment_at: new Date() },
                 });
                 mailboxSummary.paused++;
                 continue; // Skip bounce rate assessment for disconnected mailboxes
@@ -649,19 +655,23 @@ export async function assessInfrastructure(
                 mailboxState = 'warning';
             }
 
-            // Update mailbox
+            // Update operational fields
             await prisma.mailbox.update({
                 where: { id: mailbox.id },
                 data: {
-                    status: mailboxState,
                     initial_bounce_rate: bounceRate,
                     initial_assessment_at: new Date(),
-                    ...(mailboxState === 'paused' ? {
-                        last_pause_at: new Date(),
-                        consecutive_pauses: mailbox.consecutive_pauses + 1,
-                    } : {}),
                 },
             });
+
+            // Set mailbox status via state machine (assessment uses setInitial to bypass transition validation)
+            if (mailboxState !== mailbox.status) {
+                await entityStateService.setInitialMailboxStatus(
+                    organizationId, mailbox.id, mailboxState as MailboxState,
+                    `Infrastructure assessment: bounce rate ${(bounceRate * 100).toFixed(1)}%`,
+                    TriggerType.SYSTEM
+                );
+            }
 
             if (mailboxState === 'healthy') mailboxSummary.healthy++;
             else if (mailboxState === 'warning') mailboxSummary.warning++;
@@ -679,17 +689,37 @@ export async function assessInfrastructure(
         const campaignSummary = { total: campaigns.length, active: 0, warning: 0, paused: 0 };
 
         for (const campaign of campaigns) {
-            const bounceRate = campaign.total_sent > 0
-                ? campaign.total_bounced / campaign.total_sent
-                : 0;
-
             let campaignState = campaign.status; // Preserve existing status if already set
 
-            // Only assess if currently active
+            // ── INFRASTRUCTURE-ONLY CAMPAIGN ASSESSMENT ──
+            // RULE: Campaigns are NEVER paused based on bounce rate.
+            //       Campaigns pause ONLY when ALL mailboxes are paused/removed.
+            //       Campaigns warn when >50% of mailboxes are degraded.
             if (campaignState === 'active') {
-                // Volume-aware campaign assessment (aligned with mailbox thresholds)
-                if (campaign.total_sent >= CAMPAIGN_THRESHOLDS.MIN_SENDS_FOR_PAUSE) {
-                    if (bounceRate >= CAMPAIGN_THRESHOLDS.PAUSE_BOUNCE_RATE) {
+                if (campaign.mailboxes.length === 0) {
+                    // No mailboxes — campaign cannot send
+                    campaignState = 'paused';
+                    findings.push({
+                        severity: 'critical',
+                        category: 'campaign_health',
+                        entity: 'campaign',
+                        entityId: campaign.id,
+                        entityName: campaign.name,
+                        title: `No Mailboxes: ${campaign.name}`,
+                        details: `Campaign has no mailboxes assigned and cannot send emails.`,
+                        message: `Campaign "${campaign.name}" has no mailboxes assigned.`,
+                        remediation: `Assign healthy mailboxes to this campaign to resume sending.`,
+                    });
+                } else {
+                    const healthyMailboxes = campaign.mailboxes.filter(m =>
+                        m.status === 'healthy' && m.domain.status !== 'paused'
+                    );
+                    const pausedMailboxes = campaign.mailboxes.filter(m =>
+                        m.status === 'paused' || m.domain.status === 'paused'
+                    );
+
+                    if (healthyMailboxes.length === 0) {
+                        // ALL mailboxes paused/removed — pause campaign
                         campaignState = 'paused';
                         findings.push({
                             severity: 'critical',
@@ -697,12 +727,13 @@ export async function assessInfrastructure(
                             entity: 'campaign',
                             entityId: campaign.id,
                             entityName: campaign.name,
-                            title: `High Bounce Rate: ${campaign.name}`,
-                            details: `Campaign bounce rate ${(bounceRate * 100).toFixed(1)}% exceeds ${(CAMPAIGN_THRESHOLDS.PAUSE_BOUNCE_RATE * 100)}% threshold after ${campaign.total_sent} sends.`,
-                            message: `Campaign "${campaign.name}" has a bounce rate of ${(bounceRate * 100).toFixed(1)}% (>${(CAMPAIGN_THRESHOLDS.PAUSE_BOUNCE_RATE * 100)}% threshold).`,
-                            remediation: `Campaign paused to protect domain reputation. Review email list quality and remove invalid addresses before resuming.`,
+                            title: `All Mailboxes Paused: ${campaign.name}`,
+                            details: `All ${campaign.mailboxes.length} mailboxes are paused or have paused domains. Campaign cannot send.`,
+                            message: `Campaign "${campaign.name}" paused because all mailboxes are paused/removed.`,
+                            remediation: `Resolve mailbox health issues. Campaign will resume when healthy mailboxes are available.`,
                         });
-                    } else if (bounceRate >= CAMPAIGN_THRESHOLDS.WARNING_BOUNCE_RATE) {
+                    } else if (pausedMailboxes.length > campaign.mailboxes.length * 0.5) {
+                        // >50% mailboxes degraded — warn
                         campaignState = 'warning';
                         findings.push({
                             severity: 'warning',
@@ -710,58 +741,30 @@ export async function assessInfrastructure(
                             entity: 'campaign',
                             entityId: campaign.id,
                             entityName: campaign.name,
-                            title: `Elevated Bounce Rate: ${campaign.name}`,
-                            details: `Campaign bounce rate ${(bounceRate * 100).toFixed(1)}% approaching 3% threshold. Clean email list to prevent auto-pause.`,
-                            message: `Campaign "${campaign.name}" has a bounce rate of ${(bounceRate * 100).toFixed(1)}% (approaching 3% pause threshold).`,
-                            remediation: `Monitor closely. Verify email list quality and remove invalid addresses.`,
+                            title: `Degraded Infrastructure: ${campaign.name}`,
+                            details: `${pausedMailboxes.length}/${campaign.mailboxes.length} mailboxes are paused. Campaign at risk of stalling.`,
+                            message: `Campaign "${campaign.name}" has ${pausedMailboxes.length} of ${campaign.mailboxes.length} mailboxes paused.`,
+                            remediation: `Resolve mailbox issues to maintain sending capacity. Campaign will auto-pause if all mailboxes are removed.`,
                         });
                     }
-                } else if (campaign.total_sent >= 20 && bounceRate >= CAMPAIGN_THRESHOLDS.WARNING_BOUNCE_RATE) {
-                    // Early warning for campaigns with 20-60 sends
-                    campaignState = 'warning';
-                    findings.push({
-                        severity: 'warning',
-                        category: 'campaign_health',
-                        entity: 'campaign',
-                        entityId: campaign.id,
-                        entityName: campaign.name,
-                        title: `Early Bounce Signal: ${campaign.name}`,
-                        details: `Campaign showing ${(bounceRate * 100).toFixed(1)}% bounce rate on ${campaign.total_sent} sends. Will auto-pause at 3% after 60 sends.`,
-                        message: `Campaign "${campaign.name}" showing elevated bounce rate in early sending phase.`,
-                        remediation: `Monitor email list quality closely. Pattern will be confirmed after 60 sends.`,
-                    });
                 }
             }
 
-            // ── INVARIANT: Campaign can NEVER be healthier than its infrastructure ──
-            // Campaign pause is additive, never compensatory.
-            if (campaign.mailboxes.length > 0) {
-                const worstDomainState = getWorstState(
-                    [...new Set(campaign.mailboxes.map(m => m.domain.status))]
-                );
-                const worstMailboxState = getWorstState(
-                    campaign.mailboxes.map(m => m.status)
-                );
-                const worstInfraState = getWorstState([worstDomainState, worstMailboxState]);
-
-                // Campaign cannot be better than worst infra state
-                if (stateRank(worstInfraState) > stateRank(campaignState)) {
-                    campaignState = worstInfraState === 'paused' ? 'paused' : 'warning';
-                }
-            }
-
-            // Update campaign
+            // Update campaign status via central authority (campaignHealthService handles platform sync)
             if (campaignState !== campaign.status) {
-                await prisma.campaign.update({
-                    where: { id: campaign.id },
-                    data: {
-                        status: campaignState,
-                        ...(campaignState === 'paused' ? {
-                            paused_reason: 'Infrastructure assessment: health issues detected',
-                            paused_at: new Date(),
-                        } : {}),
-                    },
-                });
+                if (campaignState === 'paused') {
+                    await campaignHealthService.pauseCampaign(
+                        organizationId, campaign.id,
+                        'Infrastructure assessment: all mailboxes paused/removed'
+                    );
+                } else if (campaignState === 'warning') {
+                    await campaignHealthService.warnCampaign(
+                        organizationId, campaign.id,
+                        'Infrastructure assessment: >50% mailboxes degraded'
+                    );
+                } else if (campaignState === 'active' && campaign.status === 'paused') {
+                    await campaignHealthService.resumeCampaign(organizationId, campaign.id);
+                }
             }
 
             if (campaignState === 'active' || campaignState === 'completed' || campaignState === 'drafted') campaignSummary.active++;

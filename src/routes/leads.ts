@@ -13,5 +13,6 @@ router.post('/', checkLeadCapacity, validateBody(ingestLeadSchema), leadControll
 router.post('/scoring/sync', leadScoringController.syncLeadScores);
 router.get('/top', leadScoringController.getTopLeads);
 router.get('/:leadId/score-breakdown', leadScoringController.getLeadScoreBreakdown);
+router.get('/:leadId/campaigns', leadController.getLeadCampaigns);
 
 export default router;

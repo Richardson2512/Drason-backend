@@ -24,6 +24,8 @@ import * as eventParserService from "../services/smartleadEventParserService";
  * - email_bounced: Email bounced (hard or soft)
  * - email_unsubscribed: Recipient unsubscribed
  * - email_spam_reported: Email marked as spam
+ * - campaign_status_changed: Campaign status changed in Smartlead
+ * - lead_category_updated: Lead categorized in Smartlead
  */
 export const handleSmartleadWebhook = async (req: Request, res: Response) => {
     try {
@@ -86,6 +88,16 @@ export const handleSmartleadWebhook = async (req: Request, res: Response) => {
             case 'email_spam_reported':
             case 'spam_complaint':
                 await eventParserService.handleSpamEvent(orgId, event);
+                break;
+
+            case 'campaign_status_changed':
+            case 'CAMPAIGN_STATUS_CHANGED':
+                await eventParserService.handleCampaignStatusChangedEvent(orgId, event);
+                break;
+
+            case 'lead_category_updated':
+            case 'LEAD_CATEGORY_UPDATED':
+                await eventParserService.handleLeadCategoryUpdatedEvent(orgId, event);
                 break;
 
             default:

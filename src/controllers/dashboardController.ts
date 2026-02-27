@@ -11,6 +11,8 @@ import { getOrgId } from '../middleware/orgContext';
 import * as routingService from '../services/routingService';
 import * as leadHealthService from '../services/leadHealthService';
 import * as campaignHealthService from '../services/campaignHealthService';
+import * as entityStateService from '../services/entityStateService';
+import { MailboxState, DomainState, TriggerType } from '../types';
 import { logger } from '../services/observabilityService';
 
 /**
@@ -774,15 +776,29 @@ export const resumeMailbox = async (req: Request, res: Response, next: NextFunct
             });
         }
 
-        // Resume mailbox (set to healthy, clear paused fields)
+        // Resume mailbox via centralized state service
+        const result = await entityStateService.transitionMailbox(
+            orgId,
+            mailboxId,
+            MailboxState.HEALTHY,
+            'Manually resumed by user',
+            TriggerType.MANUAL
+        );
+
+        if (!result.success) {
+            return res.status(400).json({
+                success: false,
+                error: result.error || 'Cannot transition mailbox to healthy from current state'
+            });
+        }
+
+        // Clear paused metadata (separate from status transition)
         await prisma.mailbox.update({
             where: { id: mailboxId },
             data: {
-                status: 'healthy',
                 paused_reason: null,
                 paused_at: null,
                 paused_by: null,
-                cooldown_until: null
             }
         });
 
@@ -825,11 +841,26 @@ export const resumeDomain = async (req: Request, res: Response, next: NextFuncti
             });
         }
 
-        // Resume domain (set to healthy, clear paused fields)
+        // Resume domain via centralized state service
+        const result = await entityStateService.transitionDomain(
+            orgId,
+            domainId,
+            DomainState.HEALTHY,
+            'Manually resumed by user',
+            TriggerType.MANUAL
+        );
+
+        if (!result.success) {
+            return res.status(400).json({
+                success: false,
+                error: result.error || 'Cannot transition domain to healthy from current state'
+            });
+        }
+
+        // Clear paused metadata (separate from status transition)
         await prisma.domain.update({
             where: { id: domainId },
             data: {
-                status: 'healthy',
                 paused_reason: null,
                 paused_at: null,
                 paused_by: null,

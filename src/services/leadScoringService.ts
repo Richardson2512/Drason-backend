@@ -97,11 +97,10 @@ export async function syncLeadScoresFromSmartlead(organizationId: string): Promi
     logger.info('[LEAD-SCORING] Starting lead score sync', { organizationId });
 
     try {
-        // Get all Smartlead leads for this organization
+        // Get all leads for this organization (all sources: api, clay, smartlead)
         const leads = await prisma.lead.findMany({
             where: {
                 organization_id: organizationId,
-                source: 'smartlead'
             },
             select: {
                 id: true,
@@ -284,7 +283,6 @@ export async function getTopLeadsForCampaign(
     return prisma.lead.findMany({
         where: {
             assigned_campaign_id: campaignId,
-            source: 'smartlead'
         },
         select: {
             email: true,

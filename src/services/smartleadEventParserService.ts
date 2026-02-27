@@ -6,9 +6,43 @@
 import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
 import * as auditLogService from '../services/auditLogService';
-import { RecoveryPhase } from '../types';
+import * as entityStateService from '../services/entityStateService';
+import * as campaignHealthService from '../services/campaignHealthService';
+import { calculateEngagementScore, calculateFinalScore } from './leadScoringService';
+import { RecoveryPhase, LeadState, MailboxState, TriggerType } from '../types';
 import * as eventQueue from '../services/eventQueue';
 // Add any other necessary imports that might have been left in controller
+
+/**
+ * Recalculate lead_score from engagement counters using the proper formula.
+ * Called after each open/click/reply webhook to keep scores accurate in real-time.
+ */
+async function recalculateLeadScore(leadId: string): Promise<void> {
+    const lead = await prisma.lead.findUnique({
+        where: { id: leadId },
+        select: {
+            emails_opened: true,
+            emails_clicked: true,
+            emails_replied: true,
+            last_activity_at: true,
+        }
+    });
+    if (!lead) return;
+
+    const breakdown = calculateEngagementScore({
+        opens: lead.emails_opened || 0,
+        clicks: lead.emails_clicked || 0,
+        replies: lead.emails_replied || 0,
+        bounces: 0,
+        lastEngagementDate: lead.last_activity_at || undefined,
+    });
+    const newScore = calculateFinalScore(breakdown);
+
+    await prisma.lead.update({
+        where: { id: leadId },
+        data: { lead_score: newScore }
+    });
+}
 
 export async function handleBounceEvent(orgId: string, event: any) {
     const mailboxIdRaw = event.email_account_id || event.mailbox_id;
@@ -151,19 +185,29 @@ export async function handleBounceEvent(orgId: string, event: any) {
 
             // Auto-pause at 3% threshold (real-time protection)
             if (bounceRate >= 0.03 && updatedMailbox.status !== 'paused') {
-                // Step 1: Update mailbox status in our DB (mark as paused + cooldown)
-                await prisma.mailbox.update({
-                    where: { id: mailboxId.toString() },
-                    data: {
-                        status: 'paused',
-                        recovery_phase: 'paused', // Triggers healing system entry
-                        cooldown_until: new Date(Date.now() + 48 * 60 * 60 * 1000), // 48h cooldown
-                        last_pause_at: new Date(),
-                        consecutive_pauses: { increment: 1 },
-                        resilience_score: Math.max(0, (updatedMailbox.resilience_score || 50) - 15), // -15 penalty
-                        healing_origin: 'bounce_threshold' // Track why healing started
-                    }
-                });
+                // Step 1a: Transition mailbox via centralized state service (validates, records history, audits)
+                const transitionResult = await entityStateService.transitionMailbox(
+                    orgId,
+                    mailboxId.toString(),
+                    MailboxState.PAUSED,
+                    `Auto-paused: ${(bounceRate * 100).toFixed(1)}% bounce rate exceeds 3% threshold (${updatedMailbox.hard_bounce_count} bounces in ${updatedMailbox.total_sent_count} sends)`,
+                    TriggerType.THRESHOLD_BREACH
+                );
+
+                // Step 1b: Set operational healing fields (cooldown, recovery phase, resilience)
+                if (transitionResult.success) {
+                    await prisma.mailbox.update({
+                        where: { id: mailboxId.toString() },
+                        data: {
+                            recovery_phase: 'paused',
+                            cooldown_until: new Date(Date.now() + 48 * 60 * 60 * 1000), // 48h cooldown
+                            last_pause_at: new Date(),
+                            consecutive_pauses: { increment: 1 },
+                            resilience_score: Math.max(0, (updatedMailbox.resilience_score || 50) - 15),
+                            healing_origin: 'bounce_threshold'
+                        }
+                    });
+                }
 
                 logger.warn('[SMARTLEAD-WEBHOOK] Auto-paused mailbox due to 3% bounce threshold', {
                     organizationId: orgId,
@@ -258,25 +302,23 @@ export async function handleBounceEvent(orgId: string, event: any) {
         }
     }
 
-    // Update lead status if it exists
+    // Update lead status via centralized state service
     if (leadId) {
+        await entityStateService.transitionLead(
+            orgId,
+            leadId,
+            LeadState.PAUSED,
+            `Email bounced (${bounceType}) on campaign ${campaignId || 'unknown'}`,
+            TriggerType.WEBHOOK
+        );
+
+        // Also update health fields (separate from status transition)
         await prisma.lead.update({
             where: { id: leadId },
             data: {
-                status: 'paused',
                 health_state: 'unhealthy',
                 health_classification: 'red'
             }
-        });
-
-        // Log bounce event in audit log
-        await auditLogService.logAction({
-            organizationId: orgId,
-            entity: 'lead',
-            entityId: leadId,
-            trigger: 'smartlead_webhook',
-            action: 'lead_bounced',
-            details: `Email bounced (${bounceType}) on campaign ${campaignId || 'unknown'}`
         });
     }
 }
@@ -393,16 +435,18 @@ export async function handleOpenEvent(orgId: string, event: any) {
         });
 
         if (lead) {
-            // Update lead engagement score and activity stats
+            // Update engagement counters
             await prisma.lead.update({
                 where: { id: lead.id },
                 data: {
-                    lead_score: { increment: 5 }, // +5 points for open
                     emails_opened: { increment: 1 },
                     last_activity_at: new Date(),
                     updated_at: new Date()
                 }
             });
+
+            // Recalculate lead_score from proper formula (engagement + recency + frequency)
+            await recalculateLeadScore(lead.id);
 
             // Fetch mailbox for context
             const mailboxEmail = mailboxId ? await prisma.mailbox.findUnique({
@@ -422,7 +466,7 @@ export async function handleOpenEvent(orgId: string, event: any) {
                 entityId: lead.id,
                 trigger: 'smartlead_webhook',
                 action: 'email_opened',
-                details: `Opened email${campaignName ? ` from campaign "${campaignName.name}"` : ''}${mailboxEmail ? ` via ${mailboxEmail.email}` : ''} (+5 engagement score)`
+                details: `Opened email${campaignName ? ` from campaign "${campaignName.name}"` : ''}${mailboxEmail ? ` via ${mailboxEmail.email}` : ''}`
             });
         }
     }
@@ -513,16 +557,18 @@ export async function handleClickEvent(orgId: string, event: any) {
         });
 
         if (lead) {
-            // Update lead engagement score and activity stats
+            // Update engagement counters
             await prisma.lead.update({
                 where: { id: lead.id },
                 data: {
-                    lead_score: { increment: 10 }, // +10 points for click
                     emails_clicked: { increment: 1 },
                     last_activity_at: new Date(),
                     updated_at: new Date()
                 }
             });
+
+            // Recalculate lead_score from proper formula (engagement + recency + frequency)
+            await recalculateLeadScore(lead.id);
 
             // Fetch mailbox for context
             const mailboxEmail = mailboxId ? await prisma.mailbox.findUnique({
@@ -542,7 +588,7 @@ export async function handleClickEvent(orgId: string, event: any) {
                 entityId: lead.id,
                 trigger: 'smartlead_webhook',
                 action: 'email_clicked',
-                details: `Clicked link${campaignName ? ` in campaign "${campaignName.name}"` : ''}${mailboxEmail ? ` via ${mailboxEmail.email}` : ''} (+10 engagement score)`
+                details: `Clicked link${campaignName ? ` in campaign "${campaignName.name}"` : ''}${mailboxEmail ? ` via ${mailboxEmail.email}` : ''}`
             });
         }
     }
@@ -633,17 +679,18 @@ export async function handleReplyEvent(orgId: string, event: any) {
         });
 
         if (lead) {
-            // Update lead engagement score, status, and activity stats
+            // Update engagement counters (status stays unchanged — no direct write)
             await prisma.lead.update({
                 where: { id: lead.id },
                 data: {
-                    lead_score: { increment: 20 }, // +20 points for reply
-                    status: 'active', // Keep active on reply
                     emails_replied: { increment: 1 },
                     last_activity_at: new Date(),
                     updated_at: new Date()
                 }
             });
+
+            // Recalculate lead_score from proper formula (engagement + recency + frequency)
+            await recalculateLeadScore(lead.id);
 
             // Fetch mailbox for context
             const mailboxEmail = mailboxId ? await prisma.mailbox.findUnique({
@@ -663,7 +710,7 @@ export async function handleReplyEvent(orgId: string, event: any) {
                 entityId: lead.id,
                 trigger: 'smartlead_webhook',
                 action: 'email_replied',
-                details: `Replied to email${campaignName ? ` from campaign "${campaignName.name}"` : ''}${mailboxEmail ? ` sent by ${mailboxEmail.email}` : ''} (+20 engagement score)`
+                details: `Replied to email${campaignName ? ` from campaign "${campaignName.name}"` : ''}${mailboxEmail ? ` sent by ${mailboxEmail.email}` : ''}`
             });
         }
     }
@@ -741,17 +788,20 @@ export async function handleUnsubscribeEvent(orgId: string, event: any) {
     const campaignId = campaignIdRaw ? String(campaignIdRaw) : undefined;
 
     if (email) {
-        await prisma.lead.updateMany({
-            where: {
-                organization_id: orgId,
-                email: email
-            },
-            data: {
-                status: 'blocked',
-                health_state: 'unhealthy',
-                updated_at: new Date()
-            }
+        // Transition lead to BLOCKED via state machine (org+email is unique)
+        const lead = await prisma.lead.findUnique({
+            where: { organization_id_email: { organization_id: orgId, email } }
         });
+        if (lead) {
+            await entityStateService.transitionLead(
+                orgId, lead.id, LeadState.BLOCKED,
+                'Lead unsubscribed', TriggerType.WEBHOOK
+            );
+            await prisma.lead.update({
+                where: { id: lead.id },
+                data: { health_state: 'unhealthy', updated_at: new Date() }
+            });
+        }
     }
 
     // Update campaign unsubscribe count (SOFT SIGNAL)
@@ -780,18 +830,20 @@ export async function handleSpamEvent(orgId: string, event: any) {
     const mailboxId = mailboxIdRaw ? String(mailboxIdRaw) : undefined;
 
     if (email) {
-        await prisma.lead.updateMany({
-            where: {
-                organization_id: orgId,
-                email: email
-            },
-            data: {
-                status: 'blocked',
-                health_state: 'unhealthy',
-                health_classification: 'red',
-                updated_at: new Date()
-            }
+        // Transition lead to BLOCKED via state machine (org+email is unique)
+        const lead = await prisma.lead.findUnique({
+            where: { organization_id_email: { organization_id: orgId, email } }
         });
+        if (lead) {
+            await entityStateService.transitionLead(
+                orgId, lead.id, LeadState.BLOCKED,
+                'Spam complaint received', TriggerType.WEBHOOK
+            );
+            await prisma.lead.update({
+                where: { id: lead.id },
+                data: { health_state: 'unhealthy', health_classification: 'red', updated_at: new Date() }
+            });
+        }
     }
 
     // Update mailbox spam count (SOFT SIGNAL - logged but doesn't auto-pause)
@@ -818,4 +870,197 @@ export async function handleSpamEvent(orgId: string, event: any) {
             details: `Spam complaint from ${email}`
         });
     }
+}
+
+/**
+ * Handle campaign status changed events from Smartlead.
+ * Syncs campaign status when it changes externally (paused, completed, etc.)
+ */
+export async function handleCampaignStatusChangedEvent(orgId: string, event: any) {
+    const campaignIdRaw = event.campaign_id;
+    const campaignId = campaignIdRaw ? String(campaignIdRaw) : undefined;
+    const newStatus = (event.status || event.new_status || '').toLowerCase();
+    const oldStatus = (event.old_status || event.previous_status || '').toLowerCase();
+
+    if (!campaignId) {
+        logger.warn('[SMARTLEAD-WEBHOOK] Campaign status changed event missing campaign_id', {
+            organizationId: orgId,
+            event
+        });
+        return;
+    }
+
+    logger.info('[SMARTLEAD-WEBHOOK] Processing campaign status changed event', {
+        organizationId: orgId,
+        campaignId,
+        oldStatus,
+        newStatus
+    });
+
+    // Find the campaign in our DB
+    const campaign = await prisma.campaign.findUnique({
+        where: { id: campaignId },
+        select: { id: true, name: true, status: true }
+    });
+
+    if (!campaign) {
+        logger.warn('[SMARTLEAD-WEBHOOK] Campaign not found for status change', {
+            organizationId: orgId,
+            campaignId
+        });
+        return;
+    }
+
+    // Skip if status hasn't actually changed
+    if (campaign.status === newStatus) {
+        logger.info('[SMARTLEAD-WEBHOOK] Campaign status unchanged, skipping', {
+            organizationId: orgId,
+            campaignId,
+            status: newStatus
+        });
+        return;
+    }
+
+    // Route through campaignHealthService for proper state tracking
+    if (newStatus === 'paused') {
+        await campaignHealthService.pauseCampaign(
+            orgId,
+            campaignId,
+            `Campaign paused externally in Smartlead${oldStatus ? ` (was: ${oldStatus})` : ''}`
+        );
+    } else if (newStatus === 'active') {
+        await campaignHealthService.resumeCampaign(orgId, campaignId);
+    } else {
+        // For other statuses (completed, draft, etc.) update directly + record transition
+        await prisma.campaign.update({
+            where: { id: campaignId },
+            data: { status: newStatus }
+        });
+
+        await prisma.stateTransition.create({
+            data: {
+                organization_id: orgId,
+                entity_type: 'campaign',
+                entity_id: campaignId,
+                from_state: campaign.status,
+                to_state: newStatus,
+                reason: `Campaign status changed in Smartlead`,
+                triggered_by: 'webhook',
+            }
+        });
+    }
+
+    await auditLogService.logAction({
+        organizationId: orgId,
+        entity: 'campaign',
+        entityId: campaignId,
+        trigger: 'smartlead_webhook',
+        action: 'campaign_status_changed',
+        details: `Campaign "${campaign.name}" status changed: ${campaign.status} → ${newStatus}`
+    });
+
+    // Notify user of external status change
+    try {
+        const notificationService = require('../services/notificationService');
+        await notificationService.createNotification(orgId, {
+            type: newStatus === 'paused' ? 'WARNING' : 'INFO',
+            title: 'Campaign Status Changed in Smartlead',
+            message: `Campaign "${campaign.name}" was ${newStatus === 'paused' ? 'paused' : `changed to ${newStatus}`} in Smartlead.`
+        });
+    } catch (notifError) {
+        logger.error('[SMARTLEAD-WEBHOOK] Failed to send campaign status notification', notifError as Error);
+    }
+}
+
+/**
+ * Handle lead category updated events from Smartlead.
+ * Captures lead categorization (interested, not_interested, do_not_contact, etc.)
+ */
+export async function handleLeadCategoryUpdatedEvent(orgId: string, event: any) {
+    const email = event.email || event.lead_email;
+    const campaignIdRaw = event.campaign_id;
+    const campaignId = campaignIdRaw ? String(campaignIdRaw) : undefined;
+    const category = event.category || event.lead_category || event.new_category || '';
+
+    logger.info('[SMARTLEAD-WEBHOOK] Processing lead category updated event', {
+        organizationId: orgId,
+        email,
+        campaignId,
+        category
+    });
+
+    if (!email) {
+        logger.warn('[SMARTLEAD-WEBHOOK] Lead category event missing email', {
+            organizationId: orgId,
+            event
+        });
+        return;
+    }
+
+    // Find the lead
+    const lead = await prisma.lead.findUnique({
+        where: {
+            organization_id_email: {
+                organization_id: orgId,
+                email: email
+            }
+        }
+    });
+
+    if (!lead) {
+        logger.warn('[SMARTLEAD-WEBHOOK] Lead not found for category update', {
+            organizationId: orgId,
+            email,
+            category
+        });
+        return;
+    }
+
+    const normalizedCategory = category.toLowerCase().replace(/\s+/g, '_');
+
+    // Always persist the category on the lead record
+    await prisma.lead.update({
+        where: { id: lead.id },
+        data: {
+            lead_category: normalizedCategory,
+            updated_at: new Date()
+        }
+    });
+
+    // Handle "do not contact" / "not interested" as blocking signals
+    if (['do_not_contact', 'not_interested', 'wrong_person', 'opted_out'].includes(normalizedCategory)) {
+        await entityStateService.transitionLead(
+            orgId, lead.id, LeadState.BLOCKED,
+            `Lead categorized as "${category}" in Smartlead`,
+            TriggerType.WEBHOOK
+        );
+
+        await prisma.lead.update({
+            where: { id: lead.id },
+            data: {
+                health_state: 'unhealthy',
+            }
+        });
+    }
+
+    // Handle "interested" / "meeting_booked" as positive signals
+    if (['interested', 'meeting_booked', 'meeting_completed', 'closed'].includes(normalizedCategory)) {
+        // Recalculate score with a boost
+        await recalculateLeadScore(lead.id);
+    }
+
+    // Log to timeline regardless of category
+    const campaignName = campaignId ? await prisma.campaign.findUnique({
+        where: { id: campaignId },
+        select: { name: true }
+    }) : null;
+
+    await auditLogService.logAction({
+        organizationId: orgId,
+        entity: 'lead',
+        entityId: lead.id,
+        trigger: 'smartlead_webhook',
+        action: 'lead_category_updated',
+        details: `Lead categorized as "${category}"${campaignName ? ` in campaign "${campaignName.name}"` : ''}`
+    });
 }

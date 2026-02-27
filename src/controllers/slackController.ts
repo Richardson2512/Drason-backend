@@ -39,6 +39,52 @@ function decryptToken(encryptedData: string): string {
 }
 
 // ============================================================================
+// OAUTH INSTALL INITIATION (/api/slack/install)
+// ============================================================================
+export const initiateInstall = async (req: Request, res: Response) => {
+    const orgId = req.orgContext?.organizationId;
+    const userId = req.orgContext?.userId;
+
+    if (!orgId) {
+        return res.status(401).json({ success: false, error: 'Authentication required' });
+    }
+
+    const clientId = process.env.SLACK_CLIENT_ID;
+    if (!clientId) {
+        logger.error('[Slack] SLACK_CLIENT_ID is not configured');
+        return res.redirect(`${process.env.FRONTEND_URL}/dashboard/settings?slack_error=slack_not_configured`);
+    }
+
+    const backendUrl = process.env.BACKEND_URL || process.env.BASE_URL;
+    const redirectUri = backendUrl ? `${backendUrl}/slack/oauth/callback` : '';
+
+    // Encode orgId:userId into state (matches what handleOAuthCallback expects)
+    const state = userId ? `${orgId}:${userId}` : orgId;
+
+    const scopes = [
+        'chat:write',
+        'commands',
+        'app_mentions:read',
+        'channels:read',
+        'groups:read',
+    ].join(',');
+
+    const params = new URLSearchParams({
+        client_id: clientId,
+        scope: scopes,
+        state,
+    });
+
+    if (redirectUri) {
+        params.set('redirect_uri', redirectUri);
+    }
+
+    const authorizeUrl = `https://slack.com/oauth/v2/authorize?${params.toString()}`;
+    logger.info(`[Slack] Initiating OAuth install for Org ${orgId}`);
+    res.redirect(authorizeUrl);
+};
+
+// ============================================================================
 // OAUTH CALLBACK ENDPOINT (/slack/oauth/callback)
 // ============================================================================
 export const handleOAuthCallback = async (req: Request, res: Response) => {

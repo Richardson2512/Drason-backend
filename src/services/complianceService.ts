@@ -9,6 +9,8 @@
 
 import { prisma } from '../index';
 import * as auditLogService from './auditLogService';
+import * as entityStateService from './entityStateService';
+import { MailboxState, TriggerType } from '../types';
 import { logger } from './observabilityService';
 
 // ============================================================================
@@ -255,22 +257,11 @@ export async function softDeleteMailbox(
     mailboxId: string,
     reason: string
 ): Promise<void> {
-    await prisma.mailbox.update({
-        where: { id: mailboxId },
-        data: {
-            // Mark as inactive instead of deleted_at
-            status: 'deleted'
-        }
-    });
-
-    await auditLogService.logAction({
-        organizationId,
-        entity: 'mailbox',
-        entityId: mailboxId,
-        trigger: 'admin_action',
-        action: 'soft_delete',
-        details: reason
-    });
+    // 'deleted' is not a standard MailboxState — use setInitial for admin override
+    await entityStateService.setInitialMailboxStatus(
+        organizationId, mailboxId, 'deleted' as MailboxState,
+        `Soft delete: ${reason}`, TriggerType.MANUAL
+    );
 }
 
 /**
@@ -287,10 +278,10 @@ export async function restoreEntity(
             data: { deleted_at: null }
         });
     } else if (entityType === 'mailbox') {
-        await prisma.mailbox.update({
-            where: { id: entityId },
-            data: { status: 'healthy' }
-        });
+        await entityStateService.setInitialMailboxStatus(
+            organizationId, entityId, MailboxState.HEALTHY,
+            'Entity restored from soft delete', TriggerType.MANUAL
+        );
     }
 
     await auditLogService.logAction({

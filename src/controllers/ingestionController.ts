@@ -1,11 +1,12 @@
 /**
  * Ingestion Controller
- * 
+ *
  * Handles lead ingestion from direct API calls and Clay webhooks.
  * All leads are created with organization context for multi-tenancy.
- * 
- * Section 6 of Audit: Lead Ingestion Flow
- * NOW WITH: Lead Health Gate - classifies leads as GREEN/YELLOW/RED before routing
+ *
+ * ARCHITECTURE: Both endpoints delegate to processLead() — a single shared
+ * pipeline for health gate → upsert → routing → assignment → platform push.
+ * Bug fixes apply once. Source is just a parameter.
  */
 
 import { Request, Response } from 'express';
@@ -16,9 +17,271 @@ import * as eventService from '../services/eventService';
 import * as leadHealthService from '../services/leadHealthService';
 import { getAdapterForCampaign } from '../adapters/platformRegistry';
 import * as leadAssignmentService from '../services/leadAssignmentService';
+import * as entityStateService from '../services/entityStateService';
 import { getOrgId } from '../middleware/orgContext';
-import { EventType, LeadState } from '../types';
+import { EventType, LeadState, TriggerType } from '../types';
 import { logger } from '../services/observabilityService';
+
+// ============================================================================
+// SHARED LEAD PROCESSING PIPELINE
+// ============================================================================
+
+interface LeadInput {
+    email: string;
+    persona: string;
+    lead_score: number;
+    source: string;
+    first_name?: string;
+    last_name?: string;
+    company?: string;
+    idempotencyKey?: string;
+    extraPayload?: Record<string, any>;
+}
+
+interface ProcessResult {
+    success: boolean;
+    leadId: string;
+    healthClassification: string;
+    healthScore: number;
+    blockReasons?: string[];
+    assignedCampaignId: string | null;
+    pushedToPlatform: boolean;
+    capacityReason?: string;
+    message: string;
+}
+
+/**
+ * Single pipeline for all lead ingestion — health gate → upsert → route → assign → push.
+ * Both API and Clay endpoints call this. Bug fixes apply once.
+ */
+async function processLead(
+    organizationId: string,
+    input: LeadInput
+): Promise<ProcessResult> {
+    const { email, persona, lead_score, source, first_name, last_name, company } = input;
+    const logTag = source === 'clay' ? 'INGEST CLAY' : 'INGEST';
+
+    // === 1. HEALTH GATE ===
+    const healthResult = await leadHealthService.classifyLeadHealth(email);
+    logger.info(`[HEALTH GATE] Lead: ${email} | Classification: ${healthResult.classification} | Score: ${healthResult.score}`);
+
+    // Store raw event (Section 5.1 — store before processing)
+    const idempotencyKey = input.idempotencyKey || `${organizationId}:${source}:${email}`;
+    await eventService.storeEvent({
+        organizationId,
+        eventType: EventType.LEAD_INGESTED,
+        entityType: 'lead',
+        payload: {
+            email, persona, lead_score, source,
+            health_classification: healthResult.classification,
+            health_score: healthResult.score,
+            health_checks: healthResult.checks,
+            ...input.extraPayload,
+        },
+        idempotencyKey
+    });
+
+    // === 2. UPSERT LEAD ===
+    const createdLead = await prisma.lead.upsert({
+        where: {
+            organization_id_email: {
+                organization_id: organizationId,
+                email
+            }
+        },
+        update: {
+            persona,
+            lead_score,
+            source,
+            health_classification: healthResult.classification,
+            health_score_calc: healthResult.score,
+            health_checks: healthResult.checks
+        },
+        create: {
+            email,
+            persona,
+            lead_score,
+            source,
+            status: healthResult.classification === 'red' ? LeadState.BLOCKED : LeadState.HELD,
+            health_state: 'healthy',
+            health_classification: healthResult.classification,
+            health_score_calc: healthResult.score,
+            health_checks: healthResult.checks,
+            organization_id: organizationId
+        }
+    });
+
+    // === 3. HEALTH GATE DECISION ===
+    if (healthResult.classification === 'red') {
+        logger.info(`[HEALTH GATE] BLOCKED lead ${createdLead.id}: ${healthResult.reasons.join(', ')}`);
+        await auditLogService.logAction({
+            organizationId,
+            entity: 'lead',
+            entityId: createdLead.id,
+            trigger: 'health_gate',
+            action: 'blocked',
+            details: `Lead blocked by health gate (${source}): ${healthResult.reasons.join(', ')}`
+        });
+
+        return {
+            success: true,
+            leadId: createdLead.id,
+            healthClassification: healthResult.classification,
+            healthScore: healthResult.score,
+            blockReasons: healthResult.reasons,
+            assignedCampaignId: null,
+            pushedToPlatform: false,
+            message: 'Lead blocked by health gate',
+        };
+    }
+
+    // === 4. DEDUPLICATION CHECK ===
+    if (createdLead.assigned_campaign_id) {
+        logger.info(`[${logTag}] Lead ${email} already assigned to campaign ${createdLead.assigned_campaign_id}. Skipping routing.`);
+        return {
+            success: true,
+            leadId: createdLead.id,
+            healthClassification: healthResult.classification,
+            healthScore: healthResult.score,
+            assignedCampaignId: createdLead.assigned_campaign_id,
+            pushedToPlatform: false,
+            message: 'Lead already exists and is active in a campaign',
+        };
+    }
+
+    // === 5. ROUTING ===
+    const campaignId = await routingService.resolveCampaignForLead(organizationId, createdLead);
+
+    if (!campaignId) {
+        logger.info(`[${logTag}] No campaign matched for lead ${createdLead.id}`);
+        await auditLogService.logAction({
+            organizationId,
+            entity: 'lead',
+            entityId: createdLead.id,
+            trigger: 'ingestion',
+            action: 'unassigned',
+            details: `No routing rule matched (${source}). Health: ${healthResult.classification}`
+        });
+
+        return {
+            success: true,
+            leadId: createdLead.id,
+            healthClassification: healthResult.classification,
+            healthScore: healthResult.score,
+            assignedCampaignId: null,
+            pushedToPlatform: false,
+            message: 'Lead ingested, no campaign matched',
+        };
+    }
+
+    // === 6. ASSIGNMENT ===
+    const assignmentResult = await leadAssignmentService.assignLeadToCampaignWithCapacityCheck(
+        organizationId,
+        createdLead.id,
+        campaignId,
+        { allowOverCapacity: false }
+    );
+
+    if (!assignmentResult.assigned) {
+        logger.warn(`[${logTag}] Failed to assign lead ${createdLead.id} to campaign ${campaignId}: ${assignmentResult.reason}`);
+        await auditLogService.logAction({
+            organizationId,
+            entity: 'lead',
+            entityId: createdLead.id,
+            trigger: 'ingestion',
+            action: 'assignment_failed',
+            details: `Routing suggested campaign ${campaignId} but assignment failed (${source}): ${assignmentResult.reason}.`
+        });
+
+        return {
+            success: true,
+            leadId: createdLead.id,
+            healthClassification: healthResult.classification,
+            healthScore: healthResult.score,
+            assignedCampaignId: null,
+            pushedToPlatform: false,
+            capacityReason: assignmentResult.reason,
+            message: 'Lead ingested but assignment failed due to capacity',
+        };
+    }
+
+    logger.info(`[${logTag}] Assigned lead ${createdLead.id} to campaign ${campaignId} (${assignmentResult.currentLoad}/${assignmentResult.capacity})`);
+    await auditLogService.logAction({
+        organizationId,
+        entity: 'lead',
+        entityId: createdLead.id,
+        trigger: 'ingestion',
+        action: 'assigned',
+        details: `Routed to campaign ${campaignId} via ${source} (load: ${assignmentResult.currentLoad}/${assignmentResult.capacity}).`
+    });
+
+    // === 7. PLATFORM PUSH ===
+    let pushedToPlatform = false;
+    try {
+        const adapter = await getAdapterForCampaign(campaignId);
+        const campaign = await prisma.campaign.findUnique({
+            where: { id: campaignId },
+            select: { external_id: true }
+        });
+        const externalCampaignId = campaign?.external_id || campaignId;
+
+        const pushSuccess = await adapter.pushLeadToCampaign(
+            organizationId,
+            externalCampaignId,
+            { email, first_name, last_name, company }
+        );
+
+        if (pushSuccess) {
+            await entityStateService.transitionLead(
+                organizationId,
+                createdLead.id,
+                LeadState.ACTIVE,
+                `Pushed to ${adapter.platform} campaign ${campaignId} via ${source}`,
+                TriggerType.SYSTEM
+            );
+            pushedToPlatform = true;
+            logger.info(`[${logTag}] Successfully pushed lead ${email} to ${adapter.platform} campaign ${campaignId}`);
+        } else {
+            // Push failed — roll back assignment to prevent orphaned leads
+            await prisma.lead.update({
+                where: { id: createdLead.id },
+                data: { assigned_campaign_id: null }
+            });
+            logger.error(`[${logTag}] Failed to push lead ${email} — assignment rolled back`);
+            await auditLogService.logAction({
+                organizationId,
+                entity: 'lead',
+                entityId: createdLead.id,
+                trigger: 'ingestion',
+                action: 'push_failed',
+                details: `Failed to push to ${adapter.platform} campaign ${campaignId}. Assignment rolled back (${source}).`
+            });
+        }
+    } catch (pushError: any) {
+        // Roll back assignment on error
+        try {
+            await prisma.lead.update({
+                where: { id: createdLead.id },
+                data: { assigned_campaign_id: null }
+            });
+        } catch (_) { /* best-effort rollback */ }
+        logger.error(`[${logTag}] Error pushing lead to campaign`, pushError, { campaignId });
+    }
+
+    return {
+        success: true,
+        leadId: createdLead.id,
+        healthClassification: healthResult.classification,
+        healthScore: healthResult.score,
+        assignedCampaignId: pushedToPlatform ? campaignId : null,
+        pushedToPlatform,
+        message: pushedToPlatform ? 'Lead ingested and pushed to campaign' : 'Lead ingested successfully',
+    };
+}
+
+// ============================================================================
+// ENDPOINTS
+// ============================================================================
 
 /**
  * Direct API lead ingestion.
@@ -31,7 +294,6 @@ export const ingestLead = async (req: Request, res: Response) => {
         return res.status(400).json({ error: 'Missing required fields: email, persona, lead_score' });
     }
 
-    // Get organization context
     let organizationId: string;
     try {
         organizationId = getOrgId(req);
@@ -42,215 +304,17 @@ export const ingestLead = async (req: Request, res: Response) => {
     logger.info(`[INGEST] Org: ${organizationId} | Lead: ${email} (${persona}, ${lead_score})`);
 
     try {
-        // === LEAD HEALTH GATE ===
-        // Classify lead health BEFORE storing/routing
-        const healthResult = await leadHealthService.classifyLeadHealth(email);
-        logger.info(`[HEALTH GATE] Lead: ${email} | Classification: ${healthResult.classification} | Score: ${healthResult.score}`);
-
-        // Generate idempotency key for event storage
-        const idempotencyKey = `${organizationId}:lead:${email}`;
-
-        // Store raw event first (Section 5.1 - store before processing)
-        await eventService.storeEvent({
-            organizationId,
-            eventType: EventType.LEAD_INGESTED,
-            entityType: 'lead',
-            payload: {
-                email,
-                persona,
-                lead_score,
-                source: source || 'api',
-                health_classification: healthResult.classification,
-                health_score: healthResult.score,
-                health_checks: healthResult.checks
-            },
-            idempotencyKey
+        const result = await processLead(organizationId, {
+            email,
+            persona,
+            lead_score,
+            source: source || 'api',
+            first_name: req.body.first_name,
+            last_name: req.body.last_name,
+            company: req.body.company,
         });
 
-        // Create the lead with organization scope AND health classification
-        const createdLead = await prisma.lead.upsert({
-            where: {
-                organization_id_email: {
-                    organization_id: organizationId,
-                    email
-                }
-            },
-            update: {
-                persona,
-                lead_score,
-                source: source || 'api',
-                health_classification: healthResult.classification,
-                health_score_calc: healthResult.score,
-                health_checks: healthResult.checks
-            },
-            create: {
-                email,
-                persona,
-                lead_score,
-                source: source || 'api',
-                status: healthResult.classification === 'red' ? LeadState.BLOCKED : LeadState.HELD,
-                health_state: 'healthy',
-                health_classification: healthResult.classification,
-                health_score_calc: healthResult.score,
-                health_checks: healthResult.checks,
-                organization_id: organizationId
-            }
-        });
-
-        // === HEALTH GATE DECISION ===
-        // RED leads are blocked - don't route them
-        if (healthResult.classification === 'red') {
-            logger.info(`[HEALTH GATE] BLOCKED lead ${createdLead.id}: ${healthResult.reasons.join(', ')}`);
-            await auditLogService.logAction({
-                organizationId,
-                entity: 'lead',
-                entityId: createdLead.id,
-                trigger: 'health_gate',
-                action: 'blocked',
-                details: `Lead blocked by health gate: ${healthResult.reasons.join(', ')}`
-            });
-
-            return res.json({
-                success: true,
-                data: {
-                    message: 'Lead blocked by health gate',
-                    leadId: createdLead.id,
-                    healthClassification: healthResult.classification,
-                    healthScore: healthResult.score,
-                    blockReasons: healthResult.reasons,
-                    assignedCampaignId: null
-                }
-            });
-        }
-
-        // === DEDUPLICATION CHECK ===
-        // If lead already exists and is assigned to a campaign, do not re-route
-        if (createdLead.assigned_campaign_id) {
-            logger.info(`[INGEST] Lead ${createdLead.email} already assigned to campaign ${createdLead.assigned_campaign_id}. Skipping routing.`);
-            return res.json({
-                success: true,
-                data: {
-                    message: 'Lead already exists and is active in a campaign',
-                    leadId: createdLead.id,
-                    assignedCampaignId: createdLead.assigned_campaign_id,
-                    pushedToPlatform: false
-                }
-            });
-        }
-
-        // Resolve routing with org context
-        const campaignId = await routingService.resolveCampaignForLead(organizationId, createdLead);
-
-        // Atomically assign lead to campaign with capacity checking
-        if (campaignId) {
-            // Use atomic assignment to prevent capacity violations
-            const assignmentResult = await leadAssignmentService.assignLeadToCampaignWithCapacityCheck(
-                organizationId,
-                createdLead.id,
-                campaignId,
-                { allowOverCapacity: false }
-            );
-
-            if (!assignmentResult.assigned) {
-                // Assignment failed due to capacity or other issue
-                logger.warn(`[INGEST] Failed to assign lead ${createdLead.id} to campaign ${campaignId}: ${assignmentResult.reason}`);
-                await auditLogService.logAction({
-                    organizationId,
-                    entity: 'lead',
-                    entityId: createdLead.id,
-                    trigger: 'ingestion',
-                    action: 'assignment_failed',
-                    details: `Routing suggested campaign ${campaignId} but assignment failed: ${assignmentResult.reason}. Lead remains in holding pool.`
-                });
-
-                // Return success but indicate lead is in holding pool
-                return res.json({
-                    success: true,
-                    data: {
-                        message: 'Lead ingested but assignment failed due to capacity',
-                        leadId: createdLead.id,
-                        assignedCampaignId: null,
-                        pushedToPlatform: false,
-                        capacityReason: assignmentResult.reason
-                    }
-                });
-            }
-
-            logger.info(`[INGEST] Assigned lead ${createdLead.id} to campaign ${campaignId} (${assignmentResult.currentLoad}/${assignmentResult.capacity})`);
-
-            await auditLogService.logAction({
-                organizationId,
-                entity: 'lead',
-                entityId: createdLead.id,
-                trigger: 'ingestion',
-                action: 'assigned',
-                details: `Routed to campaign ${campaignId} based on rules (load: ${assignmentResult.currentLoad}/${assignmentResult.capacity}).`
-            });
-
-            // Push lead to campaign on external platform
-            logger.info(`[INGEST] Pushing lead ${email} to campaign ${campaignId}`);
-            try {
-                const adapter = await getAdapterForCampaign(campaignId);
-                const campaign = await prisma.campaign.findUnique({
-                    where: { id: campaignId },
-                    select: { external_id: true }
-                });
-                const externalCampaignId = campaign?.external_id || campaignId;
-                const pushSuccess = await adapter.pushLeadToCampaign(
-                    organizationId,
-                    externalCampaignId,
-                    {
-                        email,
-                        first_name: req.body.first_name,
-                        last_name: req.body.last_name,
-                        company: req.body.company
-                    }
-                );
-
-                if (pushSuccess) {
-                    // Mark lead as active since it's now on the platform
-                    await prisma.lead.update({
-                        where: { id: createdLead.id },
-                        data: { status: LeadState.ACTIVE }
-                    });
-                    logger.info(`[INGEST] Successfully pushed lead ${email} to ${adapter.platform} campaign ${campaignId}`);
-                } else {
-                    // Push failed - lead stays in HELD status
-                    logger.error(`[INGEST] Failed to push lead ${email} to ${adapter.platform} campaign ${campaignId}`);
-                    await auditLogService.logAction({
-                        organizationId,
-                        entity: 'lead',
-                        entityId: createdLead.id,
-                        trigger: 'ingestion',
-                        action: 'push_failed',
-                        details: `Failed to push lead to ${adapter.platform} campaign ${campaignId}. Lead remains in HELD status.`
-                    });
-                }
-            } catch (pushError: any) {
-                logger.error(`[INGEST] Error pushing lead to campaign`, pushError, { campaignId });
-            }
-        } else {
-            logger.info(`[INGEST] No campaign matched for lead ${createdLead.id}`);
-            await auditLogService.logAction({
-                organizationId,
-                entity: 'lead',
-                entityId: createdLead.id,
-                trigger: 'ingestion',
-                action: 'unassigned',
-                details: `No routing rule matched. Lead remains in holding pool.`
-            });
-        }
-
-        res.json({
-            success: true,
-            data: {
-                message: 'Lead ingested successfully',
-                leadId: createdLead.id,
-                assignedCampaignId: campaignId,
-                pushedToPlatform: campaignId ? true : false
-            }
-        });
-
+        res.json({ success: true, data: result });
     } catch (error) {
         logger.error('[INGEST] Error:', error as Error);
         res.status(500).json({ error: 'Internal server error during ingestion' });
@@ -262,21 +326,17 @@ export const ingestLead = async (req: Request, res: Response) => {
  * POST /api/ingest/clay
  *
  * Handles flexible Clay payload format with case-insensitive field lookup.
- * NOW WITH:
- * - HMAC-SHA256 signature validation for security
- * - Lead Health Gate - classifies leads before routing
+ * HMAC-SHA256 signature validation for security.
  */
 export const ingestClayWebhook = async (req: Request, res: Response) => {
     logger.info('[INGEST CLAY] Received payload', { preview: JSON.stringify(req.body).substring(0, 200) });
 
     const payload = req.body;
 
-    // Get organization context
-    // Get organization context manual extraction (since middleware skips public routes)
+    // Get organization context (manual extraction — middleware skips public routes)
     let organizationId = req.headers['x-organization-id'] as string || req.query.orgId as string;
 
     if (!organizationId) {
-        // Fallback: Try to find orgId in the payload itself
         organizationId = payload.orgId || payload.organizationId || payload.organization_id;
     }
 
@@ -360,207 +420,23 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
     }
 
     try {
-        // === LEAD HEALTH GATE ===
-        const healthResult = await leadHealthService.classifyLeadHealth(email);
-        logger.info(`[HEALTH GATE CLAY] Lead: ${email} | Classification: ${healthResult.classification} | Score: ${healthResult.score}`);
-
-        // Generate idempotency key
         const externalId = findVal(['id', 'external_id', 'row_id']) || email;
-        const idempotencyKey = `${organizationId}:clay:${externalId}`;
 
-        // Store raw event with health data
-        await eventService.storeEvent({
-            organizationId,
-            eventType: EventType.LEAD_INGESTED,
-            entityType: 'lead',
-            payload: {
-                ...payload,
-                health_classification: healthResult.classification,
-                health_score: healthResult.score,
-                health_checks: healthResult.checks
-            },
-            idempotencyKey
+        const result = await processLead(organizationId, {
+            email,
+            persona,
+            lead_score,
+            source: 'clay',
+            first_name: findVal(['first_name', 'firstname', 'first name', 'fname']),
+            last_name: findVal(['last_name', 'lastname', 'last name', 'lname']),
+            company: findVal(['company', 'company_name', 'company name', 'organization']),
+            idempotencyKey: `${organizationId}:clay:${externalId}`,
+            extraPayload: payload,
         });
 
-        // Create/update lead with health classification
-        const createdLead = await prisma.lead.upsert({
-            where: {
-                organization_id_email: {
-                    organization_id: organizationId,
-                    email
-                }
-            },
-            update: {
-                persona,
-                lead_score,
-                source: 'clay',
-                health_classification: healthResult.classification,
-                health_score_calc: healthResult.score,
-                health_checks: healthResult.checks
-            },
-            create: {
-                email,
-                persona,
-                lead_score,
-                source: 'clay',
-                status: healthResult.classification === 'red' ? LeadState.BLOCKED : LeadState.HELD,
-                health_state: 'healthy',
-                health_classification: healthResult.classification,
-                health_score_calc: healthResult.score,
-                health_checks: healthResult.checks,
-                organization_id: organizationId
-            }
-        });
-
-        // === HEALTH GATE DECISION ===
-        // RED leads are blocked - don't route them
-        if (healthResult.classification === 'red') {
-            logger.info(`[HEALTH GATE CLAY] BLOCKED lead ${createdLead.id}: ${healthResult.reasons.join(', ')}`);
-            await auditLogService.logAction({
-                organizationId,
-                entity: 'lead',
-                entityId: createdLead.id,
-                trigger: 'health_gate',
-                action: 'blocked',
-                details: `Clay lead blocked by health gate: ${healthResult.reasons.join(', ')}`
-            });
-
-            return res.json({
-                message: 'Lead blocked by health gate',
-                leadId: createdLead.id,
-                healthClassification: healthResult.classification,
-                healthScore: healthResult.score,
-                blockReasons: healthResult.reasons,
-                success: true
-            });
-        }
-
-        // === DEDUPLICATION CHECK ===
-        // If lead already exists and is assigned to a campaign, do not re-route
-        if (createdLead.assigned_campaign_id) {
-            logger.info(`[INGEST CLAY] Lead ${createdLead.email} already assigned to campaign ${createdLead.assigned_campaign_id}. Skipping routing.`);
-            return res.json({
-                message: 'Lead already exists and is active in a campaign',
-                leadId: createdLead.id,
-                assignedCampaignId: createdLead.assigned_campaign_id,
-                pushedToPlatform: false,
-                success: true
-            });
-        }
-
-        // Resolve routing for GREEN/YELLOW leads
-        const campaignId = await routingService.resolveCampaignForLead(organizationId, createdLead);
-
-        if (campaignId) {
-            // Atomically assign lead to campaign with capacity checking
-            const assignmentResult = await leadAssignmentService.assignLeadToCampaignWithCapacityCheck(
-                organizationId,
-                createdLead.id,
-                campaignId,
-                { allowOverCapacity: false }
-            );
-
-            if (!assignmentResult.assigned) {
-                // Assignment failed due to capacity or other issue
-                logger.warn(`[INGEST CLAY] Failed to assign lead ${createdLead.id} to campaign ${campaignId}: ${assignmentResult.reason}`);
-                await auditLogService.logAction({
-                    organizationId,
-                    entity: 'lead',
-                    entityId: createdLead.id,
-                    trigger: 'ingestion',
-                    action: 'assignment_failed',
-                    details: `Clay webhook routing suggested campaign ${campaignId} but assignment failed: ${assignmentResult.reason}. Lead remains in holding pool.`
-                });
-
-                // Return success but indicate lead is in holding pool
-                return res.json({
-                    message: 'Lead ingested but assignment failed due to capacity',
-                    leadId: createdLead.id,
-                    success: true,
-                    capacityReason: assignmentResult.reason
-                });
-            }
-
-            logger.info(`[INGEST CLAY] Assigned lead ${createdLead.id} to campaign ${campaignId} (${assignmentResult.currentLoad}/${assignmentResult.capacity})`);
-            await auditLogService.logAction({
-                organizationId,
-                entity: 'lead',
-                entityId: createdLead.id,
-                trigger: 'ingestion',
-                action: 'assigned',
-                details: `Routed to campaign ${campaignId} via Clay webhook. Health: ${healthResult.classification} (load: ${assignmentResult.currentLoad}/${assignmentResult.capacity})`
-            });
-
-            // Push lead to campaign on external platform
-            logger.info(`[INGEST CLAY] Pushing lead ${email} to campaign ${campaignId}`);
-            const firstName = findVal(['first_name', 'firstname', 'first name', 'fname']);
-            const lastName = findVal(['last_name', 'lastname', 'last name', 'lname']);
-            const company = findVal(['company', 'company_name', 'company name', 'organization']);
-
-            try {
-                const adapter = await getAdapterForCampaign(campaignId);
-                const campaign = await prisma.campaign.findUnique({
-                    where: { id: campaignId },
-                    select: { external_id: true }
-                });
-                const externalCampaignId = campaign?.external_id || campaignId;
-                const pushSuccess = await adapter.pushLeadToCampaign(
-                    organizationId,
-                    externalCampaignId,
-                    {
-                        email,
-                        first_name: firstName,
-                        last_name: lastName,
-                        company
-                    }
-                );
-
-                if (pushSuccess) {
-                    // Mark lead as active since it's now on the platform
-                    await prisma.lead.update({
-                        where: { id: createdLead.id },
-                        data: { status: LeadState.ACTIVE }
-                    });
-                    logger.info(`[INGEST CLAY] Successfully pushed lead ${email} to ${adapter.platform} campaign ${campaignId}`);
-                } else {
-                    // Push failed - lead stays in HELD status
-                    logger.error(`[INGEST CLAY] Failed to push lead ${email} to ${adapter.platform} campaign ${campaignId}`);
-                    await auditLogService.logAction({
-                        organizationId,
-                        entity: 'lead',
-                        entityId: createdLead.id,
-                        trigger: 'ingestion',
-                        action: 'push_failed',
-                        details: `Failed to push Clay lead to ${adapter.platform} campaign ${campaignId}. Lead remains in HELD status.`
-                    });
-                }
-            } catch (pushError: any) {
-                logger.error(`[INGEST CLAY] Error pushing lead to campaign`, pushError, { campaignId });
-            }
-        } else {
-            logger.info(`[INGEST CLAY] No campaign matched for lead ${createdLead.id}`);
-            await auditLogService.logAction({
-                organizationId,
-                entity: 'lead',
-                entityId: createdLead.id,
-                trigger: 'ingestion',
-                action: 'unassigned',
-                details: `No routing rule matched for Clay lead. Health: ${healthResult.classification}`
-            });
-        }
-
-        res.json({
-            message: 'Clay lead processed',
-            leadId: createdLead.id,
-            healthClassification: healthResult.classification,
-            healthScore: healthResult.score,
-            pushedToPlatform: campaignId ? true : false,
-            success: true
-        });
-
+        res.json(result);
     } catch (e) {
         logger.error('[INGEST CLAY] Error processing webhook:', e as Error);
         res.status(500).json({ error: 'Internal error processing Clay webhook' });
     }
 };
-

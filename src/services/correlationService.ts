@@ -117,27 +117,15 @@ export async function correlateBeforePause(
     }
 
     // ── CHECK 2: Are failures concentrated on one campaign? ──
+    // NOTE: Even if bounces are concentrated on one campaign, we do NOT redirect
+    // to a campaign pause. Campaigns ONLY pause when ALL their mailboxes are
+    // paused/removed. Instead, we log the concentration as informational context
+    // and proceed with the standard mailbox pause.
     const campaignCheck = checkCampaignConcentration(recentBounces);
 
     if (campaignCheck.concentrated) {
-        logger.info(`[CORRELATION] Redirecting to campaign pause: ${campaignCheck.campaignId} has ${(campaignCheck.ratio * 100).toFixed(0)}% of bounces`);
-        return {
-            originalTarget: mailboxId,
-            recommendedAction: {
-                action: 'pause_campaign',
-                entityId: campaignCheck.campaignId!,
-                reason: `${(campaignCheck.ratio * 100).toFixed(0)}% of bounces from campaign ${campaignCheck.campaignId} — pausing campaign instead of mailbox`,
-            },
-            correlations: {
-                siblingMailboxesFailing: false,
-                failingSiblingCount: 0,
-                totalSiblingCount: siblingCheck.totalCount,
-                campaignConcentrated: true,
-                concentratedCampaignId: campaignCheck.campaignId!,
-                providerConcentrated: false,
-            },
-            message: `Campaign-level issue: ${(campaignCheck.ratio * 100).toFixed(0)}% of bounces from one campaign`,
-        };
+        logger.info(`[CORRELATION] Campaign concentration detected: ${campaignCheck.campaignId} has ${(campaignCheck.ratio * 100).toFixed(0)}% of bounces. Proceeding with mailbox pause (campaigns only pause when all mailboxes are removed).`);
+        // Fall through to provider check and then standard mailbox pause
     }
 
     // ── CHECK 3: Are failures concentrated on one provider? ──

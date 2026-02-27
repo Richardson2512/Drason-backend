@@ -26,7 +26,7 @@ import { TIER_LIMITS } from './polarClient';
 import { decrypt } from '../utils/encryption';
 import { parse } from 'csv-parse/sync';
 
-import { getApiKey, SMARTLEAD_API_BASE } from './smartleadClient';
+import { getApiKey, SMARTLEAD_API_BASE, ensureWebhooksRegistered, getAnalyticsByDate, getCampaignStatistics, getLeadCampaigns } from './smartleadClient';
 
 // ============================================================================
 // HISTORICAL BOUNCE BACKFILL
@@ -222,6 +222,107 @@ async function backfillBouncesForCampaign(
 
     logger.info(`[HistoricalBackfill] Completed for campaign ${campaignId}: ${processed} processed, ${attributed} mailbox-attributed`, {
         organizationId,
+    });
+}
+
+/**
+ * One-time per-campaign engagement statistics backfill.
+ *
+ * Uses Smartlead's statistics endpoint to fetch leads by status (opened, clicked, replied, unsubscribed)
+ * and enriches our lead records with accurate engagement counts. Also updates campaign totals.
+ *
+ * Runs once per campaign (idempotent via OrganizationSetting flag).
+ */
+async function backfillEngagementStatistics(
+    campaignId: string,
+    organizationId: string,
+    apiKey: string
+): Promise<void> {
+    const backfillKey = `sl_engagement_backfill:${campaignId}`;
+
+    // Skip if already backfilled
+    const alreadyDone = await prisma.organizationSetting.findFirst({
+        where: { organization_id: organizationId, key: backfillKey },
+        select: { id: true },
+    });
+    if (alreadyDone) return;
+
+    logger.info(`[EngagementBackfill] Starting for campaign ${campaignId}`, { organizationId });
+
+    const statuses = ['opened', 'clicked', 'replied', 'unsubscribed'] as const;
+    const statusCounts: Record<string, number> = {};
+
+    for (const status of statuses) {
+        try {
+            const result = await getCampaignStatistics(organizationId, campaignId, status, 0, 1);
+            statusCounts[status] = parseInt(String(result.total_stats || 0));
+        } catch (err: any) {
+            logger.warn(`[EngagementBackfill] Could not fetch ${status} stats for campaign ${campaignId}`, {
+                error: err.message,
+            });
+            statusCounts[status] = 0;
+        }
+    }
+
+    // Update campaign with accurate counts from statistics endpoint
+    // Only override if Smartlead reports higher (additive protection)
+    try {
+        const campaign = await prisma.campaign.findUnique({
+            where: { id: campaignId },
+            select: {
+                open_count: true,
+                click_count: true,
+                reply_count: true,
+                unsubscribed_count: true,
+                total_sent: true,
+            }
+        });
+
+        if (campaign) {
+            const finalOpens = Math.max(campaign.open_count, statusCounts['opened'] || 0);
+            const finalClicks = Math.max(campaign.click_count, statusCounts['clicked'] || 0);
+            const finalReplies = Math.max(campaign.reply_count, statusCounts['replied'] || 0);
+            const finalUnsubscribed = Math.max(campaign.unsubscribed_count, statusCounts['unsubscribed'] || 0);
+
+            const totalSent = campaign.total_sent;
+            await prisma.campaign.update({
+                where: { id: campaignId },
+                data: {
+                    open_count: finalOpens,
+                    click_count: finalClicks,
+                    reply_count: finalReplies,
+                    unsubscribed_count: finalUnsubscribed,
+                    open_rate: totalSent > 0 ? (finalOpens / totalSent) * 100 : 0,
+                    click_rate: totalSent > 0 ? (finalClicks / totalSent) * 100 : 0,
+                    reply_rate: totalSent > 0 ? (finalReplies / totalSent) * 100 : 0,
+                    analytics_updated_at: new Date(),
+                }
+            });
+
+            logger.info(`[EngagementBackfill] Updated campaign ${campaignId} with full statistics`, {
+                organizationId,
+                opened: finalOpens,
+                clicked: finalClicks,
+                replied: finalReplies,
+                unsubscribed: finalUnsubscribed,
+            });
+        }
+    } catch (updateErr: any) {
+        logger.warn(`[EngagementBackfill] Failed to update campaign stats for ${campaignId}`, {
+            error: updateErr.message,
+        });
+    }
+
+    // Mark as completed
+    await prisma.organizationSetting.upsert({
+        where: { organization_id_key: { organization_id: organizationId, key: backfillKey } },
+        update: { value: new Date().toISOString() },
+        create: { organization_id: organizationId, key: backfillKey, value: new Date().toISOString() },
+    });
+
+    logger.info(`[EngagementBackfill] Completed for campaign ${campaignId}`, {
+        organizationId,
+        statusCounts,
     });
 }
 
@@ -687,21 +788,83 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             }
         }
 
+        // ── 3b. Auto-register webhooks for all campaigns ──
+        // Ensures our webhook URL is registered on every campaign for real-time events
+        const webhookBaseUrl = process.env.BACKEND_URL || process.env.BASE_URL;
+        if (webhookBaseUrl) {
+            const webhookUrl = `${webhookBaseUrl}/api/monitor/smartlead-webhook`;
+            try {
+                const campaignIdsForWebhook = campaigns.map((c: any) => c.id.toString());
+                const webhookResult = await ensureWebhooksRegistered(
+                    organizationId,
+                    campaignIdsForWebhook,
+                    webhookUrl
+                );
+
+                logger.info('[SmartleadSync] Webhook auto-registration complete', {
+                    organizationId,
+                    registered: webhookResult.registered,
+                    skipped: webhookResult.skipped,
+                    failed: webhookResult.failed
+                });
+            } catch (webhookError: any) {
+                // Non-fatal: don't fail sync if webhook registration fails
+                logger.warn('[SmartleadSync] Webhook auto-registration failed (non-fatal)', {
+                    organizationId,
+                    error: webhookError.message
+                });
+            }
+        } else {
+            logger.warn('[SmartleadSync] BACKEND_URL not set, skipping webhook auto-registration', {
+                organizationId
+            });
+        }
+
         // ── 4. Fetch leads for each campaign from Smartlead ──
 
-        // ── Reset mailbox engagement stats before recalculating from CSV data ──
-        // This prevents accumulation on re-syncs (each sync recalculates from scratch)
-        await prisma.mailbox.updateMany({
+        // ── ADDITIVE SYNC: Snapshot current mailbox engagement before processing ──
+        // Instead of destructive reset-to-zero, we snapshot current values and
+        // only update if Smartlead reports HIGHER numbers. This prevents:
+        //   1. Webhook increments being wiped during sync
+        //   2. Temporary stat regression visible on dashboard
+        //   3. Race conditions between sync and real-time events
+        const mailboxEngagementSnapshot = new Map<string, {
+            open_count_lifetime: number;
+            click_count_lifetime: number;
+            reply_count_lifetime: number;
+            total_sent_count: number;
+        }>();
+        const allMailboxesPreSync = await prisma.mailbox.findMany({
             where: { organization_id: organizationId },
-            data: {
-                open_count_lifetime: 0,
-                click_count_lifetime: 0,
-                reply_count_lifetime: 0,
-                total_sent_count: 0,
-                engagement_rate: 0,
+            select: {
+                id: true,
+                open_count_lifetime: true,
+                click_count_lifetime: true,
+                reply_count_lifetime: true,
+                total_sent_count: true,
             }
         });
-        logger.info('[MailboxStats] Reset mailbox engagement stats for clean recalculation', { organizationId });
+        for (const mb of allMailboxesPreSync) {
+            mailboxEngagementSnapshot.set(mb.id, {
+                open_count_lifetime: mb.open_count_lifetime,
+                click_count_lifetime: mb.click_count_lifetime,
+                reply_count_lifetime: mb.reply_count_lifetime,
+                total_sent_count: mb.total_sent_count,
+            });
+        }
+
+        // Track newly computed engagement per mailbox from this sync cycle
+        const mailboxSyncEngagement = new Map<string, {
+            opens: number;
+            clicks: number;
+            replies: number;
+            sent: number;
+        }>();
+
+        logger.info('[MailboxStats] Snapshotted pre-sync engagement for additive comparison', {
+            organizationId,
+            mailboxCount: allMailboxesPreSync.length,
+        });
 
         if (sessionId) {
             syncProgressService.emitProgress(sessionId, 'leads', 'in_progress', {
@@ -1027,10 +1190,12 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                 select: { id: true }
                             });
 
-                            // Backfill activity for leads with engagement
+                            // Backfill activity for leads in campaign
                             // Use lead UUID (not email) as entityId so frontend can query correctly
                             // DEDUP: Only create backfill entries if none exist yet for this lead
-                            if (openCount > 0 || clickCount > 0 || replyCount > 0) {
+                            // Note: email_sent backfill runs for ALL leads (they're in the campaign),
+                            //       open/click/reply backfill only runs for leads with engagement.
+                            {
                                 const leadUuid = updatedLead.id;
 
                                 // Check if backfill entries already exist for this lead
@@ -1040,13 +1205,23 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                         entity: 'lead',
                                         entity_id: leadUuid,
                                         trigger: 'smartlead_sync',
-                                        action: { in: ['email_opened', 'email_clicked', 'email_replied'] }
+                                        action: { in: ['email_sent', 'email_opened', 'email_clicked', 'email_replied'] }
                                     },
                                     select: { id: true }
                                 });
 
                                 // Only create backfill entries on first sync (no existing entries)
                                 if (!existingBackfill) {
+                                    // Backfill email_sent activity — lead is in campaign, so emails were sent
+                                    await auditLogService.logAction({
+                                        organizationId,
+                                        entity: 'lead',
+                                        entityId: leadUuid,
+                                        trigger: 'smartlead_sync',
+                                        action: 'email_sent',
+                                        details: `Email(s) sent to lead in campaign ${campaignId}${senderEmail ? ` via ${senderEmail}` : ''} (backfilled from sync)`
+                                    });
+
                                     if (openCount > 0) {
                                         await auditLogService.logAction({
                                             organizationId,
@@ -1109,26 +1284,14 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                     });
 
                                     if (mailbox) {
-                                        // Calculate new stats
-                                        const newOpens = mailbox.open_count_lifetime + openCount;
-                                        const newClicks = mailbox.click_count_lifetime + clickCount;
-                                        const newReplies = mailbox.reply_count_lifetime + replyCount;
-                                        const totalEngagement = newOpens + newClicks + newReplies;
-                                        const engagementRate = mailbox.total_sent_count > 0
-                                            ? (totalEngagement / mailbox.total_sent_count) * 100
-                                            : 0;
+                                        // Accumulate into sync tracking map (additive sync — written at end)
+                                        const existing = mailboxSyncEngagement.get(mailbox.id) || { opens: 0, clicks: 0, replies: 0, sent: 0 };
+                                        existing.opens += openCount;
+                                        existing.clicks += clickCount;
+                                        existing.replies += replyCount;
+                                        mailboxSyncEngagement.set(mailbox.id, existing);
 
-                                        await prisma.mailbox.update({
-                                            where: { id: mailbox.id },
-                                            data: {
-                                                open_count_lifetime: newOpens,
-                                                click_count_lifetime: newClicks,
-                                                reply_count_lifetime: newReplies,
-                                                engagement_rate: engagementRate
-                                            }
-                                        });
-
-                                        logger.debug(`[LeadEngagement] Updated mailbox ${mailbox.email} stats`, {
+                                        logger.debug(`[LeadEngagement] Accumulated mailbox ${mailbox.email} stats`, {
                                             leadEmail: email,
                                             opensAdded: openCount,
                                             clicksAdded: clickCount,
@@ -1158,18 +1321,12 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                     const mbIndex = Math.abs(hash) % campaignMailboxesForAttribution.length;
                                     const targetMb = campaignMailboxesForAttribution[mbIndex];
 
-                                    try {
-                                        await prisma.mailbox.update({
-                                            where: { id: targetMb.id },
-                                            data: {
-                                                open_count_lifetime: { increment: openCount },
-                                                click_count_lifetime: { increment: clickCount },
-                                                reply_count_lifetime: { increment: replyCount },
-                                            }
-                                        });
-                                    } catch (hashErr: any) {
-                                        logger.debug(`[LeadEngagement] Hash attribution failed for mailbox ${targetMb.id}`, { error: hashErr.message });
-                                    }
+                                    // Accumulate into sync tracking map (additive sync — written at end)
+                                    const existing = mailboxSyncEngagement.get(targetMb.id) || { opens: 0, clicks: 0, replies: 0, sent: 0 };
+                                    existing.opens += openCount;
+                                    existing.clicks += clickCount;
+                                    existing.replies += replyCount;
+                                    mailboxSyncEngagement.set(targetMb.id, existing);
                                 }
                             }
 
@@ -1243,12 +1400,10 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                             const perMailboxSent = totalLeads > 0
                                 ? Math.round(campaignTotalSent * (leadsForMb / totalLeads))
                                 : Math.round(campaignTotalSent / linkedMailboxes.length);
-                            await prisma.mailbox.update({
-                                where: { id: mb.id },
-                                data: {
-                                    total_sent_count: { increment: perMailboxSent }
-                                }
-                            });
+                            // Accumulate into sync tracking map (additive sync — written at end)
+                            const existing = mailboxSyncEngagement.get(mb.id) || { opens: 0, clicks: 0, replies: 0, sent: 0 };
+                            existing.sent += perMailboxSent;
+                            mailboxSyncEngagement.set(mb.id, existing);
                         }
                         logger.info(`[MailboxStats] Distributed ${campaignTotalSent} total_sent (hash-weighted) across ${linkedMailboxes.length} mailboxes for campaign ${campaignId}`, {
                             organizationId,
@@ -1272,6 +1427,16 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 });
             }
 
+            // ── Full engagement statistics backfill ──────────────────────────
+            // Uses /statistics for opened, clicked, replied, unsubscribed (not just bounced)
+            try {
+                await backfillEngagementStatistics(campaignId.toString(), organizationId, apiKey);
+            } catch (engBackfillErr: any) {
+                logger.warn(`[EngagementBackfill] Non-fatal error for campaign ${campaignId}`, {
+                    error: engBackfillErr.message,
+                });
+            }
+
             campaignIndex++;
             if (sessionId) {
                 syncProgressService.emitProgress(sessionId, 'leads', 'in_progress', {
@@ -1288,40 +1453,184 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             syncProgressService.emitProgress(sessionId, 'health_check', 'in_progress', {});
         }
 
-        // ── 5. Recalculate engagement_rate for all mailboxes ──
-        // Now that total_sent_count and engagement stats are both populated,
-        // recalculate engagement_rate = (opens + clicks + replies) / total_sent
+        // ── 4b. Cross-campaign lead tracking ──
+        // Count how many campaigns each lead email appears in via Smartlead.
+        // This uses our DB (after syncing all campaigns' leads) rather than the
+        // per-lead API endpoint to avoid N+1 API calls.
         try {
-            const allMailboxes = await prisma.mailbox.findMany({
-                where: { organization_id: organizationId },
-                select: {
-                    id: true,
-                    total_sent_count: true,
-                    open_count_lifetime: true,
-                    click_count_lifetime: true,
-                    reply_count_lifetime: true,
+            // Use raw SQL for efficient grouping — count distinct assigned_campaign_id per email
+            const crossCampaignCounts = await prisma.$queryRaw<Array<{ email: string; campaign_count: bigint }>>`
+                SELECT email, COUNT(DISTINCT assigned_campaign_id) as campaign_count
+                FROM "Lead"
+                WHERE organization_id = ${organizationId}
+                  AND assigned_campaign_id IS NOT NULL
+                  AND status != 'blocked'
+                GROUP BY email
+                HAVING COUNT(DISTINCT assigned_campaign_id) > 1
+            `;
+
+            if (crossCampaignCounts.length > 0) {
+                for (const row of crossCampaignCounts) {
+                    await prisma.lead.updateMany({
+                        where: {
+                            organization_id: organizationId,
+                            email: row.email,
+                        },
+                        data: {
+                            cross_campaign_count: Number(row.campaign_count),
+                        }
+                    });
                 }
-            });
 
-            for (const mb of allMailboxes) {
-                const totalEngagement = mb.open_count_lifetime + mb.click_count_lifetime + mb.reply_count_lifetime;
-                const engagementRate = mb.total_sent_count > 0
-                    ? (totalEngagement / mb.total_sent_count) * 100
-                    : 0;
-
-                await prisma.mailbox.update({
-                    where: { id: mb.id },
-                    data: { engagement_rate: engagementRate }
+                logger.info('[CrossCampaignTracking] Updated cross-campaign lead counts', {
+                    organizationId,
+                    leadsInMultipleCampaigns: crossCampaignCounts.length,
                 });
             }
-
-            logger.info('[MailboxStats] Recalculated engagement rates for all mailboxes', {
+        } catch (crossCampaignErr: any) {
+            // Non-fatal: don't fail sync if cross-campaign tracking fails
+            logger.warn('[CrossCampaignTracking] Failed to compute cross-campaign counts (non-fatal)', {
                 organizationId,
-                mailboxCount: allMailboxes.length,
+                error: crossCampaignErr.message,
+            });
+        }
+
+        // ── 5. ADDITIVE WRITE: Compare sync-derived engagement with pre-sync snapshot ──
+        // For each mailbox, only update if sync-derived value is HIGHER than what
+        // we already have (which may include real-time webhook increments).
+        // This guarantees engagement counters never decrease.
+        try {
+            let mailboxesUpdated = 0;
+            let mailboxesSkippedHigher = 0;
+
+            for (const [mbId, syncData] of mailboxSyncEngagement) {
+                const snapshot = mailboxEngagementSnapshot.get(mbId) || {
+                    open_count_lifetime: 0,
+                    click_count_lifetime: 0,
+                    reply_count_lifetime: 0,
+                    total_sent_count: 0,
+                };
+
+                // Take the MAX of (pre-sync value, sync-derived value) for each counter
+                const finalOpens = Math.max(snapshot.open_count_lifetime, syncData.opens);
+                const finalClicks = Math.max(snapshot.click_count_lifetime, syncData.clicks);
+                const finalReplies = Math.max(snapshot.reply_count_lifetime, syncData.replies);
+                const finalSent = Math.max(snapshot.total_sent_count, syncData.sent);
+
+                const totalEngagement = finalOpens + finalClicks + finalReplies;
+                const engagementRate = finalSent > 0
+                    ? (totalEngagement / finalSent) * 100
+                    : 0;
+
+                // Only write if at least one value changed
+                if (
+                    finalOpens !== snapshot.open_count_lifetime ||
+                    finalClicks !== snapshot.click_count_lifetime ||
+                    finalReplies !== snapshot.reply_count_lifetime ||
+                    finalSent !== snapshot.total_sent_count
+                ) {
+                    await prisma.mailbox.update({
+                        where: { id: mbId },
+                        data: {
+                            open_count_lifetime: finalOpens,
+                            click_count_lifetime: finalClicks,
+                            reply_count_lifetime: finalReplies,
+                            total_sent_count: finalSent,
+                            engagement_rate: engagementRate,
+                        }
+                    });
+                    mailboxesUpdated++;
+                } else {
+                    mailboxesSkippedHigher++;
+                }
+            }
+
+            // Also recalculate engagement_rate for mailboxes NOT in the sync map
+            // (they may have gotten webhook updates but no sync data)
+            for (const mb of allMailboxesPreSync) {
+                if (!mailboxSyncEngagement.has(mb.id)) {
+                    const totalEngagement = mb.open_count_lifetime + mb.click_count_lifetime + mb.reply_count_lifetime;
+                    const engagementRate = mb.total_sent_count > 0
+                        ? (totalEngagement / mb.total_sent_count) * 100
+                        : 0;
+                    await prisma.mailbox.update({
+                        where: { id: mb.id },
+                        data: { engagement_rate: engagementRate }
+                    });
+                }
+            }
+
+            logger.info('[MailboxStats] Additive sync complete — engagement counters never decreased', {
+                organizationId,
+                mailboxesUpdated,
+                mailboxesSkippedHigher,
+                totalTracked: mailboxSyncEngagement.size,
             });
         } catch (engRateErr: any) {
-            logger.warn('[MailboxStats] Failed to recalculate engagement rates', {
+            logger.warn('[MailboxStats] Failed to apply additive engagement sync', {
                 error: engRateErr.message,
+            });
+        }
+
+        // ── 5b. Fetch analytics-by-date for each campaign (daily trend snapshots) ──
+        try {
+            let dailyAnalyticsUpserted = 0;
+            for (const campaign of campaigns) {
+                const cId = campaign.id.toString();
+                try {
+                    const dailyData = await getAnalyticsByDate(organizationId, cId);
+                    if (dailyData.length > 0) {
+                        for (const day of dailyData) {
+                            if (!day.date) continue;
+                            await prisma.campaignDailyAnalytics.upsert({
+                                where: {
+                                    campaign_id_date: {
+                                        campaign_id: cId,
+                                        date: new Date(day.date),
+                                    }
+                                },
+                                update: {
+                                    sent_count: parseInt(String(day.sent_count || 0)),
+                                    open_count: parseInt(String(day.open_count || 0)),
+                                    click_count: parseInt(String(day.click_count || 0)),
+                                    reply_count: parseInt(String(day.reply_count || 0)),
+                                    bounce_count: parseInt(String(day.bounce_count || 0)),
+                                    unsubscribe_count: parseInt(String(day.unsubscribe_count || 0)),
+                                },
+                                create: {
+                                    campaign_id: cId,
+                                    organization_id: organizationId,
+                                    date: new Date(day.date),
+                                    sent_count: parseInt(String(day.sent_count || 0)),
+                                    open_count: parseInt(String(day.open_count || 0)),
+                                    click_count: parseInt(String(day.click_count || 0)),
+                                    reply_count: parseInt(String(day.reply_count || 0)),
+                                    bounce_count: parseInt(String(day.bounce_count || 0)),
+                                    unsubscribe_count: parseInt(String(day.unsubscribe_count || 0)),
+                                }
+                            });
+                            dailyAnalyticsUpserted++;
+                        }
+                    }
+                } catch (dayErr: any) {
+                    // Non-fatal per campaign
+                    logger.warn('[SmartleadSync] Failed to fetch analytics-by-date for campaign', {
+                        campaignId: cId,
+                        error: dayErr.message,
+                    });
+                }
+            }
+
+            logger.info('[SmartleadSync] Daily analytics sync complete', {
+                organizationId,
+                dailyAnalyticsUpserted,
+                campaignsProcessed: campaigns.length,
+            });
+        } catch (dailyAnalyticsErr: any) {
+            // Non-fatal: don't fail sync if daily analytics fails
+            logger.warn('[SmartleadSync] Daily analytics sync failed (non-fatal)', {
+                organizationId,
+                error: dailyAnalyticsErr.message,
             });
         }
 

@@ -239,3 +239,118 @@ export const getBounceAnalytics = async (req: Request, res: Response) => {
         });
     }
 };
+
+/**
+ * GET /api/analytics/daily
+ *
+ * Get date-bucketed campaign analytics for trend visualization.
+ *
+ * Query params:
+ * - campaign_id: Filter by specific campaign (optional — aggregates all if omitted)
+ * - start_date: Start date (ISO string, default: 30 days ago)
+ * - end_date: End date (ISO string, default: today)
+ */
+export const getDailyAnalytics = async (req: Request, res: Response) => {
+    try {
+        const orgId = getOrgId(req);
+        const { campaign_id, start_date, end_date } = req.query;
+
+        const startDate = start_date
+            ? new Date(start_date as string)
+            : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // 30 days ago
+        const endDate = end_date
+            ? new Date(end_date as string)
+            : new Date();
+
+        const where: any = {
+            organization_id: orgId,
+            date: {
+                gte: startDate,
+                lte: endDate,
+            }
+        };
+
+        if (campaign_id) {
+            where.campaign_id = campaign_id as string;
+        }
+
+        const dailyData = await prisma.campaignDailyAnalytics.findMany({
+            where,
+            orderBy: { date: 'asc' },
+            select: {
+                date: true,
+                campaign_id: true,
+                sent_count: true,
+                open_count: true,
+                click_count: true,
+                reply_count: true,
+                bounce_count: true,
+                unsubscribe_count: true,
+            }
+        });
+
+        // If no campaign_id filter, aggregate across all campaigns per day
+        if (!campaign_id) {
+            const aggregated = new Map<string, {
+                date: string;
+                sent_count: number;
+                open_count: number;
+                click_count: number;
+                reply_count: number;
+                bounce_count: number;
+                unsubscribe_count: number;
+            }>();
+
+            for (const row of dailyData) {
+                const dateKey = row.date.toISOString().split('T')[0];
+                const existing = aggregated.get(dateKey) || {
+                    date: dateKey,
+                    sent_count: 0,
+                    open_count: 0,
+                    click_count: 0,
+                    reply_count: 0,
+                    bounce_count: 0,
+                    unsubscribe_count: 0,
+                };
+                existing.sent_count += row.sent_count;
+                existing.open_count += row.open_count;
+                existing.click_count += row.click_count;
+                existing.reply_count += row.reply_count;
+                existing.bounce_count += row.bounce_count;
+                existing.unsubscribe_count += row.unsubscribe_count;
+                aggregated.set(dateKey, existing);
+            }
+
+            res.json({
+                success: true,
+                data: Array.from(aggregated.values()),
+            });
+        } else {
+            res.json({
+                success: true,
+                data: dailyData.map(row => ({
+                    date: row.date.toISOString().split('T')[0],
+                    campaign_id: row.campaign_id,
+                    sent_count: row.sent_count,
+                    open_count: row.open_count,
+                    click_count: row.click_count,
+                    reply_count: row.reply_count,
+                    bounce_count: row.bounce_count,
+                    unsubscribe_count: row.unsubscribe_count,
+                })),
+            });
+        }
+
+        logger.info('[ANALYTICS] Daily analytics retrieved', {
+            organizationId: orgId,
+            campaignId: campaign_id,
+            dataPoints: dailyData.length,
+        });
+    } catch (error: any) {
+        logger.error('[ANALYTICS] Error fetching daily analytics', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch daily analytics'
+        });
+    }
+};

@@ -15,7 +15,8 @@
 import { prisma } from '../index';
 import * as auditLogService from './auditLogService';
 import * as eventService from './eventService';
-import { EventType } from '../types';
+import * as entityStateService from './entityStateService';
+import { EventType, MailboxState, DomainState, TriggerType } from '../types';
 import logger from '../utils/logger';
 
 // ============================================================================
@@ -151,22 +152,28 @@ export async function overrideEntityState(request: OverrideRequest): Promise<Ove
         return overrideCheck;
     }
 
-    // Apply the override based on entity type
+    // Apply the override via state machine (setInitial bypasses validation for operator overrides)
     if (request.entityType === 'mailbox') {
+        await entityStateService.setInitialMailboxStatus(
+            request.organizationId, request.entityId, request.targetState as MailboxState,
+            `Operator override: ${request.justification || 'no justification'}`, TriggerType.MANUAL
+        );
         await prisma.mailbox.update({
             where: { id: request.entityId },
             data: {
-                status: request.targetState,
                 recovery_phase: 'quarantine',    // Never skip directly to healthy
                 phase_entered_at: new Date(),
                 clean_sends_since_phase: 0,
             },
         });
     } else if (request.entityType === 'domain') {
+        await entityStateService.setInitialDomainStatus(
+            request.organizationId, request.entityId, request.targetState as DomainState,
+            `Operator override: ${request.justification || 'no justification'}`, TriggerType.MANUAL
+        );
         await prisma.domain.update({
             where: { id: request.entityId },
             data: {
-                status: request.targetState,
                 recovery_phase: 'quarantine',
                 phase_entered_at: new Date(),
                 clean_sends_since_phase: 0,

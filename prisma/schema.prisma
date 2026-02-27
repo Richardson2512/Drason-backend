@@ -51,6 +51,7 @@ model Organization {
   infraReports       InfrastructureReport[]
   subscriptionEvents SubscriptionEvent[]
   slackIntegration   SlackIntegration?
+  campaignDailyAnalytics CampaignDailyAnalytics[]
 
   @@index([slug])
   @@index([subscription_status])
@@ -123,6 +124,8 @@ model Lead {
   emails_clicked   Int       @default(0) // Total link clicks
   emails_replied   Int       @default(0) // Total replies
   last_activity_at DateTime? // Last engagement timestamp
+  lead_category    String?   // Smartlead category: interested, not_interested, do_not_contact, etc.
+  cross_campaign_count Int   @default(0) // Number of campaigns this lead is enrolled in across Smartlead
 
   created_at   DateTime     @default(now())
   updated_at   DateTime     @updatedAt
@@ -169,14 +172,37 @@ model Campaign {
   created_at      DateTime @default(now())
   updated_at      DateTime @updatedAt
 
-  organization Organization  @relation(fields: [organization_id], references: [id], onDelete: Cascade)
-  mailboxes    Mailbox[]     @relation("CampaignToMailbox")
-  routingRules RoutingRule[]
+  organization   Organization             @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  mailboxes      Mailbox[]                @relation("CampaignToMailbox")
+  routingRules   RoutingRule[]
+  dailyAnalytics CampaignDailyAnalytics[]
 
   @@unique([organization_id, source_platform, external_id])
   @@index([organization_id, status])
   @@index([organization_id, source_platform])
   @@index([organization_id])
+}
+
+model CampaignDailyAnalytics {
+  id               String   @id @default(uuid())
+  campaign_id      String
+  organization_id  String
+  date             DateTime @db.Date
+  sent_count       Int      @default(0)
+  open_count       Int      @default(0)
+  click_count      Int      @default(0)
+  reply_count      Int      @default(0)
+  bounce_count     Int      @default(0)
+  unsubscribe_count Int     @default(0)
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  campaign     Campaign     @relation(fields: [campaign_id], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@unique([campaign_id, date])
+  @@index([organization_id, date])
+  @@index([campaign_id, date])
 }
 
 model Mailbox {
