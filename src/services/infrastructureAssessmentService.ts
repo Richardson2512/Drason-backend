@@ -764,9 +764,9 @@ export async function assessInfrastructure(
                 });
             }
 
-            if (campaignState === 'active') campaignSummary.active++;
+            if (campaignState === 'active' || campaignState === 'completed' || campaignState === 'drafted') campaignSummary.active++;
             else if (campaignState === 'warning') campaignSummary.warning++;
-            else if (campaignState === 'paused') campaignSummary.paused++;
+            else if (campaignState === 'paused' || campaignState === 'stopped' || campaignState === 'inactive') campaignSummary.paused++;
         }
 
         // ── Step 5: Generate recommendations ──

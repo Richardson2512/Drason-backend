@@ -386,7 +386,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     where: { id: campaign.id.toString() },
                     update: {
                         name: campaign.name,
-                        status: campaign.status || 'active',
+                        status: (campaign.status || 'active').toLowerCase(),
                         bounce_rate: bounceRate,
                         total_sent: totalSent,
                         total_bounced: totalBounced,
@@ -404,7 +404,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     create: {
                         id: campaign.id.toString(),
                         name: campaign.name,
-                        status: campaign.status || 'active',
+                        status: (campaign.status || 'active').toLowerCase(),
                         bounce_rate: bounceRate,
                         total_sent: totalSent,
                         total_bounced: totalBounced,
@@ -562,10 +562,12 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             const warmupLimit = mailbox.warmup_details?.total_warmup_per_day || mailbox.total_warmup_per_day || 0;
 
             // Extract stats from Smartlead API response
-            const dailySentCount = mailbox.daily_sent_count || 0;
             const warmupSpamCount = mailbox.warmup_details?.total_spam_count || 0;
 
             // Upsert mailbox with connection diagnostics and stats
+            // NOTE: total_sent_count is NOT set here — it's calculated from campaign CSV data
+            // during lead engagement processing (step 4) for accurate lifetime totals.
+            // daily_sent_count from Smartlead is only today's count, not lifetime.
             mailboxUpserts.push(
                 prisma.mailbox.upsert({
                     where: { id: mailbox.id.toString() },
@@ -576,7 +578,6 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         smtp_status: mailbox.is_smtp_success === true,
                         imap_status: mailbox.is_imap_success === true,
                         connection_error: connectionError || null,
-                        total_sent_count: dailySentCount,
                         spam_count: warmupSpamCount,
                         warmup_status: warmupStatus,
                         warmup_reputation: warmupReputation,
@@ -591,7 +592,6 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         smtp_status: mailbox.is_smtp_success === true,
                         imap_status: mailbox.is_imap_success === true,
                         connection_error: connectionError || null,
-                        total_sent_count: dailySentCount,
                         spam_count: warmupSpamCount,
                         warmup_status: warmupStatus,
                         warmup_reputation: warmupReputation,
@@ -688,6 +688,21 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
         }
 
         // ── 4. Fetch leads for each campaign from Smartlead ──
+
+        // ── Reset mailbox engagement stats before recalculating from CSV data ──
+        // This prevents accumulation on re-syncs (each sync recalculates from scratch)
+        await prisma.mailbox.updateMany({
+            where: { organization_id: organizationId },
+            data: {
+                open_count_lifetime: 0,
+                click_count_lifetime: 0,
+                reply_count_lifetime: 0,
+                total_sent_count: 0,
+                engagement_rate: 0,
+            }
+        });
+        logger.info('[MailboxStats] Reset mailbox engagement stats for clean recalculation', { organizationId });
+
         if (sessionId) {
             syncProgressService.emitProgress(sessionId, 'leads', 'in_progress', {
                 current: 0,
@@ -1140,10 +1155,9 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         }
 
                         try {
-                            const internalCampaignId = `sl-${campaignId}`;
                             const campaignMailboxes = await prisma.mailbox.findMany({
                                 where: {
-                                    campaigns: { some: { id: internalCampaignId } },
+                                    campaigns: { some: { id: campaignId } },
                                     organization_id: organizationId,
                                 },
                                 select: {
@@ -1228,6 +1242,47 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 });
             }
 
+            // ── Distribute campaign total_sent to linked mailboxes ──────────
+            // Since Smartlead doesn't provide per-mailbox sent counts, distribute
+            // campaign total_sent proportionally across linked mailboxes.
+            try {
+                const dbCampaign = await prisma.campaign.findUnique({
+                    where: { id: campaignId },
+                    select: { total_sent: true }
+                });
+                const campaignTotalSent = dbCampaign?.total_sent || 0;
+
+                if (campaignTotalSent > 0) {
+                    const linkedMailboxes = await prisma.mailbox.findMany({
+                        where: {
+                            campaigns: { some: { id: campaignId } },
+                            organization_id: organizationId,
+                        },
+                        select: { id: true, total_sent_count: true }
+                    });
+
+                    if (linkedMailboxes.length > 0) {
+                        const perMailboxSent = Math.round(campaignTotalSent / linkedMailboxes.length);
+                        for (const mb of linkedMailboxes) {
+                            await prisma.mailbox.update({
+                                where: { id: mb.id },
+                                data: {
+                                    total_sent_count: { increment: perMailboxSent }
+                                }
+                            });
+                        }
+                        logger.info(`[MailboxStats] Distributed ${campaignTotalSent} total_sent across ${linkedMailboxes.length} mailboxes for campaign ${campaignId}`, {
+                            organizationId,
+                            perMailboxSent,
+                        });
+                    }
+                }
+            } catch (sentDistErr: any) {
+                logger.warn(`[MailboxStats] Failed to distribute total_sent for campaign ${campaignId}`, {
+                    error: sentDistErr.message,
+                });
+            }
+
             // ── Historical bounce backfill (Issue G) ─────────────────────────
             // One-time per campaign; idempotent; non-blocking.
             try {
@@ -1252,6 +1307,43 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 count: leadCount
             });
             syncProgressService.emitProgress(sessionId, 'health_check', 'in_progress', {});
+        }
+
+        // ── 5. Recalculate engagement_rate for all mailboxes ──
+        // Now that total_sent_count and engagement stats are both populated,
+        // recalculate engagement_rate = (opens + clicks + replies) / total_sent
+        try {
+            const allMailboxes = await prisma.mailbox.findMany({
+                where: { organization_id: organizationId },
+                select: {
+                    id: true,
+                    total_sent_count: true,
+                    open_count_lifetime: true,
+                    click_count_lifetime: true,
+                    reply_count_lifetime: true,
+                }
+            });
+
+            for (const mb of allMailboxes) {
+                const totalEngagement = mb.open_count_lifetime + mb.click_count_lifetime + mb.reply_count_lifetime;
+                const engagementRate = mb.total_sent_count > 0
+                    ? (totalEngagement / mb.total_sent_count) * 100
+                    : 0;
+
+                await prisma.mailbox.update({
+                    where: { id: mb.id },
+                    data: { engagement_rate: engagementRate }
+                });
+            }
+
+            logger.info('[MailboxStats] Recalculated engagement rates for all mailboxes', {
+                organizationId,
+                mailboxCount: allMailboxes.length,
+            });
+        } catch (engRateErr: any) {
+            logger.warn('[MailboxStats] Failed to recalculate engagement rates', {
+                error: engRateErr.message,
+            });
         }
 
         await auditLogService.logAction({
