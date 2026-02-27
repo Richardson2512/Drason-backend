@@ -713,6 +713,8 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
         let campaignIndex = 0;
         for (const campaign of campaigns) {
             const campaignId = campaign.id.toString();
+            // Track per-mailbox lead counts for weighted total_sent distribution
+            const mailboxLeadCounts = new Map<string, number>();
             try {
                 logger.info(`[LeadSync] Starting lead sync for campaign`, {
                     campaignId,
@@ -921,18 +923,38 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         });
                     }
 
+                    // Pre-fetch campaign mailboxes for hash-based attribution
+                    // When CSV lacks sender info, we distribute engagement deterministically
+                    // using a hash of (leadEmail + campaignId) to simulate round-robin sending
+                    const campaignMailboxesForAttribution = await prisma.mailbox.findMany({
+                        where: {
+                            campaigns: { some: { id: campaignId } },
+                            organization_id: organizationId,
+                        },
+                        select: { id: true, email: true }
+                    });
+
                     // Update each lead with engagement stats
                     let updatedCount = 0;
                     let recordsWithEngagement = 0;
-                    // Tracks leads with engagement but no sender info (for proportional fallback)
-                    let unattributedCount = 0;
-                    let totalUnattributedOpens = 0;
-                    let totalUnattributedClicks = 0;
-                    let totalUnattributedReplies = 0;
+                    let hashAttributedCount = 0;
                     for (const record of records) {
                         const rec = record as any; // Type assertion for CSV record
                         const email = rec.email || rec.Email || rec.EMAIL;
                         if (!email) continue;
+
+                        // Track which mailbox this lead maps to (for total_sent weighting)
+                        if (campaignMailboxesForAttribution.length > 0) {
+                            let lh = 0;
+                            const lhs = `${email}:${campaignId}`;
+                            for (let li = 0; li < lhs.length; li++) {
+                                lh = ((lh << 5) - lh) + lhs.charCodeAt(li);
+                                lh |= 0;
+                            }
+                            const lbi = Math.abs(lh) % campaignMailboxesForAttribution.length;
+                            const mbId = campaignMailboxesForAttribution[lbi].id;
+                            mailboxLeadCounts.set(mbId, (mailboxLeadCounts.get(mbId) || 0) + 1);
+                        }
 
                         const openCount = parseInt(rec.open_count || rec.opens || '0');
                         const clickCount = parseInt(rec.click_count || rec.clicks || '0');
@@ -1122,15 +1144,33 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                     logger.error(`[LeadEngagement] Failed to update mailbox stats for lead ${email}`, mailboxError);
                                 }
                             } else {
-                                // No sender info - can't attribute to specific mailbox.
-                                // Track engagement totals for proportional fallback below.
-                                if (openCount > 0 || clickCount > 0 || replyCount > 0) {
-                                    unattributedCount++;
-                                    totalUnattributedOpens += openCount;
-                                    totalUnattributedClicks += clickCount;
-                                    totalUnattributedReplies += replyCount;
+                                // No sender info — use deterministic hash to assign this lead
+                                // to a specific mailbox, simulating Smartlead's round-robin distribution.
+                                // Each lead consistently maps to the same mailbox across re-syncs.
+                                if ((openCount > 0 || clickCount > 0 || replyCount > 0) && campaignMailboxesForAttribution.length > 0) {
+                                    hashAttributedCount++;
+                                    let hash = 0;
+                                    const hashStr = `${email}:${campaignId}`;
+                                    for (let ci = 0; ci < hashStr.length; ci++) {
+                                        hash = ((hash << 5) - hash) + hashStr.charCodeAt(ci);
+                                        hash |= 0;
+                                    }
+                                    const mbIndex = Math.abs(hash) % campaignMailboxesForAttribution.length;
+                                    const targetMb = campaignMailboxesForAttribution[mbIndex];
+
+                                    try {
+                                        await prisma.mailbox.update({
+                                            where: { id: targetMb.id },
+                                            data: {
+                                                open_count_lifetime: { increment: openCount },
+                                                click_count_lifetime: { increment: clickCount },
+                                                reply_count_lifetime: { increment: replyCount },
+                                            }
+                                        });
+                                    } catch (hashErr: any) {
+                                        logger.debug(`[LeadEngagement] Hash attribution failed for mailbox ${targetMb.id}`, { error: hashErr.message });
+                                    }
                                 }
-                                logger.debug(`[LeadEngagement] No sender info for lead ${email} - skipping mailbox attribution`);
                             }
 
                             updatedCount++;
@@ -1142,84 +1182,17 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         }
                     }
 
-                    // ── Issue H: Proportional fallback for unattributed engagement ──
-                    // When the CSV lacks sender fields, distribute aggregate engagement
-                    // equally across all mailboxes linked to this campaign.
-                    if (unattributedCount > 0) {
-                        if (sessionId) {
-                            syncProgressService.emitProgress(sessionId, 'leads', 'in_progress', {
-                                warning: `${unattributedCount} leads had engagement but no sender attribution. Stats distributed proportionally across campaign mailboxes.`,
-                                current: campaignIndex,
-                                total: campaigns.length,
-                            });
-                        }
-
-                        try {
-                            const campaignMailboxes = await prisma.mailbox.findMany({
-                                where: {
-                                    campaigns: { some: { id: campaignId } },
-                                    organization_id: organizationId,
-                                },
-                                select: {
-                                    id: true,
-                                    open_count_lifetime: true,
-                                    click_count_lifetime: true,
-                                    reply_count_lifetime: true,
-                                    total_sent_count: true,
-                                },
-                            });
-
-                            if (campaignMailboxes.length > 0) {
-                                const divisor = campaignMailboxes.length;
-                                const perMailboxOpens = Math.round(totalUnattributedOpens / divisor);
-                                const perMailboxClicks = Math.round(totalUnattributedClicks / divisor);
-                                const perMailboxReplies = Math.round(totalUnattributedReplies / divisor);
-
-                                for (const mb of campaignMailboxes) {
-                                    const newOpens = mb.open_count_lifetime + perMailboxOpens;
-                                    const newClicks = mb.click_count_lifetime + perMailboxClicks;
-                                    const newReplies = mb.reply_count_lifetime + perMailboxReplies;
-                                    const totalEngagement = newOpens + newClicks + newReplies;
-                                    const engagementRate = mb.total_sent_count > 0
-                                        ? (totalEngagement / mb.total_sent_count) * 100
-                                        : 0;
-
-                                    await prisma.mailbox.update({
-                                        where: { id: mb.id },
-                                        data: {
-                                            open_count_lifetime: newOpens,
-                                            click_count_lifetime: newClicks,
-                                            reply_count_lifetime: newReplies,
-                                            engagement_rate: engagementRate,
-                                        },
-                                    });
-                                }
-
-                                logger.info(`[LeadEngagement] Distributed unattributed engagement proportionally for campaign ${campaignId}`, {
-                                    organizationId,
-                                    unattributedLeads: unattributedCount,
-                                    mailboxCount: campaignMailboxes.length,
-                                    perMailboxOpens,
-                                    perMailboxClicks,
-                                    perMailboxReplies,
-                                });
-                            } else {
-                                logger.warn(`[LeadEngagement] No mailboxes linked to campaign ${campaignId} — proportional fallback skipped`, {
-                                    organizationId,
-                                    unattributedCount,
-                                });
-                            }
-                        } catch (fallbackErr: any) {
-                            logger.error(`[LeadEngagement] Proportional fallback failed for campaign ${campaignId}`, fallbackErr, {
-                                organizationId,
-                            });
-                        }
+                    if (hashAttributedCount > 0) {
+                        logger.info(`[LeadEngagement] Hash-attributed ${hashAttributedCount} leads to mailboxes for campaign ${campaignId}`, {
+                            organizationId,
+                            mailboxCount: campaignMailboxesForAttribution.length,
+                        });
                     }
 
                     logger.info(`[LeadEngagement] Updated ${updatedCount} leads with engagement stats for campaign ${campaignId}`, {
                         totalRecords: records.length,
                         recordsWithEngagement,
-                        unattributedCount,
+                        hashAttributed: hashAttributedCount,
                         recordsWithoutEngagement: records.length - recordsWithEngagement
                     });
                 } catch (csvError: any) {
@@ -1243,8 +1216,8 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             }
 
             // ── Distribute campaign total_sent to linked mailboxes ──────────
-            // Since Smartlead doesn't provide per-mailbox sent counts, distribute
-            // campaign total_sent proportionally across linked mailboxes.
+            // Uses hash-based lead counts from CSV processing to weight distribution.
+            // Each mailbox gets total_sent proportional to how many leads it "owns" via hash.
             try {
                 const dbCampaign = await prisma.campaign.findUnique({
                     where: { id: campaignId },
@@ -1262,8 +1235,14 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     });
 
                     if (linkedMailboxes.length > 0) {
-                        const perMailboxSent = Math.round(campaignTotalSent / linkedMailboxes.length);
+                        let totalLeads = 0;
+                        mailboxLeadCounts.forEach((count) => { totalLeads += count; });
                         for (const mb of linkedMailboxes) {
+                            const leadsForMb = mailboxLeadCounts.get(mb.id) || 0;
+                            // Weight by lead count; fall back to equal if no leads processed
+                            const perMailboxSent = totalLeads > 0
+                                ? Math.round(campaignTotalSent * (leadsForMb / totalLeads))
+                                : Math.round(campaignTotalSent / linkedMailboxes.length);
                             await prisma.mailbox.update({
                                 where: { id: mb.id },
                                 data: {
@@ -1271,9 +1250,9 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                 }
                             });
                         }
-                        logger.info(`[MailboxStats] Distributed ${campaignTotalSent} total_sent across ${linkedMailboxes.length} mailboxes for campaign ${campaignId}`, {
+                        logger.info(`[MailboxStats] Distributed ${campaignTotalSent} total_sent (hash-weighted) across ${linkedMailboxes.length} mailboxes for campaign ${campaignId}`, {
                             organizationId,
-                            perMailboxSent,
+                            totalLeads,
                         });
                     }
                 }
