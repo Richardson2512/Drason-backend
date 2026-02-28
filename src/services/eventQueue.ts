@@ -337,9 +337,23 @@ async function processEventInline(data: EventJobData): Promise<void> {
             await recordEngagementEvent(organizationId, entityId, campaignId, recipientEmail, 'reply');
             break;
 
+        case 'SpamComplaint':
         case 'SPAM_COMPLAINT':
-            // Future: handle spam complaints
-            logger.info('[QUEUE] Spam complaint received', { entityId });
+            // Increment spam_count on the mailbox
+            try {
+                await prisma.mailbox.update({
+                    where: { id: entityId },
+                    data: { spam_count: { increment: 1 } }
+                });
+                logger.info('[QUEUE] Spam complaint recorded', { entityId, campaignId });
+            } catch (err) {
+                logger.warn('[QUEUE] Failed to increment spam_count (mailbox may not exist)', { entityId });
+            }
+            break;
+
+        case 'EmailUnsubscribed':
+            // Log unsubscribe event — stored in RawEvent for auditing, no stat field to update
+            logger.info('[QUEUE] Unsubscribe event recorded', { entityId, recipientEmail });
             break;
 
         default:
