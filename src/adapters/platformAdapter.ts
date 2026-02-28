@@ -22,7 +22,7 @@ export interface SyncResult {
 }
 
 export interface MailboxDetails {
-    externalId: number;
+    externalId: string;
     email: string;
     status: string;
     warmupEnabled: boolean;
@@ -108,7 +108,7 @@ export interface PlatformAdapter {
      */
     getMailboxDetails(
         organizationId: string,
-        externalAccountId: number
+        externalAccountId: string
     ): Promise<MailboxDetails | null>;
 
     /**
@@ -116,7 +116,7 @@ export interface PlatformAdapter {
      */
     updateWarmupSettings(
         organizationId: string,
-        externalAccountId: number,
+        externalAccountId: string,
         settings: WarmupSettings
     ): Promise<{ ok: boolean; message: string }>;
 

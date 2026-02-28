@@ -5,6 +5,10 @@ import { prisma } from '../index';
 import axios from 'axios';
 import crypto from 'crypto';
 
+interface RequestWithRawBody extends Request {
+    rawBody?: string;
+}
+
 // Token Encryption Helper
 function encryptToken(text: string): string {
     const algorithm = 'aes-256-gcm';
@@ -184,7 +188,7 @@ export const handleEvents = async (req: Request, res: Response) => {
     }
 
     // 2. Validate Signature
-    const rawBody = (req as any).rawBody;
+    const rawBody = (req as RequestWithRawBody).rawBody;
     const signature = req.headers['x-slack-signature'] as string;
     const timestamp = req.headers['x-slack-request-timestamp'] as string;
     const signingSecret = process.env.SLACK_SIGNING_SECRET || '';
@@ -221,7 +225,7 @@ export const handleEvents = async (req: Request, res: Response) => {
 // ============================================================================
 export const handleCommand = async (req: Request, res: Response) => {
     // 1. Validate Signature
-    const rawBody = (req as any).rawBody;
+    const rawBody = (req as RequestWithRawBody).rawBody;
     const signature = req.headers['x-slack-signature'] as string;
     const timestamp = req.headers['x-slack-request-timestamp'] as string;
     const signingSecret = process.env.SLACK_SIGNING_SECRET || '';

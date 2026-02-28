@@ -68,7 +68,7 @@ export const loginSchema = z.object({
 
 export const registerSchema = z.object({
     email: z.string().email('Invalid email format'),
-    password: z.string().min(8, 'Password must be at least 8 characters'),
+    password: z.string().min(8, 'Password must be at least 8 characters').max(128, 'Password must be at most 128 characters'),
     name: z.string().min(1, 'Name is required'),
     organizationName: z.string().min(1, 'Organization name is required')
 });
@@ -77,7 +77,19 @@ export const registerSchema = z.object({
 // SCHEMAS — Settings
 // ============================================================================
 
-export const updateSettingsSchema = z.object({}).passthrough();
+const ALLOWED_SETTING_KEYS = [
+    'SMARTLEAD_API_KEY',
+    'INSTANTLY_API_KEY',
+    'EMAILBISON_API_KEY',
+    'smartlead_webhook_secret',
+    'emailbison_webhook_secret',
+    'instantly_webhook_secret',
+] as const;
+
+export const updateSettingsSchema = z.record(
+    z.enum(ALLOWED_SETTING_KEYS),
+    z.string().max(512)
+).refine(obj => Object.keys(obj).length > 0, { message: 'At least one setting is required' });
 
 export const updateOrganizationSchema = z.object({
     name: z.string().min(1).optional(),
@@ -162,7 +174,7 @@ export const updateUserSchema = z.object({
 
 export const changePasswordSchema = z.object({
     currentPassword: z.string().min(1, 'Current password is required'),
-    newPassword: z.string().min(8, 'New password must be at least 8 characters')
+    newPassword: z.string().min(8, 'New password must be at least 8 characters').max(128, 'Password must be at most 128 characters')
 });
 
 // ============================================================================

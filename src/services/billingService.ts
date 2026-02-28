@@ -37,14 +37,24 @@ export interface UsageCounts {
  * Implements idempotency using polar_event_id.
  */
 export async function processWebhook(event: WebhookEvent): Promise<void> {
-    // Check idempotency
-    const existing = await prisma.subscriptionEvent.findUnique({
-        where: { polar_event_id: event.id }
-    });
-
-    if (existing) {
-        logger.info('[BILLING] Duplicate webhook event, skipping', { eventId: event.id });
-        return;
+    // Idempotency check + record in a single transaction to prevent race conditions
+    try {
+        await prisma.subscriptionEvent.create({
+            data: {
+                organization_id: event.data?.metadata?.organization_id || 'unknown',
+                event_type: event.type,
+                polar_event_id: event.id,
+                new_tier: event.data?.metadata?.tier || null,
+                payload: event.data
+            }
+        });
+    } catch (err: unknown) {
+        // Unique constraint violation = duplicate event, safe to skip
+        if (err instanceof Error && 'code' in err && (err as { code: string }).code === 'P2002') {
+            logger.info('[BILLING] Duplicate webhook event, skipping', { eventId: event.id });
+            return;
+        }
+        throw err;
     }
 
     // Process based on event type
@@ -87,7 +97,8 @@ async function handleSubscriptionCreated(event: WebhookEvent): Promise<void> {
         throw new Error('Missing organization_id in webhook metadata');
     }
 
-    const tier = metadata.tier || 'starter';
+    const validTiers = ['trial', 'starter', 'growth', 'scale', 'enterprise'];
+    const tier = validTiers.includes(metadata.tier) ? metadata.tier : 'starter';
 
     await prisma.organization.update({
         where: { id: orgId },
@@ -101,16 +112,7 @@ async function handleSubscriptionCreated(event: WebhookEvent): Promise<void> {
         }
     });
 
-    // Record event
-    await prisma.subscriptionEvent.create({
-        data: {
-            organization_id: orgId,
-            event_type: 'subscription.created',
-            polar_event_id: event.id,
-            new_tier: tier,
-            payload: event.data
-        }
-    });
+    // Event already recorded in processWebhook() for idempotency
 
     // Audit log
     await auditLogService.logAction({
@@ -160,17 +162,7 @@ async function handleSubscriptionUpdated(event: WebhookEvent): Promise<void> {
         }
     });
 
-    // Record event
-    await prisma.subscriptionEvent.create({
-        data: {
-            organization_id: orgId,
-            event_type: 'subscription.updated',
-            polar_event_id: event.id,
-            previous_tier: previousTier,
-            new_tier: newTier,
-            payload: event.data
-        }
-    });
+    // Event already recorded in processWebhook() for idempotency
 
     // Audit log
     await auditLogService.logAction({
@@ -205,15 +197,7 @@ async function handleSubscriptionCanceled(event: WebhookEvent): Promise<void> {
         }
     });
 
-    // Record event
-    await prisma.subscriptionEvent.create({
-        data: {
-            organization_id: orgId,
-            event_type: 'subscription.canceled',
-            polar_event_id: event.id,
-            payload: event.data
-        }
-    });
+    // Event already recorded in processWebhook() for idempotency
 
     // Audit log
     await auditLogService.logAction({
@@ -254,15 +238,7 @@ async function handleInvoicePaid(event: WebhookEvent): Promise<void> {
         }
     });
 
-    // Record event
-    await prisma.subscriptionEvent.create({
-        data: {
-            organization_id: orgId,
-            event_type: 'invoice.paid',
-            polar_event_id: event.id,
-            payload: event.data
-        }
-    });
+    // Event already recorded in processWebhook() for idempotency
 
     logger.info('[BILLING] Invoice paid', { orgId, subscriptionId: subscription_id });
 }
@@ -286,15 +262,7 @@ async function handlePaymentFailed(event: WebhookEvent): Promise<void> {
         }
     });
 
-    // Record event
-    await prisma.subscriptionEvent.create({
-        data: {
-            organization_id: orgId,
-            event_type: 'invoice.payment_failed',
-            polar_event_id: event.id,
-            payload: event.data
-        }
-    });
+    // Event already recorded in processWebhook() for idempotency
 
     // Audit log
     await auditLogService.logAction({

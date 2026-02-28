@@ -25,6 +25,7 @@ import * as notificationService from './notificationService';
 import { SlackAlertService } from './SlackAlertService';
 import * as entityStateService from './entityStateService';
 import * as campaignHealthService from './campaignHealthService';
+import * as rotationService from './rotationService';
 import { logger } from './observabilityService';
 import {
     EventType,
@@ -457,7 +458,7 @@ const pauseMailbox = async (mailboxId: string, reason: string): Promise<void> =>
         severity: 'critical',
         title: '🛑 Mailbox Paused',
         message: `Mailbox \`${mailbox.email || mailboxId}\` has been auto-paused.\n*Reason:* ${reason}`
-    }).catch(() => { }); // Non-blocking
+    }).catch(err => logger.warn('[MONITOR] Non-fatal alert error', { error: String(err) }));
 
     // ── PLATFORM INTEGRATION: Remove mailbox from all assigned campaigns ──
     try {
@@ -472,12 +473,12 @@ const pauseMailbox = async (mailboxId: string, reason: string): Promise<void> =>
                     some: { id: mailboxId }
                 }
             },
-            select: { id: true, external_id: true }
+            select: { id: true, external_id: true, name: true }
         });
 
         for (const campaign of campaigns) {
             const externalCampaignId = campaign.external_id || campaign.id;
-            const externalMailboxId = mailboxEntity?.external_email_account_id?.toString() || mailboxId;
+            const externalMailboxId = mailboxEntity?.external_email_account_id || mailboxId;
             await adapter.removeMailboxFromCampaign(
                 orgId,
                 externalCampaignId,
@@ -491,6 +492,27 @@ const pauseMailbox = async (mailboxId: string, reason: string): Promise<void> =>
             campaignCount: campaigns.length,
             platform: adapter.platform
         });
+
+        // ── ROTATION: Attempt to rotate in a standby mailbox for affected campaigns ──
+        try {
+            const rotationResult = await rotationService.rotateForPausedMailbox(
+                orgId,
+                mailboxId,
+                campaigns
+            );
+            logger.info(`[MONITOR] Rotation result for paused mailbox ${mailboxId}`, {
+                organizationId: orgId,
+                mailboxId,
+                rotationsSucceeded: rotationResult.rotationsSucceeded,
+                rotationsFailed: rotationResult.rotationsFailed,
+                noStandbyAvailable: rotationResult.noStandbyAvailable
+            });
+        } catch (rotationError: any) {
+            logger.error(`[MONITOR] Rotation failed for paused mailbox ${mailboxId}`, rotationError, {
+                organizationId: orgId,
+                mailboxId
+            });
+        }
     } catch (platformError: any) {
         // Platform removal failure doesn't block the pause — mailbox is already paused in Drason
         logger.error(`[MONITOR] Failed to remove mailbox ${mailboxId} from platform campaigns`, platformError, {
@@ -822,7 +844,7 @@ const checkDomainHealth = async (domainId: string): Promise<void> => {
             severity: 'critical',
             title: '🛑 Domain Paused',
             message: `Domain \`${domain.domain}\` has been auto-paused.\n*Reason:* ${reason}\n*Unhealthy mailboxes:* ${freshUnhealthyCount}/${freshTotalMailboxes}`
-        }).catch(() => { }); // Non-blocking
+        }).catch(err => logger.warn('[MONITOR] Non-fatal alert error', { error: String(err) }));
     }
 };
 

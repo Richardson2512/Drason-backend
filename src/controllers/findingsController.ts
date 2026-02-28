@@ -51,8 +51,8 @@ export const getEntityFindings = async (req: Request, res: Response) => {
         }
 
         // Filter findings for this specific entity
-        const allFindings = report.findings as any[];
-        const entityFindings = allFindings.filter((finding: any) => {
+        const allFindings = (report.findings || []) as Record<string, unknown>[];
+        const entityFindings = allFindings.filter((finding) => {
             // Match both entity_type and entity_id
             // Check both possible field name formats (entity_type/entity and entity_id/entityId)
             const findingEntityType = finding.entity_type || finding.entity;

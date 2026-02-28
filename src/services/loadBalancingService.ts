@@ -335,7 +335,7 @@ export const applySuggestion = async (
                         await adapter.addMailboxToCampaign(
                             mailboxAdd.organization_id,
                             externalCampaignId,
-                            mailboxAdd.external_email_account_id.toString()
+                            mailboxAdd.external_email_account_id
                         );
                     } catch (adapterError: any) {
                         logger.warn(`[LOAD_BALANCING] Platform API call failed for add`, { error: adapterError.message });
@@ -378,7 +378,7 @@ export const applySuggestion = async (
                         await adapter.removeMailboxFromCampaign(
                             mailboxRemove.organization_id,
                             externalCampaignId,
-                            mailboxRemove.external_email_account_id.toString()
+                            mailboxRemove.external_email_account_id
                         );
                     } catch (adapterError: any) {
                         logger.warn(`[LOAD_BALANCING] Platform API call failed for remove`, { error: adapterError.message });

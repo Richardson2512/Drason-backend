@@ -317,7 +317,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
 
                 if (!domain) continue;
 
-                const externalId = mailbox.id;
+                const externalId = String(mailbox.id);
                 const internalId = `eb-${externalId}`;
 
                 const isNewMailbox = !existingMailboxSet.has(internalId);
@@ -768,7 +768,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
 
     async getMailboxDetails(
         organizationId: string,
-        externalAccountId: number
+        externalAccountId: string
     ): Promise<MailboxDetails | null> {
         try {
             const client = await this.getClient(organizationId);
@@ -778,7 +778,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
             if (!data) return null;
 
             return {
-                externalId: data.id,
+                externalId: String(data.id),
                 email: data.email || '',
                 status: data.status || 'unknown',
                 warmupEnabled: data.warmup_enabled === true,
@@ -798,26 +798,29 @@ export class EmailBisonAdapter implements PlatformAdapter {
 
     async updateWarmupSettings(
         organizationId: string,
-        externalAccountId: number,
+        externalAccountId: string,
         settings: WarmupSettings
     ): Promise<{ ok: boolean; message: string }> {
         try {
             const client = await this.getClient(organizationId);
 
+            const numericId = parseInt(externalAccountId, 10);
+            if (isNaN(numericId)) return { ok: false, message: 'Invalid numeric account ID for EmailBison' };
+
             if (settings.warmup_enabled) {
                 await client.patch('/api/warmup/sender-emails/enable', {
-                    sender_email_ids: [externalAccountId],
+                    sender_email_ids: [numericId],
                 });
 
                 if (settings.total_warmup_per_day) {
                     await client.patch('/api/warmup/sender-emails/update-daily-warmup-limits', {
-                        sender_email_ids: [externalAccountId],
+                        sender_email_ids: [numericId],
                         daily_warmup_limit: settings.total_warmup_per_day,
                     });
                 }
             } else {
                 await client.patch('/api/warmup/sender-emails/disable', {
-                    sender_email_ids: [externalAccountId],
+                    sender_email_ids: [numericId],
                 });
             }
 
@@ -933,7 +936,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
                     const ok = await this.removeMailboxFromCampaign(
                         organizationId,
                         campaign.external_id,
-                        mailbox.external_email_account_id.toString()
+                        mailbox.external_email_account_id
                     );
 
                     if (ok) successCount++;

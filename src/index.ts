@@ -10,10 +10,10 @@ dotenv.config();
 // ============================================================================
 
 function validateEnvironment(): void {
-    const required: string[] = ['DATABASE_URL'];
+    const required: string[] = ['DATABASE_URL', 'ENCRYPTION_KEY'];
 
     if (process.env.NODE_ENV === 'production') {
-        required.push('JWT_SECRET');
+        required.push('JWT_SECRET', 'BACKEND_URL', 'POLAR_WEBHOOK_SECRET', 'POLAR_ACCESS_TOKEN');
     }
 
     const missing = required.filter(key => !process.env[key]);
@@ -30,8 +30,20 @@ validateEnvironment();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Initialize Prisma
-export const prisma = new PrismaClient();
+// Initialize Prisma with query timeout and connection pool limits
+export const prisma = new PrismaClient({
+    datasourceUrl: appendStatementTimeout(process.env.DATABASE_URL || ''),
+});
+
+/**
+ * Append statement_timeout to the PostgreSQL connection string.
+ * Prevents any single query from running longer than 30 seconds.
+ */
+function appendStatementTimeout(url: string): string {
+    if (!url) return url;
+    const separator = url.includes('?') ? '&' : '?';
+    return `${url}${separator}statement_timeout=30000&connect_timeout=10`;
+}
 
 // Import middleware
 import { extractOrgContext } from './middleware/orgContext';
@@ -263,8 +275,11 @@ import * as healingService from './services/healingService';
 
 // DLQ: List failed jobs (ADMIN only)
 app.get('/api/admin/dlq', requireRole(UserRole.ADMIN), asyncHandler(async (req, res) => {
+    const orgId = req.orgContext?.organizationId;
     const limit = parseInt(String(req.query.limit || '50'), 10);
-    const jobs = await getDeadLetterJobs(limit);
+    const allJobs = await getDeadLetterJobs(limit);
+    // Scope DLQ to admin's own organization
+    const jobs = orgId ? allJobs.filter((j: Record<string, unknown>) => (j as Record<string, unknown>).organizationId === orgId) : allJobs;
     res.json({ success: true, data: { count: jobs.length, jobs } });
 }));
 
@@ -414,26 +429,26 @@ app.get('/api/dashboard/system-metrics', requireRole(UserRole.ADMIN), asyncHandl
         totalMailboxes, healthyMailboxes, pausedMailboxes, warningMailboxes,
         totalDomains, healthyDomains, pausedDomains,
     ] = await Promise.all([
-        prisma.mailbox.count({ where: orgId ? { organization_id: orgId } : {} }),
-        prisma.mailbox.count({ where: { ...(orgId ? { organization_id: orgId } : {}), status: 'healthy' } }),
-        prisma.mailbox.count({ where: { ...(orgId ? { organization_id: orgId } : {}), status: 'paused' } }),
-        prisma.mailbox.count({ where: { ...(orgId ? { organization_id: orgId } : {}), status: 'warning' } }),
-        prisma.domain.count({ where: orgId ? { organization_id: orgId } : {} }),
-        prisma.domain.count({ where: { ...(orgId ? { organization_id: orgId } : {}), status: 'healthy' } }),
-        prisma.domain.count({ where: { ...(orgId ? { organization_id: orgId } : {}), status: 'paused' } }),
+        prisma.mailbox.count({ where: { organization_id: orgId } }),
+        prisma.mailbox.count({ where: { organization_id: orgId, status: 'healthy' } }),
+        prisma.mailbox.count({ where: { organization_id: orgId, status: 'paused' } }),
+        prisma.mailbox.count({ where: { organization_id: orgId, status: 'warning' } }),
+        prisma.domain.count({ where: { organization_id: orgId } }),
+        prisma.domain.count({ where: { organization_id: orgId, status: 'healthy' } }),
+        prisma.domain.count({ where: { organization_id: orgId, status: 'paused' } }),
     ]);
 
     // Recent bounce rate (last 24h)
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const recentEvents = await prisma.rawEvent.count({
         where: {
-            ...(orgId ? { organization_id: orgId } : {}),
+            organization_id: orgId,
             created_at: { gte: oneDayAgo },
         },
     });
     const recentBounces = await prisma.rawEvent.count({
         where: {
-            ...(orgId ? { organization_id: orgId } : {}),
+            organization_id: orgId,
             event_type: { in: ['HARD_BOUNCE', 'BOUNCE', 'EMAIL_BOUNCE'] },
             created_at: { gte: oneDayAgo },
         },
@@ -581,7 +596,7 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
 
     // 1. Zod Validation Errors
     if (err instanceof ZodError) {
-        const message = (err as any).errors.map((e: any) => `${e.path.join('.')}: ${e.message}`).join(', ');
+        const message = err.issues.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
         return res.status(400).json({
             success: false,
             error: `Validation Error: ${message}`
@@ -596,10 +611,12 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
         });
     }
 
-    // 3. Programming/Unknown Errors — always include message for internal API debugging
+    // 3. Programming/Unknown Errors — hide internal details in production
     res.status(500).json({
         success: false,
-        error: err.message || 'Internal server error'
+        error: process.env.NODE_ENV === 'production'
+            ? 'Internal server error'
+            : (err.message || 'Internal server error')
     });
 });
 

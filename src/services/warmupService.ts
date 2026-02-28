@@ -60,7 +60,6 @@ export const enableWarmupForRecovery = async (
             select: {
                 email: true,
                 external_email_account_id: true,
-                smartlead_email_account_id: true,
                 consecutive_pauses: true
             }
         });
@@ -69,7 +68,7 @@ export const enableWarmupForRecovery = async (
             throw new Error(`Mailbox ${mailboxId} not found`);
         }
 
-        const externalAccountId = mailbox.external_email_account_id ?? mailbox.smartlead_email_account_id;
+        const externalAccountId = mailbox.external_email_account_id;
         if (!externalAccountId) {
             logger.warn('[WARMUP] Cannot enable warmup - no external email account ID', {
                 organizationId,
@@ -182,12 +181,11 @@ export const updateWarmupForPhaseTransition = async (
             where: { id: mailboxId },
             select: {
                 email: true,
-                external_email_account_id: true,
-                smartlead_email_account_id: true
+                external_email_account_id: true
             }
         });
 
-        const externalAccountId = mailbox?.external_email_account_id ?? mailbox?.smartlead_email_account_id;
+        const externalAccountId = mailbox?.external_email_account_id;
         if (!mailbox || !externalAccountId) {
             logger.warn('[WARMUP] Cannot update warmup - mailbox or email account ID not found', {
                 organizationId,
@@ -292,12 +290,11 @@ export const disableWarmup = async (
             where: { id: mailboxId },
             select: {
                 email: true,
-                external_email_account_id: true,
-                smartlead_email_account_id: true
+                external_email_account_id: true
             }
         });
 
-        const externalAccountId = mailbox?.external_email_account_id ?? mailbox?.smartlead_email_account_id;
+        const externalAccountId = mailbox?.external_email_account_id;
         if (!mailbox || !externalAccountId) {
             logger.warn('[WARMUP] Cannot disable warmup - mailbox or email account ID not found', {
                 organizationId,
@@ -381,12 +378,11 @@ export const checkGraduationCriteria = async (
             phase_entered_at: true,
             consecutive_pauses: true,
             external_email_account_id: true,
-            smartlead_email_account_id: true,
             organization_id: true
         }
     });
 
-    const externalAccountId = mailbox?.external_email_account_id ?? mailbox?.smartlead_email_account_id;
+    const externalAccountId = mailbox?.external_email_account_id;
     if (!mailbox || !externalAccountId) {
         return {
             readyForGraduation: false,

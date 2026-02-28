@@ -674,7 +674,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     where: { id: mailbox.id.toString() },
                     update: {
                         email,
-                        smartlead_email_account_id: mailbox.id,
+                        external_email_account_id: String(mailbox.id),
                         status: mailboxStatus,
                         smtp_status: mailbox.is_smtp_success === true,
                         imap_status: mailbox.is_imap_success === true,
@@ -688,7 +688,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     create: {
                         id: mailbox.id.toString(),
                         email,
-                        smartlead_email_account_id: mailbox.id,
+                        external_email_account_id: String(mailbox.id),
                         status: mailboxStatus,
                         smtp_status: mailbox.is_smtp_success === true,
                         imap_status: mailbox.is_imap_success === true,
@@ -1079,7 +1079,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
 
                     // Debug: Log first record to see column structure
                     if (records.length > 0) {
-                        const firstRecord = records[0] as any;
+                        const firstRecord = records[0] as Record<string, string>;
                         logger.info(`[LeadEngagement] CSV columns for campaign ${campaignId}:`, {
                             columns: Object.keys(firstRecord),
                             sampleRecord: firstRecord
@@ -1102,7 +1102,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     let recordsWithEngagement = 0;
                     let hashAttributedCount = 0;
                     for (const record of records) {
-                        const rec = record as any; // Type assertion for CSV record
+                        const rec = record as Record<string, string>;
                         const email = rec.email || rec.Email || rec.EMAIL;
                         if (!email) continue;
 
@@ -1125,7 +1125,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
 
                         // Extract bounce data
                         const bounceCount = parseInt(rec.bounce_count || rec.bounces || rec.bounced || '0');
-                        const bouncedStatus = rec.bounced === 'true' || rec.bounced === '1' || rec.bounced === 1;
+                        const bouncedStatus = rec.bounced === 'true' || rec.bounced === '1';
 
                         // Extract sender information (which mailbox sent to this lead)
                         const senderEmail = rec.sender_email || rec.from_email || rec.sent_from || rec.email_account || rec.sender;
@@ -1265,11 +1265,11 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                             organization_id: organizationId,
                                             OR: [
                                                 { email: senderEmail },
-                                                { smartlead_email_account_id: senderAccountId ? parseInt(senderAccountId) : undefined }
+                                                { external_email_account_id: senderAccountId || undefined }
                                             ].filter(condition => {
                                                 // Remove undefined conditions
                                                 if ('email' in condition) return !!condition.email;
-                                                if ('smartlead_email_account_id' in condition) return condition.smartlead_email_account_id !== undefined;
+                                                if ('external_email_account_id' in condition) return condition.external_email_account_id !== undefined;
                                                 return false;
                                             })
                                         },

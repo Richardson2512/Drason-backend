@@ -1,6 +1,7 @@
+import crypto from 'crypto';
 import { Request, Response } from 'express';
+import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
-import { getOrgId } from '../middleware/orgContext';
 import { enqueueEvent } from '../services/eventQueue';
 import { storeEvent } from '../services/eventService';
 import { EventType } from '../types';
@@ -31,23 +32,88 @@ function mapEmailBisonEventToType(ebEventName: string): EventType | string | nul
 }
 
 /**
+ * Validate HMAC-SHA256 webhook signature.
+ * Returns true if valid or if no secret is configured in non-production.
+ */
+function validateSignature(req: Request, secret: string | null): boolean {
+    if (!secret) {
+        if (process.env.NODE_ENV === 'production') {
+            logger.warn('[EMAILBISON-WEBHOOK] No webhook secret configured — rejecting in production');
+            return false;
+        }
+        return true; // Allow unsigned in development
+    }
+
+    const signature = req.headers['x-emailbison-signature'] as string || req.headers['x-webhook-signature'] as string;
+    if (!signature) {
+        logger.warn('[EMAILBISON-WEBHOOK] Missing signature header');
+        return false;
+    }
+
+    const expectedSignature = crypto
+        .createHmac('sha256', secret)
+        .update(JSON.stringify(req.body))
+        .digest('hex');
+
+    try {
+        return crypto.timingSafeEqual(
+            Buffer.from(signature),
+            Buffer.from(expectedSignature)
+        );
+    } catch {
+        return false; // Length mismatch
+    }
+}
+
+/**
  * EmailBison Webhook Controller
  *
  * Handles real-time events from EmailBison.
- * Uses the BullMQ eventQueue for async, decoupled processing to ensure database stability during spikes.
+ * Resolves org via mailbox lookup (public endpoint — no JWT required).
+ * Uses the BullMQ eventQueue for async, decoupled processing.
  */
 export const handleEmailBisonWebhook = async (req: Request, res: Response) => {
     try {
-        const orgId = getOrgId(req);
-        // EmailBison payload is typically { events: [...] } or an array directly
         const bodyContent = req.body;
 
         // Handle varying payload structures (array vs wrapped object)
         const events = Array.isArray(bodyContent) ? bodyContent : (bodyContent.events || [bodyContent]);
 
-        logger.info(`[EMAILBISON-WEBHOOK] Received ${events.length} event(s)`, {
-            organizationId: orgId
+        if (events.length === 0) {
+            return res.json({ success: true, processed: 0 });
+        }
+
+        // Resolve org from the first event's mailbox
+        const firstEvent = events[0];
+        const firstMailboxIdRaw = firstEvent.email_account_id || firstEvent.mailbox_id || firstEvent.data?.email_account_id;
+        const firstMailboxId = firstMailboxIdRaw ? `eb-${firstMailboxIdRaw}` : null;
+
+        if (!firstMailboxId) {
+            logger.warn('[EMAILBISON-WEBHOOK] First event missing mailbox ID, cannot resolve org');
+            return res.json({ success: false, error: 'Missing mailbox identifier' });
+        }
+
+        const mailbox = await prisma.mailbox.findUnique({
+            where: { id: firstMailboxId },
+            select: { organization_id: true }
         });
+
+        if (!mailbox) {
+            logger.info(`[EMAILBISON-WEBHOOK] Mailbox ${firstMailboxId} not found`);
+            return res.json({ received: true, warning: 'Mailbox not found' });
+        }
+
+        const orgId = mailbox.organization_id;
+
+        // Validate webhook signature using org-specific secret
+        const setting = await prisma.organizationSetting.findUnique({
+            where: { organization_id_key: { organization_id: orgId, key: 'emailbison_webhook_secret' } }
+        });
+        if (!validateSignature(req, setting?.value || null)) {
+            return res.status(401).json({ error: 'Invalid webhook signature' });
+        }
+
+        logger.info(`[EMAILBISON-WEBHOOK] Received ${events.length} event(s)`, { organizationId: orgId });
 
         // Parse and enqueue each event
         for (const event of events) {
@@ -109,6 +175,6 @@ export const handleEmailBisonWebhook = async (req: Request, res: Response) => {
         });
 
         // Return 200 even on complete parsing failure to prevent retry storms from malformed payloads
-        res.json({ success: false, error: error.message });
+        res.json({ success: false, error: 'Processing failed' });
     }
 };

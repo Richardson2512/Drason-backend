@@ -343,7 +343,7 @@ export const resolveStalledCampaign = async (req: Request, res: Response) => {
                         select: { external_email_account_id: true }
                     });
                     const externalCampaignId = campaignData?.external_id || campaignId;
-                    const externalMailboxId = mailboxData?.external_email_account_id?.toString() || mailboxId;
+                    const externalMailboxId = mailboxData?.external_email_account_id || mailboxId;
                     await adapter.addMailboxToCampaign(orgId, externalCampaignId, externalMailboxId);
                     successCount++;
                 } catch (addError) {

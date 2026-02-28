@@ -8,10 +8,13 @@ import { logger } from '../services/observabilityService';
 import * as auditLogService from '../services/auditLogService';
 import * as entityStateService from '../services/entityStateService';
 import * as campaignHealthService from '../services/campaignHealthService';
+import * as healingService from '../services/healingService';
+import * as notificationService from '../services/notificationService';
+import * as rotationService from './rotationService';
+import { removeMailboxFromCampaigns } from '../services/smartleadInfrastructureMutator';
 import { calculateEngagementScore, calculateFinalScore } from './leadScoringService';
 import { RecoveryPhase, LeadState, MailboxState, TriggerType } from '../types';
 import * as eventQueue from '../services/eventQueue';
-// Add any other necessary imports that might have been left in controller
 
 /**
  * Recalculate lead_score from engagement counters using the proper formula.
@@ -133,9 +136,6 @@ export async function handleBounceEvent(orgId: string, event: any) {
             (mailbox.recovery_phase === 'restricted_send' || mailbox.recovery_phase === 'warm_recovery')) {
 
             try {
-                const healingService = require('../services/healingService');
-                const notificationService = require('../services/notificationService');
-
                 logger.error('[WARMUP-RECOVERY] BOUNCE during recovery - ZERO TOLERANCE VIOLATED', undefined, {
                     organizationId: orgId,
                     mailboxId,
@@ -223,7 +223,6 @@ export async function handleBounceEvent(orgId: string, event: any) {
                 const smartleadEmailAccountId = event.email_account_id || mailboxId;
                 if (smartleadEmailAccountId) {
                     try {
-                        const { removeMailboxFromCampaigns } = require('../services/smartleadInfrastructureMutator');
                         const result = await removeMailboxFromCampaigns(
                             orgId,
                             mailboxId.toString(),
@@ -247,9 +246,34 @@ export async function handleBounceEvent(orgId: string, event: any) {
                     }
                 }
 
-                // Step 3: Notify user of auto-pause
+                // Step 3: Rotate in standby mailbox(es) for affected campaigns
                 try {
-                    const notificationService = require('../services/notificationService');
+                    const affectedCampaigns = await prisma.campaign.findMany({
+                        where: { mailboxes: { some: { id: mailboxId.toString() } } },
+                        select: { id: true, external_id: true, name: true }
+                    });
+                    if (affectedCampaigns.length > 0) {
+                        const rotationResult = await rotationService.rotateForPausedMailbox(
+                            orgId,
+                            mailboxId.toString(),
+                            affectedCampaigns
+                        );
+                        logger.info('[SMARTLEAD-WEBHOOK] Rotation result after bounce auto-pause', {
+                            organizationId: orgId,
+                            mailboxId,
+                            rotationsSucceeded: rotationResult.rotationsSucceeded,
+                            noStandbyAvailable: rotationResult.noStandbyAvailable
+                        });
+                    }
+                } catch (rotationError: any) {
+                    logger.error('[SMARTLEAD-WEBHOOK] Rotation failed after bounce auto-pause', rotationError, {
+                        organizationId: orgId,
+                        mailboxId
+                    });
+                }
+
+                // Step 4: Notify user of auto-pause
+                try {
                     await notificationService.createNotification(orgId, {
                         type: 'WARNING',
                         title: 'Mailbox Auto-Paused & Removed',
@@ -259,7 +283,7 @@ export async function handleBounceEvent(orgId: string, event: any) {
                     logger.error('[SMARTLEAD-WEBHOOK] Failed to send auto-pause notification', notifError as Error);
                 }
 
-                // Step 4: Audit log
+                // Step 5: Audit log
                 await auditLogService.logAction({
                     organizationId: orgId,
                     entity: 'mailbox',
@@ -961,7 +985,6 @@ export async function handleCampaignStatusChangedEvent(orgId: string, event: any
 
     // Notify user of external status change
     try {
-        const notificationService = require('../services/notificationService');
         await notificationService.createNotification(orgId, {
             type: newStatus === 'paused' ? 'WARNING' : 'INFO',
             title: 'Campaign Status Changed in Smartlead',

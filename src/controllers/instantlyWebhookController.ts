@@ -2,6 +2,7 @@
  * Instantly Webhook Controller
  *
  * Handles real-time events from Instantly API V2.
+ * Resolves org via mailbox lookup (public endpoint — no JWT required).
  * Event types: email_sent, email_opened, email_clicked, email_bounced,
  *              email_replied, lead_unsubscribed
  *
@@ -9,9 +10,10 @@
  * Returns 200 immediately so Instantly does not retry on slow processing.
  */
 
+import crypto from 'crypto';
 import { Request, Response } from 'express';
+import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
-import { getOrgId } from '../middleware/orgContext';
 import { enqueueEvent } from '../services/eventQueue';
 import { storeEvent } from '../services/eventService';
 import { EventType } from '../types';
@@ -45,6 +47,40 @@ function mapInstantlyEventType(eventName: string): EventType | string | null {
 }
 
 /**
+ * Validate HMAC-SHA256 webhook signature.
+ * Returns true if valid or if no secret is configured in non-production.
+ */
+function validateSignature(req: Request, secret: string | null): boolean {
+    if (!secret) {
+        if (process.env.NODE_ENV === 'production') {
+            logger.warn('[INSTANTLY-WEBHOOK] No webhook secret configured — rejecting in production');
+            return false;
+        }
+        return true; // Allow unsigned in development
+    }
+
+    const signature = req.headers['x-instantly-signature'] as string || req.headers['x-webhook-signature'] as string;
+    if (!signature) {
+        logger.warn('[INSTANTLY-WEBHOOK] Missing signature header');
+        return false;
+    }
+
+    const expectedSignature = crypto
+        .createHmac('sha256', secret)
+        .update(JSON.stringify(req.body))
+        .digest('hex');
+
+    try {
+        return crypto.timingSafeEqual(
+            Buffer.from(signature),
+            Buffer.from(expectedSignature)
+        );
+    } catch {
+        return false; // Length mismatch
+    }
+}
+
+/**
  * Instantly Webhook Handler
  *
  * Instantly delivers one event object per POST.
@@ -62,11 +98,44 @@ function mapInstantlyEventType(eventName: string): EventType | string | null {
  */
 export const handleInstantlyWebhook = async (req: Request, res: Response) => {
     try {
-        const orgId = getOrgId(req);
         const body = req.body;
 
         // Instantly can send a single event or a batch array
         const events: any[] = Array.isArray(body) ? body : [body];
+
+        if (events.length === 0) {
+            return res.json({ success: true, processed: 0 });
+        }
+
+        // Resolve org from the first event's mailbox
+        const firstEvent = events[0];
+        const firstSenderEmail = firstEvent.email_account || firstEvent.from_email || firstEvent.account;
+        const firstMailboxId = firstSenderEmail ? `inst-${firstSenderEmail}` : null;
+
+        if (!firstMailboxId) {
+            logger.warn('[INSTANTLY-WEBHOOK] First event missing email_account, cannot resolve org');
+            return res.json({ success: false, error: 'Missing mailbox identifier' });
+        }
+
+        const mailbox = await prisma.mailbox.findUnique({
+            where: { id: firstMailboxId },
+            select: { organization_id: true }
+        });
+
+        if (!mailbox) {
+            logger.info(`[INSTANTLY-WEBHOOK] Mailbox ${firstMailboxId} not found`);
+            return res.json({ received: true, warning: 'Mailbox not found' });
+        }
+
+        const orgId = mailbox.organization_id;
+
+        // Validate webhook signature using org-specific secret
+        const setting = await prisma.organizationSetting.findUnique({
+            where: { organization_id_key: { organization_id: orgId, key: 'instantly_webhook_secret' } }
+        });
+        if (!validateSignature(req, setting?.value || null)) {
+            return res.status(401).json({ error: 'Invalid webhook signature' });
+        }
 
         logger.info(`[INSTANTLY-WEBHOOK] Received ${events.length} event(s)`, {
             organizationId: orgId,
@@ -132,6 +201,6 @@ export const handleInstantlyWebhook = async (req: Request, res: Response) => {
             body: req.body,
         });
         // Return 200 even on error to prevent infinite retries from malformed payloads
-        res.json({ success: false, error: err.message });
+        res.json({ success: false, error: 'Processing failed' });
     }
 };

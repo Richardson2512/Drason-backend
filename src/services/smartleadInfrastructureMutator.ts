@@ -111,7 +111,8 @@ export const removeMailboxFromCampaigns = async (
             campaigns: {
                 select: {
                     id: true,
-                    name: true
+                    name: true,
+                    external_id: true
                 }
             }
         }
@@ -136,8 +137,10 @@ export const removeMailboxFromCampaigns = async (
 
     // Remove from each campaign
     for (const campaign of smartleadCampaigns.data) {
-        // Match by campaign name (since we don't store smartlead_campaign_id)
-        const ourCampaign = campaigns.find(c => c.name === campaign.name);
+        // Match by external_id (Smartlead campaign ID), fall back to name if external_id not set
+        const ourCampaign = campaigns.find(c =>
+            (c.external_id && c.external_id === String(campaign.id)) || c.name === campaign.name
+        );
         if (!ourCampaign) continue;
 
         try {

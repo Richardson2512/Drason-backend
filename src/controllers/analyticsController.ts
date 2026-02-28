@@ -177,15 +177,15 @@ export const getBounceAnalytics = async (req: Request, res: Response) => {
             };
         });
 
-        // Get bounce reasons distribution
+        // Get bounce reasons distribution (parameterized to prevent SQL injection)
         const bounceReasons = await prisma.$queryRaw<Array<{ bounce_reason: string; count: bigint }>>`
             SELECT
                 COALESCE("bounce_reason", 'Unknown') as bounce_reason,
                 COUNT(*) as count
             FROM "BounceEvent"
             WHERE "organization_id" = ${orgId}
-            ${mailbox_id ? prisma.$queryRawUnsafe(`AND "mailbox_id" = '${mailbox_id}'`) : prisma.$queryRawUnsafe('')}
-            ${campaign_id ? prisma.$queryRawUnsafe(`AND "campaign_id" = '${campaign_id}'`) : prisma.$queryRawUnsafe('')}
+            AND (${mailbox_id}::text IS NULL OR "mailbox_id" = ${mailbox_id || null})
+            AND (${campaign_id}::text IS NULL OR "campaign_id" = ${campaign_id || null})
             GROUP BY "bounce_reason"
             ORDER BY count DESC
             LIMIT 10

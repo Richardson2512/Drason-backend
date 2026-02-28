@@ -36,9 +36,7 @@ export const handlePolarWebhook = async (req: Request, res: Response): Promise<R
         const isValid = polarClient.validateWebhookSignature(payload, signature, webhookSecret);
 
         if (!isValid) {
-            logger.warn('[BILLING] Invalid webhook signature', {
-                receivedSignature: signature
-            });
+            logger.warn('[BILLING] Invalid webhook signature — rejected');
             return res.status(401).json({ error: 'Invalid signature' });
         }
 
@@ -182,7 +180,7 @@ export const cancelSubscription = async (req: Request, res: Response): Promise<R
         return res.json({ message: 'Subscription canceled. Access will continue until the end of your billing period.' });
     } catch (error) {
         logger.error('[BILLING] Failed to cancel subscription', error instanceof Error ? error : new Error(String(error)));
-        return res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to cancel subscription' });
+        return res.status(500).json({ error: 'Failed to cancel subscription' });
     }
 };
 

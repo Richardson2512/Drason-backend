@@ -6,6 +6,7 @@
  */
 
 import { Request, Response } from 'express';
+import crypto from 'crypto';
 import { prisma } from '../index';
 import { getOrgId } from '../middleware/orgContext';
 import { logger } from '../services/observabilityService';
@@ -29,7 +30,7 @@ export const getSettings = async (req: Request, res: Response) => {
         });
 
         // Mask secret values
-        const maskedSettings = settings.map(s => ({
+        const maskedSettings: { key: string; value: string; is_secret: boolean }[] = settings.map(s => ({
             key: s.key,
             value: s.is_secret ? maskSecret(s.value) : s.value,
             is_secret: s.is_secret
@@ -39,14 +40,14 @@ export const getSettings = async (req: Request, res: Response) => {
             key: 'SLACK_CONNECTED',
             value: slackIntegration ? 'true' : 'false',
             is_secret: false
-        } as any);
+        });
 
         if (slackIntegration) {
             maskedSettings.push(
-                { key: 'SLACK_ALERTS_CHANNEL', value: slackIntegration.alerts_channel_id || '', is_secret: false } as any,
-                { key: 'SLACK_ALERTS_STATUS', value: slackIntegration.alerts_status, is_secret: false } as any,
-                { key: 'SLACK_ALERTS_LAST_ERROR', value: slackIntegration.alerts_last_error_message || '', is_secret: false } as any,
-                { key: 'SLACK_ALERTS_LAST_ERROR_AT', value: slackIntegration.alerts_last_error_at ? slackIntegration.alerts_last_error_at.toISOString() : '', is_secret: false } as any
+                { key: 'SLACK_ALERTS_CHANNEL', value: slackIntegration.alerts_channel_id || '', is_secret: false },
+                { key: 'SLACK_ALERTS_STATUS', value: slackIntegration.alerts_status, is_secret: false },
+                { key: 'SLACK_ALERTS_LAST_ERROR', value: slackIntegration.alerts_last_error_message || '', is_secret: false },
+                { key: 'SLACK_ALERTS_LAST_ERROR_AT', value: slackIntegration.alerts_last_error_at ? slackIntegration.alerts_last_error_at.toISOString() : '', is_secret: false }
             );
         }
 
@@ -106,9 +107,9 @@ export const updateSettings = async (req: Request, res: Response) => {
                     is_secret: isSecret
                 }
             });
-        }).filter(Boolean);
+        }).filter((u): u is NonNullable<typeof u> => u !== null);
 
-        await prisma.$transaction(updates as any);
+        await prisma.$transaction(updates);
 
         res.json({ success: true, message: 'Settings updated successfully' });
     } catch (error) {
@@ -154,13 +155,12 @@ export const getClayWebhookUrl = async (req: Request, res: Response) => {
     try {
         const orgId = getOrgId(req);
 
-        // Determine base URL - prefer BACKEND_URL for webhook endpoints
-        let baseUrl = process.env.BACKEND_URL || process.env.BASE_URL;
+        // Use configured BACKEND_URL — never trust request Host header
+        const baseUrl = process.env.BACKEND_URL || process.env.BASE_URL;
         if (!baseUrl) {
-            // Fallback: construct from request host
-            const protocol = req.protocol;
-            const host = req.get('host');
-            baseUrl = `${protocol}://${host}`;
+            return res.status(500).json({
+                error: 'Server configuration error: BACKEND_URL is not set. Contact your administrator.'
+            });
         }
 
         // Fetch organization's webhook secret
@@ -171,7 +171,6 @@ export const getClayWebhookUrl = async (req: Request, res: Response) => {
 
         // Auto-generate webhook secret if missing (backfill for existing orgs)
         if (!org?.clay_webhook_secret) {
-            const crypto = await import('crypto');
             const webhookSecret = crypto.randomBytes(32).toString('hex');
 
             await prisma.organization.update({

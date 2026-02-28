@@ -35,7 +35,7 @@ export const checkWarmupProgress = async (): Promise<{
                 recovery_phase: {
                     in: [RecoveryPhase.RESTRICTED_SEND, RecoveryPhase.WARM_RECOVERY]
                 },
-                smartlead_email_account_id: {
+                external_email_account_id: {
                     not: null
                 }
             },
@@ -45,7 +45,7 @@ export const checkWarmupProgress = async (): Promise<{
                 organization_id: true,
                 recovery_phase: true,
                 consecutive_pauses: true,
-                smartlead_email_account_id: true,
+                external_email_account_id: true,
                 resilience_score: true
             }
         });
@@ -173,7 +173,7 @@ export const getWarmupStatusSummary = async (
             recovery_phase: {
                 in: [RecoveryPhase.RESTRICTED_SEND, RecoveryPhase.WARM_RECOVERY]
             },
-            smartlead_email_account_id: {
+            external_email_account_id: {
                 not: null
             }
         },
@@ -182,7 +182,7 @@ export const getWarmupStatusSummary = async (
             email: true,
             recovery_phase: true,
             phase_entered_at: true,
-            smartlead_email_account_id: true
+            external_email_account_id: true
         }
     });
 

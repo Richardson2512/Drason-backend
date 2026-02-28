@@ -9,6 +9,7 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import { prisma } from '../index';
 
 // ============================================================================
@@ -21,7 +22,6 @@ const correlationIdStore = new Map<string, string>();
  * Generate a unique correlation ID.
  */
 export function generateCorrelationId(): string {
-    const crypto = require('crypto');
     return crypto.randomUUID();
 }
 

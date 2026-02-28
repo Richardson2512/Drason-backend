@@ -29,6 +29,14 @@ export const resolveCampaignForLead = async (
 
     logger.info(`[ROUTING] Org: ${organizationId} | Found ${rules.length} rules | Lead: ${lead.persona}, ${lead.lead_score}`);
 
+    // Batch-preload all referenced campaigns to avoid N+1 queries in the loop
+    const campaignIds = [...new Set(rules.map(r => r.target_campaign_id))];
+    const campaigns = await prisma.campaign.findMany({
+        where: { id: { in: campaignIds } },
+        include: { _count: { select: { mailboxes: true } } }
+    });
+    const campaignMap = new Map(campaigns.map(c => [c.id, c]));
+
     // Iterate and match
     for (const rule of rules) {
         logger.info(`[ROUTING] Checking rule ${rule.id}: Persona=${rule.persona}, MinScore=${rule.min_score}`);
@@ -44,14 +52,7 @@ export const resolveCampaignForLead = async (
         if (personaMatch && scoreMatch) {
             // ── VALIDATE: Campaign must have at least one mailbox ──
             // Prevents leads from being trapped in campaigns that can never send
-            const campaign = await prisma.campaign.findUnique({
-                where: { id: rule.target_campaign_id },
-                include: {
-                    _count: {
-                        select: { mailboxes: true }
-                    }
-                }
-            });
+            const campaign = campaignMap.get(rule.target_campaign_id) || null;
 
             if (!campaign) {
                 logger.warn(`[ROUTING] Campaign ${rule.target_campaign_id} not found - skipping rule`);

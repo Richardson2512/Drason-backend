@@ -60,10 +60,10 @@ router.post('/', async (req: Request, res: Response) => {
             }
         });
 
-        let criticalFindings: any[] = [];
+        let criticalFindings: Record<string, unknown>[] = [];
         if (report && report.findings) {
-            const allFindings = report.findings as any[];
-            criticalFindings = allFindings.filter((f: any) => f.severity === 'critical');
+            const allFindings = report.findings as Record<string, unknown>[];
+            criticalFindings = allFindings.filter(f => f.severity === 'critical');
         }
 
         // Return field names that match frontend expectations
@@ -82,7 +82,7 @@ router.post('/', async (req: Request, res: Response) => {
         });
     } catch (e: any) {
         logger.error('[SYNC ERROR]', e, { stack: e.stack });
-        res.status(500).json({ success: false, error: e.message });
+        res.status(500).json({ success: false, error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
     }
 });
 

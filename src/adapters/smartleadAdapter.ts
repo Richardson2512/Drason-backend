@@ -71,18 +71,21 @@ export class SmartleadAdapter implements PlatformAdapter {
 
     async getMailboxDetails(
         organizationId: string,
-        externalAccountId: number
+        externalAccountId: string
     ): Promise<MailboxDetails | null> {
         try {
+            const numericId = parseInt(externalAccountId, 10);
+            if (isNaN(numericId)) return null;
+
             const details = await smartleadClient.getEmailAccountDetails(
                 organizationId,
-                externalAccountId
+                numericId
             );
 
             if (!details) return null;
 
             return {
-                externalId: details.id,
+                externalId: externalAccountId,
                 email: details.from_email,
                 status: 'active',
                 warmupEnabled: details.warmup_details?.id != null,
@@ -101,13 +104,16 @@ export class SmartleadAdapter implements PlatformAdapter {
 
     async updateWarmupSettings(
         organizationId: string,
-        externalAccountId: number,
+        externalAccountId: string,
         settings: WarmupSettings
     ): Promise<{ ok: boolean; message: string }> {
         try {
+            const numericId = parseInt(externalAccountId, 10);
+            if (isNaN(numericId)) return { ok: false, message: 'Invalid numeric account ID for Smartlead' };
+
             const result = await smartleadClient.updateMailboxWarmup(
                 organizationId,
-                externalAccountId,
+                numericId,
                 settings
             );
             return {

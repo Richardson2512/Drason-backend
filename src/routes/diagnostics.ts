@@ -61,7 +61,9 @@ router.get('/campaign-mailboxes', async (req: Request, res: Response) => {
     } catch (error: any) {
         res.status(500).json({
             success: false,
-            error: error.message
+            error: process.env.NODE_ENV === 'production'
+                ? 'Internal server error'
+                : error.message
         });
     }
 });

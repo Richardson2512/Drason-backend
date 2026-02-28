@@ -97,8 +97,9 @@ export async function disconnectRedis(): Promise<void> {
  */
 export async function acquireLock(key: string, ttlSeconds: number = 600): Promise<boolean> {
     if (!redisClient || !isConnected) {
-        // Fallback for local development without Redis: assume lock is granted
-        return true;
+        // Fail closed: if Redis is unavailable, deny the lock to prevent concurrent execution
+        logger.warn(`[REDIS] Lock denied for ${key} — Redis unavailable`);
+        return false;
     }
     try {
         const result = await redisClient.set(key, 'locked', 'EX', ttlSeconds, 'NX');

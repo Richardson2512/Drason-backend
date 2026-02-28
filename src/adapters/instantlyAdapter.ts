@@ -705,7 +705,7 @@ export class InstantlyAdapter implements PlatformAdapter {
                                 if (Array.isArray(val)) {
                                     val.forEach(v => parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(v)}`));
                                 } else {
-                                    parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(val as any)}`);
+                                    parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(val))}`);
                                 }
                             }
                             return parts.join('&');
@@ -778,7 +778,7 @@ export class InstantlyAdapter implements PlatformAdapter {
                         open_count_lifetime: finalOpens,
                         engagement_rate: engagementRate,
                     },
-                }).catch(() => { /* non-fatal */ });
+                }).catch(err => logger.warn('[Instantly] Non-fatal mailbox analytics update error', { error: String(err) }));
                 mailboxesUpdated++;
             } else {
                 mailboxesSkippedHigher++;
@@ -799,7 +799,7 @@ export class InstantlyAdapter implements PlatformAdapter {
                     total_sent_lifetime: stats.sent,
                     total_bounces: stats.bounced,
                 },
-            }).catch(() => { /* non-fatal if columns don't exist */ });
+            }).catch(err => { logger.warn('[InstantlySync] Non-fatal domain stats update error', { error: String(err), domainId: domain.id }); });
         }
 
         logger.info('[InstantlySync] Additive analytics sync complete', {
@@ -911,12 +911,12 @@ export class InstantlyAdapter implements PlatformAdapter {
 
     async getMailboxDetails(
         organizationId: string,
-        externalAccountId: number | string
+        externalAccountId: string
     ): Promise<MailboxDetails | null> {
         try {
             const client = await this.getClient(organizationId);
             // externalAccountId is the email address for Instantly
-            const email = String(externalAccountId);
+            const email = externalAccountId;
             const res = await instantlyRateLimiter.execute(() =>
                 client.get(`/accounts/${encodeURIComponent(email)}`)
             );
@@ -927,7 +927,7 @@ export class InstantlyAdapter implements PlatformAdapter {
             const isActive = acctStatus === 1 || acctStatus === 'active';
 
             return {
-                externalId: email as any,
+                externalId: email,
                 email: data.email || email,
                 status: isActive ? 'active' : 'paused',
                 warmupEnabled: data.warmup_enabled === true || data.warmup_status === 1,
@@ -947,12 +947,12 @@ export class InstantlyAdapter implements PlatformAdapter {
 
     async updateWarmupSettings(
         organizationId: string,
-        externalAccountId: number | string,
+        externalAccountId: string,
         settings: WarmupSettings
     ): Promise<{ ok: boolean; message: string }> {
         try {
             const client = await this.getClient(organizationId);
-            const email = String(externalAccountId);
+            const email = externalAccountId;
 
             if (settings.warmup_enabled) {
                 await instantlyRateLimiter.execute(() =>

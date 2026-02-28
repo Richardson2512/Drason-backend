@@ -11,6 +11,7 @@
  *   - Processes in batches of 50 to avoid DB overload
  */
 
+import { Prisma } from '@prisma/client';
 import { prisma } from '../index';
 import { logger } from './observabilityService';
 import * as leadHealthService from './leadHealthService';
@@ -192,10 +193,10 @@ async function reclassifyLead(lead: {
     const newResult = await leadHealthService.classifyLeadHealth(lead.email);
     const newRank = CLASSIFICATION_RANK[newResult.classification as HealthClassification] ?? 0;
 
-    const updateData: any = {
+    const updateData: Prisma.LeadUpdateInput = {
         health_checked_at: new Date(),
         health_score_calc: newResult.score,
-        health_checks: newResult.checks as any,
+        health_checks: newResult.checks as Prisma.InputJsonValue,
     };
 
     const willUpgrade = newRank > currentRank;

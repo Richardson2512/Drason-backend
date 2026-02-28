@@ -14,6 +14,7 @@
 
 import dns from 'dns';
 import { promisify } from 'util';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../index';
 import * as auditLogService from './auditLogService';
 import * as notificationService from './notificationService';
@@ -832,8 +833,8 @@ export async function assessInfrastructure(
                 assessment_version: ASSESSMENT_VERSION,
                 overall_score: overallScore,
                 summary,
-                findings: findings as any,
-                recommendations: recommendations as any,
+                findings: findings as unknown as Prisma.InputJsonValue,
+                recommendations: recommendations as unknown as Prisma.InputJsonValue,
             },
         });
 

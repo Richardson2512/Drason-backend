@@ -1,45 +1,50 @@
 /**
  * Encryption Utilities
  *
- * Provides AES-256-GCM encryption for sensitive data like API keys
+ * Provides AES-256-GCM encryption for sensitive data like API keys.
+ * Uses per-operation random salt for key derivation.
+ *
+ * Format (v2): salt:iv:authTag:encryptedData (4 hex-encoded parts)
+ * Legacy (v1): iv:authTag:encryptedData (3 hex-encoded parts, fixed salt)
  */
 
 import crypto from 'crypto';
 
-// Encryption algorithm
 const ALGORITHM = 'aes-256-gcm';
-const IV_LENGTH = 16; // 128 bits
-const AUTH_TAG_LENGTH = 16; // 128 bits
-const SALT_LENGTH = 64;
-const KEY_LENGTH = 32; // 256 bits
+const IV_LENGTH = 16;
+const AUTH_TAG_LENGTH = 16;
+const SALT_LENGTH = 32;
+const KEY_LENGTH = 32;
+
+// Legacy salt used in v1 format — only for decrypting old data
+const LEGACY_FIXED_SALT = 'fixed-salt';
 
 /**
- * Get encryption key from environment or generate one
- * IMPORTANT: Set ENCRYPTION_KEY in environment variables for production
+ * Derive encryption key from env var + salt.
+ * Throws if ENCRYPTION_KEY is not set.
  */
-function getEncryptionKey(): Buffer {
+function deriveKey(salt: string | Buffer): Buffer {
     const envKey = process.env.ENCRYPTION_KEY;
-
     if (!envKey) {
-        console.warn('WARNING: ENCRYPTION_KEY not set in environment. Using default key. THIS IS INSECURE FOR PRODUCTION!');
-        // Fallback key (NOT secure, for development only)
-        return crypto.scryptSync('default-insecure-key-change-in-production', 'salt', KEY_LENGTH);
+        throw new Error(
+            'ENCRYPTION_KEY environment variable is required. ' +
+            'Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"'
+        );
     }
-
-    // Derive key from environment variable
-    return crypto.scryptSync(envKey, 'fixed-salt', KEY_LENGTH);
+    return crypto.scryptSync(envKey, salt, KEY_LENGTH);
 }
 
 /**
- * Encrypt a string value
+ * Encrypt a string value.
  *
  * @param plaintext - The text to encrypt
- * @returns Encrypted text in format: iv:authTag:encryptedData (all hex-encoded)
+ * @returns Encrypted text in format: salt:iv:authTag:encryptedData (all hex-encoded)
  */
 export function encrypt(plaintext: string): string {
     if (!plaintext) return plaintext;
 
-    const key = getEncryptionKey();
+    const salt = crypto.randomBytes(SALT_LENGTH);
+    const key = deriveKey(salt);
     const iv = crypto.randomBytes(IV_LENGTH);
 
     const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
@@ -49,30 +54,46 @@ export function encrypt(plaintext: string): string {
 
     const authTag = cipher.getAuthTag();
 
-    // Return format: iv:authTag:encrypted (all hex)
-    return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted}`;
+    // v2 format: salt:iv:authTag:encrypted
+    return `${salt.toString('hex')}:${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted}`;
 }
 
 /**
- * Decrypt an encrypted string
+ * Decrypt an encrypted string. Supports both v2 (random salt) and v1 (fixed salt) formats.
  *
- * @param encryptedData - The encrypted text in format: iv:authTag:encryptedData
+ * @param encryptedData - The encrypted text (v2: salt:iv:authTag:data, v1: iv:authTag:data)
  * @returns Decrypted plaintext
  */
 export function decrypt(encryptedData: string): string {
     if (!encryptedData) return encryptedData;
 
     try {
-        const key = getEncryptionKey();
         const parts = encryptedData.split(':');
 
-        if (parts.length !== 3) {
+        let salt: string | Buffer;
+        let ivHex: string;
+        let authTagHex: string;
+        let encrypted: string;
+
+        if (parts.length === 4) {
+            // v2 format: salt:iv:authTag:encrypted
+            salt = Buffer.from(parts[0], 'hex');
+            ivHex = parts[1];
+            authTagHex = parts[2];
+            encrypted = parts[3];
+        } else if (parts.length === 3) {
+            // v1 legacy format: iv:authTag:encrypted (used fixed salt)
+            salt = LEGACY_FIXED_SALT;
+            ivHex = parts[0];
+            authTagHex = parts[1];
+            encrypted = parts[2];
+        } else {
             throw new Error('Invalid encrypted data format');
         }
 
-        const iv = Buffer.from(parts[0], 'hex');
-        const authTag = Buffer.from(parts[1], 'hex');
-        const encrypted = parts[2];
+        const key = deriveKey(salt);
+        const iv = Buffer.from(ivHex, 'hex');
+        const authTag = Buffer.from(authTagHex, 'hex');
 
         const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
         decipher.setAuthTag(authTag);
@@ -87,17 +108,19 @@ export function decrypt(encryptedData: string): string {
 }
 
 /**
- * Check if a value is encrypted (has the expected format)
+ * Check if a value is encrypted (has the expected format — v1 or v2)
  */
 export function isEncrypted(value: string): boolean {
     if (!value) return false;
     const parts = value.split(':');
-    return parts.length === 3 && /^[0-9a-f]+$/i.test(parts[0]) && /^[0-9a-f]+$/i.test(parts[1]);
+    // v2: 4 parts (salt:iv:authTag:data), v1: 3 parts (iv:authTag:data)
+    if (parts.length !== 3 && parts.length !== 4) return false;
+    return parts.every(p => /^[0-9a-f]+$/i.test(p));
 }
 
 /**
- * Generate a secure random key for ENCRYPTION_KEY environment variable
- * Run this once and store in your .env file
+ * Generate a secure random key for ENCRYPTION_KEY environment variable.
+ * Run this once and store in your .env file.
  */
 export function generateEncryptionKey(): string {
     return crypto.randomBytes(32).toString('hex');

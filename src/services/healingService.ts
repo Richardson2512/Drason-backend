@@ -875,7 +875,7 @@ export async function transitionPhase(
                 });
 
                 // Re-add the mailbox to each campaign on the platform
-                const externalMailboxId = mailboxEntity?.external_email_account_id?.toString() || entityId;
+                const externalMailboxId = mailboxEntity?.external_email_account_id || entityId;
                 for (const campaign of campaigns) {
                     const externalCampaignId = campaign.external_id || campaign.id;
                     await adapter.addMailboxToCampaign(
@@ -916,7 +916,7 @@ export async function transitionPhase(
                 let addedCount = 0;
                 for (const mailbox of mailboxes) {
                     const adapter = await getAdapterForMailbox(mailbox.id);
-                    const externalMailboxId = mailbox.external_email_account_id?.toString() || mailbox.id;
+                    const externalMailboxId = mailbox.external_email_account_id || mailbox.id;
                     for (const campaign of mailbox.campaigns) {
                         const externalCampaignId = campaign.external_id || campaign.id;
                         await adapter.addMailboxToCampaign(
@@ -954,7 +954,7 @@ export async function transitionPhase(
             severity: 'info',
             title: `✅ ${entityType === 'mailbox' ? 'Mailbox' : 'Domain'} Recovered`,
             message: `${entityType === 'mailbox' ? 'Mailbox' : 'Domain'} \`${entityId}\` has completed recovery and is back in full production.`
-        }).catch(() => { }); // Non-blocking
+        }).catch(err => logger.warn('[HEALING] Non-fatal alert error', { error: String(err) }));
     }
 
     return {

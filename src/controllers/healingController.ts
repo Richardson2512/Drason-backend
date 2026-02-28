@@ -11,6 +11,7 @@ import { prisma } from '../index';
 import * as healingService from '../services/healingService';
 import * as operatorProtection from '../services/operatorProtectionService';
 import { logger } from '../services/observabilityService';
+import { RecoveryPhase } from '../types';
 
 /**
  * GET /api/healing/transition-gate
@@ -23,7 +24,7 @@ export const getTransitionGate = async (req: Request, res: Response): Promise<vo
         res.json({ success: true, data: result });
     } catch (e: any) {
         logger.error('Failed to check transition gate', e);
-        res.status(500).json({ error: e.message });
+        res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
     }
 };
 
@@ -50,7 +51,7 @@ export const acknowledgeTransition = async (req: Request, res: Response): Promis
         });
     } catch (e: any) {
         logger.error('Failed to acknowledge transition', e);
-        res.status(500).json({ error: e.message });
+        res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
     }
 };
 
@@ -113,7 +114,7 @@ export const getRecoveryStatus = async (req: Request, res: Response): Promise<vo
         const mailboxesWithLimits = recoveringMailboxes.map(mb => ({
             ...mb,
             volumeLimit: healingService.getPhaseVolumeLimit(
-                mb.recovery_phase as any,
+                mb.recovery_phase as RecoveryPhase,
                 mb.resilience_score
             ),
         }));
@@ -121,7 +122,7 @@ export const getRecoveryStatus = async (req: Request, res: Response): Promise<vo
         const domainsWithLimits = recoveringDomains.map(d => ({
             ...d,
             volumeLimit: healingService.getPhaseVolumeLimit(
-                d.recovery_phase as any,
+                d.recovery_phase as RecoveryPhase,
                 d.resilience_score
             ),
         }));
@@ -140,6 +141,6 @@ export const getRecoveryStatus = async (req: Request, res: Response): Promise<vo
         });
     } catch (e: any) {
         logger.error('Failed to fetch recovery status', e);
-        res.status(500).json({ error: e.message });
+        res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
     }
 };

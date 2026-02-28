@@ -21,11 +21,11 @@ import { logger } from '../services/observabilityService';
 // ADAPTER INSTANCES (Singletons)
 // ============================================================================
 
-const adapters: Record<SourcePlatform, PlatformAdapter> = {
+const adapters: Record<SourcePlatform, PlatformAdapter | null> = {
     smartlead: new SmartleadAdapter(),
     emailbison: new EmailBisonAdapter(),
     instantly: new InstantlyAdapter(),
-    replyio: null as any,    // Stub — not yet implemented
+    replyio: null,    // Not yet implemented — getAdapter() throws if accessed
 };
 
 // ============================================================================

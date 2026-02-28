@@ -117,7 +117,7 @@ export const handleSmartleadWebhook = async (req: Request, res: Response) => {
         });
 
         // Still return 200 to prevent retries
-        res.json({ success: false, error: error.message });
+        res.json({ success: false, error: 'Processing failed' });
     }
 };
 

@@ -393,8 +393,8 @@ async function updateDomainHealth(
             select: { findings: true }
         });
         if (latestReport?.findings) {
-            const allFindings = latestReport.findings as any[];
-            actualWarningCount = allFindings.filter((f: any) => {
+            const allFindings = latestReport.findings as Record<string, unknown>[];
+            actualWarningCount = allFindings.filter((f) => {
                 const entityType = f.entity_type || f.entity;
                 const entityId = f.entity_id || f.entityId;
                 return entityType === 'domain' && entityId === domainId;

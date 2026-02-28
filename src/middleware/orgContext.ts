@@ -7,6 +7,7 @@
  * Section 3 of Infrastructure Audit: Multi-Tenancy (Mandatory)
  */
 
+import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../index';
@@ -22,6 +23,7 @@ interface JwtPayload {
     email: string;
     role: string;
     orgId: string;
+    iat?: number; // JWT issued-at timestamp (seconds since epoch)
 }
 
 /**
@@ -99,7 +101,7 @@ export const extractOrgContext = async (
 
         // PUBLIC ROUTES: Skip context check for auth endpoints and webhooks
         // Note: req.path is relative to the mount point ('/api')
-        const publicPaths = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout', '/auth/google', '/auth/onboarding', '/monitor/smartlead-webhook', '/ingest/clay', '/billing/polar-webhook'];
+        const publicPaths = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout', '/auth/google', '/auth/onboarding', '/monitor/smartlead-webhook', '/monitor/emailbison-webhook', '/monitor/instantly-webhook', '/ingest/clay', '/billing/polar-webhook'];
         if (publicPaths.some(path => req.path.startsWith(path))) {
             return next();
         }
@@ -116,6 +118,27 @@ export const extractOrgContext = async (
             // Try JWT first
             const jwtPayload = verifyJwt(token);
             if (jwtPayload) {
+                // Check if JWT was issued before a password change (invalidated)
+                if (jwtPayload.iat) {
+                    const user = await prisma.user.findUnique({
+                        where: { id: jwtPayload.userId },
+                        select: { password_changed_at: true }
+                    });
+                    if (user?.password_changed_at) {
+                        const tokenIssuedAt = new Date(jwtPayload.iat * 1000);
+                        if (tokenIssuedAt < user.password_changed_at) {
+                            logger.warn('[ORG_CONTEXT] JWT issued before password change — rejected', {
+                                userId: jwtPayload.userId,
+                            });
+                            res.status(401).json({
+                                error: 'Session expired',
+                                message: 'Your password was changed. Please log in again.',
+                            });
+                            return;
+                        }
+                    }
+                }
+
                 // JWT authentication — trusted source for userId, role, orgId
                 userId = jwtPayload.userId;
                 role = jwtPayload.role as UserRole;
@@ -187,11 +210,7 @@ export const extractOrgContext = async (
  * Returns null if key is invalid or expired.
  */
 async function validateApiKey(apiKey: string): Promise<{ organizationId: string; scopes: string[] } | null> {
-    // TODO: Implement proper key hashing and validation
-    // For now, we'll do a simple lookup (keys should be hashed in production)
-
-    // Hash the key for lookup
-    const crypto = await import('crypto');
+    // Hash the key for lookup (SHA-256)
     const keyHash = crypto.createHash('sha256').update(apiKey).digest('hex');
 
     const key = await prisma.apiKey.findUnique({

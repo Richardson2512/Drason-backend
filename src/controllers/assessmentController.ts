@@ -32,7 +32,7 @@ export const getReport = async (req: Request, res: Response): Promise<void> => {
         res.json({ success: true, data: report });
     } catch (e: any) {
         logger.error('Failed to fetch assessment report', e);
-        res.status(500).json({ error: e.message });
+        res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
     }
 };
 
@@ -47,7 +47,7 @@ export const getReports = async (req: Request, res: Response): Promise<void> => 
         res.json({ success: true, data: reports });
     } catch (e: any) {
         logger.error('Failed to fetch assessment reports', e);
-        res.status(500).json({ error: e.message });
+        res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
     }
 };
 
@@ -112,6 +112,6 @@ export const getDomainDNS = async (req: Request, res: Response): Promise<void> =
         });
     } catch (e: any) {
         logger.error('DNS check failed', e);
-        res.status(500).json({ error: e.message });
+        res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
     }
 };

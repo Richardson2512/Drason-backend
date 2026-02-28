@@ -275,10 +275,10 @@ async function assessOverrideRisk(request: OverrideRequest): Promise<OverrideRes
     // ── CHECK 3: Low-resilience entity check ──
     if (request.entityType === 'mailbox' || request.entityType === 'domain') {
         const entity = request.entityType === 'mailbox'
-            ? await prisma.mailbox.findUnique({ where: { id: request.entityId } })
-            : await prisma.domain.findUnique({ where: { id: request.entityId } });
+            ? await prisma.mailbox.findUnique({ where: { id: request.entityId }, select: { resilience_score: true } })
+            : await prisma.domain.findUnique({ where: { id: request.entityId }, select: { resilience_score: true } });
 
-        const resilience = (entity as any)?.resilience_score ?? 50;
+        const resilience = entity?.resilience_score ?? 50;
 
         if (resilience < LOW_RESILIENCE_THRESHOLD) {
             requiresJustification = true;

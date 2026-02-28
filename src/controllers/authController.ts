@@ -73,17 +73,51 @@ export const login = async (req: Request, res: Response) => {
             return res.status(401).json({ success: false, error: 'Please sign in with Google' });
         }
 
+        // Check account lockout (10 failed attempts → 15 min lockout)
+        if (user.locked_until && user.locked_until > new Date()) {
+            const minutesLeft = Math.ceil((user.locked_until.getTime() - Date.now()) / 60000);
+            logger.warn('Login attempt on locked account', { email, minutesLeft });
+            return res.status(423).json({
+                success: false,
+                error: `Account temporarily locked. Try again in ${minutesLeft} minute${minutesLeft === 1 ? '' : 's'}.`
+            });
+        }
+
         const isValid = await bcrypt.compare(password, user.password_hash);
         if (!isValid) {
+            // Increment failed attempt counter
+            const newCount = (user.failed_login_count || 0) + 1;
+            const lockUntil = newCount >= 10 ? new Date(Date.now() + 15 * 60 * 1000) : null; // Lock for 15 min after 10 failures
+
+            await prisma.user.update({
+                where: { id: user.id },
+                data: {
+                    failed_login_count: newCount,
+                    locked_until: lockUntil
+                }
+            });
+
+            if (lockUntil) {
+                logger.warn('Account locked after too many failed attempts', { email, attempts: newCount });
+                return res.status(423).json({
+                    success: false,
+                    error: 'Too many failed login attempts. Account locked for 15 minutes.'
+                });
+            }
+
             return res.status(401).json({ success: false, error: 'Invalid credentials' });
         }
 
         const token = generateToken(user);
 
-        // Update last login
+        // Reset failed login counter on successful login
         await prisma.user.update({
             where: { id: user.id },
-            data: { last_login_at: new Date() }
+            data: {
+                last_login_at: new Date(),
+                failed_login_count: 0,
+                locked_until: null
+            }
         });
 
         logger.info('User logged in', { userId: user.id, email: user.email });
@@ -141,10 +175,8 @@ export const register = async (req: Request, res: Response) => {
             const trialStartedAt = new Date();
             const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 14 days from now
 
-            // Use selected tier or default to 'trial'
-            // Valid tiers: 'trial', 'starter', 'growth', 'scale'
-            const validTiers = ['trial', 'starter', 'growth', 'scale'];
-            const subscriptionTier = tier && validTiers.includes(tier) ? tier : 'trial';
+            // Signup always starts as trial — paid tiers require checkout
+            const subscriptionTier = 'trial';
 
             // Generate Clay webhook secret for HMAC validation
             const crypto = await import('crypto');
@@ -248,6 +280,15 @@ export const refreshToken = async (req: Request, res: Response) => {
 
         if (!user) {
             return res.status(401).json({ success: false, error: 'User no longer exists' });
+        }
+
+        // Reject refresh if token was issued before a password change
+        if (user.password_changed_at && decoded.iat) {
+            const tokenIssuedAt = new Date(decoded.iat * 1000);
+            if (tokenIssuedAt < user.password_changed_at) {
+                res.clearCookie('token', { path: '/' });
+                return res.status(401).json({ success: false, error: 'Password was changed. Please log in again.' });
+            }
         }
 
         // Issue fresh token

@@ -157,12 +157,10 @@ export const canExecuteLead = async (
         where: {
             organization_id: organizationId,
             status: 'healthy',
-            cooldown_until: {
-                OR: [
-                    { equals: null },
-                    { lt: new Date() }
-                ]
-            } as any,
+            OR: [
+                { cooldown_until: null },
+                { cooldown_until: { lt: new Date() } }
+            ],
             domain: {
                 status: 'healthy'
             }

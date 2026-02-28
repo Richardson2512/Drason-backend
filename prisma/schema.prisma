@@ -65,9 +65,12 @@ model User {
   name            String?
   role            String    @default("viewer")
   organization_id String
-  last_login_at   DateTime?
-  created_at      DateTime  @default(now())
-  updated_at      DateTime  @updatedAt
+  last_login_at       DateTime?
+  password_changed_at DateTime? // Used to invalidate JWTs issued before password change
+  failed_login_count  Int       @default(0) // Per-account brute force tracking
+  locked_until        DateTime? // Account lockout timestamp
+  created_at          DateTime  @default(now())
+  updated_at          DateTime  @updatedAt
 
   // Google OAuth fields
   google_id               String?   @unique // Google user ID (sub claim)
@@ -210,7 +213,7 @@ model Mailbox {
   email                   String
   status                  String         @default("healthy")
   source_platform         SourcePlatform @default(smartlead)
-  external_email_account_id Int?         // Generic external ID from any platform
+  external_email_account_id String?       // External ID from any platform (numeric for Smartlead/EmailBison, email for Instantly)
   recovery_phase          String         @default("healthy") // RecoveryPhase: healthy|paused|quarantine|restricted_send|warm_recovery
   healing_origin          String? // HealingOrigin: rehab|recovery
   phase_entered_at        DateTime? // When the entity entered its current recovery phase
@@ -261,7 +264,7 @@ model Mailbox {
   organization_id String
   created_at      DateTime        @default(now())
   updated_at      DateTime        @updatedAt
-  domain          Domain          @relation(fields: [domain_id], references: [id])
+  domain          Domain          @relation(fields: [domain_id], references: [id], onDelete: Cascade)
   organization    Organization    @relation(fields: [organization_id], references: [id], onDelete: Cascade)
   metrics         MailboxMetrics?
   campaigns       Campaign[]      @relation("CampaignToMailbox")

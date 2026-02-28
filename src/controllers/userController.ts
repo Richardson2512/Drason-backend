@@ -149,11 +149,17 @@ export const changePassword = async (req: Request, res: Response): Promise<void>
 
         await prisma.user.update({
             where: { id: userId },
-            data: { password_hash: newHash }
+            data: {
+                password_hash: newHash,
+                password_changed_at: new Date()
+            }
         });
 
-        logger.info('[USER] Password changed', { userId });
-        res.json({ success: true, message: 'Password changed successfully' });
+        // Clear the current session cookie — force re-login
+        res.clearCookie('token', { path: '/' });
+
+        logger.info('[USER] Password changed — all prior sessions invalidated', { userId });
+        res.json({ success: true, message: 'Password changed successfully. Please log in again.' });
     } catch (error) {
         logger.error('[USER] Failed to change password', error as Error);
         res.status(500).json({ error: 'Failed to change password' });

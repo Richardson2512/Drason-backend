@@ -10,7 +10,7 @@ import { EventEmitter } from 'events';
 interface SyncProgressEvent {
     sessionId: string;
     type: 'progress' | 'complete' | 'error';
-    step?: 'campaigns' | 'mailboxes' | 'leads' | 'health_check';
+    step?: 'campaigns' | 'mailboxes' | 'leads' | 'health_check' | 'historical_bounces';
     status?: 'pending' | 'in_progress' | 'completed' | 'failed';
     current?: number;
     total?: number;
@@ -59,12 +59,12 @@ class SyncProgressService extends EventEmitter {
     /**
      * Emit progress update to all connected clients for a session
      */
-    emitProgress(sessionId: string, step: string, status: string, data?: any) {
+    emitProgress(sessionId: string, step: SyncProgressEvent['step'], status: SyncProgressEvent['status'], data?: Record<string, unknown>) {
         const event: SyncProgressEvent = {
             sessionId,
             type: 'progress',
-            step: step as any,
-            status: status as any,
+            step,
+            status,
             ...data
         };
 
