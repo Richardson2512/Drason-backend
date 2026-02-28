@@ -630,7 +630,11 @@ export class InstantlyAdapter implements PlatformAdapter {
     /**
      * Aggregate rule: fetch per-mailbox daily analytics for the past 7 days,
      * then sum across all mailboxes on the same domain to produce per-domain stats.
-     * Updates domain.bounce_rate and domain engagement in the DB.
+     * Updates domain.bounce_rate and per-mailbox engagement using additive snapshots.
+     *
+     * Additive sync: snapshots current mailbox stats before processing, then uses
+     * Math.max(snapshot, syncDerived) so webhook-accumulated values are never overwritten
+     * by lower sync-derived values.
      */
     private async syncMailboxAnalyticsAndAggregateDomains(
         organizationId: string,
@@ -648,9 +652,39 @@ export class InstantlyAdapter implements PlatformAdapter {
         const emails = accounts.map((a: any) => a.email).filter(Boolean);
         if (emails.length === 0) return;
 
+        // ── ADDITIVE SYNC: Snapshot pre-sync mailbox stats ──
+        const mailboxEngagementSnapshot = new Map<string, {
+            open_count_lifetime: number;
+            click_count_lifetime: number;
+            reply_count_lifetime: number;
+            total_sent_count: number;
+        }>();
+
+        const allMailboxesPreSync = await prisma.mailbox.findMany({
+            where: { organization_id: organizationId, source_platform: SourcePlatform.instantly },
+            select: {
+                id: true,
+                open_count_lifetime: true,
+                click_count_lifetime: true,
+                reply_count_lifetime: true,
+                total_sent_count: true,
+            }
+        });
+
+        for (const mb of allMailboxesPreSync) {
+            mailboxEngagementSnapshot.set(mb.id, {
+                open_count_lifetime: mb.open_count_lifetime,
+                click_count_lifetime: mb.click_count_lifetime,
+                reply_count_lifetime: mb.reply_count_lifetime,
+                total_sent_count: mb.total_sent_count,
+            });
+        }
+
         // Fetch in batches of 50 to avoid overly long query strings
         const batchSize = 50;
         const domainStats: Map<string, { sent: number; bounced: number; opens: number }> = new Map();
+        // Accumulate per-mailbox totals across all daily rows before writing
+        const mailboxSyncStats: Map<string, { sent: number; opens: number }> = new Map();
 
         for (let i = 0; i < emails.length; i += batchSize) {
             const batch = emails.slice(i, i + batchSize);
@@ -687,30 +721,67 @@ export class InstantlyAdapter implements PlatformAdapter {
                     const domainName = email.split('@')[1];
                     if (!domainName) continue;
 
-                    const existing = domainStats.get(domainName) || { sent: 0, bounced: 0, opens: 0 };
-                    existing.sent += parseInt(String(row.emails_sent || row.sent_count || 0));
-                    existing.bounced += parseInt(String(row.bounced || row.bounce_count || 0));
-                    existing.opens += parseInt(String(row.opens || row.open_count || 0));
-                    domainStats.set(domainName, existing);
-                }
+                    // Domain-level aggregation
+                    const domainExisting = domainStats.get(domainName) || { sent: 0, bounced: 0, opens: 0 };
+                    domainExisting.sent += parseInt(String(row.emails_sent || row.sent_count || 0));
+                    domainExisting.bounced += parseInt(String(row.bounced || row.bounce_count || 0));
+                    domainExisting.opens += parseInt(String(row.opens || row.open_count || 0));
+                    domainStats.set(domainName, domainExisting);
 
-                // Also update per-mailbox totals in the DB
-                for (const row of dailyData) {
-                    const email = row.email || '';
-                    if (!email) continue;
+                    // Per-mailbox accumulation (sum all daily rows per email)
                     const internalMailboxId = `inst-${email}`;
-                    const sent = parseInt(String(row.emails_sent || row.sent_count || 0));
-
-                    await prisma.mailbox.updateMany({
-                        where: { id: internalMailboxId, organization_id: organizationId },
-                        data: { total_sent_count: { increment: sent } },
-                    }).catch(() => { /* non-fatal */ });
+                    const mbExisting = mailboxSyncStats.get(internalMailboxId) || { sent: 0, opens: 0 };
+                    mbExisting.sent += parseInt(String(row.emails_sent || row.sent_count || 0));
+                    mbExisting.opens += parseInt(String(row.opens || row.open_count || 0));
+                    mailboxSyncStats.set(internalMailboxId, mbExisting);
                 }
             } catch (batchErr: any) {
                 logger.warn('[InstantlySync] Failed to fetch analytics batch', {
                     error: batchErr.message,
                     batchStart: i,
                 });
+            }
+        }
+
+        // ── Additive write: per-mailbox stats ──
+        let mailboxesUpdated = 0;
+        let mailboxesSkippedHigher = 0;
+
+        for (const [mbId, syncData] of mailboxSyncStats) {
+            const snapshot = mailboxEngagementSnapshot.get(mbId) || {
+                open_count_lifetime: 0,
+                click_count_lifetime: 0,
+                reply_count_lifetime: 0,
+                total_sent_count: 0,
+            };
+
+            // Math.max: never overwrite webhook-accumulated values with lower sync values
+            const finalSent = Math.max(snapshot.total_sent_count, syncData.sent);
+            const finalOpens = Math.max(snapshot.open_count_lifetime, syncData.opens);
+            // clicks and replies not in daily analytics — preserve webhook values
+            const finalClicks = snapshot.click_count_lifetime;
+            const finalReplies = snapshot.reply_count_lifetime;
+
+            const totalEngagement = finalOpens + finalClicks + finalReplies;
+            const engagementRate = finalSent > 0
+                ? Math.min((totalEngagement / finalSent) * 100, 100)
+                : 0;
+
+            if (
+                finalSent !== snapshot.total_sent_count ||
+                finalOpens !== snapshot.open_count_lifetime
+            ) {
+                await prisma.mailbox.updateMany({
+                    where: { id: mbId, organization_id: organizationId },
+                    data: {
+                        total_sent_count: finalSent,
+                        open_count_lifetime: finalOpens,
+                        engagement_rate: engagementRate,
+                    },
+                }).catch(() => { /* non-fatal */ });
+                mailboxesUpdated++;
+            } else {
+                mailboxesSkippedHigher++;
             }
         }
 
@@ -731,9 +802,11 @@ export class InstantlyAdapter implements PlatformAdapter {
             }).catch(() => { /* non-fatal if columns don't exist */ });
         }
 
-        logger.info('[InstantlySync] Domain analytics aggregated', {
+        logger.info('[InstantlySync] Additive analytics sync complete', {
             organizationId,
             domainsUpdated: domainStats.size,
+            mailboxesUpdated,
+            mailboxesSkippedHigher,
         });
     }
 

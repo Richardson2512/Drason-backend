@@ -241,6 +241,36 @@ export class EmailBisonAdapter implements PlatformAdapter {
             });
             const existingMailboxSet = new Set(existingMailboxes.map(m => m.id));
 
+            // ── ADDITIVE SYNC: Snapshot pre-sync engagement ──
+            // Capture current values so we can compare after sync and never
+            // overwrite higher webhook-accumulated stats with lower sync-derived estimates.
+            const mailboxEngagementSnapshot = new Map<string, {
+                open_count_lifetime: number;
+                click_count_lifetime: number;
+                reply_count_lifetime: number;
+                total_sent_count: number;
+            }>();
+
+            const allMailboxesPreSync = await prisma.mailbox.findMany({
+                where: { organization_id: organizationId, source_platform: SourcePlatform.emailbison },
+                select: {
+                    id: true,
+                    open_count_lifetime: true,
+                    click_count_lifetime: true,
+                    reply_count_lifetime: true,
+                    total_sent_count: true,
+                }
+            });
+
+            for (const mb of allMailboxesPreSync) {
+                mailboxEngagementSnapshot.set(mb.id, {
+                    open_count_lifetime: mb.open_count_lifetime,
+                    click_count_lifetime: mb.click_count_lifetime,
+                    reply_count_lifetime: mb.reply_count_lifetime,
+                    total_sent_count: mb.total_sent_count,
+                });
+            }
+
             // Create domains for new email addresses
             const uniqueDomainNames = [...new Set(
                 mailboxes.map((m: any) => (m.email || '').split('@')[1] || 'unknown.com')
@@ -539,10 +569,11 @@ export class EmailBisonAdapter implements PlatformAdapter {
                 syncProgressService.emitProgress(sessionId, 'leads', 'completed', { count: leadCount });
             }
 
-            // ── 5. Aggregate mailbox engagement from campaign-level stats (Issue B) ──
-            // Distribute each campaign's open/click/reply counts proportionally across
-            // its linked mailboxes. This is an approximation since EmailBison does not
-            // expose per-mailbox engagement breakdowns in its API.
+            // ── 5. Additive engagement sync (Issue B) ──
+            // Distribute campaign engagement proportionally across linked mailboxes,
+            // but only update if the sync-derived value is HIGHER than what webhooks
+            // have already accumulated. This prevents real-time increments from being
+            // overwritten by approximate sync values every 20 minutes.
             try {
                 const syncedCampaignIds = campaigns.map((c: any) => `eb-${c.id}`);
                 const mailboxesWithCampaigns = await prisma.mailbox.findMany({
@@ -561,43 +592,68 @@ export class EmailBisonAdapter implements PlatformAdapter {
                     },
                 });
 
+                let mailboxesUpdated = 0;
+                let mailboxesSkippedHigher = 0;
+
                 for (const mb of mailboxesWithCampaigns) {
-                    let totalOpens = 0;
-                    let totalClicks = 0;
-                    let totalReplies = 0;
+                    let syncOpens = 0;
+                    let syncClicks = 0;
+                    let syncReplies = 0;
 
                     for (const campaign of mb.campaigns) {
-                        // Count how many mailboxes share this campaign (in-memory, no extra query)
                         const sharedCount = Math.max(
                             mailboxesWithCampaigns.filter(m =>
                                 m.campaigns.some(c => c.id === campaign.id)
                             ).length,
                             1
                         );
-                        totalOpens += Math.round(campaign.open_count / sharedCount);
-                        totalClicks += Math.round(campaign.click_count / sharedCount);
-                        totalReplies += Math.round(campaign.reply_count / sharedCount);
+                        syncOpens += Math.round(campaign.open_count / sharedCount);
+                        syncClicks += Math.round(campaign.click_count / sharedCount);
+                        syncReplies += Math.round(campaign.reply_count / sharedCount);
                     }
 
-                    const totalEngagement = totalOpens + totalClicks + totalReplies;
-                    const engagementRate = mb.total_sent_count > 0
-                        ? Math.min((totalEngagement / mb.total_sent_count) * 100, 100)
+                    // Compare sync-derived values with pre-sync snapshot
+                    const snapshot = mailboxEngagementSnapshot.get(mb.id) || {
+                        open_count_lifetime: 0,
+                        click_count_lifetime: 0,
+                        reply_count_lifetime: 0,
+                        total_sent_count: 0,
+                    };
+
+                    const finalOpens = Math.max(snapshot.open_count_lifetime, syncOpens);
+                    const finalClicks = Math.max(snapshot.click_count_lifetime, syncClicks);
+                    const finalReplies = Math.max(snapshot.reply_count_lifetime, syncReplies);
+                    const finalSent = Math.max(snapshot.total_sent_count, mb.total_sent_count);
+
+                    const totalEngagement = finalOpens + finalClicks + finalReplies;
+                    const engagementRate = finalSent > 0
+                        ? Math.min((totalEngagement / finalSent) * 100, 100)
                         : 0;
 
-                    await prisma.mailbox.update({
-                        where: { id: mb.id },
-                        data: {
-                            open_count_lifetime: totalOpens,
-                            click_count_lifetime: totalClicks,
-                            reply_count_lifetime: totalReplies,
-                            engagement_rate: engagementRate,
-                        },
-                    });
+                    if (
+                        finalOpens !== snapshot.open_count_lifetime ||
+                        finalClicks !== snapshot.click_count_lifetime ||
+                        finalReplies !== snapshot.reply_count_lifetime
+                    ) {
+                        await prisma.mailbox.update({
+                            where: { id: mb.id },
+                            data: {
+                                open_count_lifetime: finalOpens,
+                                click_count_lifetime: finalClicks,
+                                reply_count_lifetime: finalReplies,
+                                engagement_rate: engagementRate,
+                            },
+                        });
+                        mailboxesUpdated++;
+                    } else {
+                        mailboxesSkippedHigher++;
+                    }
                 }
 
-                logger.info('[EmailBisonSync] Updated mailbox engagement stats', {
+                logger.info('[EmailBisonSync] Additive engagement sync complete', {
                     organizationId,
-                    mailboxesUpdated: mailboxesWithCampaigns.length,
+                    mailboxesUpdated,
+                    mailboxesSkippedHigher,
                 });
             } catch (engagementError: any) {
                 // Non-fatal — don't fail the sync if engagement aggregation fails
