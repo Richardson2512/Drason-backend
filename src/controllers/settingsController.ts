@@ -71,7 +71,7 @@ export const updateSettings = async (req: Request, res: Response) => {
         }
 
         // Determine which keys are secrets
-        const secretKeys = ['SMARTLEAD_API_KEY', 'INSTANTLY_API_KEY'];
+        const secretKeys = ['SMARTLEAD_API_KEY', 'INSTANTLY_API_KEY', 'EMAILBISON_API_KEY'];
 
         // Upsert each setting (encrypt secrets before storing)
         const updates = Object.entries(settingsToUpdate).map(([key, value]) => {
