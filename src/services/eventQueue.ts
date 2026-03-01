@@ -18,6 +18,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { logger } from './observabilityService';
 import * as monitoringService from './monitoringService';
+import * as bounceProcessingService from './bounceProcessingService';
 import * as eventService from './eventService';
 import * as notificationService from './notificationService';
 import { EventType } from '../types';
@@ -36,6 +37,9 @@ interface EventJobData {
     campaignId?: string;
     smtpResponse?: string;
     recipientEmail?: string;
+    bounceType?: string;     // 'hard' | 'soft' (from platform webhook)
+    sentAt?: string;         // ISO datetime string
+    bouncedAt?: string;      // ISO datetime string
 }
 
 interface QueueStatus {
@@ -312,12 +316,16 @@ async function processEventInline(data: EventJobData): Promise<void> {
         case EventType.HARD_BOUNCE:
         case 'EMAIL_BOUNCE':
         case 'BOUNCE':
-            await monitoringService.recordBounce(
-                entityId,
-                campaignId || '',
+            await bounceProcessingService.processBounce({
+                organizationId,
+                mailboxId: entityId,
+                campaignId: campaignId || undefined,
+                recipientEmail,
                 smtpResponse,
-                recipientEmail
-            );
+                bounceType: data.bounceType,
+                sentAt: data.sentAt ? new Date(data.sentAt) : undefined,
+                bouncedAt: data.bouncedAt ? new Date(data.bouncedAt) : undefined,
+            });
             break;
 
         case EventType.EMAIL_SENT:

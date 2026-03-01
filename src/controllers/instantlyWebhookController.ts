@@ -182,6 +182,8 @@ export const handleInstantlyWebhook = async (req: Request, res: Response) => {
             });
 
             // 2. Enqueue to BullMQ for async processing
+            const isBounce = internalEventType === EventType.HARD_BOUNCE;
+
             await enqueueEvent({
                 eventId: internalDbEventId,
                 eventType: internalEventType,
@@ -191,6 +193,9 @@ export const handleInstantlyWebhook = async (req: Request, res: Response) => {
                 campaignId,
                 recipientEmail,
                 smtpResponse,
+                bounceType: isBounce ? (event.bounce_type || 'hard') : undefined,
+                sentAt: isBounce ? event.sent_at : undefined,
+                bouncedAt: isBounce ? (event.timestamp || new Date().toISOString()) : undefined,
             });
         }
 

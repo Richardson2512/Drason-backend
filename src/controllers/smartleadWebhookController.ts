@@ -10,8 +10,10 @@ import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
 import * as auditLogService from '../services/auditLogService';
 import { getOrgId } from '../middleware/orgContext';
-import { RecoveryPhase } from '../types';
+import { EventType } from '../types';
 import * as eventParserService from "../services/smartleadEventParserService";
+import { storeEvent } from '../services/eventService';
+import { enqueueEvent } from '../services/eventQueue';
 
 /**
  * Handle Smartlead webhook events.
@@ -56,9 +58,48 @@ export const handleSmartleadWebhook = async (req: Request, res: Response) => {
             case 'email_bounced':
             case 'bounce':
             case 'hard_bounce':
-            case 'soft_bounce':
-                await eventParserService.handleBounceEvent(orgId, event);
+            case 'soft_bounce': {
+                // Route bounces through the unified queue path (same as EmailBison/Instantly)
+                const mailboxIdRaw = event.email_account_id || event.mailbox_id;
+                const campaignIdRaw = event.campaign_id;
+                const mailboxId = mailboxIdRaw ? String(mailboxIdRaw) : undefined;
+                const campaignId = campaignIdRaw ? String(campaignIdRaw) : undefined;
+                const recipientEmail = event.email || event.lead_email;
+                const smtpResponse = event.bounce_reason || event.reason || '';
+                const bounceType = event.bounce_type || 'hard';
+                const eventId = event.id || `sl-evt-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+                if (!mailboxId) {
+                    logger.warn('[SMARTLEAD-WEBHOOK] Bounce event missing mailbox ID', { orgId, event });
+                    break;
+                }
+
+                // 1. Store raw event for immutable event sourcing
+                const { eventId: internalDbEventId } = await storeEvent({
+                    organizationId: orgId,
+                    eventType: EventType.HARD_BOUNCE,
+                    entityType: 'mailbox',
+                    entityId: mailboxId,
+                    payload: event,
+                    idempotencyKey: eventId,
+                });
+
+                // 2. Enqueue to BullMQ for async processing via bounceProcessingService
+                await enqueueEvent({
+                    eventId: internalDbEventId,
+                    eventType: EventType.HARD_BOUNCE,
+                    entityType: 'mailbox',
+                    entityId: mailboxId,
+                    organizationId: orgId,
+                    campaignId,
+                    recipientEmail,
+                    smtpResponse,
+                    bounceType,
+                    sentAt: event.sent_at,
+                    bouncedAt: event.bounced_at || new Date().toISOString(),
+                });
                 break;
+            }
 
             case 'email_sent':
             case 'sent':

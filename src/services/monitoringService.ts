@@ -69,13 +69,10 @@ async function getMailboxOrgId(mailboxId: string): Promise<string | null> {
 
 /**
  * Record a bounce event for a mailbox.
- * 
- * Enhanced with:
- *   - Cause-based classification (BounceFailureType)
- *   - Provider fingerprinting (EmailProvider)
- *   - Only health-degrading failures count toward thresholds
- *   - Transient failures logged but don't affect health
- *   - Recovery phase relapse detection
+ *
+ * @deprecated Use bounceProcessingService.processBounce() instead.
+ * All platforms now use the unified bounceProcessingService for bounce
+ * processing. This function is retained for backward compatibility.
  */
 export const recordBounce = async (
     mailboxId: string,
@@ -280,7 +277,7 @@ const slideWindow = async (mailboxId: string): Promise<void> => {
  * This gives operators time to react before damage occurs.
  * Respects system mode (ENFORCE only).
  */
-const warnMailbox = async (mailboxId: string, reason: string): Promise<void> => {
+export const warnMailbox = async (mailboxId: string, reason: string): Promise<void> => {
     const mailbox = await prisma.mailbox.findUnique({ where: { id: mailboxId } });
     if (!mailbox) return;
 
@@ -346,7 +343,7 @@ const warnMailbox = async (mailboxId: string, reason: string): Promise<void> => 
  * Implements cooldown calculation based on consecutive pauses.
  * Respects system mode (ENFORCE only).
  */
-const pauseMailbox = async (mailboxId: string, reason: string): Promise<void> => {
+export const pauseMailbox = async (mailboxId: string, reason: string): Promise<void> => {
     const mailbox = await prisma.mailbox.findUnique({ where: { id: mailboxId } });
     if (!mailbox) return;
 
