@@ -104,11 +104,6 @@ export function getPlatformSyncWorkerStatus(): WorkerStatus {
     return { ...workerStatus };
 }
 
-// Legacy aliases for backward compat
-export const startSmartleadSyncWorker = startPlatformSyncWorker;
-export const stopSmartleadSyncWorker = stopPlatformSyncWorker;
-export const getSmartleadSyncWorkerStatus = getPlatformSyncWorkerStatus;
-
 // ============================================================================
 // SYNC LOGIC
 // ============================================================================

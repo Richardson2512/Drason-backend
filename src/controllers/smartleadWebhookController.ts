@@ -8,7 +8,6 @@
 import { Request, Response } from 'express';
 import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
-import * as auditLogService from '../services/auditLogService';
 import { getOrgId } from '../middleware/orgContext';
 import { EventType } from '../types';
 import * as eventParserService from "../services/smartleadEventParserService";
@@ -103,33 +102,61 @@ export const handleSmartleadWebhook = async (req: Request, res: Response) => {
 
             case 'email_sent':
             case 'sent':
-                await eventParserService.handleSentEvent(orgId, event);
-                break;
-
             case 'email_opened':
             case 'opened':
-                await eventParserService.handleOpenEvent(orgId, event);
-                break;
-
             case 'email_clicked':
             case 'clicked':
-                await eventParserService.handleClickEvent(orgId, event);
-                break;
-
             case 'email_replied':
             case 'replied':
-                await eventParserService.handleReplyEvent(orgId, event);
-                break;
-
             case 'email_unsubscribed':
             case 'unsubscribed':
-                await eventParserService.handleUnsubscribeEvent(orgId, event);
-                break;
-
             case 'email_spam_reported':
-            case 'spam_complaint':
-                await eventParserService.handleSpamEvent(orgId, event);
+            case 'spam_complaint': {
+                // Route ALL engagement/sent/spam/unsub events through the unified queue
+                // (same path as EmailBison/Instantly — platform parity)
+                const mailboxIdRaw = event.email_account_id || event.mailbox_id;
+                const campaignIdRaw = event.campaign_id;
+                const mailboxId = mailboxIdRaw ? String(mailboxIdRaw) : undefined;
+                const campaignId = campaignIdRaw ? String(campaignIdRaw) : undefined;
+                const recipientEmail = event.email || event.lead_email;
+                const eventId = event.id || `sl-evt-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+                // Map Smartlead event type to internal queue event type
+                const internalEventType =
+                    (eventType === 'email_sent' || eventType === 'sent') ? EventType.EMAIL_SENT :
+                    (eventType === 'email_opened' || eventType === 'opened') ? 'EmailOpened' :
+                    (eventType === 'email_clicked' || eventType === 'clicked') ? 'EmailClicked' :
+                    (eventType === 'email_replied' || eventType === 'replied') ? 'EmailReplied' :
+                    (eventType === 'email_unsubscribed' || eventType === 'unsubscribed') ? 'EmailUnsubscribed' :
+                    'SpamComplaint'; // email_spam_reported, spam_complaint
+
+                if (!mailboxId) {
+                    logger.warn('[SMARTLEAD-WEBHOOK] Event missing mailbox ID', { orgId, eventType });
+                    break;
+                }
+
+                // 1. Store raw event for immutable event sourcing
+                const { eventId: internalDbEventId } = await storeEvent({
+                    organizationId: orgId,
+                    eventType: internalEventType as EventType,
+                    entityType: 'mailbox',
+                    entityId: mailboxId,
+                    payload: event,
+                    idempotencyKey: eventId,
+                });
+
+                // 2. Enqueue to BullMQ for async processing
+                await enqueueEvent({
+                    eventId: internalDbEventId,
+                    eventType: internalEventType,
+                    entityType: 'mailbox',
+                    entityId: mailboxId,
+                    organizationId: orgId,
+                    campaignId,
+                    recipientEmail,
+                });
                 break;
+            }
 
             case 'campaign_status_changed':
             case 'CAMPAIGN_STATUS_CHANGED':

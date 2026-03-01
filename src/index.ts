@@ -88,7 +88,7 @@ import { initEventQueue, getQueueStatus, shutdownEventQueue } from './services/e
 import { startLeadHealthWorker, getLeadHealthWorkerStatus } from './services/leadHealthWorker';
 import { startLeadScoringWorker, stopLeadScoringWorker } from './services/leadScoringWorker';
 import { startTrialWorker, stopTrialWorker } from './services/trialWorker';
-import { startSmartleadSyncWorker, stopSmartleadSyncWorker, getSmartleadSyncWorkerStatus } from './services/platformSyncWorker';
+import { startPlatformSyncWorker, stopPlatformSyncWorker, getPlatformSyncWorkerStatus } from './services/platformSyncWorker';
 import { scheduleWarmupTracking } from './workers/warmupTrackingWorker';
 import * as infrastructureAssessmentService from './services/infrastructureAssessmentService';
 
@@ -173,7 +173,7 @@ app.get('/health', asyncHandler(async (req: express.Request, res: express.Respon
     const retentionJob = getRetentionJobStatus();
     const eventQueueStatus = await getQueueStatus();
     const leadHealthWorker = getLeadHealthWorkerStatus();
-    const smartleadSyncWorker = getSmartleadSyncWorkerStatus();
+    const platformSyncWorker = getPlatformSyncWorkerStatus();
 
     const components = {
         database: dbStatus,
@@ -200,14 +200,14 @@ app.get('/health', asyncHandler(async (req: express.Request, res: express.Respon
             lastRunAt: leadHealthWorker.lastRunAt,
             lastError: leadHealthWorker.lastError
         },
-        smartleadSyncWorker: {
-            status: smartleadSyncWorker.lastRunAt ? 'active' : 'not_started',
-            lastRunAt: smartleadSyncWorker.lastRunAt,
-            lastError: smartleadSyncWorker.lastError,
-            totalSyncs: smartleadSyncWorker.totalSyncs,
-            totalOrganizationsSynced: smartleadSyncWorker.totalOrganizationsSynced,
-            lastSyncDurationMs: smartleadSyncWorker.lastSyncDurationMs,
-            consecutiveFailures: smartleadSyncWorker.consecutiveFailures
+        platformSyncWorker: {
+            status: platformSyncWorker.lastRunAt ? 'active' : 'not_started',
+            lastRunAt: platformSyncWorker.lastRunAt,
+            lastError: platformSyncWorker.lastError,
+            totalSyncs: platformSyncWorker.totalSyncs,
+            totalOrganizationsSynced: platformSyncWorker.totalOrganizationsSynced,
+            lastSyncDurationMs: platformSyncWorker.lastSyncDurationMs,
+            consecutiveFailures: platformSyncWorker.consecutiveFailures
         }
     };
 
@@ -316,7 +316,7 @@ app.get('/api/health', requireRole(UserRole.ADMIN), asyncHandler(async (req, res
     const retentionJob = getRetentionJobStatus();
     const eventQueueStatus = await getQueueStatus();
     const leadHealthWorker = getLeadHealthWorkerStatus();
-    const smartleadSyncWorker = getSmartleadSyncWorkerStatus();
+    const platformSyncWorker = getPlatformSyncWorkerStatus();
 
     const components = {
         database: dbStatus,
@@ -344,14 +344,14 @@ app.get('/api/health', requireRole(UserRole.ADMIN), asyncHandler(async (req, res
             lastRunAt: leadHealthWorker.lastRunAt,
             lastError: leadHealthWorker.lastError
         },
-        smartleadSyncWorker: {
-            status: smartleadSyncWorker.lastRunAt ? 'active' : 'not_started',
-            lastRunAt: smartleadSyncWorker.lastRunAt,
-            lastError: smartleadSyncWorker.lastError,
-            totalSyncs: smartleadSyncWorker.totalSyncs,
-            totalOrganizationsSynced: smartleadSyncWorker.totalOrganizationsSynced,
-            lastSyncDurationMs: smartleadSyncWorker.lastSyncDurationMs,
-            consecutiveFailures: smartleadSyncWorker.consecutiveFailures
+        platformSyncWorker: {
+            status: platformSyncWorker.lastRunAt ? 'active' : 'not_started',
+            lastRunAt: platformSyncWorker.lastRunAt,
+            lastError: platformSyncWorker.lastError,
+            totalSyncs: platformSyncWorker.totalSyncs,
+            totalOrganizationsSynced: platformSyncWorker.totalOrganizationsSynced,
+            lastSyncDurationMs: platformSyncWorker.lastSyncDurationMs,
+            consecutiveFailures: platformSyncWorker.consecutiveFailures
         }
     };
 
@@ -658,9 +658,9 @@ const server = app.listen(PORT, () => {
     startTrialWorker();
     logger.info('Trial expiration worker started (runs hourly)');
 
-    // Start Smartlead sync worker for 24/7 infrastructure monitoring
-    startSmartleadSyncWorker();
-    logger.info('Smartlead sync worker started (runs every 20min for real-time monitoring)');
+    // Start Platform sync worker for 24/7 infrastructure monitoring
+    startPlatformSyncWorker();
+    logger.info('Platform sync worker started (runs every 20min for real-time monitoring)');
 
     // Start warmup tracking worker for automated recovery
     scheduleWarmupTracking();
@@ -684,8 +684,8 @@ async function gracefulShutdown(signal: string): Promise<void> {
     stopTrialWorker();
     logger.info('Trial worker stopped');
 
-    stopSmartleadSyncWorker();
-    logger.info('Smartlead sync worker stopped');
+    stopPlatformSyncWorker();
+    logger.info('Platform sync worker stopped');
 
     infrastructureAssessmentService.stopPeriodicAssessment();
     logger.info('Periodic assessment worker stopped');

@@ -1,7 +1,7 @@
 /**
  * Lead Scoring Service
  *
- * Calculates dynamic lead quality scores based on engagement data from Smartlead.
+ * Calculates dynamic lead quality scores based on engagement data from all platforms.
  * Scores range from 0-100 and help identify top-performing leads in campaigns.
  *
  * Additive Scoring Formula (all components sum to final score):
@@ -87,10 +87,42 @@ export function calculateFinalScore(breakdown: LeadScore['breakdown']): number {
 }
 
 /**
- * Sync engagement data from Smartlead and update lead scores.
+ * Recalculate lead_score from engagement counters using the proper formula.
+ * Called after each open/click/reply webhook to keep scores accurate in real-time.
+ * Platform-agnostic — works for all platforms (Smartlead, EmailBison, Instantly).
+ */
+export async function recalculateLeadScore(leadId: string): Promise<void> {
+    const lead = await prisma.lead.findUnique({
+        where: { id: leadId },
+        select: {
+            emails_opened: true,
+            emails_clicked: true,
+            emails_replied: true,
+            last_activity_at: true,
+        }
+    });
+    if (!lead) return;
+
+    const breakdown = calculateEngagementScore({
+        opens: lead.emails_opened || 0,
+        clicks: lead.emails_clicked || 0,
+        replies: lead.emails_replied || 0,
+        bounces: 0,
+        lastEngagementDate: lead.last_activity_at || undefined,
+    });
+    const newScore = calculateFinalScore(breakdown);
+
+    await prisma.lead.update({
+        where: { id: leadId },
+        data: { lead_score: newScore }
+    });
+}
+
+/**
+ * Sync engagement data and update lead scores for all platforms.
  * This should be called periodically (e.g., daily) to keep scores fresh.
  */
-export async function syncLeadScoresFromSmartlead(organizationId: string): Promise<{
+export async function syncLeadScores(organizationId: string): Promise<{
     updated: number;
     topLeads: LeadScore[];
 }> {
@@ -109,7 +141,7 @@ export async function syncLeadScoresFromSmartlead(organizationId: string): Promi
             }
         });
 
-        logger.info(`[LEAD-SCORING] Found ${leads.length} Smartlead leads to score`);
+        logger.info(`[LEAD-SCORING] Found ${leads.length} leads to score`);
 
         if (leads.length === 0) {
             return { updated: 0, topLeads: [] };
@@ -134,7 +166,7 @@ export async function syncLeadScoresFromSmartlead(organizationId: string): Promi
             try {
                 // Fetch engagement data from Smartlead API
                 // Note: This requires Smartlead API support for lead-level analytics
-                const engagementData = await fetchSmartleadEngagementData(
+                const engagementData = await fetchEngagementData(
                     organizationId,
                     campaignId,
                     campaignLeads.map(l => l.email)
@@ -197,33 +229,21 @@ export async function syncLeadScoresFromSmartlead(organizationId: string): Promi
 }
 
 /**
- * Fetch engagement data from Smartlead API.
- *
- * TODO: Implement actual Smartlead API call when endpoint is available.
- * Current Smartlead API limitations:
- * - No single endpoint for lead-level engagement stats
- * - Need to aggregate from email activity logs
- *
- * Workaround: Parse campaign activity logs or use webhook events.
+ * Fetch engagement data for leads.
+ * Currently aggregates from our internal event store (populated by webhooks from all platforms).
  */
-async function fetchSmartleadEngagementData(
+async function fetchEngagementData(
     organizationId: string,
     campaignId: string,
     emails: string[]
 ): Promise<Record<string, EngagementData>> {
-    // This is a placeholder - actual implementation depends on Smartlead API capabilities
-
-    // Option 1: Use Smartlead campaign analytics API (if available)
-    // Option 2: Aggregate from email activity events stored in our database
-    // Option 3: Parse from Smartlead webhook events we've received
-
-    // For now, let's aggregate from our own event store
+    // Aggregate from our own event store (populated by webhooks from all platforms)
     return await aggregateEngagementFromEvents(organizationId, emails);
 }
 
 /**
  * Aggregate engagement data from our internal event store.
- * This uses events we've received from Smartlead webhooks.
+ * Uses lead activity counters populated by webhooks from all platforms.
  */
 async function aggregateEngagementFromEvents(
     organizationId: string,
@@ -242,7 +262,7 @@ async function aggregateEngagementFromEvents(
     });
 
     // Fetch lead activity data directly from Lead model
-    // Activity stats are synced from Smartlead API during sync
+    // Activity stats are updated in real-time by webhooks from all platforms
     const leads = await prisma.lead.findMany({
         where: {
             organization_id: organizationId,

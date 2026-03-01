@@ -10,7 +10,6 @@ import * as leadService from '../services/leadService';
 import { getOrgId } from '../middleware/orgContext';
 import { logger } from '../services/observabilityService';
 import { prisma } from '../index';
-import { getLeadCampaigns as fetchSmartleadLeadCampaigns } from '../services/smartleadClient';
 
 export const ingestLead = async (req: Request, res: Response): Promise<void> => {
     try {
@@ -45,7 +44,7 @@ export const ingestLead = async (req: Request, res: Response): Promise<void> => 
 
 /**
  * Get all campaigns a lead is enrolled in.
- * Combines local DB data with Smartlead API for comprehensive cross-campaign view.
+ * Platform-agnostic — queries local DB for all campaigns across all platforms.
  */
 export const getLeadCampaigns = async (req: Request, res: Response): Promise<void> => {
     try {
@@ -68,22 +67,40 @@ export const getLeadCampaigns = async (req: Request, res: Response): Promise<voi
             return;
         }
 
-        // Get campaign assignment from our DB
-        const localCampaign = lead.assigned_campaign_id
+        // Get the assigned campaign from our DB
+        const assignedCampaign = lead.assigned_campaign_id
             ? await prisma.campaign.findUnique({
                 where: { id: lead.assigned_campaign_id },
-                select: { id: true, name: true, status: true }
+                select: { id: true, name: true, status: true, source_platform: true }
             })
             : null;
 
-        // Try to fetch from Smartlead API for cross-campaign data
-        let smartleadCampaigns: Array<{ campaign_id: string; campaign_name: string; status: string }> = [];
-        try {
-            // Use the Smartlead lead ID if available (it's typically the same as our campaign lead ID)
-            smartleadCampaigns = await fetchSmartleadLeadCampaigns(orgId, leadId);
-        } catch {
-            // Non-fatal: Smartlead may not have this lead or API may be unavailable
-            logger.debug('[LeadCampaigns] Could not fetch from Smartlead API', { leadId, orgId });
+        // Query all campaigns this lead's email is associated with (platform-agnostic)
+        // This finds campaigns where the lead email appears in bounce events or audit logs
+        const allCampaigns = lead.assigned_campaign_id
+            ? [assignedCampaign].filter(Boolean)
+            : [];
+
+        // Also check bounce events for cross-campaign associations
+        const crossCampaignIds = await prisma.bounceEvent.findMany({
+            where: {
+                organization_id: orgId,
+                email_address: lead.email,
+                campaign_id: { not: null },
+            },
+            select: { campaign_id: true },
+            distinct: ['campaign_id'],
+        });
+
+        if (crossCampaignIds.length > 0) {
+            const additionalCampaigns = await prisma.campaign.findMany({
+                where: {
+                    id: { in: crossCampaignIds.map(b => b.campaign_id!).filter(Boolean) },
+                    NOT: { id: lead.assigned_campaign_id || '' },
+                },
+                select: { id: true, name: true, status: true, source_platform: true },
+            });
+            allCampaigns.push(...additionalCampaigns);
         }
 
         res.json({
@@ -93,8 +110,8 @@ export const getLeadCampaigns = async (req: Request, res: Response): Promise<voi
                 email: lead.email,
                 lead_category: lead.lead_category,
                 cross_campaign_count: lead.cross_campaign_count,
-                local_campaign: localCampaign,
-                smartlead_campaigns: smartleadCampaigns,
+                assigned_campaign: assignedCampaign,
+                all_campaigns: allCampaigns,
             }
         });
     } catch (error) {

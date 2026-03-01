@@ -17,12 +17,16 @@
 
 import { Queue, Worker, Job } from 'bullmq';
 import { logger } from './observabilityService';
-import * as monitoringService from './monitoringService';
 import * as bounceProcessingService from './bounceProcessingService';
 import * as eventService from './eventService';
 import * as notificationService from './notificationService';
-import { EventType } from '../types';
+import * as auditLogService from './auditLogService';
+import * as entityStateService from './entityStateService';
+import { recalculateLeadScore } from './leadScoringService';
+import { EventType, LeadState, TriggerType, MONITORING_THRESHOLDS } from '../types';
 import { prisma } from '../index';
+
+const { ROLLING_WINDOW_SIZE } = MONITORING_THRESHOLDS;
 
 // ============================================================================
 // TYPES
@@ -192,31 +196,171 @@ export async function enqueueEvent(data: EventJobData): Promise<boolean> {
 // JOB PROCESSOR
 // ============================================================================
 
+// ============================================================================
+// UNIFIED EVENT HANDLERS (platform-agnostic)
+// ============================================================================
+
 /**
- * Platform-agnostic engagement event handler.
- * Used for EmailBison (and any future platform) where IDs are already
- * pre-prefixed by the webhook controller (e.g., 'eb-123').
+ * Process a sent event — unified for all platforms.
+ * Updates lead, campaign, and mailbox counters. Triggers sliding window.
  */
-async function recordEngagementEvent(
+async function processSentEvent(
+    organizationId: string,
+    mailboxId: string,
+    campaignId: string | undefined,
+    recipientEmail: string | undefined
+): Promise<void> {
+    // 1. Update lead sent counter
+    if (recipientEmail) {
+        try {
+            const lead = await prisma.lead.findFirst({
+                where: { organization_id: organizationId, email: { equals: recipientEmail, mode: 'insensitive' } },
+                select: { id: true },
+            });
+            if (lead) {
+                await prisma.lead.update({
+                    where: { id: lead.id },
+                    data: {
+                        emails_sent: { increment: 1 },
+                        last_activity_at: new Date(),
+                    },
+                });
+
+                await auditLogService.logAction({
+                    organizationId,
+                    entity: 'lead',
+                    entityId: lead.id,
+                    trigger: 'webhook',
+                    action: 'email_sent',
+                    details: `Email sent via campaign ${campaignId || 'unknown'} from mailbox ${mailboxId}`,
+                });
+            }
+        } catch (err: any) {
+            logger.warn(`[QUEUE] Failed to update lead sent count for ${recipientEmail}`, { error: err.message });
+        }
+    }
+
+    // 2. Update campaign total_sent (CRITICAL — was missing for EB/Instantly)
+    if (campaignId) {
+        try {
+            await prisma.campaign.updateMany({
+                where: { id: campaignId },
+                data: { total_sent: { increment: 1 } },
+            });
+        } catch (err: any) {
+            logger.warn(`[QUEUE] Failed to update campaign sent count for ${campaignId}`, { error: err.message });
+        }
+    }
+
+    // 3. Update mailbox stats + trigger sliding window
+    try {
+        const mailbox = await prisma.mailbox.findUnique({
+            where: { id: mailboxId },
+            select: { id: true, window_sent_count: true, clean_sends_since_phase: true },
+        });
+        if (mailbox) {
+            const newWindowSent = mailbox.window_sent_count + 1;
+            await prisma.mailbox.update({
+                where: { id: mailboxId },
+                data: {
+                    window_sent_count: newWindowSent,
+                    total_sent_count: { increment: 1 },
+                    last_activity_at: new Date(),
+                    clean_sends_since_phase: mailbox.clean_sends_since_phase + 1,
+                },
+            });
+
+            // Trigger sliding window if threshold reached
+            if (newWindowSent >= ROLLING_WINDOW_SIZE) {
+                await slideWindow(mailboxId, organizationId);
+            }
+        }
+    } catch (err: any) {
+        logger.warn(`[QUEUE] Failed to update mailbox sent count for ${mailboxId}`, { error: err.message });
+    }
+}
+
+/**
+ * Sliding window for monitoring (NOT hard reset).
+ * Keeps 50% of current window stats to preserve volatility visibility.
+ */
+async function slideWindow(mailboxId: string, organizationId: string): Promise<void> {
+    const mailbox = await prisma.mailbox.findUnique({
+        where: { id: mailboxId },
+        select: { window_sent_count: true, window_bounce_count: true, status: true },
+    });
+    if (!mailbox) return;
+
+    const newSentCount = Math.floor(mailbox.window_sent_count / 2);
+    const newBounceCount = Math.floor(mailbox.window_bounce_count / 2);
+
+    await prisma.mailbox.update({
+        where: { id: mailboxId },
+        data: {
+            window_sent_count: newSentCount,
+            window_bounce_count: newBounceCount,
+            window_start_at: new Date(),
+        },
+    });
+
+    await auditLogService.logAction({
+        organizationId,
+        entity: 'mailbox',
+        entityId: mailboxId,
+        trigger: 'monitor_window',
+        action: 'window_slide',
+        details: `Window slid: kept ${newBounceCount}/${newSentCount} (50% of previous). Sliding heal.`,
+    });
+}
+
+/**
+ * Process engagement events (open/click/reply) — unified for all platforms.
+ * Updates lead, campaign, and mailbox counters. Recalculates lead score. Logs audit trail.
+ */
+async function processEngagementEvent(
     organizationId: string,
     mailboxId: string,
     campaignId: string | undefined,
     recipientEmail: string | undefined,
     type: 'open' | 'click' | 'reply'
 ): Promise<void> {
-    // 1. Update Lead engagement counter
+    const actionName = type === 'open' ? 'email_opened'
+        : type === 'click' ? 'email_clicked'
+        : 'email_replied';
+
+    // 1. Find and update Lead engagement counter + recalculate score
     if (recipientEmail) {
         try {
-            const leadField = type === 'open' ? 'emails_opened'
-                : type === 'click' ? 'emails_clicked'
-                : 'emails_replied';
-            await prisma.lead.updateMany({
-                where: { organization_id: organizationId, email: recipientEmail },
-                data: {
-                    [leadField]: { increment: 1 },
-                    last_activity_at: new Date(),
-                },
+            const lead = await prisma.lead.findFirst({
+                where: { organization_id: organizationId, email: { equals: recipientEmail, mode: 'insensitive' } },
+                select: { id: true },
             });
+            if (lead) {
+                const leadField = type === 'open' ? 'emails_opened'
+                    : type === 'click' ? 'emails_clicked'
+                    : 'emails_replied';
+                await prisma.lead.update({
+                    where: { id: lead.id },
+                    data: {
+                        [leadField]: { increment: 1 },
+                        last_activity_at: new Date(),
+                        updated_at: new Date(),
+                    },
+                });
+
+                // Recalculate lead score (was missing for EB/Instantly)
+                await recalculateLeadScore(lead.id);
+
+                // Audit trail (was missing for EB/Instantly)
+                await auditLogService.logAction({
+                    organizationId,
+                    entity: 'lead',
+                    entityId: lead.id,
+                    trigger: 'webhook',
+                    action: actionName,
+                    details: `${type === 'open' ? 'Opened email' : type === 'click' ? 'Clicked link' : 'Replied to email'} in campaign ${campaignId || 'unknown'} via mailbox ${mailboxId}`,
+                });
+            }
         } catch (err: any) {
             logger.warn(`[QUEUE] Failed to update lead engagement for ${recipientEmail}`, { error: err.message });
         }
@@ -287,6 +431,120 @@ async function recordEngagementEvent(
 }
 
 /**
+ * Process spam complaint events — unified for all platforms.
+ * Blocks lead, increments mailbox spam_count, logs audit trail.
+ */
+async function processSpamEvent(
+    organizationId: string,
+    mailboxId: string,
+    campaignId: string | undefined,
+    recipientEmail: string | undefined
+): Promise<void> {
+    // 1. Block lead via state machine (was missing for EB/Instantly)
+    if (recipientEmail) {
+        try {
+            const lead = await prisma.lead.findFirst({
+                where: { organization_id: organizationId, email: { equals: recipientEmail, mode: 'insensitive' } },
+                select: { id: true },
+            });
+            if (lead) {
+                await entityStateService.transitionLead(
+                    organizationId, lead.id, LeadState.BLOCKED,
+                    'Spam complaint received', TriggerType.WEBHOOK
+                );
+                await prisma.lead.update({
+                    where: { id: lead.id },
+                    data: { health_state: 'unhealthy', health_classification: 'red', updated_at: new Date() },
+                });
+            }
+        } catch (err: any) {
+            logger.warn(`[QUEUE] Failed to block lead for spam complaint: ${recipientEmail}`, { error: err.message });
+        }
+    }
+
+    // 2. Increment mailbox spam_count
+    try {
+        await prisma.mailbox.update({
+            where: { id: mailboxId },
+            data: { spam_count: { increment: 1 } },
+        });
+    } catch (err: any) {
+        logger.warn('[QUEUE] Failed to increment spam_count (mailbox may not exist)', { entityId: mailboxId });
+    }
+
+    // 3. Audit trail (was missing for EB/Instantly)
+    await auditLogService.logAction({
+        organizationId,
+        entity: 'mailbox',
+        entityId: mailboxId,
+        trigger: 'webhook',
+        action: 'spam_complaint_received',
+        details: `Spam complaint from ${recipientEmail || 'unknown'}${campaignId ? ` in campaign ${campaignId}` : ''}`,
+    });
+
+    logger.info('[QUEUE] Spam complaint processed', { mailboxId, campaignId, recipientEmail });
+}
+
+/**
+ * Process unsubscribe events — unified for all platforms.
+ * Blocks lead, updates campaign unsubscribed_count, logs audit trail.
+ */
+async function processUnsubscribeEvent(
+    organizationId: string,
+    mailboxId: string,
+    campaignId: string | undefined,
+    recipientEmail: string | undefined
+): Promise<void> {
+    // 1. Block lead via state machine (was a no-op for EB/Instantly)
+    if (recipientEmail) {
+        try {
+            const lead = await prisma.lead.findFirst({
+                where: { organization_id: organizationId, email: { equals: recipientEmail, mode: 'insensitive' } },
+                select: { id: true },
+            });
+            if (lead) {
+                await entityStateService.transitionLead(
+                    organizationId, lead.id, LeadState.BLOCKED,
+                    'Lead unsubscribed', TriggerType.WEBHOOK
+                );
+                await prisma.lead.update({
+                    where: { id: lead.id },
+                    data: { health_state: 'unhealthy', updated_at: new Date() },
+                });
+
+                await auditLogService.logAction({
+                    organizationId,
+                    entity: 'lead',
+                    entityId: lead.id,
+                    trigger: 'webhook',
+                    action: 'lead_unsubscribed',
+                    details: `Lead unsubscribed${campaignId ? ` from campaign ${campaignId}` : ''}`,
+                });
+            }
+        } catch (err: any) {
+            logger.warn(`[QUEUE] Failed to block lead for unsubscribe: ${recipientEmail}`, { error: err.message });
+        }
+    }
+
+    // 2. Update campaign unsubscribed_count (was missing for EB/Instantly)
+    if (campaignId) {
+        try {
+            await prisma.campaign.update({
+                where: { id: campaignId },
+                data: {
+                    unsubscribed_count: { increment: 1 },
+                    analytics_updated_at: new Date(),
+                },
+            });
+        } catch (err: any) {
+            logger.warn(`[QUEUE] Failed to update campaign unsubscribe count for ${campaignId}`, { error: err.message });
+        }
+    }
+
+    logger.info('[QUEUE] Unsubscribe event processed', { mailboxId, campaignId, recipientEmail });
+}
+
+/**
  * Process a single event job from the queue.
  * This is the BullMQ job handler — runs in the worker.
  */
@@ -310,7 +568,9 @@ async function processEventJob(job: Job<EventJobData>): Promise<void> {
  * Inline event processing — shared between async worker and sync fallback.
  */
 async function processEventInline(data: EventJobData): Promise<void> {
-    const { eventType, entityId, campaignId, smtpResponse, recipientEmail, organizationId } = data;
+    const { eventType, entityId, campaignId, smtpResponse, organizationId } = data;
+    // Normalize email to lowercase — prevents case-mismatch lead lookup failures
+    const recipientEmail = data.recipientEmail?.toLowerCase().trim();
 
     switch (eventType) {
         case EventType.HARD_BOUNCE:
@@ -330,38 +590,28 @@ async function processEventInline(data: EventJobData): Promise<void> {
 
         case EventType.EMAIL_SENT:
         case 'SENT':
-            await monitoringService.recordSent(entityId, campaignId || '');
+            await processSentEvent(organizationId, entityId, campaignId, recipientEmail);
             break;
 
         case 'EmailOpened':
-            await recordEngagementEvent(organizationId, entityId, campaignId, recipientEmail, 'open');
+            await processEngagementEvent(organizationId, entityId, campaignId, recipientEmail, 'open');
             break;
 
         case 'EmailClicked':
-            await recordEngagementEvent(organizationId, entityId, campaignId, recipientEmail, 'click');
+            await processEngagementEvent(organizationId, entityId, campaignId, recipientEmail, 'click');
             break;
 
         case 'EmailReplied':
-            await recordEngagementEvent(organizationId, entityId, campaignId, recipientEmail, 'reply');
+            await processEngagementEvent(organizationId, entityId, campaignId, recipientEmail, 'reply');
             break;
 
         case 'SpamComplaint':
         case 'SPAM_COMPLAINT':
-            // Increment spam_count on the mailbox
-            try {
-                await prisma.mailbox.update({
-                    where: { id: entityId },
-                    data: { spam_count: { increment: 1 } }
-                });
-                logger.info('[QUEUE] Spam complaint recorded', { entityId, campaignId });
-            } catch (err) {
-                logger.warn('[QUEUE] Failed to increment spam_count (mailbox may not exist)', { entityId });
-            }
+            await processSpamEvent(organizationId, entityId, campaignId, recipientEmail);
             break;
 
         case 'EmailUnsubscribed':
-            // Log unsubscribe event — stored in RawEvent for auditing, no stat field to update
-            logger.info('[QUEUE] Unsubscribe event recorded', { entityId, recipientEmail });
+            await processUnsubscribeEvent(organizationId, entityId, campaignId, recipientEmail);
             break;
 
         default:

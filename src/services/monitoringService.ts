@@ -193,6 +193,11 @@ export const recordBounce = async (
 /**
  * Record a sent email event for a mailbox.
  * May trigger window reset if threshold reached.
+ *
+ * @deprecated Use processSentEvent() in eventQueue.ts instead.
+ * All platforms now use the unified event queue for sent event processing.
+ * This function is retained for backward compatibility but is no longer
+ * called from the main event processing path.
  */
 export const recordSent = async (mailboxId: string, campaignId: string): Promise<void> => {
     const mailbox = await prisma.mailbox.findUnique({ where: { id: mailboxId } });

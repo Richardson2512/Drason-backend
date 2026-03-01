@@ -58,7 +58,8 @@ async function processLead(
     organizationId: string,
     input: LeadInput
 ): Promise<ProcessResult> {
-    const { email, persona, lead_score, source, first_name, last_name, company } = input;
+    const { persona, lead_score, source, first_name, last_name, company } = input;
+    const email = input.email.toLowerCase().trim();
     const logTag = source === 'clay' ? 'INGEST CLAY' : 'INGEST';
 
     // === 1. HEALTH GATE ===

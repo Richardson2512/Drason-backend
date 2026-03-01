@@ -109,13 +109,12 @@ export async function processBounce(params: BounceProcessingParams): Promise<voi
 
     // ── Step 3: Create BounceEvent record (ALWAYS — for analytics) ──
     let leadId: string | undefined;
-    if (recipientEmail) {
-        const lead = await prisma.lead.findUnique({
+    const normalizedRecipient = recipientEmail?.toLowerCase().trim();
+    if (normalizedRecipient) {
+        const lead = await prisma.lead.findFirst({
             where: {
-                organization_id_email: {
-                    organization_id: organizationId,
-                    email: recipientEmail,
-                },
+                organization_id: organizationId,
+                email: { equals: normalizedRecipient, mode: 'insensitive' },
             },
             select: { id: true },
         });

@@ -931,18 +931,18 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     const existingLeads = await prisma.lead.findMany({
                         where: {
                             organization_id: organizationId,
-                            email: { in: leadsList.map((l: any) => (l.lead || l).email || (l.lead || l).lead_email || '').filter(Boolean) }
+                            email: { in: leadsList.map((l: any) => ((l.lead || l).email || (l.lead || l).lead_email || '').toLowerCase().trim()).filter(Boolean) }
                         },
                         select: { email: true }
                     });
-                    const existingLeadSet = new Set(existingLeads.map(l => l.email));
+                    const existingLeadSet = new Set(existingLeads.map(l => l.email.toLowerCase()));
 
                     for (const leadData of leadsList) {
                         // Smartlead returns leads wrapped in a container object with nested 'lead' property
                         const lead = leadData.lead || leadData;
 
-                        // Try multiple field name variations for email
-                        const email = lead.email ||
+                        // Try multiple field name variations for email — normalize to lowercase
+                        const rawEmail = lead.email ||
                             lead.lead_email ||
                             lead.Email ||
                             lead.EMAIL ||
@@ -950,6 +950,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                             lead.email_address ||
                             (lead.custom_fields && lead.custom_fields.email) ||
                             '';
+                        const email = rawEmail.toLowerCase().trim();
 
                         if (!email) {
                             logger.warn(`[LeadSync] Skipping lead with no email`, {

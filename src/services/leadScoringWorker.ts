@@ -81,7 +81,7 @@ async function runScoringCycle(): Promise<void> {
 
         for (const org of organizations) {
             try {
-                const result = await leadScoringService.syncLeadScoresFromSmartlead(org.id);
+                const result = await leadScoringService.syncLeadScores(org.id);
 
                 logger.info('[LEAD-SCORING-WORKER] Org scoring complete', {
                     orgId: org.id,
@@ -117,7 +117,7 @@ export async function triggerManualScoring(organizationId?: string): Promise<{
 }> {
     if (organizationId) {
         logger.info('[LEAD-SCORING-WORKER] Manual scoring triggered for org', { organizationId });
-        return await leadScoringService.syncLeadScoresFromSmartlead(organizationId);
+        return await leadScoringService.syncLeadScores(organizationId);
     } else {
         logger.info('[LEAD-SCORING-WORKER] Manual scoring triggered for all orgs');
         await runScoringCycle();
