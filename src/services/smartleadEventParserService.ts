@@ -336,12 +336,13 @@ export async function handleBounceEvent(orgId: string, event: any) {
             TriggerType.WEBHOOK
         );
 
-        // Also update health fields (separate from status transition)
+        // Also update health fields and mark as bounced
         await prisma.lead.update({
             where: { id: leadId },
             data: {
                 health_state: 'unhealthy',
-                health_classification: 'red'
+                health_classification: 'red',
+                bounced: true
             }
         });
     }

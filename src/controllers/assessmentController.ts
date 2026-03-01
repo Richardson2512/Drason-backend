@@ -81,6 +81,30 @@ export const runAssessment = async (req: Request, res: Response): Promise<void> 
 };
 
 /**
+ * GET /api/assessment/status
+ * Check whether an infrastructure assessment is currently in progress.
+ */
+export const getAssessmentStatus = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const orgId = getOrgId(req);
+        const org = await prisma.organization.findUnique({
+            where: { id: orgId },
+            select: { assessment_completed: true }
+        });
+
+        res.json({
+            success: true,
+            data: {
+                inProgress: org ? !org.assessment_completed : false
+            }
+        });
+    } catch (e: any) {
+        logger.error('Failed to check assessment status', e);
+        res.status(500).json({ error: 'Failed to check assessment status' });
+    }
+};
+
+/**
  * GET /api/assessment/domain/:domainId/dns
  * Fetch DNS details for a specific domain (performs a live check).
  */

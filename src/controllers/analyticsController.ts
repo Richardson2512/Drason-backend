@@ -27,6 +27,7 @@ export const getBounceAnalytics = async (req: Request, res: Response) => {
         const orgId = getOrgId(req);
         const {
             mailbox_id,
+            domain_id,
             campaign_id,
             bounce_type,
             start_date,
@@ -43,6 +44,21 @@ export const getBounceAnalytics = async (req: Request, res: Response) => {
 
         if (mailbox_id) {
             where.mailbox_id = mailbox_id as string;
+        }
+
+        // Domain filter: find all mailboxes belonging to this domain, then filter bounces by those mailbox IDs
+        if (domain_id && !mailbox_id) {
+            const domainMailboxes = await prisma.mailbox.findMany({
+                where: { domain_id: domain_id as string, organization_id: orgId },
+                select: { id: true }
+            });
+            const mailboxIds = domainMailboxes.map(m => m.id);
+            if (mailboxIds.length > 0) {
+                where.mailbox_id = { in: mailboxIds };
+            } else {
+                // No mailboxes on this domain — return empty results
+                where.mailbox_id = 'no-match';
+            }
         }
 
         if (campaign_id) {
@@ -177,23 +193,18 @@ export const getBounceAnalytics = async (req: Request, res: Response) => {
             };
         });
 
-        // Get bounce reasons distribution (parameterized to prevent SQL injection)
-        const bounceReasons = await prisma.$queryRaw<Array<{ bounce_reason: string; count: bigint }>>`
-            SELECT
-                COALESCE("bounce_reason", 'Unknown') as bounce_reason,
-                COUNT(*) as count
-            FROM "BounceEvent"
-            WHERE "organization_id" = ${orgId}
-            AND (${mailbox_id}::text IS NULL OR "mailbox_id" = ${mailbox_id || null})
-            AND (${campaign_id}::text IS NULL OR "campaign_id" = ${campaign_id || null})
-            GROUP BY "bounce_reason"
-            ORDER BY count DESC
-            LIMIT 10
-        `;
+        // Get bounce reasons distribution using Prisma groupBy (respects all where filters including domain)
+        const bounceReasonsRaw = await prisma.bounceEvent.groupBy({
+            by: ['bounce_reason'],
+            where,
+            _count: { id: true },
+            orderBy: { _count: { id: 'desc' } },
+            take: 10
+        });
 
-        const formattedBounceReasons = bounceReasons.map(r => ({
-            reason: r.bounce_reason,
-            count: Number(r.count)
+        const formattedBounceReasons = bounceReasonsRaw.map(r => ({
+            reason: r.bounce_reason || 'Unknown',
+            count: r._count.id
         }));
 
         res.json({
@@ -326,19 +337,56 @@ export const getDailyAnalytics = async (req: Request, res: Response) => {
                 data: Array.from(aggregated.values()),
             });
         } else {
-            res.json({
-                success: true,
-                data: dailyData.map(row => ({
-                    date: row.date.toISOString().split('T')[0],
-                    campaign_id: row.campaign_id,
-                    sent_count: row.sent_count,
-                    open_count: row.open_count,
-                    click_count: row.click_count,
-                    reply_count: row.reply_count,
-                    bounce_count: row.bounce_count,
-                    unsubscribe_count: row.unsubscribe_count,
-                })),
-            });
+            // If daily data exists, return it
+            if (dailyData.length > 0) {
+                res.json({
+                    success: true,
+                    data: dailyData.map(row => ({
+                        date: row.date.toISOString().split('T')[0],
+                        campaign_id: row.campaign_id,
+                        sent_count: row.sent_count,
+                        open_count: row.open_count,
+                        click_count: row.click_count,
+                        reply_count: row.reply_count,
+                        bounce_count: row.bounce_count,
+                        unsubscribe_count: row.unsubscribe_count,
+                    })),
+                });
+            } else {
+                // Fallback: for platforms without daily analytics (Instantly, EmailBison),
+                // synthesize from aggregate campaign data
+                const campaign = await prisma.campaign.findFirst({
+                    where: { id: campaign_id as string, organization_id: orgId },
+                    select: {
+                        total_sent: true,
+                        total_bounced: true,
+                        open_count: true,
+                        reply_count: true,
+                        analytics_updated_at: true,
+                    }
+                });
+
+                if (campaign && campaign.total_sent > 0) {
+                    const date = campaign.analytics_updated_at
+                        ? campaign.analytics_updated_at.toISOString().split('T')[0]
+                        : new Date().toISOString().split('T')[0];
+                    res.json({
+                        success: true,
+                        data: [{
+                            date,
+                            campaign_id: campaign_id as string,
+                            sent_count: campaign.total_sent,
+                            open_count: campaign.open_count || 0,
+                            click_count: 0,
+                            reply_count: campaign.reply_count || 0,
+                            bounce_count: campaign.total_bounced,
+                            unsubscribe_count: 0,
+                        }],
+                    });
+                } else {
+                    res.json({ success: true, data: [] });
+                }
+            }
         }
 
         logger.info('[ANALYTICS] Daily analytics retrieved', {

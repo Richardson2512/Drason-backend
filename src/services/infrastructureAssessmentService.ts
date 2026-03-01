@@ -648,13 +648,9 @@ export async function assessInfrastructure(
             }
             // Below 20 sends: Too early to judge, remain healthy
 
-            // Domain-health ceiling: mailbox cannot be healthier than its domain
-            const domainStatus = mailbox.domain.status;
-            if (domainStatus === 'paused' && mailboxState !== 'paused') {
-                mailboxState = 'paused';
-            } else if (domainStatus === 'warning' && mailboxState === 'healthy') {
-                mailboxState = 'warning';
-            }
+            // NOTE: Domain-health ceiling removed. Mailboxes are assessed independently
+            // on their own bounce metrics. A domain DNS issue does not mean the mailbox
+            // itself is unhealthy — the mailbox status should reflect its own sending health.
 
             // Update operational fields
             await prisma.mailbox.update({

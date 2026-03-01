@@ -19,6 +19,9 @@ router.get('/reports', assessmentController.getReports);
 // Trigger manual re-assessment (required for DNS recovery verification)
 router.post('/run', assessmentController.runAssessment);
 
+// Check if assessment is currently in progress
+router.get('/status', assessmentController.getAssessmentStatus);
+
 // Get live DNS details for a specific domain
 router.get('/domain/:domainId/dns', assessmentController.getDomainDNS);
 

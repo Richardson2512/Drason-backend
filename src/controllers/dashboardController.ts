@@ -37,7 +37,9 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
             deleted_at: null
         };
 
-        if (status && status !== 'all') {
+        if (status === 'bounced') {
+            where.bounced = true;
+        } else if (status && status !== 'all') {
             where.status = status;
         }
 
