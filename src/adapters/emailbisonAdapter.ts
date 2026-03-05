@@ -274,6 +274,29 @@ export class EmailBisonAdapter implements PlatformAdapter {
                 });
             }
 
+            // ── ADDITIVE SYNC: Per-mailbox bounce count from sender-emails API ──
+            // EmailBison's sender-email response includes actual per-mailbox bounce stats.
+            // Update hard_bounce_count using Math.max to never overwrite higher webhook values.
+            for (let i = 0; i < mailboxes.length; i++) {
+                const mailbox = mailboxes[i];
+                const externalId = String(mailbox.id);
+                const internalId = `eb-${externalId}`;
+                const syncBounces = parseInt(String(mailbox.bounced_count || mailbox.bounced || mailbox.hard_bounced || 0));
+
+                if (syncBounces > 0) {
+                    const snapshot = mailboxEngagementSnapshot.get(internalId);
+                    const currentBounces = snapshot?.hard_bounce_count || 0;
+                    const finalBounces = Math.max(currentBounces, syncBounces);
+
+                    if (finalBounces > currentBounces) {
+                        await prisma.mailbox.updateMany({
+                            where: { id: internalId, organization_id: organizationId },
+                            data: { hard_bounce_count: finalBounces },
+                        }).catch(err => logger.warn('[EmailBisonSync] Non-fatal mailbox bounce update error', { error: String(err) }));
+                    }
+                }
+            }
+
             // Create domains for new email addresses
             const uniqueDomainNames = [...new Set(
                 mailboxes.map((m: any) => (m.email || '').split('@')[1] || 'unknown.com')
@@ -595,7 +618,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
                         total_sent_count: true,
                         campaigns: {
                             where: { id: { in: syncedCampaignIds } },
-                            select: { id: true, open_count: true, click_count: true, reply_count: true, total_bounced: true },
+                            select: { id: true, open_count: true, click_count: true, reply_count: true },
                         },
                     },
                 });
@@ -607,7 +630,6 @@ export class EmailBisonAdapter implements PlatformAdapter {
                     let syncOpens = 0;
                     let syncClicks = 0;
                     let syncReplies = 0;
-                    let syncBounces = 0;
 
                     for (const campaign of mb.campaigns) {
                         const sharedCount = Math.max(
@@ -619,7 +641,6 @@ export class EmailBisonAdapter implements PlatformAdapter {
                         syncOpens += Math.round(campaign.open_count / sharedCount);
                         syncClicks += Math.round(campaign.click_count / sharedCount);
                         syncReplies += Math.round(campaign.reply_count / sharedCount);
-                        syncBounces += Math.round(campaign.total_bounced / sharedCount);
                     }
 
                     // Compare sync-derived values with pre-sync snapshot
@@ -634,7 +655,6 @@ export class EmailBisonAdapter implements PlatformAdapter {
                     const finalOpens = Math.max(snapshot.open_count_lifetime, syncOpens);
                     const finalClicks = Math.max(snapshot.click_count_lifetime, syncClicks);
                     const finalReplies = Math.max(snapshot.reply_count_lifetime, syncReplies);
-                    const finalBounces = Math.max(snapshot.hard_bounce_count, syncBounces);
                     const finalSent = Math.max(snapshot.total_sent_count, mb.total_sent_count);
 
                     const totalEngagement = finalOpens + finalClicks + finalReplies;
@@ -645,8 +665,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
                     if (
                         finalOpens !== snapshot.open_count_lifetime ||
                         finalClicks !== snapshot.click_count_lifetime ||
-                        finalReplies !== snapshot.reply_count_lifetime ||
-                        finalBounces !== snapshot.hard_bounce_count
+                        finalReplies !== snapshot.reply_count_lifetime
                     ) {
                         await prisma.mailbox.update({
                             where: { id: mb.id },
@@ -654,7 +673,6 @@ export class EmailBisonAdapter implements PlatformAdapter {
                                 open_count_lifetime: finalOpens,
                                 click_count_lifetime: finalClicks,
                                 reply_count_lifetime: finalReplies,
-                                hard_bounce_count: finalBounces,
                                 engagement_rate: engagementRate,
                             },
                         });
