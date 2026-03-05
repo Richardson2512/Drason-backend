@@ -249,6 +249,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
                 click_count_lifetime: number;
                 reply_count_lifetime: number;
                 total_sent_count: number;
+                hard_bounce_count: number;
             }>();
 
             const allMailboxesPreSync = await prisma.mailbox.findMany({
@@ -259,6 +260,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
                     click_count_lifetime: true,
                     reply_count_lifetime: true,
                     total_sent_count: true,
+                    hard_bounce_count: true,
                 }
             });
 
@@ -268,6 +270,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
                     click_count_lifetime: mb.click_count_lifetime,
                     reply_count_lifetime: mb.reply_count_lifetime,
                     total_sent_count: mb.total_sent_count,
+                    hard_bounce_count: mb.hard_bounce_count,
                 });
             }
 
@@ -502,6 +505,10 @@ export class EmailBisonAdapter implements PlatformAdapter {
                             const emailsOpened = parseInt(String(stats.opens || stats.unique_opens || 0));
                             const emailsReplied = parseInt(String(stats.replies || stats.unique_replies || 0));
 
+                            // Per-lead bounce: status 'bounced' or 'hard_bounced' counts as a bounce
+                            const leadStatus = (lead.status || lead.lead_status || '').toString().toLowerCase();
+                            const isBounced = leadStatus === 'bounced' || leadStatus === 'hard_bounced' || leadStatus === 'undeliverable';
+
                             leadUpserts.push(
                                 prisma.lead.upsert({
                                     where: {
@@ -516,6 +523,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
                                         emails_sent: emailsSent,
                                         emails_opened: emailsOpened,
                                         emails_replied: emailsReplied,
+                                        ...(isBounced && { health_classification: 'red', status: 'failed' }),
                                         updated_at: new Date(),
                                     },
                                     create: {
@@ -524,8 +532,8 @@ export class EmailBisonAdapter implements PlatformAdapter {
                                         lead_score: 50,
                                         source: 'emailbison',
                                         source_platform: SourcePlatform.emailbison,
-                                        status: 'active',
-                                        health_classification: 'green',
+                                        status: isBounced ? 'failed' : 'active',
+                                        health_classification: isBounced ? 'red' : 'green',
                                         emails_sent: emailsSent,
                                         emails_opened: emailsOpened,
                                         emails_replied: emailsReplied,
@@ -587,7 +595,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
                         total_sent_count: true,
                         campaigns: {
                             where: { id: { in: syncedCampaignIds } },
-                            select: { id: true, open_count: true, click_count: true, reply_count: true },
+                            select: { id: true, open_count: true, click_count: true, reply_count: true, total_bounced: true },
                         },
                     },
                 });
@@ -599,6 +607,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
                     let syncOpens = 0;
                     let syncClicks = 0;
                     let syncReplies = 0;
+                    let syncBounces = 0;
 
                     for (const campaign of mb.campaigns) {
                         const sharedCount = Math.max(
@@ -610,6 +619,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
                         syncOpens += Math.round(campaign.open_count / sharedCount);
                         syncClicks += Math.round(campaign.click_count / sharedCount);
                         syncReplies += Math.round(campaign.reply_count / sharedCount);
+                        syncBounces += Math.round(campaign.total_bounced / sharedCount);
                     }
 
                     // Compare sync-derived values with pre-sync snapshot
@@ -618,11 +628,13 @@ export class EmailBisonAdapter implements PlatformAdapter {
                         click_count_lifetime: 0,
                         reply_count_lifetime: 0,
                         total_sent_count: 0,
+                        hard_bounce_count: 0,
                     };
 
                     const finalOpens = Math.max(snapshot.open_count_lifetime, syncOpens);
                     const finalClicks = Math.max(snapshot.click_count_lifetime, syncClicks);
                     const finalReplies = Math.max(snapshot.reply_count_lifetime, syncReplies);
+                    const finalBounces = Math.max(snapshot.hard_bounce_count, syncBounces);
                     const finalSent = Math.max(snapshot.total_sent_count, mb.total_sent_count);
 
                     const totalEngagement = finalOpens + finalClicks + finalReplies;
@@ -633,7 +645,8 @@ export class EmailBisonAdapter implements PlatformAdapter {
                     if (
                         finalOpens !== snapshot.open_count_lifetime ||
                         finalClicks !== snapshot.click_count_lifetime ||
-                        finalReplies !== snapshot.reply_count_lifetime
+                        finalReplies !== snapshot.reply_count_lifetime ||
+                        finalBounces !== snapshot.hard_bounce_count
                     ) {
                         await prisma.mailbox.update({
                             where: { id: mb.id },
@@ -641,6 +654,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
                                 open_count_lifetime: finalOpens,
                                 click_count_lifetime: finalClicks,
                                 reply_count_lifetime: finalReplies,
+                                hard_bounce_count: finalBounces,
                                 engagement_rate: engagementRate,
                             },
                         });

@@ -658,6 +658,7 @@ export class InstantlyAdapter implements PlatformAdapter {
             click_count_lifetime: number;
             reply_count_lifetime: number;
             total_sent_count: number;
+            hard_bounce_count: number;
         }>();
 
         const allMailboxesPreSync = await prisma.mailbox.findMany({
@@ -668,6 +669,7 @@ export class InstantlyAdapter implements PlatformAdapter {
                 click_count_lifetime: true,
                 reply_count_lifetime: true,
                 total_sent_count: true,
+                hard_bounce_count: true,
             }
         });
 
@@ -677,6 +679,7 @@ export class InstantlyAdapter implements PlatformAdapter {
                 click_count_lifetime: mb.click_count_lifetime,
                 reply_count_lifetime: mb.reply_count_lifetime,
                 total_sent_count: mb.total_sent_count,
+                hard_bounce_count: mb.hard_bounce_count,
             });
         }
 
@@ -684,7 +687,7 @@ export class InstantlyAdapter implements PlatformAdapter {
         const batchSize = 50;
         const domainStats: Map<string, { sent: number; bounced: number; opens: number }> = new Map();
         // Accumulate per-mailbox totals across all daily rows before writing
-        const mailboxSyncStats: Map<string, { sent: number; opens: number }> = new Map();
+        const mailboxSyncStats: Map<string, { sent: number; opens: number; bounced: number }> = new Map();
 
         for (let i = 0; i < emails.length; i += batchSize) {
             const batch = emails.slice(i, i + batchSize);
@@ -730,9 +733,10 @@ export class InstantlyAdapter implements PlatformAdapter {
 
                     // Per-mailbox accumulation (sum all daily rows per email)
                     const internalMailboxId = `inst-${email}`;
-                    const mbExisting = mailboxSyncStats.get(internalMailboxId) || { sent: 0, opens: 0 };
+                    const mbExisting = mailboxSyncStats.get(internalMailboxId) || { sent: 0, opens: 0, bounced: 0 };
                     mbExisting.sent += parseInt(String(row.emails_sent || row.sent_count || 0));
                     mbExisting.opens += parseInt(String(row.opens || row.open_count || 0));
+                    mbExisting.bounced += parseInt(String(row.bounced || row.bounce_count || 0));
                     mailboxSyncStats.set(internalMailboxId, mbExisting);
                 }
             } catch (batchErr: any) {
@@ -753,11 +757,13 @@ export class InstantlyAdapter implements PlatformAdapter {
                 click_count_lifetime: 0,
                 reply_count_lifetime: 0,
                 total_sent_count: 0,
+                hard_bounce_count: 0,
             };
 
             // Math.max: never overwrite webhook-accumulated values with lower sync values
             const finalSent = Math.max(snapshot.total_sent_count, syncData.sent);
             const finalOpens = Math.max(snapshot.open_count_lifetime, syncData.opens);
+            const finalBounces = Math.max(snapshot.hard_bounce_count, syncData.bounced);
             // clicks and replies not in daily analytics — preserve webhook values
             const finalClicks = snapshot.click_count_lifetime;
             const finalReplies = snapshot.reply_count_lifetime;
@@ -769,13 +775,15 @@ export class InstantlyAdapter implements PlatformAdapter {
 
             if (
                 finalSent !== snapshot.total_sent_count ||
-                finalOpens !== snapshot.open_count_lifetime
+                finalOpens !== snapshot.open_count_lifetime ||
+                finalBounces !== snapshot.hard_bounce_count
             ) {
                 await prisma.mailbox.updateMany({
                     where: { id: mbId, organization_id: organizationId },
                     data: {
                         total_sent_count: finalSent,
                         open_count_lifetime: finalOpens,
+                        hard_bounce_count: finalBounces,
                         engagement_rate: engagementRate,
                     },
                 }).catch(err => logger.warn('[Instantly] Non-fatal mailbox analytics update error', { error: String(err) }));
