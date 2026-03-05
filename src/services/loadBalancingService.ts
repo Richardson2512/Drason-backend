@@ -24,6 +24,9 @@ interface MailboxLoad {
     campaign_count: number;
     load_category: 'overloaded' | 'optimal' | 'underutilized';
     health_score: number; // 0-100, based on metrics
+    total_sent: number; // Lifetime send volume from sync + webhooks
+    bounce_rate: number; // Lifetime bounce rate (0-100)
+    engagement_rate: number; // Lifetime engagement rate (0-100)
 }
 
 interface LoadBalancingSuggestion {
@@ -64,33 +67,53 @@ const THRESHOLDS = {
  * Calculate health score for a mailbox based on metrics.
  */
 function calculateMailboxHealthScore(mailbox: any): number {
-    if (!mailbox.metrics) return 50; // Default neutral score
-
-    const metrics = mailbox.metrics;
-    const sent24h = metrics.window_24h_sent || 1;
-    const bounce24h = metrics.window_24h_bounce || 0;
-    const failure24h = metrics.window_24h_failure || 0;
-
-    const bounceRate = (bounce24h / sent24h) * 100;
-    const failureRate = (failure24h / sent24h) * 100;
-
     // Start with perfect score
     let score = 100;
 
-    // Deduct for bounce rate
-    score -= bounceRate * 10; // High bounce rate significantly reduces score
+    // Factor 1: 24h window metrics (real-time signal)
+    if (mailbox.metrics) {
+        const metrics = mailbox.metrics;
+        const sent24h = metrics.window_24h_sent || 1;
+        const bounce24h = metrics.window_24h_bounce || 0;
+        const failure24h = metrics.window_24h_failure || 0;
 
-    // Deduct for failure rate
-    score -= failureRate * 5;
+        const bounceRate24h = (bounce24h / sent24h) * 100;
+        const failureRate24h = (failure24h / sent24h) * 100;
 
-    // Deduct if mailbox is in cooldown
+        score -= bounceRate24h * 10;
+        score -= failureRate24h * 5;
+    }
+
+    // Factor 2: Lifetime bounce rate (from sync + webhooks)
+    // Weighted lower than 24h since it's a longer-term trend
+    if (mailbox.total_sent_count > 0) {
+        const lifetimeBounceRate = (mailbox.hard_bounce_count / mailbox.total_sent_count) * 100;
+        score -= lifetimeBounceRate * 5;
+    }
+
+    // Factor 3: Engagement rate (from sync + webhooks)
+    // Low engagement suggests spam folder issues
+    if (mailbox.total_sent_count > 0 && mailbox.engagement_rate !== undefined) {
+        if (mailbox.engagement_rate < 2) {
+            score -= 15; // Very low engagement
+        } else if (mailbox.engagement_rate < 5) {
+            score -= 8; // Low engagement
+        }
+    }
+
+    // Factor 4: Cooldown status
     if (mailbox.cooldown_until && new Date(mailbox.cooldown_until) > new Date()) {
         score -= 30;
     }
 
-    // Deduct if domain has warnings
+    // Factor 5: Domain warnings
     const domainWarnings = mailbox.domain?.warning_count || 0;
     score -= domainWarnings * 5;
+
+    // If no metrics at all and no lifetime data, return neutral
+    if (!mailbox.metrics && mailbox.total_sent_count === 0) {
+        return 50;
+    }
 
     return Math.max(0, Math.min(100, score));
 }
@@ -145,6 +168,9 @@ export const analyzeLoadBalancing = async (
         const healthScore = calculateMailboxHealthScore(mailbox);
         const loadCategory = categorizeLoad(campaignCount);
 
+        const totalSent = mailbox.total_sent_count || 0;
+        const bounceRate = totalSent > 0 ? (mailbox.hard_bounce_count / totalSent) * 100 : 0;
+
         const load: MailboxLoad = {
             id: mailbox.id,
             email: mailbox.email,
@@ -153,7 +179,10 @@ export const analyzeLoadBalancing = async (
             domain_status: mailbox.domain?.status || 'unknown',
             campaign_count: campaignCount,
             load_category: loadCategory,
-            health_score: healthScore
+            health_score: healthScore,
+            total_sent: totalSent,
+            bounce_rate: Number(bounceRate.toFixed(2)),
+            engagement_rate: Number((mailbox.engagement_rate || 0).toFixed(2)),
         };
 
         // Add health warnings
@@ -211,7 +240,7 @@ export const analyzeLoadBalancing = async (
                     from_campaign_name: campaignToMove.name || undefined,
                     to_campaign_id: undefined,
                     to_campaign_name: undefined,
-                    reason: `Mailbox ${overloadedMailbox.email} is overloaded (${overloadedMailbox.campaign_count} campaigns). Move to ${targetMailbox.email} which has only ${targetMailbox.campaign_count} campaigns.`,
+                    reason: `Mailbox ${overloadedMailbox.email} is overloaded (${overloadedMailbox.campaign_count} campaigns, ${overloadedMailbox.total_sent} sends). Move to ${targetMailbox.email} which has only ${targetMailbox.campaign_count} campaigns.`,
                     expected_impact: `Reduces load from ${overloadedMailbox.campaign_count} to ${overloadedMailbox.campaign_count - 1} campaigns`,
                     priority: overloadedMailbox.campaign_count >= 7 ? 'high' : 'medium'
                 });

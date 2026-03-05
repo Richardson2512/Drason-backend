@@ -130,6 +130,11 @@ async function analyzeCampaignRisk(
     let avgBounceRate = 0;
     let mailboxMetricsCount = 0;
 
+    let avgLifetimeBounceRate = 0;
+    let lifetimeMetricsCount = 0;
+    let avgEngagementRate = 0;
+    let engagementMetricsCount = 0;
+
     for (const mailbox of campaign.mailboxes) {
         // Check status
         if (mailbox.status !== 'healthy') {
@@ -141,17 +146,36 @@ async function analyzeCampaignRisk(
             mailboxesInCooldown++;
         }
 
-        // Check bounce rate
+        // Check bounce rate from 24h window
         if (mailbox.metrics) {
             mailboxMetricsCount++;
             const sent24h = mailbox.metrics.window_24h_sent || 1;
             const bounce24h = mailbox.metrics.window_24h_bounce || 0;
             avgBounceRate += (bounce24h / sent24h) * 100;
         }
+
+        // Check lifetime bounce rate (from sync + webhooks)
+        if (mailbox.total_sent_count > 0) {
+            lifetimeMetricsCount++;
+            avgLifetimeBounceRate += (mailbox.hard_bounce_count / mailbox.total_sent_count) * 100;
+        }
+
+        // Check engagement rate (from sync + webhooks)
+        if (mailbox.total_sent_count > 0) {
+            engagementMetricsCount++;
+            const totalEngagement = (mailbox.open_count_lifetime || 0) + (mailbox.click_count_lifetime || 0) + (mailbox.reply_count_lifetime || 0);
+            avgEngagementRate += (totalEngagement / mailbox.total_sent_count) * 100;
+        }
     }
 
     if (mailboxMetricsCount > 0) {
         avgBounceRate = avgBounceRate / mailboxMetricsCount;
+    }
+    if (lifetimeMetricsCount > 0) {
+        avgLifetimeBounceRate = avgLifetimeBounceRate / lifetimeMetricsCount;
+    }
+    if (engagementMetricsCount > 0) {
+        avgEngagementRate = avgEngagementRate / engagementMetricsCount;
     }
 
     // Unhealthy mailboxes
@@ -233,6 +257,51 @@ async function analyzeCampaignRisk(
             score_impact: 5
         });
         totalRiskScore += 5;
+    }
+
+    // ── Signal 3b: Lifetime Bounce Rate (from sync data) ──
+    // This signal uses historical data from the mailbox-statistics API, providing
+    // risk visibility even before 24h window data accumulates (e.g., day-1 onboarding).
+    if (lifetimeMetricsCount > 0 && avgLifetimeBounceRate >= 5) {
+        if (avgLifetimeBounceRate >= 10) {
+            signals.push({
+                type: 'bounce_rate',
+                severity: 'high',
+                message: `Historical mailbox avg bounce rate: ${avgLifetimeBounceRate.toFixed(1)}%. Pre-existing deliverability issues detected.`,
+                score_impact: 15
+            });
+            totalRiskScore += 15;
+        } else if (avgLifetimeBounceRate >= 5) {
+            signals.push({
+                type: 'bounce_rate',
+                severity: 'medium',
+                message: `Historical mailbox avg bounce rate: ${avgLifetimeBounceRate.toFixed(1)}%. Monitor for escalation.`,
+                score_impact: 8
+            });
+            totalRiskScore += 8;
+        }
+    }
+
+    // ── Signal 3c: Low Engagement Rate ──
+    // Low engagement signals potential reputation decay. Uses lifetime data from sync.
+    if (engagementMetricsCount > 0 && avgEngagementRate < 5) {
+        if (avgEngagementRate < 1) {
+            signals.push({
+                type: 'mailbox_health',
+                severity: 'high',
+                message: `Very low engagement rate: ${avgEngagementRate.toFixed(1)}%. Mailboxes may be landing in spam.`,
+                score_impact: 15
+            });
+            totalRiskScore += 15;
+        } else if (avgEngagementRate < 5) {
+            signals.push({
+                type: 'mailbox_health',
+                severity: 'medium',
+                message: `Low engagement rate: ${avgEngagementRate.toFixed(1)}%. Review email content and targeting.`,
+                score_impact: 8
+            });
+            totalRiskScore += 8;
+        }
     }
 
     // ── Signal 4: Domain Health ──
@@ -326,11 +395,12 @@ async function analyzeCampaignRisk(
         });
     }
 
-    if (avgBounceRate >= 5) {
+    if (avgBounceRate >= 5 || avgLifetimeBounceRate >= 5) {
+        const displayRate = Math.max(avgBounceRate, avgLifetimeBounceRate);
         recommendations.push('Investigate bounce causes and pause campaign if necessary');
         structuredRecs.push({
             action: 'investigate_bounces',
-            label: `Investigate bounces (avg ${avgBounceRate.toFixed(1)}%)`,
+            label: `Investigate bounces (avg ${displayRate.toFixed(1)}%)`,
             campaign_id: campaignId
         });
     }

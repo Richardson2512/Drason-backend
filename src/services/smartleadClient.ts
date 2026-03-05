@@ -734,3 +734,69 @@ export const getLeadCampaigns = async (
         return [];
     }
 };
+
+/**
+ * Fetch per-mailbox statistics for a campaign.
+ * Uses Smartlead API: GET /campaigns/{campaign_id}/mailbox-statistics
+ *
+ * Returns per-mailbox sent/open/click/reply/bounce/unsubscribed counts
+ * for the given campaign. Essential for populating accurate per-mailbox
+ * historical stats without relying solely on webhooks.
+ */
+export interface MailboxStatisticsEntry {
+    email_account_id: number;
+    from_email: string;
+    sent_count: number;
+    open_count: number;
+    click_count: number;
+    reply_count: number;
+    bounce_count: number;
+    unsubscribed_count: number;
+    sender_bounce_count: number;
+    sent_time: string;
+}
+
+export const fetchCampaignMailboxStatistics = async (
+    organizationId: string,
+    campaignId: string
+): Promise<MailboxStatisticsEntry[]> => {
+    const apiKey = await getApiKey(organizationId);
+    if (!apiKey) throw new Error('Smartlead API key not configured');
+
+    try {
+        const response = await smartleadRateLimiter.execute(() =>
+            smartleadBreaker.call(() =>
+                axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/mailbox-statistics`, {
+                    params: { api_key: apiKey }
+                })
+            )
+        );
+
+        const data = response.data;
+
+        // API returns { ok: true, data: [...] }
+        if (data?.ok && Array.isArray(data.data)) {
+            return data.data;
+        }
+
+        // Fallback: direct array response
+        if (Array.isArray(data)) {
+            return data;
+        }
+
+        logger.warn('[SMARTLEAD-MAILBOX-STATS] Unexpected response shape', {
+            organizationId,
+            campaignId,
+            responseKeys: data ? Object.keys(data) : 'null'
+        });
+        return [];
+    } catch (error: any) {
+        logger.error('[SMARTLEAD-MAILBOX-STATS] Failed to fetch mailbox statistics', error, {
+            organizationId,
+            campaignId,
+            response: error.response?.data,
+            status: error.response?.status
+        });
+        return [];
+    }
+};

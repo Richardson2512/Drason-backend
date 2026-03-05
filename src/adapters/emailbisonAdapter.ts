@@ -241,61 +241,11 @@ export class EmailBisonAdapter implements PlatformAdapter {
             });
             const existingMailboxSet = new Set(existingMailboxes.map(m => m.id));
 
-            // ── ADDITIVE SYNC: Snapshot pre-sync engagement ──
-            // Capture current values so we can compare after sync and never
-            // overwrite higher webhook-accumulated stats with lower sync-derived estimates.
-            const mailboxEngagementSnapshot = new Map<string, {
-                open_count_lifetime: number;
-                click_count_lifetime: number;
-                reply_count_lifetime: number;
-                total_sent_count: number;
-                hard_bounce_count: number;
-            }>();
-
-            const allMailboxesPreSync = await prisma.mailbox.findMany({
-                where: { organization_id: organizationId, source_platform: SourcePlatform.emailbison },
-                select: {
-                    id: true,
-                    open_count_lifetime: true,
-                    click_count_lifetime: true,
-                    reply_count_lifetime: true,
-                    total_sent_count: true,
-                    hard_bounce_count: true,
-                }
-            });
-
-            for (const mb of allMailboxesPreSync) {
-                mailboxEngagementSnapshot.set(mb.id, {
-                    open_count_lifetime: mb.open_count_lifetime,
-                    click_count_lifetime: mb.click_count_lifetime,
-                    reply_count_lifetime: mb.reply_count_lifetime,
-                    total_sent_count: mb.total_sent_count,
-                    hard_bounce_count: mb.hard_bounce_count,
-                });
-            }
-
-            // ── ADDITIVE SYNC: Per-mailbox bounce count from sender-emails API ──
-            // EmailBison's sender-email response includes actual per-mailbox bounce stats.
-            // Update hard_bounce_count using Math.max to never overwrite higher webhook values.
-            for (let i = 0; i < mailboxes.length; i++) {
-                const mailbox = mailboxes[i];
-                const externalId = String(mailbox.id);
-                const internalId = `eb-${externalId}`;
-                const syncBounces = parseInt(String(mailbox.bounced_count || mailbox.bounced || mailbox.hard_bounced || 0));
-
-                if (syncBounces > 0) {
-                    const snapshot = mailboxEngagementSnapshot.get(internalId);
-                    const currentBounces = snapshot?.hard_bounce_count || 0;
-                    const finalBounces = Math.max(currentBounces, syncBounces);
-
-                    if (finalBounces > currentBounces) {
-                        await prisma.mailbox.updateMany({
-                            where: { id: internalId, organization_id: organizationId },
-                            data: { hard_bounce_count: finalBounces },
-                        }).catch(err => logger.warn('[EmailBisonSync] Non-fatal mailbox bounce update error', { error: String(err) }));
-                    }
-                }
-            }
+            // NOTE: EmailBison's /api/sender-emails endpoint is for configuration only —
+            // it does NOT expose per-mailbox bounce stats. Per-mailbox bounce counts
+            // are tracked exclusively via the "Email Bounced" webhook handler
+            // (emailbisonWebhookController.ts → bounceProcessingService.ts).
+            // Historical per-lead bounces are detected via lead status during sync below.
 
             // Create domains for new email addresses
             const uniqueDomainNames = [...new Set(
@@ -600,99 +550,18 @@ export class EmailBisonAdapter implements PlatformAdapter {
                 syncProgressService.emitProgress(sessionId, 'leads', 'completed', { count: leadCount });
             }
 
-            // ── 5. Additive engagement sync (Issue B) ──
-            // Distribute campaign engagement proportionally across linked mailboxes,
-            // but only update if the sync-derived value is HIGHER than what webhooks
-            // have already accumulated. This prevents real-time increments from being
-            // overwritten by approximate sync values every 20 minutes.
-            try {
-                const syncedCampaignIds = campaigns.map((c: any) => `eb-${c.id}`);
-                const mailboxesWithCampaigns = await prisma.mailbox.findMany({
-                    where: {
-                        organization_id: organizationId,
-                        source_platform: SourcePlatform.emailbison,
-                        campaigns: { some: { id: { in: syncedCampaignIds } } },
-                    },
-                    select: {
-                        id: true,
-                        total_sent_count: true,
-                        campaigns: {
-                            where: { id: { in: syncedCampaignIds } },
-                            select: { id: true, open_count: true, click_count: true, reply_count: true },
-                        },
-                    },
-                });
+            // NOTE: EmailBison does NOT expose per-mailbox engagement analytics.
+            // Mailbox-level opens/clicks/replies/bounces are tracked exclusively
+            // via webhooks (emailbisonWebhookController.ts). Campaign-level totals
+            // are synced above on the campaign records. We do NOT distribute
+            // campaign stats proportionally across mailboxes — that would be
+            // assumption data, not actual per-mailbox metrics.
 
-                let mailboxesUpdated = 0;
-                let mailboxesSkippedHigher = 0;
-
-                for (const mb of mailboxesWithCampaigns) {
-                    let syncOpens = 0;
-                    let syncClicks = 0;
-                    let syncReplies = 0;
-
-                    for (const campaign of mb.campaigns) {
-                        const sharedCount = Math.max(
-                            mailboxesWithCampaigns.filter(m =>
-                                m.campaigns.some(c => c.id === campaign.id)
-                            ).length,
-                            1
-                        );
-                        syncOpens += Math.round(campaign.open_count / sharedCount);
-                        syncClicks += Math.round(campaign.click_count / sharedCount);
-                        syncReplies += Math.round(campaign.reply_count / sharedCount);
-                    }
-
-                    // Compare sync-derived values with pre-sync snapshot
-                    const snapshot = mailboxEngagementSnapshot.get(mb.id) || {
-                        open_count_lifetime: 0,
-                        click_count_lifetime: 0,
-                        reply_count_lifetime: 0,
-                        total_sent_count: 0,
-                        hard_bounce_count: 0,
-                    };
-
-                    const finalOpens = Math.max(snapshot.open_count_lifetime, syncOpens);
-                    const finalClicks = Math.max(snapshot.click_count_lifetime, syncClicks);
-                    const finalReplies = Math.max(snapshot.reply_count_lifetime, syncReplies);
-                    const finalSent = Math.max(snapshot.total_sent_count, mb.total_sent_count);
-
-                    const totalEngagement = finalOpens + finalClicks + finalReplies;
-                    const engagementRate = finalSent > 0
-                        ? Math.min((totalEngagement / finalSent) * 100, 100)
-                        : 0;
-
-                    if (
-                        finalOpens !== snapshot.open_count_lifetime ||
-                        finalClicks !== snapshot.click_count_lifetime ||
-                        finalReplies !== snapshot.reply_count_lifetime
-                    ) {
-                        await prisma.mailbox.update({
-                            where: { id: mb.id },
-                            data: {
-                                open_count_lifetime: finalOpens,
-                                click_count_lifetime: finalClicks,
-                                reply_count_lifetime: finalReplies,
-                                engagement_rate: engagementRate,
-                            },
-                        });
-                        mailboxesUpdated++;
-                    } else {
-                        mailboxesSkippedHigher++;
-                    }
-                }
-
-                logger.info('[EmailBisonSync] Additive engagement sync complete', {
-                    organizationId,
-                    mailboxesUpdated,
-                    mailboxesSkippedHigher,
-                });
-            } catch (engagementError: any) {
-                // Non-fatal — don't fail the sync if engagement aggregation fails
-                logger.warn('[EmailBisonSync] Failed to aggregate mailbox engagement stats', {
-                    error: engagementError.message,
-                });
-            }
+            // ── 5. Historical bounce backfill from per-lead status ──────
+            // EmailBison's /api/campaigns/{id}/leads returns per-lead status.
+            // Leads with bounced status are already marked above during lead sync
+            // (line ~532). For mailbox-level attribution, we rely on "Email Bounced"
+            // webhooks which include the sender_email object.
 
             // ── 6. Post-sync assessment ────────────────────────────────
 

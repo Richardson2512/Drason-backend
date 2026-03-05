@@ -26,7 +26,7 @@ import { TIER_LIMITS } from './polarClient';
 import { decrypt } from '../utils/encryption';
 import { parse } from 'csv-parse/sync';
 
-import { getApiKey, SMARTLEAD_API_BASE, ensureWebhooksRegistered, getAnalyticsByDate, getCampaignStatistics, getLeadCampaigns } from './smartleadClient';
+import { getApiKey, SMARTLEAD_API_BASE, ensureWebhooksRegistered, getAnalyticsByDate, getCampaignStatistics, getLeadCampaigns, fetchCampaignMailboxStatistics, MailboxStatisticsEntry } from './smartleadClient';
 
 // ============================================================================
 // HISTORICAL BOUNCE BACKFILL
@@ -822,50 +822,6 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
 
         // ── 4. Fetch leads for each campaign from Smartlead ──
 
-        // ── ADDITIVE SYNC: Snapshot current mailbox engagement before processing ──
-        // Instead of destructive reset-to-zero, we snapshot current values and
-        // only update if Smartlead reports HIGHER numbers. This prevents:
-        //   1. Webhook increments being wiped during sync
-        //   2. Temporary stat regression visible on dashboard
-        //   3. Race conditions between sync and real-time events
-        const mailboxEngagementSnapshot = new Map<string, {
-            open_count_lifetime: number;
-            click_count_lifetime: number;
-            reply_count_lifetime: number;
-            total_sent_count: number;
-        }>();
-        const allMailboxesPreSync = await prisma.mailbox.findMany({
-            where: { organization_id: organizationId },
-            select: {
-                id: true,
-                open_count_lifetime: true,
-                click_count_lifetime: true,
-                reply_count_lifetime: true,
-                total_sent_count: true,
-            }
-        });
-        for (const mb of allMailboxesPreSync) {
-            mailboxEngagementSnapshot.set(mb.id, {
-                open_count_lifetime: mb.open_count_lifetime,
-                click_count_lifetime: mb.click_count_lifetime,
-                reply_count_lifetime: mb.reply_count_lifetime,
-                total_sent_count: mb.total_sent_count,
-            });
-        }
-
-        // Track newly computed engagement per mailbox from this sync cycle
-        const mailboxSyncEngagement = new Map<string, {
-            opens: number;
-            clicks: number;
-            replies: number;
-            sent: number;
-        }>();
-
-        logger.info('[MailboxStats] Snapshotted pre-sync engagement for additive comparison', {
-            organizationId,
-            mailboxCount: allMailboxesPreSync.length,
-        });
-
         if (sessionId) {
             syncProgressService.emitProgress(sessionId, 'leads', 'in_progress', {
                 current: 0,
@@ -876,8 +832,6 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
         let campaignIndex = 0;
         for (const campaign of campaigns) {
             const campaignId = campaign.id.toString();
-            // Track per-mailbox lead counts for weighted total_sent distribution
-            const mailboxLeadCounts = new Map<string, number>();
             try {
                 logger.info(`[LeadSync] Starting lead sync for campaign`, {
                     campaignId,
@@ -1087,50 +1041,23 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         });
                     }
 
-                    // Pre-fetch campaign mailboxes for hash-based attribution
-                    // When CSV lacks sender info, we distribute engagement deterministically
-                    // using a hash of (leadEmail + campaignId) to simulate round-robin sending
-                    const campaignMailboxesForAttribution = await prisma.mailbox.findMany({
-                        where: {
-                            campaigns: { some: { id: campaignId } },
-                            organization_id: organizationId,
-                        },
-                        select: { id: true, email: true }
-                    });
-
-                    // Update each lead with engagement stats
+                    // Update each lead with engagement stats from CSV
+                    // NOTE: CSV provides per-lead engagement (open_count, click_count, reply_count)
+                    // but does NOT include sender mailbox info. Per-mailbox attribution is handled
+                    // by the bounce backfill (via message-history API) and webhooks only.
                     let updatedCount = 0;
                     let recordsWithEngagement = 0;
-                    let hashAttributedCount = 0;
                     for (const record of records) {
                         const rec = record as Record<string, string>;
                         const email = rec.email || rec.Email || rec.EMAIL;
                         if (!email) continue;
 
-                        // Track which mailbox this lead maps to (for total_sent weighting)
-                        if (campaignMailboxesForAttribution.length > 0) {
-                            let lh = 0;
-                            const lhs = `${email}:${campaignId}`;
-                            for (let li = 0; li < lhs.length; li++) {
-                                lh = ((lh << 5) - lh) + lhs.charCodeAt(li);
-                                lh |= 0;
-                            }
-                            const lbi = Math.abs(lh) % campaignMailboxesForAttribution.length;
-                            const mbId = campaignMailboxesForAttribution[lbi].id;
-                            mailboxLeadCounts.set(mbId, (mailboxLeadCounts.get(mbId) || 0) + 1);
-                        }
-
                         const openCount = parseInt(rec.open_count || rec.opens || '0');
                         const clickCount = parseInt(rec.click_count || rec.clicks || '0');
                         const replyCount = parseInt(rec.reply_count || rec.replies || '0');
 
-                        // Extract bounce data
-                        const bounceCount = parseInt(rec.bounce_count || rec.bounces || rec.bounced || '0');
-                        const bouncedStatus = rec.bounced === 'true' || rec.bounced === '1';
-
-                        // Extract sender information (which mailbox sent to this lead)
-                        const senderEmail = rec.sender_email || rec.from_email || rec.sent_from || rec.email_account || rec.sender;
-                        const senderAccountId = rec.sender_account_id || rec.email_account_id || rec.from_account_id;
+                        // Extract bounce data (is_bounced is a documented CSV column)
+                        const bouncedStatus = rec.is_bounced === 'true' || rec.is_bounced === '1' || rec.bounced === 'true' || rec.bounced === '1';
 
                         // Debug: Log first 3 records with details
                         if (updatedCount < 3) {
@@ -1139,12 +1066,8 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                 opens: openCount,
                                 clicks: clickCount,
                                 replies: replyCount,
-                                bounces: bounceCount,
                                 bounced: bouncedStatus,
-                                senderEmail,
-                                senderAccountId,
-                                availableFields: Object.keys(rec),
-                                rawRecord: rec
+                                availableFields: Object.keys(rec)
                             });
                         }
 
@@ -1162,7 +1085,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                             };
 
                             // Add bounce data if lead bounced
-                            if (bouncedStatus || bounceCount > 0) {
+                            if (bouncedStatus) {
                                 leadUpdateData.bounced = bouncedStatus;
                                 // Note: We don't have a bounce_count field on Lead model currently
                                 // This will be tracked via hard_bounce events in webhooks
@@ -1220,7 +1143,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                         entityId: leadUuid,
                                         trigger: 'smartlead_sync',
                                         action: 'email_sent',
-                                        details: `Email(s) sent to lead in campaign ${campaignId}${senderEmail ? ` via ${senderEmail}` : ''} (backfilled from sync)`
+                                        details: `Email(s) sent to lead in campaign ${campaignId} (backfilled from sync)`
                                     });
 
                                     if (openCount > 0) {
@@ -1230,7 +1153,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                             entityId: leadUuid,
                                             trigger: 'smartlead_sync',
                                             action: 'email_opened',
-                                            details: `Email opened ${openCount} time(s) (backfilled from sync)${senderEmail ? ` via ${senderEmail}` : ''}`
+                                            details: `Email opened ${openCount} time(s) (backfilled from sync)`
                                         });
                                     }
                                     if (clickCount > 0) {
@@ -1240,7 +1163,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                             entityId: leadUuid,
                                             trigger: 'smartlead_sync',
                                             action: 'email_clicked',
-                                            details: `Email link clicked ${clickCount} time(s) (backfilled from sync)${senderEmail ? ` via ${senderEmail}` : ''}`
+                                            details: `Email link clicked ${clickCount} time(s) (backfilled from sync)`
                                         });
                                     }
                                     if (replyCount > 0) {
@@ -1250,86 +1173,17 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                             entityId: leadUuid,
                                             trigger: 'smartlead_sync',
                                             action: 'email_replied',
-                                            details: `Email replied ${replyCount} time(s) (backfilled from sync)${senderEmail ? ` via ${senderEmail}` : ''}`
+                                            details: `Email replied ${replyCount} time(s) (backfilled from sync)`
                                         });
                                     }
                                 }
                             }
 
-                            // ── MAILBOX ATTRIBUTION: Update mailbox stats if sender is known ──
-                            // Only update mailbox stats if CSV provides accurate sender information
-                            if (senderEmail || senderAccountId) {
-                                try {
-                                    // Find the mailbox by email or Smartlead account ID
-                                    const mailbox = await prisma.mailbox.findFirst({
-                                        where: {
-                                            organization_id: organizationId,
-                                            OR: [
-                                                { email: senderEmail },
-                                                { external_email_account_id: senderAccountId || undefined }
-                                            ].filter(condition => {
-                                                // Remove undefined conditions
-                                                if ('email' in condition) return !!condition.email;
-                                                if ('external_email_account_id' in condition) return condition.external_email_account_id !== undefined;
-                                                return false;
-                                            })
-                                        },
-                                        select: {
-                                            id: true,
-                                            email: true,
-                                            open_count_lifetime: true,
-                                            click_count_lifetime: true,
-                                            reply_count_lifetime: true,
-                                            total_sent_count: true
-                                        }
-                                    });
-
-                                    if (mailbox) {
-                                        // Accumulate into sync tracking map (additive sync — written at end)
-                                        const existing = mailboxSyncEngagement.get(mailbox.id) || { opens: 0, clicks: 0, replies: 0, sent: 0 };
-                                        existing.opens += openCount;
-                                        existing.clicks += clickCount;
-                                        existing.replies += replyCount;
-                                        mailboxSyncEngagement.set(mailbox.id, existing);
-
-                                        logger.debug(`[LeadEngagement] Accumulated mailbox ${mailbox.email} stats`, {
-                                            leadEmail: email,
-                                            opensAdded: openCount,
-                                            clicksAdded: clickCount,
-                                            repliesAdded: replyCount
-                                        });
-                                    } else {
-                                        logger.warn(`[LeadEngagement] Sender mailbox not found for lead ${email}`, {
-                                            senderEmail,
-                                            senderAccountId
-                                        });
-                                    }
-                                } catch (mailboxError: any) {
-                                    logger.error(`[LeadEngagement] Failed to update mailbox stats for lead ${email}`, mailboxError);
-                                }
-                            } else {
-                                // No sender info — use deterministic hash to assign this lead
-                                // to a specific mailbox, simulating Smartlead's round-robin distribution.
-                                // Each lead consistently maps to the same mailbox across re-syncs.
-                                if ((openCount > 0 || clickCount > 0 || replyCount > 0) && campaignMailboxesForAttribution.length > 0) {
-                                    hashAttributedCount++;
-                                    let hash = 0;
-                                    const hashStr = `${email}:${campaignId}`;
-                                    for (let ci = 0; ci < hashStr.length; ci++) {
-                                        hash = ((hash << 5) - hash) + hashStr.charCodeAt(ci);
-                                        hash |= 0;
-                                    }
-                                    const mbIndex = Math.abs(hash) % campaignMailboxesForAttribution.length;
-                                    const targetMb = campaignMailboxesForAttribution[mbIndex];
-
-                                    // Accumulate into sync tracking map (additive sync — written at end)
-                                    const existing = mailboxSyncEngagement.get(targetMb.id) || { opens: 0, clicks: 0, replies: 0, sent: 0 };
-                                    existing.opens += openCount;
-                                    existing.clicks += clickCount;
-                                    existing.replies += replyCount;
-                                    mailboxSyncEngagement.set(targetMb.id, existing);
-                                }
-                            }
+                            // NOTE: Smartlead's CSV export does NOT include sender mailbox info.
+                            // Per-mailbox engagement attribution comes ONLY from:
+                            // 1. Bounce backfill via message-history API (has `from` field)
+                            // 2. Real-time webhooks (include sender info)
+                            // We do NOT distribute lead engagement to mailboxes via hash or proportion.
 
                             updatedCount++;
                         } catch (updateError: any) {
@@ -1340,17 +1194,9 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         }
                     }
 
-                    if (hashAttributedCount > 0) {
-                        logger.info(`[LeadEngagement] Hash-attributed ${hashAttributedCount} leads to mailboxes for campaign ${campaignId}`, {
-                            organizationId,
-                            mailboxCount: campaignMailboxesForAttribution.length,
-                        });
-                    }
-
                     logger.info(`[LeadEngagement] Updated ${updatedCount} leads with engagement stats for campaign ${campaignId}`, {
                         totalRecords: records.length,
                         recordsWithEngagement,
-                        hashAttributed: hashAttributedCount,
                         recordsWithoutEngagement: records.length - recordsWithEngagement
                     });
                 } catch (csvError: any) {
@@ -1373,50 +1219,9 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 });
             }
 
-            // ── Distribute campaign total_sent to linked mailboxes ──────────
-            // Uses hash-based lead counts from CSV processing to weight distribution.
-            // Each mailbox gets total_sent proportional to how many leads it "owns" via hash.
-            try {
-                const dbCampaign = await prisma.campaign.findUnique({
-                    where: { id: campaignId },
-                    select: { total_sent: true }
-                });
-                const campaignTotalSent = dbCampaign?.total_sent || 0;
-
-                if (campaignTotalSent > 0) {
-                    const linkedMailboxes = await prisma.mailbox.findMany({
-                        where: {
-                            campaigns: { some: { id: campaignId } },
-                            organization_id: organizationId,
-                        },
-                        select: { id: true, total_sent_count: true }
-                    });
-
-                    if (linkedMailboxes.length > 0) {
-                        let totalLeads = 0;
-                        mailboxLeadCounts.forEach((count) => { totalLeads += count; });
-                        for (const mb of linkedMailboxes) {
-                            const leadsForMb = mailboxLeadCounts.get(mb.id) || 0;
-                            // Weight by lead count; fall back to equal if no leads processed
-                            const perMailboxSent = totalLeads > 0
-                                ? Math.round(campaignTotalSent * (leadsForMb / totalLeads))
-                                : Math.round(campaignTotalSent / linkedMailboxes.length);
-                            // Accumulate into sync tracking map (additive sync — written at end)
-                            const existing = mailboxSyncEngagement.get(mb.id) || { opens: 0, clicks: 0, replies: 0, sent: 0 };
-                            existing.sent += perMailboxSent;
-                            mailboxSyncEngagement.set(mb.id, existing);
-                        }
-                        logger.info(`[MailboxStats] Distributed ${campaignTotalSent} total_sent (hash-weighted) across ${linkedMailboxes.length} mailboxes for campaign ${campaignId}`, {
-                            organizationId,
-                            totalLeads,
-                        });
-                    }
-                }
-            } catch (sentDistErr: any) {
-                logger.warn(`[MailboxStats] Failed to distribute total_sent for campaign ${campaignId}`, {
-                    error: sentDistErr.message,
-                });
-            }
+            // ── Per-mailbox statistics from /campaigns/{id}/mailbox-statistics ──
+            // Fetches real per-mailbox sent/open/click/reply/bounce counts per campaign.
+            // Aggregated across campaigns after the loop (step 4c).
 
             // ── Historical bounce backfill (Issue G) ─────────────────────────
             // One-time per campaign; idempotent; non-blocking.
@@ -1496,79 +1301,149 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             });
         }
 
-        // ── 5. ADDITIVE WRITE: Compare sync-derived engagement with pre-sync snapshot ──
-        // For each mailbox, only update if sync-derived value is HIGHER than what
-        // we already have (which may include real-time webhook increments).
-        // This guarantees engagement counters never decrease.
+        // ── 4c. Per-mailbox statistics aggregation ──
+        // Fetches real per-mailbox stats from /campaigns/{id}/mailbox-statistics
+        // for every campaign, aggregates across campaigns per email_account_id,
+        // then writes to DB using Math.max() to never overwrite higher webhook-accumulated values.
         try {
-            let mailboxesUpdated = 0;
-            let mailboxesSkippedHigher = 0;
+            // Aggregate stats across all campaigns per email_account_id
+            const mailboxStatsMap = new Map<number, {
+                from_email: string;
+                sent_count: number;
+                open_count: number;
+                click_count: number;
+                reply_count: number;
+                bounce_count: number;
+                unsubscribed_count: number;
+            }>();
 
-            for (const [mbId, syncData] of mailboxSyncEngagement) {
-                const snapshot = mailboxEngagementSnapshot.get(mbId) || {
-                    open_count_lifetime: 0,
-                    click_count_lifetime: 0,
-                    reply_count_lifetime: 0,
-                    total_sent_count: 0,
-                };
+            for (const campaign of campaigns) {
+                const cId = campaign.id.toString();
+                try {
+                    const stats = await fetchCampaignMailboxStatistics(organizationId, cId);
+                    for (const entry of stats) {
+                        const existing = mailboxStatsMap.get(entry.email_account_id);
+                        if (existing) {
+                            existing.sent_count += entry.sent_count || 0;
+                            existing.open_count += entry.open_count || 0;
+                            existing.click_count += entry.click_count || 0;
+                            existing.reply_count += entry.reply_count || 0;
+                            existing.bounce_count += entry.bounce_count || 0;
+                            existing.unsubscribed_count += entry.unsubscribed_count || 0;
+                        } else {
+                            mailboxStatsMap.set(entry.email_account_id, {
+                                from_email: entry.from_email,
+                                sent_count: entry.sent_count || 0,
+                                open_count: entry.open_count || 0,
+                                click_count: entry.click_count || 0,
+                                reply_count: entry.reply_count || 0,
+                                bounce_count: entry.bounce_count || 0,
+                                unsubscribed_count: entry.unsubscribed_count || 0,
+                            });
+                        }
+                    }
+                } catch (statsErr: any) {
+                    logger.warn(`[MailboxStatistics] Failed for campaign ${cId} (non-fatal)`, {
+                        error: statsErr.message,
+                    });
+                }
+            }
 
-                // Take the MAX of (pre-sync value, sync-derived value) for each counter
-                const finalOpens = Math.max(snapshot.open_count_lifetime, syncData.opens);
-                const finalClicks = Math.max(snapshot.click_count_lifetime, syncData.clicks);
-                const finalReplies = Math.max(snapshot.reply_count_lifetime, syncData.replies);
-                const finalSent = Math.max(snapshot.total_sent_count, syncData.sent);
-
-                const totalEngagement = finalOpens + finalClicks + finalReplies;
-                const engagementRate = finalSent > 0
-                    ? (totalEngagement / finalSent) * 100
-                    : 0;
-
-                // Only write if at least one value changed
-                if (
-                    finalOpens !== snapshot.open_count_lifetime ||
-                    finalClicks !== snapshot.click_count_lifetime ||
-                    finalReplies !== snapshot.reply_count_lifetime ||
-                    finalSent !== snapshot.total_sent_count
-                ) {
-                    await prisma.mailbox.update({
-                        where: { id: mbId },
-                        data: {
-                            open_count_lifetime: finalOpens,
-                            click_count_lifetime: finalClicks,
-                            reply_count_lifetime: finalReplies,
-                            total_sent_count: finalSent,
-                            engagement_rate: engagementRate,
+            // Write aggregated stats to DB — Math.max() additive pattern
+            let mailboxStatsUpdated = 0;
+            for (const [emailAccountId, stats] of mailboxStatsMap) {
+                try {
+                    const mailbox = await prisma.mailbox.findFirst({
+                        where: {
+                            organization_id: organizationId,
+                            external_email_account_id: emailAccountId.toString(),
+                        },
+                        select: {
+                            id: true,
+                            total_sent_count: true,
+                            hard_bounce_count: true,
+                            open_count_lifetime: true,
+                            click_count_lifetime: true,
+                            reply_count_lifetime: true,
                         }
                     });
-                    mailboxesUpdated++;
-                } else {
-                    mailboxesSkippedHigher++;
-                }
-            }
 
-            // Also recalculate engagement_rate for mailboxes NOT in the sync map
-            // (they may have gotten webhook updates but no sync data)
-            for (const mb of allMailboxesPreSync) {
-                if (!mailboxSyncEngagement.has(mb.id)) {
-                    const totalEngagement = mb.open_count_lifetime + mb.click_count_lifetime + mb.reply_count_lifetime;
-                    const engagementRate = mb.total_sent_count > 0
-                        ? (totalEngagement / mb.total_sent_count) * 100
-                        : 0;
-                    await prisma.mailbox.update({
-                        where: { id: mb.id },
-                        data: { engagement_rate: engagementRate }
+                    if (!mailbox) {
+                        logger.debug('[MailboxStatistics] No matching mailbox for email_account_id', {
+                            emailAccountId,
+                            from_email: stats.from_email,
+                        });
+                        continue;
+                    }
+
+                    // Math.max() ensures we never overwrite higher values from webhooks
+                    const updatedData: Record<string, number> = {};
+                    const newSent = Math.max(mailbox.total_sent_count, stats.sent_count);
+                    const newBounce = Math.max(mailbox.hard_bounce_count, stats.bounce_count);
+                    const newOpen = Math.max(mailbox.open_count_lifetime, stats.open_count);
+                    const newClick = Math.max(mailbox.click_count_lifetime, stats.click_count);
+                    const newReply = Math.max(mailbox.reply_count_lifetime, stats.reply_count);
+
+                    // Only update if sync provides higher values
+                    if (newSent > mailbox.total_sent_count) updatedData.total_sent_count = newSent;
+                    if (newBounce > mailbox.hard_bounce_count) updatedData.hard_bounce_count = newBounce;
+                    if (newOpen > mailbox.open_count_lifetime) updatedData.open_count_lifetime = newOpen;
+                    if (newClick > mailbox.click_count_lifetime) updatedData.click_count_lifetime = newClick;
+                    if (newReply > mailbox.reply_count_lifetime) updatedData.reply_count_lifetime = newReply;
+
+                    if (Object.keys(updatedData).length > 0) {
+                        await prisma.mailbox.update({
+                            where: { id: mailbox.id },
+                            data: updatedData
+                        });
+                        mailboxStatsUpdated++;
+                    }
+                } catch (mbUpdateErr: any) {
+                    logger.warn('[MailboxStatistics] Failed to update mailbox', {
+                        emailAccountId,
+                        error: mbUpdateErr.message,
                     });
                 }
             }
 
-            logger.info('[MailboxStats] Additive sync complete — engagement counters never decreased', {
+            logger.info('[MailboxStatistics] Per-mailbox stats aggregation complete', {
                 organizationId,
-                mailboxesUpdated,
-                mailboxesSkippedHigher,
-                totalTracked: mailboxSyncEngagement.size,
+                campaignsScanned: campaigns.length,
+                uniqueMailboxes: mailboxStatsMap.size,
+                mailboxesUpdated: mailboxStatsUpdated,
             });
+        } catch (mailboxStatsErr: any) {
+            logger.warn('[MailboxStatistics] Failed to aggregate mailbox statistics (non-fatal)', {
+                organizationId,
+                error: mailboxStatsErr.message,
+            });
+        }
+
+        // ── 5. Recalculate engagement_rate for all mailboxes ──
+        // Re-fetch mailbox data after mailbox-statistics sync to use updated counts.
+        try {
+            const allMailboxesPostSync = await prisma.mailbox.findMany({
+                where: { organization_id: organizationId },
+                select: {
+                    id: true,
+                    open_count_lifetime: true,
+                    click_count_lifetime: true,
+                    reply_count_lifetime: true,
+                    total_sent_count: true,
+                }
+            });
+            for (const mb of allMailboxesPostSync) {
+                const totalEngagement = mb.open_count_lifetime + mb.click_count_lifetime + mb.reply_count_lifetime;
+                const engagementRate = mb.total_sent_count > 0
+                    ? (totalEngagement / mb.total_sent_count) * 100
+                    : 0;
+                await prisma.mailbox.update({
+                    where: { id: mb.id },
+                    data: { engagement_rate: engagementRate }
+                });
+            }
         } catch (engRateErr: any) {
-            logger.warn('[MailboxStats] Failed to apply additive engagement sync', {
+            logger.warn('[MailboxStats] Failed to recalculate engagement rates', {
                 error: engRateErr.message,
             });
         }

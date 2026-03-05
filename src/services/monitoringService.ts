@@ -175,7 +175,7 @@ export const recordBounce = async (
         if (updatedMailbox.status !== 'paused') {
             await pauseMailbox(
                 mailboxId,
-                `Exceeded ${MAILBOX_PAUSE_BOUNCES} bounces (${newBounceCount}/${sentCount}). Cause: ${classification.failureType}, Provider: ${classification.provider}`
+                `Exceeded ${MAILBOX_PAUSE_BOUNCES} bounces (${newBounceCount}/${sentCount}${sentCount > 0 ? `, ${((newBounceCount / sentCount) * 100).toFixed(1)}%` : ''}). Cause: ${classification.failureType}, Provider: ${classification.provider}`
             );
         }
     }
@@ -184,7 +184,7 @@ export const recordBounce = async (
         if (updatedMailbox.status === 'healthy') {
             await warnMailbox(
                 mailboxId,
-                `Early warning: ${newBounceCount}/${sentCount} (${((newBounceCount / sentCount) * 100).toFixed(1)}%). Cause: ${classification.failureType}`
+                `Early warning: ${newBounceCount}/${sentCount} (${sentCount > 0 ? ((newBounceCount / sentCount) * 100).toFixed(1) : '0.0'}%). Cause: ${classification.failureType}`
             );
         }
     }
