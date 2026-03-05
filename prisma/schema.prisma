@@ -52,6 +52,7 @@ model Organization {
   subscriptionEvents SubscriptionEvent[]
   slackIntegration   SlackIntegration?
   campaignDailyAnalytics CampaignDailyAnalytics[]
+  supportTickets  SupportTicket[]
 
   @@index([slug])
   @@index([subscription_status])
@@ -552,6 +553,25 @@ model SlackAlertLog {
   sent_at         DateTime @default(now())
 
   @@index([organization_id, event_hash])
+}
+
+model SupportTicket {
+  id              String       @id @default(uuid())
+  ticket_id       String       @unique // Human-readable ticket ID (e.g., SUP-20260306-A1B2)
+  organization_id String
+  user_id         String
+  user_email      String
+  subject         String
+  description     String
+  category        String       @default("general") // general, bug, feature, billing, urgent
+  status          String       @default("open") // open, in_progress, resolved, closed
+  created_at      DateTime     @default(now())
+  updated_at      DateTime     @updatedAt
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id, created_at])
+  @@index([ticket_id])
+  @@index([status])
 }
 
 model PendingRegistration {

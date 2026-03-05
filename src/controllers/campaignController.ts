@@ -805,6 +805,42 @@ export const triggerPredictiveAlerts = async (req: Request, res: Response) => {
 };
 
 /**
+ * Apply a predictive risk recommendation
+ *
+ * @route POST /api/dashboard/campaigns/predictive-risks/apply
+ */
+export const applyPredictiveRecommendation = async (req: Request, res: Response) => {
+    try {
+        const orgId = getOrgId(req);
+        const { recommendation } = req.body;
+
+        if (!recommendation || !recommendation.action || !recommendation.campaign_id) {
+            return res.status(400).json({
+                success: false,
+                error: 'Recommendation with action and campaign_id is required'
+            });
+        }
+
+        logger.info(`[CAMPAIGNS] Applying predictive recommendation for org ${orgId}`, { recommendation });
+
+        const result = await predictiveMonitoringService.applyRecommendation(orgId, recommendation);
+
+        return res.json({
+            success: result.success,
+            message: result.message
+        });
+
+    } catch (error: any) {
+        logger.error('[CAMPAIGNS] Error applying predictive recommendation', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to apply recommendation',
+            message: error.message
+        });
+    }
+};
+
+/**
  * Get smart campaign recommendations for a lead
  *
  * @route GET /api/dashboard/leads/:leadId/campaign-recommendations

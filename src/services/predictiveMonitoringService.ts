@@ -15,6 +15,15 @@
 import { prisma } from '../index';
 import { logger } from './observabilityService';
 import * as notificationService from './notificationService';
+import { SlackAlertService } from './SlackAlertService';
+
+interface Recommendation {
+    action: 'add_mailboxes' | 'remove_unhealthy' | 'wait_cooldown' | 'investigate_bounces' | 'fix_domains' | 'no_action';
+    label: string;
+    campaign_id: string;
+    mailbox_ids?: string[];
+    domain_ids?: string[];
+}
 
 interface CampaignRiskScore {
     campaign_id: string;
@@ -25,6 +34,7 @@ interface CampaignRiskScore {
     time_to_stall_hours: number | null; // Estimated hours until stall (if trending toward stall)
     signals: RiskSignal[];
     recommended_actions: string[];
+    recommendations: Recommendation[];
 }
 
 interface RiskSignal {
@@ -278,29 +288,70 @@ async function analyzeCampaignRisk(
 
     // ── Generate Recommendations ──
     const recommendations: string[] = [];
+    const structuredRecs: Recommendation[] = [];
+
+    // Collect unhealthy mailbox/domain IDs for actionable recommendations
+    const unhealthyMailboxIds = campaign.mailboxes
+        .filter(m => m.status !== 'healthy')
+        .map(m => m.id);
+    const unhealthyDomainIds = Array.from(domains.entries())
+        .filter(([, d]) => d.status !== 'healthy')
+        .map(([id]) => id);
 
     if (mailboxCount <= 2) {
         recommendations.push('Add more mailboxes to this campaign for redundancy');
+        structuredRecs.push({
+            action: 'add_mailboxes',
+            label: 'Add more mailboxes for redundancy',
+            campaign_id: campaignId
+        });
     }
 
     if (unhealthyMailboxCount > 0) {
         recommendations.push('Remove unhealthy mailboxes and replace with healthy ones');
+        structuredRecs.push({
+            action: 'remove_unhealthy',
+            label: `Remove ${unhealthyMailboxCount} unhealthy mailbox${unhealthyMailboxCount > 1 ? 'es' : ''}`,
+            campaign_id: campaignId,
+            mailbox_ids: unhealthyMailboxIds
+        });
     }
 
     if (mailboxesInCooldown > 0) {
         recommendations.push('Wait for mailboxes to exit cooldown or add additional mailboxes');
+        structuredRecs.push({
+            action: 'wait_cooldown',
+            label: `${mailboxesInCooldown} mailbox${mailboxesInCooldown > 1 ? 'es' : ''} in cooldown — add more or wait`,
+            campaign_id: campaignId
+        });
     }
 
     if (avgBounceRate >= 5) {
         recommendations.push('Investigate bounce causes and pause campaign if necessary');
+        structuredRecs.push({
+            action: 'investigate_bounces',
+            label: `Investigate bounces (avg ${avgBounceRate.toFixed(1)}%)`,
+            campaign_id: campaignId
+        });
     }
 
     if (unhealthyDomainCount > 0) {
         recommendations.push('Address domain health issues before continuing campaign');
+        structuredRecs.push({
+            action: 'fix_domains',
+            label: `Fix ${unhealthyDomainCount} unhealthy domain${unhealthyDomainCount > 1 ? 's' : ''}`,
+            campaign_id: campaignId,
+            domain_ids: unhealthyDomainIds
+        });
     }
 
     if (signals.length === 0) {
         recommendations.push('Campaign health looks good - no immediate action needed');
+        structuredRecs.push({
+            action: 'no_action',
+            label: 'No action needed',
+            campaign_id: campaignId
+        });
     }
 
     const riskLevel = getRiskLevel(totalRiskScore);
@@ -313,7 +364,8 @@ async function analyzeCampaignRisk(
         stall_probability: stallProbability,
         time_to_stall_hours: timeToStallHours,
         signals,
-        recommended_actions: recommendations
+        recommended_actions: recommendations,
+        recommendations: structuredRecs
     };
 }
 
@@ -411,6 +463,150 @@ export const sendPredictiveAlerts = async (organizationId: string): Promise<void
             message
         });
 
+        // Send Slack alert
+        const signalSummary = campaign.signals
+            .map(s => `• ${s.message}`)
+            .join('\n');
+        const actionSummary = campaign.recommended_actions
+            .map(a => `• ${a}`)
+            .join('\n');
+
+        SlackAlertService.sendAlert({
+            organizationId,
+            eventType: 'predictive_risk',
+            entityId: campaign.campaign_id,
+            severity: campaign.risk_level === 'critical' ? 'critical' : 'warning',
+            title: `⚠️ Campaign At Risk: ${campaign.campaign_name}`,
+            message: [
+                `*Risk Score:* ${campaign.risk_score}/100 (${campaign.risk_level.toUpperCase()})`,
+                campaign.time_to_stall_hours ? `*Est. Time to Stall:* ~${campaign.time_to_stall_hours}h` : '',
+                `*Stall Probability:* ${(campaign.stall_probability * 100).toFixed(0)}%`,
+                '',
+                '*Warning Signals:*',
+                signalSummary,
+                '',
+                '*Recommended Actions:*',
+                actionSummary
+            ].filter(Boolean).join('\n')
+        }).catch(err => logger.warn('[PREDICTIVE] Non-fatal Slack alert error', { error: String(err) }));
+
         logger.info(`[PREDICTIVE] Sent alert for campaign ${campaign.campaign_name} (risk: ${campaign.risk_level})`);
+    }
+};
+
+/**
+ * Apply a structured recommendation for a campaign.
+ */
+export const applyRecommendation = async (
+    organizationId: string,
+    recommendation: Recommendation
+): Promise<{ success: boolean; message: string }> => {
+    logger.info(`[PREDICTIVE] Applying recommendation: ${recommendation.action} for campaign ${recommendation.campaign_id}`);
+
+    try {
+        switch (recommendation.action) {
+            case 'remove_unhealthy': {
+                if (!recommendation.mailbox_ids || recommendation.mailbox_ids.length === 0) {
+                    return { success: false, message: 'No unhealthy mailboxes to remove' };
+                }
+                // Disconnect unhealthy mailboxes from the campaign
+                for (const mailboxId of recommendation.mailbox_ids) {
+                    await prisma.campaign.update({
+                        where: { id: recommendation.campaign_id },
+                        data: {
+                            mailboxes: {
+                                disconnect: { id: mailboxId }
+                            }
+                        }
+                    });
+                }
+                const count = recommendation.mailbox_ids.length;
+                const removeMsg = `Removed ${count} unhealthy mailbox${count > 1 ? 'es' : ''} from campaign`;
+
+                SlackAlertService.sendAlert({
+                    organizationId,
+                    eventType: 'predictive_action_remove',
+                    entityId: recommendation.campaign_id,
+                    severity: 'warning',
+                    title: '🔮 Predictive Action: Unhealthy Mailboxes Removed',
+                    message: `${removeMsg}\n*Campaign:* ${recommendation.campaign_id}`
+                }).catch(err => logger.warn('[PREDICTIVE] Non-fatal Slack alert error', { error: String(err) }));
+
+                return { success: true, message: removeMsg };
+            }
+
+            case 'add_mailboxes': {
+                // Find healthy, underutilized mailboxes in the org not already in this campaign
+                const campaign = await prisma.campaign.findUnique({
+                    where: { id: recommendation.campaign_id },
+                    select: { mailboxes: { select: { id: true } } }
+                });
+                const existingIds = campaign?.mailboxes.map(m => m.id) || [];
+
+                const available = await prisma.mailbox.findMany({
+                    where: {
+                        organization_id: organizationId,
+                        status: 'healthy',
+                        id: { notIn: existingIds }
+                    },
+                    orderBy: { created_at: 'asc' },
+                    take: 3,
+                    select: { id: true, email: true }
+                });
+
+                if (available.length === 0) {
+                    return { success: false, message: 'No healthy mailboxes available to add' };
+                }
+
+                for (const mb of available) {
+                    await prisma.campaign.update({
+                        where: { id: recommendation.campaign_id },
+                        data: {
+                            mailboxes: { connect: { id: mb.id } }
+                        }
+                    });
+                }
+
+                const emails = available.map(m => m.email).join(', ');
+                const addMsg = `Added ${available.length} mailbox${available.length > 1 ? 'es' : ''}: ${emails}`;
+
+                SlackAlertService.sendAlert({
+                    organizationId,
+                    eventType: 'predictive_action_add',
+                    entityId: recommendation.campaign_id,
+                    severity: 'info',
+                    title: '🔮 Predictive Action: Mailboxes Added',
+                    message: `${addMsg}\n*Campaign:* ${recommendation.campaign_id}`
+                }).catch(err => logger.warn('[PREDICTIVE] Non-fatal Slack alert error', { error: String(err) }));
+
+                return { success: true, message: addMsg };
+            }
+
+            case 'investigate_bounces': {
+                // Navigate user to campaign — no automated action, just acknowledge
+                return {
+                    success: true,
+                    message: 'Navigate to the campaign to review bounce details and take action'
+                };
+            }
+
+            case 'fix_domains': {
+                // Navigate user to domains — no automated action
+                return {
+                    success: true,
+                    message: 'Navigate to Domains page to address health issues'
+                };
+            }
+
+            case 'wait_cooldown':
+            case 'no_action':
+                return { success: true, message: 'No automated action required' };
+
+            default:
+                return { success: false, message: `Unknown action: ${recommendation.action}` };
+        }
+    } catch (error: any) {
+        logger.error(`[PREDICTIVE] Failed to apply recommendation:`, error);
+        return { success: false, message: `Failed: ${error.message}` };
     }
 };

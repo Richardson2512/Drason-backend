@@ -13,6 +13,7 @@
 import { prisma } from '../index';
 import { logger } from './observabilityService';
 import { getAdapterForMailbox } from '../adapters/platformRegistry';
+import { SlackAlertService } from './SlackAlertService';
 
 interface MailboxLoad {
     id: string;
@@ -290,6 +291,28 @@ export const analyzeLoadBalancing = async (
 
     logger.info(`[LOAD_BALANCING] Analysis complete: ${suggestions.length} suggestions, ${healthWarnings.length} warnings`);
 
+    // Send Slack alert if there are high-priority suggestions
+    const highPrioritySuggestions = suggestions.filter(s => s.priority === 'high');
+    if (highPrioritySuggestions.length > 0) {
+        const suggestionLines = highPrioritySuggestions
+            .map(s => `• *${s.type.replace('_', ' ')}* — \`${s.mailbox_email}\`: ${s.reason}`)
+            .join('\n');
+
+        SlackAlertService.sendAlert({
+            organizationId,
+            eventType: 'load_balancing_report',
+            severity: 'warning',
+            title: `⚖️ Load Balancing: ${highPrioritySuggestions.length} High-Priority Issue${highPrioritySuggestions.length > 1 ? 's' : ''}`,
+            message: [
+                `*${overloadedMailboxes.length}* overloaded · *${underutilizedMailboxes.length}* underutilized · *${optimalMailboxes.length}* optimal`,
+                `Avg campaigns/mailbox: *${avgCampaignsPerMailbox.toFixed(1)}*`,
+                '',
+                '*High-Priority Actions:*',
+                suggestionLines
+            ].join('\n')
+        }).catch(err => logger.warn('[LOAD_BALANCING] Non-fatal Slack alert error', { error: String(err) }));
+    }
+
     return report;
 };
 
@@ -343,6 +366,15 @@ export const applySuggestion = async (
                 } else {
                     logger.warn(`[LOAD_BALANCING] Mailbox ${suggestion.mailbox_id} missing external ID, skipping platform API call`);
                 }
+                SlackAlertService.sendAlert({
+                    organizationId,
+                    eventType: 'load_balancing_add',
+                    entityId: suggestion.mailbox_id,
+                    severity: 'info',
+                    title: '⚖️ Load Balancing: Mailbox Added',
+                    message: `Mailbox \`${suggestion.mailbox_email}\` added to campaign *${suggestion.to_campaign_name}*.\n*Reason:* ${suggestion.reason}`
+                }).catch(err => logger.warn('[LOAD_BALANCING] Non-fatal Slack alert error', { error: String(err) }));
+
                 return {
                     success: true,
                     message: `Added ${suggestion.mailbox_email} to campaign ${suggestion.to_campaign_name}`
@@ -386,6 +418,15 @@ export const applySuggestion = async (
                 } else {
                     logger.warn(`[LOAD_BALANCING] Mailbox ${suggestion.mailbox_id} missing external ID, skipping platform API call`);
                 }
+                SlackAlertService.sendAlert({
+                    organizationId,
+                    eventType: 'load_balancing_remove',
+                    entityId: suggestion.mailbox_id,
+                    severity: 'warning',
+                    title: '⚖️ Load Balancing: Mailbox Removed',
+                    message: `Mailbox \`${suggestion.mailbox_email}\` removed from campaign *${suggestion.from_campaign_name}*.\n*Reason:* ${suggestion.reason}`
+                }).catch(err => logger.warn('[LOAD_BALANCING] Non-fatal Slack alert error', { error: String(err) }));
+
                 return {
                     success: true,
                     message: `Removed ${suggestion.mailbox_email} from campaign ${suggestion.from_campaign_name}`

@@ -41,6 +41,7 @@ router.post('/campaigns/load-balancing/apply', validateBody(applyLoadBalancingSc
 // Predictive monitoring endpoints
 router.get('/campaigns/predictive-risks', campaignController.getPredictiveRisks);
 router.post('/campaigns/predictive-alerts', campaignController.triggerPredictiveAlerts);
+router.post('/campaigns/predictive-risks/apply', campaignController.applyPredictiveRecommendation);
 
 // Smart routing endpoints
 router.get('/leads/:leadId/campaign-recommendations', campaignController.getSmartCampaignRecommendations);
@@ -60,5 +61,10 @@ router.post('/notifications/read-all', notificationController.markAllAsRead);
 // Warmup recovery endpoints
 router.get('/warmup-status', dashboardController.getWarmupStatus);
 router.post('/warmup/check', dashboardController.checkWarmupProgress);
+
+// Support ticket endpoints
+import * as ticketController from '../controllers/ticketController';
+router.post('/tickets', ticketController.createTicket);
+router.get('/tickets', ticketController.getTickets);
 
 export default router;
