@@ -74,7 +74,7 @@ import infrastructureRoutes from './routes/infrastructure';
 import slackRoutes from './routes/slack';
 import apiSlackRoutes from './routes/apiSlack';
 
-import { checkLeadCapacity } from './middleware/featureGate';
+import { checkLeadCapacity, checkSubscriptionStatus } from './middleware/featureGate';
 
 // Import controllers
 import * as monitoringController from './controllers/monitoringController';
@@ -230,6 +230,15 @@ app.get('/metrics', (req, res) => {
 
 // Apply organization context middleware to all /api routes
 app.use('/api', extractOrgContext);
+
+// Enforce subscription status on all /api routes (except auth, billing, GET user/me, webhooks)
+app.use('/api', (req, res, next) => {
+    const prefixExempt = ['/auth/', '/billing/', '/monitor/', '/ingest/'];
+    if (prefixExempt.some(p => req.path.startsWith(p))) return next();
+    // Allow only GET /user/me so the dashboard shell can render — block all other user routes
+    if (req.path === '/user/me' && req.method === 'GET') return next();
+    checkSubscriptionStatus(req, res, next);
+});
 
 // Slack Routes (Bypass /api and typical auth)
 app.use('/slack', slackRoutes);
