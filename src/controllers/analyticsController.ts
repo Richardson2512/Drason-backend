@@ -361,7 +361,9 @@ export const getDailyAnalytics = async (req: Request, res: Response) => {
                         total_sent: true,
                         total_bounced: true,
                         open_count: true,
+                        click_count: true,
                         reply_count: true,
+                        unsubscribed_count: true,
                         analytics_updated_at: true,
                     }
                 });
@@ -377,10 +379,10 @@ export const getDailyAnalytics = async (req: Request, res: Response) => {
                             campaign_id: campaign_id as string,
                             sent_count: campaign.total_sent,
                             open_count: campaign.open_count || 0,
-                            click_count: 0,
+                            click_count: campaign.click_count || 0,
                             reply_count: campaign.reply_count || 0,
                             bounce_count: campaign.total_bounced,
-                            unsubscribe_count: 0,
+                            unsubscribe_count: campaign.unsubscribed_count || 0,
                         }],
                     });
                 } else {

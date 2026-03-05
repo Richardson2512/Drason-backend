@@ -116,7 +116,7 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
         // Fetch campaign names for all assigned campaigns
         const campaignIds = [...new Set(leads.filter(l => l.assigned_campaign_id).map(l => l.assigned_campaign_id))];
         const campaigns = await prisma.campaign.findMany({
-            where: { id: { in: campaignIds as string[] } },
+            where: { id: { in: campaignIds as string[] }, organization_id: orgId },
             select: { id: true, name: true, status: true }
         });
 
@@ -305,6 +305,7 @@ export const getDomains = async (req: Request, res: Response, next: NextFunction
         const limit = parseInt(req.query.limit as string) || 20;
         const sortBy = req.query.sortBy as string || 'domain_asc';
         const status = req.query.status as string;
+        const search = req.query.search as string;
         const minEngagement = req.query.minEngagement ? parseFloat(req.query.minEngagement as string) : undefined;
         const maxEngagement = req.query.maxEngagement ? parseFloat(req.query.maxEngagement as string) : undefined;
         const minBounceRate = req.query.minBounceRate ? parseFloat(req.query.minBounceRate as string) : undefined;
@@ -314,6 +315,11 @@ export const getDomains = async (req: Request, res: Response, next: NextFunction
         const where: any = {
             organization_id: orgId
         };
+
+        // Search by domain name
+        if (search && search.trim()) {
+            where.domain = { contains: search.trim(), mode: 'insensitive' };
+        }
 
         // Status filter
         if (status && status !== 'all') {
@@ -411,7 +417,9 @@ export const getMailboxes = async (req: Request, res: Response, next: NextFuncti
         const sortBy = req.query.sortBy as string || 'email_asc';
         const status = req.query.status as string;
         const domainId = req.query.domainId as string;
+        const campaignId = req.query.campaignId as string;
         const warmupStatus = req.query.warmupStatus as string;
+        const search = req.query.search as string;
         const minEngagement = req.query.minEngagement ? parseFloat(req.query.minEngagement as string) : undefined;
         const maxEngagement = req.query.maxEngagement ? parseFloat(req.query.maxEngagement as string) : undefined;
         const skip = (page - 1) * limit;
@@ -419,6 +427,11 @@ export const getMailboxes = async (req: Request, res: Response, next: NextFuncti
         const where: any = {
             organization_id: orgId
         };
+
+        // Search by email
+        if (search && search.trim()) {
+            where.email = { contains: search.trim(), mode: 'insensitive' };
+        }
 
         // Status filter
         if (status && status !== 'all') {
@@ -428,6 +441,11 @@ export const getMailboxes = async (req: Request, res: Response, next: NextFuncti
         // Domain filter
         if (domainId && domainId !== 'all') {
             where.domain_id = domainId;
+        }
+
+        // Campaign filter
+        if (campaignId && campaignId !== 'all') {
+            where.campaigns = { some: { id: campaignId } };
         }
 
         // Warmup status filter

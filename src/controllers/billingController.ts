@@ -8,10 +8,12 @@
  */
 
 import { Request, Response } from 'express';
+import PDFDocument from 'pdfkit';
 import { logger } from '../services/observabilityService';
 import * as billingService from '../services/billingService';
 import * as polarClient from '../services/polarClient';
 import { getOrgId } from '../middleware/orgContext';
+import { prisma } from '../index';
 
 // ============================================================================
 // WEBHOOK HANDLER
@@ -201,5 +203,152 @@ export const refreshUsage = async (req: Request, res: Response): Promise<Respons
     } catch (error) {
         logger.error('[BILLING] Failed to refresh usage', error instanceof Error ? error : new Error(String(error)));
         return res.status(500).json({ error: 'Failed to refresh usage' });
+    }
+};
+
+export const getInvoices = async (req: Request, res: Response): Promise<Response> => {
+    try {
+        const orgId = getOrgId(req);
+        const org = await prisma.organization.findUnique({
+            where: { id: orgId },
+            select: { polar_subscription_id: true, subscription_started_at: true, subscription_tier: true, subscription_status: true }
+        });
+
+        if (!org?.polar_subscription_id || org.subscription_status === 'trialing') {
+            return res.json({ invoices: [] });
+        }
+
+        // Tier → price in USD cents
+        const tierPrices: Record<string, number> = {
+            starter: 4900,
+            growth: 19900,
+            scale: 34900,
+        };
+
+        // Return subscription events as invoice records
+        const events = await prisma.subscriptionEvent.findMany({
+            where: { organization_id: orgId, event_type: { in: ['invoice.paid', 'subscription.created', 'subscription.updated'] } },
+            orderBy: { created_at: 'desc' },
+            take: 20,
+        });
+
+        const invoices = events.map(e => {
+            const tier = e.new_tier || org.subscription_tier;
+            return {
+                id: e.id,
+                date: e.created_at.toISOString(),
+                amount: tierPrices[tier] || 0,
+                currency: 'usd',
+                status: e.event_type === 'invoice.paid' ? 'paid' : 'completed',
+                url: `/api/billing/invoices/${e.id}/pdf`,
+            };
+        });
+
+        return res.json({ invoices });
+    } catch (error) {
+        logger.error('[BILLING] Failed to fetch invoices', error instanceof Error ? error : new Error(String(error)));
+        return res.status(500).json({ error: 'Failed to fetch invoices' });
+    }
+};
+
+export const downloadInvoicePdf = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const orgId = getOrgId(req);
+        const id = req.params.id as string;
+
+        const event = await prisma.subscriptionEvent.findFirst({
+            where: { id, organization_id: orgId },
+        });
+
+        if (!event) {
+            res.status(404).json({ error: 'Invoice not found' });
+            return;
+        }
+
+        const org = await prisma.organization.findUnique({
+            where: { id: orgId },
+            select: { name: true, subscription_tier: true },
+        });
+
+        const tierPrices: Record<string, number> = { starter: 4900, growth: 19900, scale: 34900 };
+        const tier = event.new_tier || org?.subscription_tier || 'starter';
+        const amountCents = tierPrices[tier] || 0;
+        const amountDollars = (amountCents / 100).toFixed(2);
+        const tierName = tier.charAt(0).toUpperCase() + tier.slice(1);
+        const invoiceDate = event.created_at;
+        const invoiceNumber = `INV-${invoiceDate.toISOString().slice(0, 10).replace(/-/g, '')}-${id.slice(0, 6).toUpperCase()}`;
+
+        const doc = new PDFDocument({ size: 'A4', margin: 50 });
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${invoiceNumber}.pdf"`);
+        doc.pipe(res);
+
+        // Header — brand bar
+        doc.rect(0, 0, 595.28, 100).fill('#4F46E5');
+        doc.fontSize(28).fillColor('#FFFFFF').text('INVOICE', 50, 35);
+        doc.fontSize(10).fillColor('#E0E7FF').text(`Invoice #: ${invoiceNumber}`, 50, 68);
+        doc.text(`Date: ${invoiceDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}`, 50, 82);
+
+        // Company info (right side of header)
+        doc.fontSize(14).fillColor('#FFFFFF').text('Superkabe', 380, 35, { align: 'right' });
+        doc.fontSize(9).fillColor('#E0E7FF').text('support@superkabe.com', 380, 55, { align: 'right' });
+
+        // Bill To section
+        doc.fillColor('#6B7280').fontSize(9).text('BILL TO', 50, 125);
+        doc.fillColor('#111827').fontSize(12).text(org?.name || 'Customer', 50, 140);
+
+        // Divider
+        doc.moveTo(50, 175).lineTo(545, 175).strokeColor('#E5E7EB').lineWidth(1).stroke();
+
+        // Table header
+        const tableTop = 195;
+        doc.rect(50, tableTop, 495, 30).fill('#F8FAFC');
+        doc.fillColor('#64748B').fontSize(9);
+        doc.text('DESCRIPTION', 60, tableTop + 10);
+        doc.text('QTY', 320, tableTop + 10, { width: 50, align: 'center' });
+        doc.text('UNIT PRICE', 380, tableTop + 10, { width: 80, align: 'right' });
+        doc.text('AMOUNT', 470, tableTop + 10, { width: 70, align: 'right' });
+
+        // Table row
+        const rowTop = tableTop + 40;
+        doc.fillColor('#111827').fontSize(10);
+        doc.text(`Superkabe ${tierName} Plan — Monthly Subscription`, 60, rowTop);
+        doc.text('1', 320, rowTop, { width: 50, align: 'center' });
+        doc.text(`$${amountDollars}`, 380, rowTop, { width: 80, align: 'right' });
+        doc.text(`$${amountDollars}`, 470, rowTop, { width: 70, align: 'right' });
+
+        // Divider
+        doc.moveTo(50, rowTop + 30).lineTo(545, rowTop + 30).strokeColor('#E5E7EB').lineWidth(1).stroke();
+
+        // Total
+        const totalTop = rowTop + 50;
+        doc.fillColor('#64748B').fontSize(9).text('SUBTOTAL', 380, totalTop, { width: 80, align: 'right' });
+        doc.fillColor('#111827').fontSize(10).text(`$${amountDollars}`, 470, totalTop, { width: 70, align: 'right' });
+
+        doc.fillColor('#64748B').fontSize(9).text('TAX', 380, totalTop + 22, { width: 80, align: 'right' });
+        doc.fillColor('#111827').fontSize(10).text('$0.00', 470, totalTop + 22, { width: 70, align: 'right' });
+
+        doc.moveTo(380, totalTop + 42).lineTo(545, totalTop + 42).strokeColor('#E5E7EB').lineWidth(1).stroke();
+
+        doc.fillColor('#111827').fontSize(12).font('Helvetica-Bold').text('TOTAL', 380, totalTop + 52, { width: 80, align: 'right' });
+        doc.text(`$${amountDollars} USD`, 470, totalTop + 52, { width: 70, align: 'right' });
+
+        // Payment status
+        const statusTop = totalTop + 90;
+        const statusText = event.event_type === 'invoice.paid' ? 'PAID' : 'COMPLETED';
+        const statusColor = event.event_type === 'invoice.paid' ? '#059669' : '#3B82F6';
+        doc.roundedRect(380, statusTop, 165, 28, 4).fill(statusColor);
+        doc.fillColor('#FFFFFF').fontSize(11).font('Helvetica-Bold').text(statusText, 380, statusTop + 8, { width: 165, align: 'center' });
+
+        // Footer
+        doc.font('Helvetica').fillColor('#94A3B8').fontSize(8);
+        doc.text('Thank you for your business.', 50, 750, { align: 'center', width: 495 });
+        doc.text('Superkabe — Outbound Execution Control Layer', 50, 762, { align: 'center', width: 495 });
+
+        doc.end();
+    } catch (error) {
+        logger.error('[BILLING] Failed to generate invoice PDF', error instanceof Error ? error : new Error(String(error)));
+        res.status(500).json({ error: 'Failed to generate invoice PDF' });
     }
 };

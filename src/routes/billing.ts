@@ -46,4 +46,16 @@ router.post('/cancel', billingController.cancelSubscription);
  */
 router.post('/refresh-usage', billingController.refreshUsage);
 
+/**
+ * GET /api/billing/invoices
+ * Get invoice/payment history.
+ */
+router.get('/invoices', billingController.getInvoices);
+
+/**
+ * GET /api/billing/invoices/:id/pdf
+ * Download invoice as PDF.
+ */
+router.get('/invoices/:id/pdf', billingController.downloadInvoicePdf);
+
 export default router;
