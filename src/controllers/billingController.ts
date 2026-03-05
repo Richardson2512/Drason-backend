@@ -8,6 +8,7 @@
  */
 
 import { Request, Response } from 'express';
+import path from 'path';
 import PDFDocument from 'pdfkit';
 import { logger } from '../services/observabilityService';
 import * as billingService from '../services/billingService';
@@ -270,6 +271,10 @@ export const downloadInvoicePdf = async (req: Request, res: Response): Promise<v
             select: { name: true, subscription_tier: true },
         });
 
+        // Get customer email from the user who triggered the event, or fallback to requesting user
+        const userId = req.orgContext?.userId;
+        const user = userId ? await prisma.user.findUnique({ where: { id: userId }, select: { email: true } }) : null;
+
         const tierPrices: Record<string, number> = { starter: 4900, growth: 19900, scale: 34900 };
         const tier = event.new_tier || org?.subscription_tier || 'starter';
         const amountCents = tierPrices[tier] || 0;
@@ -290,19 +295,25 @@ export const downloadInvoicePdf = async (req: Request, res: Response): Promise<v
         doc.fontSize(10).fillColor('#E0E7FF').text(`Invoice #: ${invoiceNumber}`, 50, 68);
         doc.text(`Date: ${invoiceDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}`, 50, 82);
 
-        // Company info (right side of header)
-        doc.fontSize(14).fillColor('#FFFFFF').text('Superkabe', 380, 35, { align: 'right' });
-        doc.fontSize(9).fillColor('#E0E7FF').text('support@superkabe.com', 380, 55, { align: 'right' });
+        // Logo + Company info (right side of header)
+        const logoPath = path.join(__dirname, '..', 'assets', 'logo.png');
+        try { doc.image(logoPath, 480, 25, { width: 50 }); } catch { /* logo missing — skip */ }
+        doc.fontSize(14).fillColor('#FFFFFF').text('Superkabe', 350, 35, { width: 125, align: 'left' });
+        doc.fontSize(9).fillColor('#E0E7FF').text('support@superkabe.com', 350, 55, { width: 125, align: 'left' });
 
         // Bill To section
         doc.fillColor('#6B7280').fontSize(9).text('BILL TO', 50, 125);
         doc.fillColor('#111827').fontSize(12).text(org?.name || 'Customer', 50, 140);
+        if (user?.email) {
+            doc.fillColor('#6B7280').fontSize(9).text(user.email, 50, 157);
+        }
 
         // Divider
-        doc.moveTo(50, 175).lineTo(545, 175).strokeColor('#E5E7EB').lineWidth(1).stroke();
+        const dividerY = user?.email ? 180 : 175;
+        doc.moveTo(50, dividerY).lineTo(545, dividerY).strokeColor('#E5E7EB').lineWidth(1).stroke();
 
         // Table header
-        const tableTop = 195;
+        const tableTop = dividerY + 20;
         doc.rect(50, tableTop, 495, 30).fill('#F8FAFC');
         doc.fillColor('#64748B').fontSize(9);
         doc.text('DESCRIPTION', 60, tableTop + 10);
