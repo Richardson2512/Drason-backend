@@ -232,7 +232,7 @@ export const getStalledCampaignContext = async (req: Request, res: Response) => 
         const recoveringMailboxes = await prisma.mailbox.findMany({
             where: {
                 organization_id: orgId,
-                status: { in: ['paused', 'recovering'] },
+                status: { in: ['paused', 'recovering', 'quarantine', 'restricted_send', 'warm_recovery'] },
                 cooldown_until: { gte: new Date() }
             },
             select: {

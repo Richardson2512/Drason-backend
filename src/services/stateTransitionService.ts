@@ -256,8 +256,9 @@ export async function executeTransition(
         };
     }
 
-    // 2. Check cooldown for recovering entities
-    if (toState === MailboxState.RECOVERING || toState === DomainState.RECOVERING) {
+    // 2. Check cooldown for entities entering recovery (legacy RECOVERING or new QUARANTINE)
+    if (toState === MailboxState.RECOVERING || toState === DomainState.RECOVERING
+        || toState === MailboxState.QUARANTINE || toState === DomainState.QUARANTINE) {
         const cooldownInfo = await checkCooldown(entityType, entityId);
         if (cooldownInfo.isInCooldown) {
             logger.info(`[STATE] Entity ${entityId} is in cooldown until ${cooldownInfo.cooldownUntil}`);
@@ -502,6 +503,7 @@ export async function getTransitionStats(
 
         if ((current.to_state === MailboxState.PAUSED || current.to_state === DomainState.PAUSED) &&
             (next.to_state === MailboxState.RECOVERING || next.to_state === DomainState.RECOVERING ||
+                next.to_state === MailboxState.QUARANTINE || next.to_state === DomainState.QUARANTINE ||
                 next.to_state === MailboxState.HEALTHY || next.to_state === DomainState.HEALTHY)) {
             totalRecoveryTimeMs += next.created_at.getTime() - current.created_at.getTime();
             recoveryCount++;

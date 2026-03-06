@@ -207,26 +207,36 @@ async function processMailbox(
             reason = `Risk score ${risk.riskScore} dropped below warning threshold`;
         }
     } else if (currentState === MailboxState.RECOVERING) {
-        if (risk.riskScore < MONITORING_THRESHOLDS.RISK_SCORE_WARNING) {
-            targetState = MailboxState.HEALTHY;
-            reason = 'Recovery successful - risk score normalized';
-        } else if (risk.riskScore >= MONITORING_THRESHOLDS.RISK_SCORE_CRITICAL) {
-            targetState = MailboxState.WARNING;
-            reason = 'Recovery incomplete - elevated risk detected';
-        }
+        // Legacy RECOVERING state — migrate to proper healing pipeline
+        // Transition to QUARANTINE so the warmup worker can manage graduation
+        targetState = MailboxState.QUARANTINE;
+        reason = 'Migrating legacy RECOVERING state to QUARANTINE healing pipeline';
     }
 
     // Execute state transition if needed
     if (targetState && targetState !== currentState) {
         // In OBSERVE mode, only log; in ENFORCE mode, execute
         if (systemMode === 'enforce') {
-            await stateTransitionService.transitionMailbox(
+            const result = await stateTransitionService.transitionMailbox(
                 organizationId,
                 mailbox.id,
                 targetState,
                 reason,
                 TriggerType.SYSTEM
             );
+
+            // When migrating legacy RECOVERING → QUARANTINE, set healing phase fields
+            if (result.success && currentState === MailboxState.RECOVERING && targetState === MailboxState.QUARANTINE) {
+                await prisma.mailbox.update({
+                    where: { id: mailbox.id },
+                    data: {
+                        recovery_phase: 'quarantine',
+                        phase_entered_at: new Date(),
+                        clean_sends_since_phase: 0,
+                    }
+                });
+                logger.info('[METRICS] Migrated legacy RECOVERING mailbox to QUARANTINE', { mailboxId: mailbox.id });
+            }
         } else {
             logger.info('Would transition mailbox (observe mode)', { mailboxId: mailbox.id, from: currentState, to: targetState, systemMode });
         }
@@ -239,6 +249,8 @@ async function processMailbox(
 
 /**
  * Check paused entities for recovery eligibility.
+ * Transitions paused → QUARANTINE (the 5-phase healing pipeline)
+ * instead of the legacy RECOVERING state.
  */
 async function checkRecoveryEligibility(
     organizationId: string,
@@ -253,18 +265,34 @@ async function checkRecoveryEligibility(
             status: MailboxState.PAUSED,
             cooldown_until: { lte: now }
         },
-        select: { id: true }
+        select: { id: true, resilience_score: true, healing_origin: true }
     });
 
     for (const mailbox of eligibleMailboxes) {
         if (systemMode === 'enforce') {
-            await stateTransitionService.transitionMailbox(
+            // Transition to QUARANTINE (5-phase healing) instead of legacy RECOVERING
+            const result = await stateTransitionService.transitionMailbox(
                 organizationId,
                 mailbox.id,
-                MailboxState.RECOVERING,
-                'Cooldown period expired - entering recovery',
+                MailboxState.QUARANTINE,
+                'Cooldown expired — entering quarantine (no sending, DNS re-check required)',
                 TriggerType.COOLDOWN_COMPLETE
             );
+
+            if (result.success) {
+                // Set healing phase fields so healingService can manage graduation
+                await prisma.mailbox.update({
+                    where: { id: mailbox.id },
+                    data: {
+                        recovery_phase: 'quarantine',
+                        phase_entered_at: new Date(),
+                        clean_sends_since_phase: 0,
+                    }
+                });
+                logger.info('[METRICS] Mailbox entered QUARANTINE phase', {
+                    mailboxId: mailbox.id, organizationId
+                });
+            }
         } else {
             logger.info('Mailbox eligible for recovery (observe mode)', { mailboxId: mailbox.id, systemMode });
         }
@@ -277,18 +305,33 @@ async function checkRecoveryEligibility(
             status: DomainState.PAUSED,
             cooldown_until: { lte: now }
         },
-        select: { id: true }
+        select: { id: true, resilience_score: true, healing_origin: true }
     });
 
     for (const domain of eligibleDomains) {
         if (systemMode === 'enforce') {
-            await stateTransitionService.transitionDomain(
+            // Transition to QUARANTINE (5-phase healing) instead of legacy RECOVERING
+            const result = await stateTransitionService.transitionDomain(
                 organizationId,
                 domain.id,
-                DomainState.RECOVERING,
-                'Cooldown period expired - entering recovery',
+                DomainState.QUARANTINE,
+                'Cooldown expired — entering quarantine (DNS re-check required)',
                 TriggerType.COOLDOWN_COMPLETE
             );
+
+            if (result.success) {
+                await prisma.domain.update({
+                    where: { id: domain.id },
+                    data: {
+                        recovery_phase: 'quarantine',
+                        phase_entered_at: new Date(),
+                        clean_sends_since_phase: 0,
+                    }
+                });
+                logger.info('[METRICS] Domain entered QUARANTINE phase', {
+                    domainId: domain.id, organizationId
+                });
+            }
         } else {
             logger.info('Domain eligible for recovery (observe mode)', { domainId: domain.id, systemMode });
         }

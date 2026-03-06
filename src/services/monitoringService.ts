@@ -270,11 +270,10 @@ const slideWindow = async (mailboxId: string): Promise<void> => {
         details: `Window slid: kept ${newBounceCount}/${newSentCount} (50% of previous). Sliding heal.`
     });
 
-    // If recovering AND bounce rate is now acceptable, consider healthy
-    const currentRate = newSentCount > 0 ? (newBounceCount / newSentCount) : 0;
-    if (mailbox.status === 'recovering' && currentRate < 0.03) { // Under 3%
-        await transitionMailboxState(mailboxId, 'recovering', 'healthy', `Clean sliding window (${(currentRate * 100).toFixed(1)}% bounce rate)`);
-    }
+    // Legacy RECOVERING check removed — recovery is now handled by the
+    // 5-phase healing pipeline (QUARANTINE → RESTRICTED_SEND → WARM_RECOVERY → HEALTHY)
+    // managed by the warmupTrackingWorker. Any mailboxes still in RECOVERING
+    // are auto-migrated to QUARANTINE by the metricsWorker.
 };
 
 /**
