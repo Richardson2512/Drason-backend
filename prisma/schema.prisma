@@ -12,7 +12,7 @@ model Organization {
   name                    String
   slug                    String  @unique
   system_mode             String  @default("observe")
-  assessment_completed    Boolean @default(false)
+  assessment_completed    Boolean @default(true)
   transition_acknowledged Boolean @default(false) // Phase 0→1: operator must acknowledge low-score assessments
 
   // Subscription Management
