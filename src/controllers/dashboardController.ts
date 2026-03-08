@@ -535,12 +535,7 @@ export const getMailboxes = async (req: Request, res: Response, next: NextFuncti
             prisma.mailbox.count({ where })
         ]);
 
-        logger.info('[DEBUG] getMailboxes response', {
-            orgId,
-            total,
-            returnedCount: mailboxes.length,
-            where: JSON.stringify(where),
-        });
+        logger.info(`[DEBUG] getMailboxes: orgId=${orgId} total=${total} returned=${mailboxes.length} where=${JSON.stringify(where)}`);
 
         res.json({
             data: mailboxes,

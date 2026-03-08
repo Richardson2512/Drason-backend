@@ -788,15 +788,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
         // Verify mailboxes actually persisted
         const dbMailboxCount = await prisma.mailbox.count({ where: { organization_id: organizationId } });
 
-        logger.info('[MailboxSync] Mailbox sync summary', {
-            organizationId,
-            total: mailboxes.length,
-            upserted: mailboxCount,
-            skippedDomain,
-            skippedCapacity,
-            newMailboxes: mailboxesToIncrement,
-            dbMailboxCount
-        });
+        logger.info(`[MailboxSync] Mailbox sync summary: total=${mailboxes.length} upserted=${mailboxCount} skippedDomain=${skippedDomain} skippedCapacity=${skippedCapacity} new=${mailboxesToIncrement} dbCount=${dbMailboxCount} org=${organizationId}`);
 
         if (mailboxesToIncrement > 0) {
             await prisma.organization.update({
