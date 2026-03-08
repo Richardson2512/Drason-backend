@@ -33,6 +33,7 @@ import {
     LeadPayload,
     PushLeadResult,
 } from './platformAdapter';
+import { LeadState } from '../types';
 
 const EMAILBISON_API_BASE = 'https://dedi.emailbison.com';
 
@@ -75,7 +76,13 @@ export class EmailBisonAdapter implements PlatformAdapter {
     // ── SYNC ───────────────────────────────────────────────────────────
 
     async sync(organizationId: string, sessionId?: string): Promise<SyncResult> {
-        // ── Issue C: Redis mutex — prevents concurrent syncs for the same org ──
+        // Fail fast: validate API key before acquiring lock
+        const apiKey = await this.getApiKey(organizationId);
+        if (!apiKey) {
+            throw new Error('EmailBison API key not configured. Please add your API key in Settings.');
+        }
+
+        // ── Redis mutex — prevents concurrent syncs for the same org ──
         const lockKey = `sync:emailbison:org:${organizationId}`;
         const acquired = await acquireLock(lockKey, 15 * 60); // 15 min TTL
         if (!acquired) {
@@ -596,7 +603,9 @@ export class EmailBisonAdapter implements PlatformAdapter {
     async pauseCampaign(organizationId: string, externalCampaignId: string): Promise<boolean> {
         try {
             const client = await this.getClient(organizationId);
-            await client.patch(`/api/campaigns/${externalCampaignId}/pause`);
+            await emailbisonRateLimiter.execute(() =>
+                client.patch(`/api/campaigns/${externalCampaignId}/pause`)
+            );
             logger.info('[EmailBison] Campaign paused', { externalCampaignId, organizationId });
             return true;
         } catch (error: any) {
@@ -608,7 +617,9 @@ export class EmailBisonAdapter implements PlatformAdapter {
     async resumeCampaign(organizationId: string, externalCampaignId: string): Promise<boolean> {
         try {
             const client = await this.getClient(organizationId);
-            await client.patch(`/api/campaigns/${externalCampaignId}/resume`);
+            await emailbisonRateLimiter.execute(() =>
+                client.patch(`/api/campaigns/${externalCampaignId}/resume`)
+            );
             logger.info('[EmailBison] Campaign resumed', { externalCampaignId, organizationId });
             return true;
         } catch (error: any) {
@@ -624,9 +635,11 @@ export class EmailBisonAdapter implements PlatformAdapter {
     ): Promise<boolean> {
         try {
             const client = await this.getClient(organizationId);
-            await client.post(`/api/campaigns/${externalCampaignId}/attach-sender-emails`, {
-                sender_email_ids: [parseInt(externalMailboxId)],
-            });
+            await emailbisonRateLimiter.execute(() =>
+                client.post(`/api/campaigns/${externalCampaignId}/attach-sender-emails`, {
+                    sender_email_ids: [parseInt(externalMailboxId)],
+                })
+            );
             logger.info('[EmailBison] Mailbox added to campaign', {
                 externalCampaignId,
                 externalMailboxId,
@@ -649,9 +662,11 @@ export class EmailBisonAdapter implements PlatformAdapter {
     ): Promise<boolean> {
         try {
             const client = await this.getClient(organizationId);
-            await client.delete(`/api/campaigns/${externalCampaignId}/remove-sender-emails`, {
-                data: { sender_email_ids: [parseInt(externalMailboxId)] },
-            });
+            await emailbisonRateLimiter.execute(() =>
+                client.delete(`/api/campaigns/${externalCampaignId}/remove-sender-emails`, {
+                    data: { sender_email_ids: [parseInt(externalMailboxId)] },
+                })
+            );
             logger.info('[EmailBison] Mailbox removed from campaign', {
                 externalCampaignId,
                 externalMailboxId,
@@ -675,7 +690,9 @@ export class EmailBisonAdapter implements PlatformAdapter {
     ): Promise<MailboxDetails | null> {
         try {
             const client = await this.getClient(organizationId);
-            const res = await client.get(`/api/warmup/sender-emails/${externalAccountId}`);
+            const res = await emailbisonRateLimiter.execute(() =>
+                client.get(`/api/warmup/sender-emails/${externalAccountId}`)
+            );
             const data = res.data?.data || res.data;
 
             if (!data) return null;
@@ -711,20 +728,26 @@ export class EmailBisonAdapter implements PlatformAdapter {
             if (isNaN(numericId)) return { ok: false, message: 'Invalid numeric account ID for EmailBison' };
 
             if (settings.warmup_enabled) {
-                await client.patch('/api/warmup/sender-emails/enable', {
-                    sender_email_ids: [numericId],
-                });
+                await emailbisonRateLimiter.execute(() =>
+                    client.patch('/api/warmup/sender-emails/enable', {
+                        sender_email_ids: [numericId],
+                    })
+                );
 
                 if (settings.total_warmup_per_day) {
-                    await client.patch('/api/warmup/sender-emails/update-daily-warmup-limits', {
-                        sender_email_ids: [numericId],
-                        daily_warmup_limit: settings.total_warmup_per_day,
-                    });
+                    await emailbisonRateLimiter.execute(() =>
+                        client.patch('/api/warmup/sender-emails/update-daily-warmup-limits', {
+                            sender_email_ids: [numericId],
+                            daily_warmup_limit: settings.total_warmup_per_day,
+                        })
+                    );
                 }
             } else {
-                await client.patch('/api/warmup/sender-emails/disable', {
-                    sender_email_ids: [numericId],
-                });
+                await emailbisonRateLimiter.execute(() =>
+                    client.patch('/api/warmup/sender-emails/disable', {
+                        sender_email_ids: [numericId],
+                    })
+                );
             }
 
             return { ok: true, message: 'Warmup settings updated' };
@@ -742,25 +765,50 @@ export class EmailBisonAdapter implements PlatformAdapter {
         lead: LeadPayload
     ): Promise<PushLeadResult> {
         try {
+            // Idempotency check: skip if lead already active in this campaign
+            const internalCampaignId = `eb-${externalCampaignId}`;
+            const existingLead = await prisma.lead.findFirst({
+                where: {
+                    organization_id: organizationId,
+                    email: lead.email,
+                    assigned_campaign_id: internalCampaignId,
+                    status: LeadState.ACTIVE,
+                },
+            });
+
+            if (existingLead) {
+                logger.info('[EmailBison] Lead already exists in campaign (idempotent skip)', {
+                    organizationId,
+                    externalCampaignId,
+                    email: lead.email,
+                });
+                return { success: true };
+            }
+
             const client = await this.getClient(organizationId);
 
-            // First create the lead globally
-            const createRes = await client.post('/api/leads', {
-                email: lead.email,
-                first_name: lead.first_name || '',
-                last_name: lead.last_name || '',
-                company: lead.company || '',
-            });
+            // First create the lead globally (rate-limited)
+            // Map company → company_name (consistent with Smartlead & Instantly)
+            const createRes = await emailbisonRateLimiter.execute(() =>
+                client.post('/api/leads', {
+                    email: lead.email,
+                    first_name: lead.first_name || '',
+                    last_name: lead.last_name || '',
+                    company_name: lead.company || '',
+                })
+            );
 
             const leadId = createRes.data?.data?.id;
             if (!leadId) {
                 return { success: false, message: 'Failed to create lead in EmailBison' };
             }
 
-            // Then attach to campaign
-            await client.post(`/api/campaigns/${externalCampaignId}/leads/attach-leads`, {
-                lead_ids: [leadId],
-            });
+            // Then attach to campaign (rate-limited)
+            await emailbisonRateLimiter.execute(() =>
+                client.post(`/api/campaigns/${externalCampaignId}/leads/attach-leads`, {
+                    lead_ids: [leadId],
+                })
+            );
 
             return { success: true };
         } catch (error: any) {
@@ -780,10 +828,10 @@ export class EmailBisonAdapter implements PlatformAdapter {
         try {
             const client = await this.getClient(organizationId);
 
-            // Find the lead by email first
-            const leadsRes = await client.get('/api/leads', {
-                params: { search: leadEmail }
-            });
+            // Find the lead by email first (rate-limited)
+            const leadsRes = await emailbisonRateLimiter.execute(() =>
+                client.get('/api/leads', { params: { search: leadEmail } })
+            );
             const leads = leadsRes.data?.data || [];
             const lead = leads.find((l: any) => l.email === leadEmail);
 
@@ -792,9 +840,11 @@ export class EmailBisonAdapter implements PlatformAdapter {
                 return false;
             }
 
-            await client.delete(`/api/campaigns/${externalCampaignId}/leads`, {
-                data: { lead_ids: [lead.id] },
-            });
+            await emailbisonRateLimiter.execute(() =>
+                client.delete(`/api/campaigns/${externalCampaignId}/leads`, {
+                    data: { lead_ids: [lead.id] },
+                })
+            );
 
             return true;
         } catch (error: any) {

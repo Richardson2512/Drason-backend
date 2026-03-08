@@ -4,6 +4,7 @@ import { getActiveAdaptersForOrg } from '../adapters/platformRegistry';
 import { getOrgId } from '../middleware/orgContext';
 import { prisma } from '../index';
 import { logger } from '../utils/logger';
+import { syncProgressService } from '../services/syncProgressService';
 
 const router = Router();
 
@@ -66,6 +67,23 @@ router.post('/', async (req: Request, res: Response) => {
             criticalFindings = allFindings.filter(f => f.severity === 'critical');
         }
 
+        const healthCheck = {
+            has_critical_issues: criticalFindings.length > 0,
+            critical_count: criticalFindings.length,
+            overall_score: report?.overall_score || null,
+            findings: criticalFindings.slice(0, 5)
+        };
+
+        // Emit SSE completion event so the frontend modal knows sync is done
+        if (sessionId) {
+            syncProgressService.emitComplete(sessionId, {
+                campaigns_synced: totalCampaigns,
+                mailboxes_synced: totalMailboxes,
+                leads_synced: totalLeads,
+                health_check: healthCheck
+            });
+        }
+
         // Return field names that match frontend expectations
         res.json({
             success: true,
@@ -73,15 +91,17 @@ router.post('/', async (req: Request, res: Response) => {
             mailboxes_synced: totalMailboxes,
             leads_synced: totalLeads,
             platforms: platformResults,
-            health_check: {
-                has_critical_issues: criticalFindings.length > 0,
-                critical_count: criticalFindings.length,
-                overall_score: report?.overall_score || null,
-                findings: criticalFindings.slice(0, 5) // Return top 5 critical issues
-            }
+            health_check: healthCheck
         });
     } catch (e: any) {
         logger.error('[SYNC ERROR]', e, { stack: e.stack });
+
+        // Emit SSE error event so the frontend modal shows the failure
+        const sessionId = req.query.session as string | undefined;
+        if (sessionId) {
+            syncProgressService.emitError(sessionId, e.message || 'Sync failed');
+        }
+
         res.status(500).json({ success: false, error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
     }
 });

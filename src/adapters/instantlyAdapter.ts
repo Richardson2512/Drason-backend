@@ -37,6 +37,7 @@ import {
     LeadPayload,
     PushLeadResult,
 } from './platformAdapter';
+import { LeadState } from '../types';
 
 const INSTANTLY_API_BASE = 'https://api.instantly.ai/api/v2';
 
@@ -76,6 +77,12 @@ export class InstantlyAdapter implements PlatformAdapter {
     // ── SYNC ───────────────────────────────────────────────────────────
 
     async sync(organizationId: string, sessionId?: string): Promise<SyncResult> {
+        // Fail fast: validate API key before acquiring lock
+        const apiKey = await this.getApiKey(organizationId);
+        if (!apiKey) {
+            throw new Error('Instantly API key not configured. Please add your API key in Settings.');
+        }
+
         const lockKey = `sync:instantly:org:${organizationId}`;
         const acquired = await acquireLock(lockKey, 15 * 60);
         if (!acquired) {
@@ -995,6 +1002,26 @@ export class InstantlyAdapter implements PlatformAdapter {
         lead: LeadPayload
     ): Promise<PushLeadResult> {
         try {
+            // Idempotency check: skip if lead already active in this campaign
+            const internalCampaignId = `inst-${externalCampaignId}`;
+            const existingLead = await prisma.lead.findFirst({
+                where: {
+                    organization_id: organizationId,
+                    email: lead.email,
+                    assigned_campaign_id: internalCampaignId,
+                    status: LeadState.ACTIVE,
+                },
+            });
+
+            if (existingLead) {
+                logger.info('[Instantly] Lead already exists in campaign (idempotent skip)', {
+                    organizationId,
+                    externalCampaignId,
+                    email: lead.email,
+                });
+                return { success: true };
+            }
+
             const client = await this.getClient(organizationId);
 
             // Instantly field mapping: company → company_name

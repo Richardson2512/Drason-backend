@@ -15,6 +15,7 @@ import * as auditLogService from './auditLogService';
 import * as eventService from './eventService';
 import * as assessmentService from './infrastructureAssessmentService';
 import * as notificationService from './notificationService';
+import { SourcePlatform } from '@prisma/client';
 import { EventType, LeadState } from '../types';
 import { logger } from './observabilityService';
 import { smartleadBreaker } from '../utils/circuitBreaker';
@@ -506,6 +507,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         id: campaign.id.toString(),
                         name: campaign.name,
                         status: (campaign.status || 'active').toLowerCase(),
+                        source_platform: SourcePlatform.smartlead,
                         bounce_rate: bounceRate,
                         total_sent: totalSent,
                         total_bounced: totalBounced,
@@ -589,6 +591,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 domainsToCreate.push({
                     domain: domainName as string,
                     status: 'healthy',
+                    source_platform: SourcePlatform.smartlead,
                     organization_id: organizationId
                 });
                 org.current_domain_count++;
@@ -691,6 +694,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         id: mailbox.id.toString(),
                         email,
                         external_email_account_id: String(mailbox.id),
+                        source_platform: SourcePlatform.smartlead,
                         status: mailboxStatus,
                         smtp_status: mailbox.is_smtp_success === true,
                         imap_status: mailbox.is_imap_success === true,
@@ -1657,26 +1661,9 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             logger.warn('Failed to create sync success notification', { organizationId });
         }
 
-        // Emit completion event with results
-        logger.info('[SmartleadSync] About to emit completion event', {
-            sessionId,
-            hasSessionId: !!sessionId,
-            campaignCount,
-            mailboxCount,
-            leadCount
-        });
-
-        if (sessionId) {
-            syncProgressService.emitComplete(sessionId, {
-                campaigns_synced: campaignCount,
-                mailboxes_synced: mailboxCount,
-                leads_synced: leadCount,
-                health_check: healthCheckResult
-            });
-            logger.info('[SmartleadSync] Completion event emitted', { sessionId });
-        } else {
-            logger.warn('[SmartleadSync] No sessionId provided, skipping SSE completion event');
-        }
+        // NOTE: emitComplete is handled by the sync route after ALL platforms finish.
+        // Individual adapters should NOT emit completion — it would close the modal prematurely
+        // when multiple platforms are configured.
 
         return { campaigns: campaignCount, mailboxes: mailboxCount, leads: leadCount };
 
@@ -1702,10 +1689,8 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             logger.warn('Failed to create sync failure notification', { organizationId });
         }
 
-        // Emit error event
-        if (sessionId) {
-            syncProgressService.emitError(sessionId, error.message);
-        }
+        // NOTE: emitError is handled by the sync route after catching platform errors.
+        // Individual adapters should NOT emit error — the route aggregates all platform results.
 
         throw error;
     } finally {
