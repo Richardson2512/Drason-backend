@@ -655,8 +655,10 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             }
         }
 
-        let mailboxUpserts = [];
+        let mailboxUpserts: any[] = [];
         let mailboxesToIncrement = 0;
+        let skippedDomain = 0;
+        let skippedCapacity = 0;
 
         for (let i = 0; i < mailboxes.length; i++) {
             const mailbox = mailboxes[i];
@@ -666,13 +668,16 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             const domain = domainMap.get(domainName);
 
             if (!domain) {
-                continue; // Domain was skipped due to capacity limits
+                skippedDomain++;
+                logger.warn('[MailboxSync] Skipping mailbox — domain not in map', { email, domainName, organizationId });
+                continue;
             }
 
             const isNewMailbox = !existingMailboxSet.has(mailbox.id.toString());
             if (isNewMailbox) {
                 // Check mailbox capacity before creating
                 if (org.current_mailbox_count >= limits.mailboxes) {
+                    skippedCapacity++;
                     logger.warn('[Smartlead Sync] Mailbox capacity reached, skipping mailbox creation', {
                         organizationId,
                         current: org.current_mailbox_count,
@@ -680,7 +685,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         tier: org.subscription_tier,
                         skippedEmail: email
                     });
-                    continue; // Skip this mailbox
+                    continue;
                 }
                 org.current_mailbox_count++;
                 mailboxesToIncrement++;
@@ -757,7 +762,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
 
             mailboxCount++;
 
-            if (mailboxUpserts.length >= 50 || i === mailboxes.length - 1) {
+            if (mailboxUpserts.length >= 50) {
                 await prisma.$transaction(mailboxUpserts);
                 mailboxUpserts = [];
                 if (sessionId) {
@@ -768,6 +773,26 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 }
             }
         }
+
+        // Flush any remaining mailbox upserts (fixes bug where last batch was lost if final mailboxes were skipped)
+        if (mailboxUpserts.length > 0) {
+            await prisma.$transaction(mailboxUpserts);
+            if (sessionId) {
+                syncProgressService.emitProgress(sessionId, 'mailboxes', 'in_progress', {
+                    current: mailboxCount,
+                    total: mailboxes.length
+                });
+            }
+        }
+
+        logger.info('[MailboxSync] Mailbox sync summary', {
+            organizationId,
+            total: mailboxes.length,
+            upserted: mailboxCount,
+            skippedDomain,
+            skippedCapacity,
+            newMailboxes: mailboxesToIncrement
+        });
 
         if (mailboxesToIncrement > 0) {
             await prisma.organization.update({
