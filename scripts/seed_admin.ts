@@ -6,8 +6,8 @@ const prisma = new PrismaClient();
 async function main() {
     const email = 'richsamven12@gmail.com';
     const password = 'Richardson2512@';
-    const orgName = 'DrasonHQ';
-    const orgSlug = 'drason-hq';
+    const orgName = 'Superkabe';
+    const orgSlug = 'superkabe';
 
     console.log(`Seeding admin user: ${email}...`);
 
@@ -15,15 +15,20 @@ async function main() {
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(password, salt);
 
-    // 2. Create Organization
-    // Use slug as unique identifier for finding
+    // 2. Create Organization with enterprise tier (unlimited everything)
     const org = await prisma.organization.upsert({
         where: { slug: orgSlug },
-        update: {},
+        update: {
+            name: orgName,
+            subscription_tier: 'enterprise',
+            subscription_status: 'active',
+        },
         create: {
             name: orgName,
             slug: orgSlug,
-            system_mode: 'enforce' // Set to enforce for production-ready feel
+            system_mode: 'enforce',
+            subscription_tier: 'enterprise',
+            subscription_status: 'active',
         }
     });
 
@@ -35,11 +40,12 @@ async function main() {
         update: {
             role: 'admin',
             password_hash: passwordHash,
-            organization_id: org.id
+            organization_id: org.id,
+            name: 'Richardson'
         },
         create: {
             email,
-            name: 'Richardson Admin',
+            name: 'Richardson',
             password_hash: passwordHash,
             role: 'admin',
             organization_id: org.id
