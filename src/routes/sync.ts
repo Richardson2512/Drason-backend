@@ -81,13 +81,35 @@ router.post('/', async (req: Request, res: Response) => {
             findings: criticalFindings.slice(0, 5)
         };
 
+        // Gather post-sync entity status breakdown so the frontend can show
+        // what the assessment/scoring found (paused mailboxes, unhealthy domains, etc.)
+        const [mailboxStatuses, domainStatuses, leadStatuses] = await Promise.all([
+            prisma.mailbox.groupBy({ by: ['status'], where: { organization_id: orgId }, _count: true }),
+            prisma.domain.groupBy({ by: ['status'], where: { organization_id: orgId }, _count: true }),
+            prisma.lead.groupBy({ by: ['status'], where: { organization_id: orgId }, _count: true }),
+        ]);
+
+        const toStatusMap = (groups: { status: string; _count: number }[], keys: string[]) => {
+            const map: Record<string, number> = {};
+            for (const k of keys) map[k] = 0;
+            for (const g of groups) map[g.status] = (map[g.status] || 0) + g._count;
+            return map;
+        };
+
+        const postSyncSummary = {
+            mailboxes: toStatusMap(mailboxStatuses as any, ['healthy', 'warning', 'paused']),
+            domains: toStatusMap(domainStatuses as any, ['healthy', 'warning', 'paused']),
+            leads: toStatusMap(leadStatuses as any, ['active', 'held', 'blocked']),
+        };
+
         // Emit SSE completion event so the frontend modal knows sync is done
         if (sessionId) {
             syncProgressService.emitComplete(sessionId, {
                 campaigns_synced: totalCampaigns,
                 mailboxes_synced: totalMailboxes,
                 leads_synced: totalLeads,
-                health_check: healthCheck
+                health_check: healthCheck,
+                post_sync_summary: postSyncSummary
             });
         }
 
@@ -98,7 +120,8 @@ router.post('/', async (req: Request, res: Response) => {
             mailboxes_synced: totalMailboxes,
             leads_synced: totalLeads,
             platforms: platformResults,
-            health_check: healthCheck
+            health_check: healthCheck,
+            post_sync_summary: postSyncSummary
         });
     } catch (e: any) {
         logger.error('[SYNC ERROR]', e, { stack: e.stack });
