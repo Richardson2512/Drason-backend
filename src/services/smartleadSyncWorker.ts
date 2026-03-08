@@ -979,6 +979,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                 },
                                 update: {
                                     assigned_campaign_id: campaignId,
+                                    source_platform: SourcePlatform.smartlead,
                                     updated_at: new Date()
                                     // Note: Status is intentionally NOT updated here
                                     // - Smartlead leads are created as 'active'
@@ -990,6 +991,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                     persona,
                                     lead_score: 50, // Default neutral score
                                     source: 'smartlead',
+                                    source_platform: SourcePlatform.smartlead,
                                     status: 'active', // Pre-existing leads in Smartlead campaigns are already approved
                                     health_classification: 'green',
                                     emails_sent: 0,
