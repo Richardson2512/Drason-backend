@@ -275,6 +275,8 @@ export const getCampaigns = async (req: Request, res: Response, next: NextFuncti
                             id: true,
                             email: true,
                             status: true,
+                            window_sent_count: true,
+                            total_sent_count: true,
                             domain: {
                                 select: { id: true, domain: true, status: true }
                             }
