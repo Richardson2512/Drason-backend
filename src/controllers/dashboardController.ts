@@ -31,12 +31,18 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
         const minScore = req.query.minScore ? parseInt(req.query.minScore as string) : undefined;
         const maxScore = req.query.maxScore ? parseInt(req.query.maxScore as string) : undefined;
         const hasEngagement = req.query.hasEngagement as string;
+        const platform = req.query.platform as string;
         const skip = (page - 1) * limit;
 
         const where: any = {
             organization_id: orgId,
             deleted_at: null
         };
+
+        // Platform filter
+        if (platform && platform !== 'all') {
+            where.source_platform = platform;
+        }
 
         if (status === 'bounced') {
             where.bounced = true;
@@ -200,6 +206,7 @@ export const getCampaigns = async (req: Request, res: Response, next: NextFuncti
         const maxSent = req.query.maxSent ? parseInt(req.query.maxSent as string) : undefined;
         const minOpenRate = req.query.minOpenRate ? parseFloat(req.query.minOpenRate as string) : undefined;
         const maxOpenRate = req.query.maxOpenRate ? parseFloat(req.query.maxOpenRate as string) : undefined;
+        const platform = req.query.platform as string;
         const skip = (page - 1) * limit;
 
         const where: any = {
@@ -208,6 +215,11 @@ export const getCampaigns = async (req: Request, res: Response, next: NextFuncti
 
         if (status && status !== 'all') {
             where.status = status;
+        }
+
+        // Platform filter
+        if (platform && platform !== 'all') {
+            where.source_platform = platform;
         }
 
         if (search && search.trim()) {
@@ -314,11 +326,17 @@ export const getDomains = async (req: Request, res: Response, next: NextFunction
         const maxEngagement = req.query.maxEngagement ? parseFloat(req.query.maxEngagement as string) : undefined;
         const minBounceRate = req.query.minBounceRate ? parseFloat(req.query.minBounceRate as string) : undefined;
         const maxBounceRate = req.query.maxBounceRate ? parseFloat(req.query.maxBounceRate as string) : undefined;
+        const platform = req.query.platform as string;
         const skip = (page - 1) * limit;
 
         const where: any = {
             organization_id: orgId
         };
+
+        // Platform filter
+        if (platform && platform !== 'all') {
+            where.source_platform = platform;
+        }
 
         // Search by domain name
         if (search && search.trim()) {
@@ -426,11 +444,17 @@ export const getMailboxes = async (req: Request, res: Response, next: NextFuncti
         const search = req.query.search as string;
         const minEngagement = req.query.minEngagement ? parseFloat(req.query.minEngagement as string) : undefined;
         const maxEngagement = req.query.maxEngagement ? parseFloat(req.query.maxEngagement as string) : undefined;
+        const platform = req.query.platform as string;
         const skip = (page - 1) * limit;
 
         const where: any = {
             organization_id: orgId
         };
+
+        // Platform filter
+        if (platform && platform !== 'all') {
+            where.source_platform = platform;
+        }
 
         // Search by email
         if (search && search.trim()) {
