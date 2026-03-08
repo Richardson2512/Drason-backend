@@ -86,10 +86,9 @@ const ALLOWED_SETTING_KEYS = [
     'instantly_webhook_secret',
 ] as const;
 
-export const updateSettingsSchema = z.record(
-    z.enum(ALLOWED_SETTING_KEYS),
-    z.string().max(512)
-).refine(obj => Object.keys(obj).length > 0, { message: 'At least one setting is required' });
+export const updateSettingsSchema = z.object(
+    Object.fromEntries(ALLOWED_SETTING_KEYS.map(k => [k, z.string().max(512).optional()]))
+).refine(obj => Object.values(obj).some(v => v !== undefined), { message: 'At least one setting is required' }) as z.ZodType<Partial<Record<(typeof ALLOWED_SETTING_KEYS)[number], string>>>;
 
 export const updateOrganizationSchema = z.object({
     name: z.string().min(1).optional(),
