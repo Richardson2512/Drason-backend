@@ -535,11 +535,19 @@ export const getMailboxes = async (req: Request, res: Response, next: NextFuncti
             prisma.mailbox.count({ where })
         ]);
 
+        logger.info('[DEBUG] getMailboxes response', {
+            orgId,
+            total,
+            returnedCount: mailboxes.length,
+            where: JSON.stringify(where),
+        });
+
         res.json({
             data: mailboxes,
             meta: { total, page, limit, totalPages: Math.ceil(total / limit) }
         });
     } catch (error) {
+        logger.error('[DEBUG] getMailboxes error', error as Error);
         next(error);
     }
 };
