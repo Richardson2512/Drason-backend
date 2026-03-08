@@ -23,7 +23,7 @@ export const getNotifications = async (req: Request, res: Response) => {
         res.json({ success: true, data: result });
     } catch (error) {
         logger.error('Error fetching notifications:', error as Error);
-        res.status(500).json({ error: 'Internal Server Error' });
+        res.status(500).json({ success: false, error: 'Internal Server Error' });
     }
 };
 
@@ -37,7 +37,7 @@ export const getUnreadCount = async (req: Request, res: Response) => {
         res.json({ success: true, data: { count } });
     } catch (error) {
         logger.error('Error fetching unread count:', error as Error);
-        res.status(500).json({ error: 'Internal Server Error' });
+        res.status(500).json({ success: false, error: 'Internal Server Error' });
     }
 };
 
@@ -53,7 +53,7 @@ export const markAsRead = async (req: Request, res: Response) => {
         res.json({ success: true });
     } catch (error) {
         logger.error('Error marking notification as read:', error as Error);
-        res.status(500).json({ error: 'Internal Server Error' });
+        res.status(500).json({ success: false, error: 'Internal Server Error' });
     }
 };
 
@@ -67,6 +67,6 @@ export const markAllAsRead = async (req: Request, res: Response) => {
         res.json({ success: true });
     } catch (error) {
         logger.error('Error marking all notifications as read:', error as Error);
-        res.status(500).json({ error: 'Internal Server Error' });
+        res.status(500).json({ success: false, error: 'Internal Server Error' });
     }
 };

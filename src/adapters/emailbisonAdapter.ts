@@ -277,8 +277,10 @@ export class EmailBisonAdapter implements PlatformAdapter {
                         where: { id: organizationId },
                         data: { current_domain_count: org.current_domain_count },
                     });
-                    const updatedDomains = await prisma.domain.findMany({ where: { organization_id: organizationId } });
-                    updatedDomains.forEach(d => domainMap.set(d.domain, d));
+                    const newlyCreated = await prisma.domain.findMany({
+                        where: { organization_id: organizationId, domain: { in: domainsToCreate.map(d => d.domain) } }
+                    });
+                    newlyCreated.forEach(d => domainMap.set(d.domain, d));
                 }
             }
 

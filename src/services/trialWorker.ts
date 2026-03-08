@@ -18,7 +18,7 @@ import * as auditLogService from './auditLogService';
 // ============================================================================
 
 const WARNING_DAYS = 3; // Send warning when 3 days remain
-const CHECK_INTERVAL_MS = 60 * 60 * 1000; // Run every hour
+const CHECK_INTERVAL_MS = parseInt(process.env.TRIAL_CHECK_INTERVAL_MS || String(60 * 60 * 1000), 10);
 
 // ============================================================================
 // TRIAL WORKER

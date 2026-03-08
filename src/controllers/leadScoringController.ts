@@ -33,6 +33,7 @@ export const syncLeadScores = async (req: Request, res: Response): Promise<void>
     } catch (error: any) {
         logger.error('[LEAD-SCORING] Sync failed', error);
         res.status(500).json({
+            success: false,
             error: 'Failed to sync lead scores',
             message: error.message
         });
@@ -57,6 +58,7 @@ export const getTopLeads = async (req: Request, res: Response): Promise<void> =>
     } catch (error: any) {
         logger.error('[LEAD-SCORING] Failed to get top leads', error);
         res.status(500).json({
+            success: false,
             error: 'Failed to get top leads',
             message: error.message
         });
@@ -75,6 +77,7 @@ export const getLeadScoreBreakdown = async (req: Request, res: Response): Promis
 
         if (!breakdown) {
             res.status(404).json({
+                success: false,
                 error: 'Lead not found or no engagement data'
             });
             return;
@@ -87,6 +90,7 @@ export const getLeadScoreBreakdown = async (req: Request, res: Response): Promis
     } catch (error: any) {
         logger.error('[LEAD-SCORING] Failed to get score breakdown', error);
         res.status(500).json({
+            success: false,
             error: 'Failed to get score breakdown',
             message: error.message
         });
@@ -111,6 +115,7 @@ export const getTopLeadsForCampaign = async (req: Request, res: Response): Promi
     } catch (error: any) {
         logger.error('[LEAD-SCORING] Failed to get campaign top leads', error);
         res.status(500).json({
+            success: false,
             error: 'Failed to get campaign top leads',
             message: error.message
         });

@@ -31,7 +31,7 @@ export const handlePolarWebhook = async (req: Request, res: Response): Promise<R
 
         if (!webhookSecret) {
             logger.error('[BILLING] Missing POLAR_WEBHOOK_SECRET environment variable');
-            return res.status(500).json({ error: 'Webhook secret not configured' });
+            return res.status(500).json({ success: false, error: 'Webhook secret not configured' });
         }
 
         // Validate HMAC-SHA256 signature
@@ -40,18 +40,18 @@ export const handlePolarWebhook = async (req: Request, res: Response): Promise<R
 
         if (!isValid) {
             logger.warn('[BILLING] Invalid webhook signature — rejected');
-            return res.status(401).json({ error: 'Invalid signature' });
+            return res.status(401).json({ success: false, error: 'Invalid signature' });
         }
 
         // Process webhook event
         await billingService.processWebhook(req.body);
 
         // Always return 200 to prevent retry storms
-        return res.json({ received: true });
+        return res.json({ success: true, received: true });
     } catch (error) {
         logger.error('[BILLING] Webhook processing failed', error instanceof Error ? error : new Error(String(error)));
         // Still return 200 to prevent retries for non-retryable errors
-        return res.status(200).json({ error: 'Processing failed', received: true });
+        return res.status(200).json({ success: false, error: 'Processing failed', received: true });
     }
 };
 
@@ -68,7 +68,7 @@ export const createCheckout = async (req: Request, res: Response): Promise<Respo
         const { tier } = req.body;
 
         if (!tier || !['starter', 'growth', 'scale'].includes(tier)) {
-            return res.status(400).json({ error: 'Invalid tier. Must be one of: starter, growth, scale' });
+            return res.status(400).json({ success: false, error: 'Invalid tier. Must be one of: starter, growth, scale' });
         }
 
         // Check subscription status instead of tier
@@ -83,7 +83,7 @@ export const createCheckout = async (req: Request, res: Response): Promise<Respo
         });
 
         if (!org) {
-            return res.status(404).json({ error: 'Organization not found' });
+            return res.status(404).json({ success: false, error: 'Organization not found' });
         }
 
         // Allow upgrades for active subscriptions, but block downgrades and lateral moves
@@ -102,6 +102,7 @@ export const createCheckout = async (req: Request, res: Response): Promise<Respo
             // Block downgrades and lateral moves
             if (requestedTierRank <= currentTierRank) {
                 return res.status(400).json({
+                    success: false,
                     error: `Cannot downgrade or switch to same tier. Current tier: ${org.subscription_tier}. To change to ${tier}, please cancel your subscription first.`
                 });
             }
@@ -113,12 +114,13 @@ export const createCheckout = async (req: Request, res: Response): Promise<Respo
         const checkoutSession = await polarClient.createCheckoutSession(orgId, tier);
 
         return res.json({
+            success: true,
             checkoutUrl: checkoutSession.url,
             checkoutId: checkoutSession.id
         });
     } catch (error) {
         logger.error('[BILLING] Checkout creation failed', error instanceof Error ? error : new Error(String(error)));
-        return res.status(500).json({ error: 'Failed to create checkout session' });
+        return res.status(500).json({ success: false, error: 'Failed to create checkout session' });
     }
 };
 
@@ -154,6 +156,7 @@ export const getSubscriptionStatus = async (req: Request, res: Response): Promis
         });
 
         return res.json({
+            success: true,
             subscription: {
                 tier: org?.subscription_tier,
                 status: org?.subscription_status,
@@ -167,7 +170,7 @@ export const getSubscriptionStatus = async (req: Request, res: Response): Promis
         });
     } catch (error) {
         logger.error('[BILLING] Failed to get subscription status', error instanceof Error ? error : new Error(String(error)));
-        return res.status(500).json({ error: 'Failed to get subscription status' });
+        return res.status(500).json({ success: false, error: 'Failed to get subscription status' });
     }
 };
 
@@ -180,10 +183,10 @@ export const cancelSubscription = async (req: Request, res: Response): Promise<R
 
         await polarClient.cancelSubscription(orgId);
 
-        return res.json({ message: 'Subscription canceled. Access will continue until the end of your billing period.' });
+        return res.json({ success: true, message: 'Subscription canceled. Access will continue until the end of your billing period.' });
     } catch (error) {
         logger.error('[BILLING] Failed to cancel subscription', error instanceof Error ? error : new Error(String(error)));
-        return res.status(500).json({ error: 'Failed to cancel subscription' });
+        return res.status(500).json({ success: false, error: 'Failed to cancel subscription' });
     }
 };
 
@@ -200,10 +203,10 @@ export const refreshUsage = async (req: Request, res: Response): Promise<Respons
 
         const usage = await billingService.refreshUsageCounts(orgId);
 
-        return res.json({ usage });
+        return res.json({ success: true, usage });
     } catch (error) {
         logger.error('[BILLING] Failed to refresh usage', error instanceof Error ? error : new Error(String(error)));
-        return res.status(500).json({ error: 'Failed to refresh usage' });
+        return res.status(500).json({ success: false, error: 'Failed to refresh usage' });
     }
 };
 
@@ -216,7 +219,7 @@ export const getInvoices = async (req: Request, res: Response): Promise<Response
         });
 
         if (!org?.polar_subscription_id || org.subscription_status === 'trialing') {
-            return res.json({ invoices: [] });
+            return res.json({ success: true, invoices: [] });
         }
 
         // Tier → price in USD cents
@@ -245,10 +248,10 @@ export const getInvoices = async (req: Request, res: Response): Promise<Response
             };
         });
 
-        return res.json({ invoices });
+        return res.json({ success: true, invoices });
     } catch (error) {
         logger.error('[BILLING] Failed to fetch invoices', error instanceof Error ? error : new Error(String(error)));
-        return res.status(500).json({ error: 'Failed to fetch invoices' });
+        return res.status(500).json({ success: false, error: 'Failed to fetch invoices' });
     }
 };
 
@@ -262,7 +265,7 @@ export const downloadInvoicePdf = async (req: Request, res: Response): Promise<v
         });
 
         if (!event) {
-            res.status(404).json({ error: 'Invoice not found' });
+            res.status(404).json({ success: false, error: 'Invoice not found' });
             return;
         }
 
@@ -360,6 +363,6 @@ export const downloadInvoicePdf = async (req: Request, res: Response): Promise<v
         doc.end();
     } catch (error) {
         logger.error('[BILLING] Failed to generate invoice PDF', error instanceof Error ? error : new Error(String(error)));
-        res.status(500).json({ error: 'Failed to generate invoice PDF' });
+        res.status(500).json({ success: false, error: 'Failed to generate invoice PDF' });
     }
 };

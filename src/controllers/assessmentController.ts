@@ -23,6 +23,7 @@ export const getReport = async (req: Request, res: Response): Promise<void> => {
 
         if (!report) {
             res.status(404).json({
+                success: false,
                 error: 'No infrastructure assessment report found',
                 hint: 'Run a Smartlead sync to trigger the initial assessment, or trigger a manual assessment via POST /api/assessment/run'
             });
@@ -32,7 +33,7 @@ export const getReport = async (req: Request, res: Response): Promise<void> => {
         res.json({ success: true, data: report });
     } catch (e: any) {
         logger.error('Failed to fetch assessment report', e);
-        res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
+        res.status(500).json({ success: false, error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
     }
 };
 
@@ -47,7 +48,7 @@ export const getReports = async (req: Request, res: Response): Promise<void> => 
         res.json({ success: true, data: reports });
     } catch (e: any) {
         logger.error('Failed to fetch assessment reports', e);
-        res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
+        res.status(500).json({ success: false, error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
     }
 };
 
@@ -73,6 +74,7 @@ export const runAssessment = async (req: Request, res: Response): Promise<void> 
     } catch (e: any) {
         logger.error('Manual assessment failed', e);
         res.status(500).json({
+            success: false,
             error: 'Assessment failed',
             message: e.message,
             hint: 'The execution gate may remain locked. Check logs and retry.'
@@ -100,7 +102,7 @@ export const getAssessmentStatus = async (req: Request, res: Response): Promise<
         });
     } catch (e: any) {
         logger.error('Failed to check assessment status', e);
-        res.status(500).json({ error: 'Failed to check assessment status' });
+        res.status(500).json({ success: false, error: 'Failed to check assessment status' });
     }
 };
 
@@ -118,7 +120,7 @@ export const getDomainDNS = async (req: Request, res: Response): Promise<void> =
         });
 
         if (!domain) {
-            res.status(404).json({ error: 'Domain not found' });
+            res.status(404).json({ success: false, error: 'Domain not found' });
             return;
         }
 
@@ -136,6 +138,6 @@ export const getDomainDNS = async (req: Request, res: Response): Promise<void> =
         });
     } catch (e: any) {
         logger.error('DNS check failed', e);
-        res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
+        res.status(500).json({ success: false, error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
     }
 };

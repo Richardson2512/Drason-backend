@@ -70,7 +70,7 @@ export const triggerEvent = async (req: Request, res: Response) => {
     const { eventType, mailboxId, campaignId } = req.body;
 
     if (!eventType || !mailboxId) {
-        return res.status(400).json({ error: 'Missing required fields: eventType, mailboxId' });
+        return res.status(400).json({ success: false, error: 'Missing required fields: eventType, mailboxId' });
     }
 
     try {
@@ -81,11 +81,11 @@ export const triggerEvent = async (req: Request, res: Response) => {
             await monitoringService.recordSent(mailboxId, campaignId || '');
             res.json({ success: true, message: 'Send recorded', mailboxId });
         } else {
-            res.status(400).json({ error: 'Invalid eventType. Use: bounce, sent' });
+            res.status(400).json({ success: false, error: 'Invalid eventType. Use: bounce, sent' });
         }
     } catch (error) {
         logger.error('[MONITOR] Error processing event:', error as Error);
-        res.status(500).json({ error: 'Failed to process monitoring event' });
+        res.status(500).json({ success: false, error: 'Failed to process monitoring event' });
     }
 };
 
@@ -188,7 +188,7 @@ export const handleSmartleadWebhook = async (req: Request, res: Response) => {
         const webhookSecret = await getWebhookSecret(orgId);
         if (!validateWebhookSignature(req, webhookSecret)) {
             logger.warn('[WEBHOOK] Invalid or missing signature, rejecting');
-            return res.status(401).json({ error: 'Invalid webhook signature' });
+            return res.status(401).json({ success: false, error: 'Invalid webhook signature' });
         }
 
         // Store event with idempotency key (prevents duplicate processing)
@@ -255,7 +255,7 @@ export const getMailboxHealth = async (req: Request, res: Response) => {
         });
 
         if (!mailbox) {
-            return res.status(404).json({ error: 'Mailbox not found' });
+            return res.status(404).json({ success: false, error: 'Mailbox not found' });
         }
 
         // Get recent state transitions
@@ -288,6 +288,6 @@ export const getMailboxHealth = async (req: Request, res: Response) => {
         });
     } catch (error) {
         logger.error('[MONITOR] Error getting mailbox health:', error as Error);
-        res.status(500).json({ error: 'Failed to get mailbox health' });
+        res.status(500).json({ success: false, error: 'Failed to get mailbox health' });
     }
 };

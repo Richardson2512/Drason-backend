@@ -9,8 +9,8 @@ import { prisma } from '../index';
 import { logger } from './observabilityService';
 import * as leadScoringService from './leadScoringService';
 
-// Run every 24 hours
-const SCORING_INTERVAL_MS = 24 * 60 * 60 * 1000;
+// Run every 24 hours by default (configurable via env var)
+const SCORING_INTERVAL_MS = parseInt(process.env.LEAD_SCORING_INTERVAL_MS || String(24 * 60 * 60 * 1000), 10);
 
 let scoringInterval: NodeJS.Timeout | null = null;
 

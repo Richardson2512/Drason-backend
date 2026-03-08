@@ -33,11 +33,11 @@ let workerInterval: NodeJS.Timeout | null = null;
 let lastRunAt: Date | null = null;
 let lastError: string | null = null;
 
-// Worker configuration
+// Worker configuration (configurable via env vars)
 const WORKER_CONFIG = {
-    intervalMs: 60000,          // Run every 60 seconds
-    batchSize: 50,              // Process 50 mailboxes per batch
-    recoveryCheckIntervalMs: 300000  // Check recovery every 5 minutes
+    intervalMs: parseInt(process.env.METRICS_WORKER_INTERVAL_MS || '60000', 10),
+    batchSize: 50,
+    recoveryCheckIntervalMs: parseInt(process.env.METRICS_RECOVERY_INTERVAL_MS || '300000', 10),
 };
 
 // ============================================================================

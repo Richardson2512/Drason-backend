@@ -297,10 +297,10 @@ export class InstantlyAdapter implements PlatformAdapter {
                         where: { id: organizationId },
                         data: { current_domain_count: org.current_domain_count },
                     });
-                    const updatedDomains = await prisma.domain.findMany({
-                        where: { organization_id: organizationId },
+                    const newlyCreated = await prisma.domain.findMany({
+                        where: { organization_id: organizationId, domain: { in: domainsToCreate.map(d => d.domain) } },
                     });
-                    updatedDomains.forEach(d => domainMap.set(d.domain, d));
+                    newlyCreated.forEach(d => domainMap.set(d.domain, d));
                 }
             }
 

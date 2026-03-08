@@ -14,6 +14,7 @@ import * as campaignHealthService from '../services/campaignHealthService';
 import * as entityStateService from '../services/entityStateService';
 import { MailboxState, DomainState, TriggerType } from '../types';
 import { logger } from '../services/observabilityService';
+import { cached } from '../utils/responseCache';
 
 /**
  * Get all leads for the organization with pagination.
@@ -160,24 +161,25 @@ export const getStats = async (req: Request, res: Response, next: NextFunction) 
             where.assigned_campaign_id = campaignId;
         }
 
-        const [activeCount, heldCount, pausedCount, completedCount, totalCount] = await Promise.all([
-            prisma.lead.count({ where: { ...where, status: 'active' } }),
-            prisma.lead.count({ where: { ...where, status: 'held' } }),
-            prisma.lead.count({ where: { ...where, status: 'paused' } }),
-            prisma.lead.count({ where: { ...where, status: 'completed' } }),
-            prisma.lead.count({ where })
-        ]);
-
-        res.json({
-            success: true,
-            data: {
+        const cacheKey = campaignId ? `stats:${campaignId}` : 'stats:all';
+        const data = await cached(orgId, cacheKey, async () => {
+            const [activeCount, heldCount, pausedCount, completedCount, totalCount] = await Promise.all([
+                prisma.lead.count({ where: { ...where, status: 'active' } }),
+                prisma.lead.count({ where: { ...where, status: 'held' } }),
+                prisma.lead.count({ where: { ...where, status: 'paused' } }),
+                prisma.lead.count({ where: { ...where, status: 'completed' } }),
+                prisma.lead.count({ where })
+            ]);
+            return {
                 active: activeCount,
                 held: heldCount,
                 paused: pausedCount,
                 completed: completedCount,
                 total: totalCount
-            }
+            };
         });
+
+        res.json({ success: true, data });
     } catch (error) {
         next(error);
     }
@@ -537,7 +539,7 @@ export const getAuditLogs = async (req: Request, res: Response) => {
         res.json({ success: true, data: logs });
     } catch (error) {
         logger.error('getAuditLogs error', error as Error);
-        res.status(500).json({ error: 'Failed to fetch audit logs' });
+        res.status(500).json({ success: false, error: 'Failed to fetch audit logs' });
     }
 };
 
@@ -551,7 +553,7 @@ export const getRoutingRules = async (req: Request, res: Response) => {
         res.json({ success: true, data: rules });
     } catch (error) {
         logger.error('getRoutingRules error', error as Error);
-        res.status(500).json({ error: 'Failed to fetch routing rules' });
+        res.status(500).json({ success: false, error: 'Failed to fetch routing rules' });
     }
 };
 
@@ -564,7 +566,7 @@ export const createRoutingRule = async (req: Request, res: Response) => {
         const { persona, min_score, target_campaign_id, priority } = req.body;
 
         if (!persona || !target_campaign_id) {
-            return res.status(400).json({ error: 'Missing required fields: persona, target_campaign_id' });
+            return res.status(400).json({ success: false, error: 'Missing required fields: persona, target_campaign_id' });
         }
 
         const rule = await routingService.createRule(orgId, {
@@ -577,7 +579,7 @@ export const createRoutingRule = async (req: Request, res: Response) => {
         res.json({ success: true, data: rule });
     } catch (error) {
         logger.error('createRoutingRule error', error as Error);
-        res.status(500).json({ error: 'Failed to create routing rule' });
+        res.status(500).json({ success: false, error: 'Failed to create routing rule' });
     }
 };
 
@@ -602,7 +604,7 @@ export const getStateTransitions = async (req: Request, res: Response) => {
         res.json({ success: true, data: transitions });
     } catch (error) {
         logger.error('getStateTransitions error', error as Error);
-        res.status(500).json({ error: 'Failed to fetch state transitions' });
+        res.status(500).json({ success: false, error: 'Failed to fetch state transitions' });
     }
 };
 
@@ -627,7 +629,7 @@ export const getRawEvents = async (req: Request, res: Response) => {
         res.json({ success: true, data: events });
     } catch (error) {
         logger.error('getRawEvents error', error as Error);
-        res.status(500).json({ error: 'Failed to fetch events' });
+        res.status(500).json({ success: false, error: 'Failed to fetch events' });
     }
 };
 
@@ -639,49 +641,44 @@ export const getLeadHealthStats = async (req: Request, res: Response) => {
     try {
         const orgId = getOrgId(req);
 
-        // Count leads by health classification
-        const [total, green, yellow, red, blocked, recentBlocked] = await Promise.all([
-            prisma.lead.count({ where: { organization_id: orgId, deleted_at: null } }),
-            prisma.lead.count({ where: { organization_id: orgId, health_classification: 'green', deleted_at: null } }),
-            prisma.lead.count({ where: { organization_id: orgId, health_classification: 'yellow', deleted_at: null } }),
-            prisma.lead.count({ where: { organization_id: orgId, health_classification: 'red', deleted_at: null } }),
-            prisma.lead.count({ where: { organization_id: orgId, status: 'blocked', deleted_at: null } }),
-            prisma.lead.findMany({
-                where: {
-                    organization_id: orgId,
-                    health_classification: 'red',
-                    deleted_at: null
-                },
-                select: {
-                    id: true,
-                    email: true,
-                    health_classification: true,
-                    health_score_calc: true,
-                    health_checks: true,
-                    created_at: true
-                },
-                orderBy: { created_at: 'desc' },
-                take: 10
-            })
-        ]);
-
-        res.json({
-            success: true,
-            data: {
-                total,
-                green,
-                yellow,
-                red,
-                blocked,
-                recentBlocked,
+        // Count leads by health classification (cached for 15s)
+        const data = await cached(orgId, 'leadHealthStats', async () => {
+            const [total, green, yellow, red, blocked, recentBlocked] = await Promise.all([
+                prisma.lead.count({ where: { organization_id: orgId, deleted_at: null } }),
+                prisma.lead.count({ where: { organization_id: orgId, health_classification: 'green', deleted_at: null } }),
+                prisma.lead.count({ where: { organization_id: orgId, health_classification: 'yellow', deleted_at: null } }),
+                prisma.lead.count({ where: { organization_id: orgId, health_classification: 'red', deleted_at: null } }),
+                prisma.lead.count({ where: { organization_id: orgId, status: 'blocked', deleted_at: null } }),
+                prisma.lead.findMany({
+                    where: {
+                        organization_id: orgId,
+                        health_classification: 'red',
+                        deleted_at: null
+                    },
+                    select: {
+                        id: true,
+                        email: true,
+                        health_classification: true,
+                        health_score_calc: true,
+                        health_checks: true,
+                        created_at: true
+                    },
+                    orderBy: { created_at: 'desc' },
+                    take: 10
+                })
+            ]);
+            return {
+                total, green, yellow, red, blocked, recentBlocked,
                 greenPercent: total > 0 ? Math.round((green / total) * 100) : 0,
                 yellowPercent: total > 0 ? Math.round((yellow / total) * 100) : 0,
                 redPercent: total > 0 ? Math.round((red / total) * 100) : 0
-            }
+            };
         });
+
+        res.json({ success: true, data });
     } catch (error) {
         logger.error('getLeadHealthStats error', error as Error);
-        res.status(500).json({ error: 'Failed to fetch lead health stats' });
+        res.status(500).json({ success: false, error: 'Failed to fetch lead health stats' });
     }
 };
 
@@ -698,14 +695,14 @@ export const pauseCampaign = async (req: Request, res: Response) => {
         const { campaignId, reason } = req.body;
 
         if (!campaignId) {
-            return res.status(400).json({ error: 'Missing campaignId' });
+            return res.status(400).json({ success: false, error: 'Missing campaignId' });
         }
 
         await campaignHealthService.pauseCampaign(orgId, campaignId, reason || 'Manual pause');
         res.json({ success: true, message: 'Campaign paused' });
     } catch (error) {
         logger.error('pauseCampaign error', error as Error);
-        res.status(500).json({ error: 'Failed to pause campaign' });
+        res.status(500).json({ success: false, error: 'Failed to pause campaign' });
     }
 };
 
@@ -718,14 +715,14 @@ export const resumeCampaign = async (req: Request, res: Response) => {
         const { campaignId } = req.body;
 
         if (!campaignId) {
-            return res.status(400).json({ error: 'Missing campaignId' });
+            return res.status(400).json({ success: false, error: 'Missing campaignId' });
         }
 
         await campaignHealthService.resumeCampaign(orgId, campaignId);
         res.json({ success: true, message: 'Campaign resumed' });
     } catch (error) {
         logger.error('resumeCampaign error', error as Error);
-        res.status(500).json({ error: 'Failed to resume campaign' });
+        res.status(500).json({ success: false, error: 'Failed to resume campaign' });
     }
 };
 

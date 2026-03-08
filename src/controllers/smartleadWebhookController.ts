@@ -8,11 +8,12 @@
 import { Request, Response } from 'express';
 import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
-import { getOrgId } from '../middleware/orgContext';
 import { EventType } from '../types';
 import * as eventParserService from "../services/smartleadEventParserService";
 import { storeEvent } from '../services/eventService';
 import { enqueueEvent } from '../services/eventQueue';
+import { validateWebhookSignature } from '../utils/webhookSignature';
+
 
 /**
  * Handle Smartlead webhook events.
@@ -30,17 +31,7 @@ import { enqueueEvent } from '../services/eventQueue';
  */
 export const handleSmartleadWebhook = async (req: Request, res: Response) => {
     try {
-        const orgId = getOrgId(req);
         const event = req.body;
-
-        logger.info('[SMARTLEAD-WEBHOOK] Received event', {
-            organizationId: orgId,
-            eventType: event.event_type || event.type,
-            eventId: event.id,
-            email: event.email || event.lead_email,
-            campaignId: event.campaign_id,
-            mailboxId: event.email_account_id || event.mailbox_id
-        });
 
         // Validate required fields
         if (!event.event_type && !event.type) {
@@ -49,6 +40,51 @@ export const handleSmartleadWebhook = async (req: Request, res: Response) => {
                 error: 'Missing event_type field'
             });
         }
+
+        // Resolve org via mailbox lookup (public endpoint — no JWT)
+        const mailboxIdRaw = event.email_account_id || event.mailbox_id;
+        if (!mailboxIdRaw) {
+            logger.warn('[SMARTLEAD-WEBHOOK] Event missing mailbox identifier', {
+                eventType: event.event_type || event.type,
+                eventKeys: Object.keys(event),
+            });
+            return res.json({ success: false, error: 'Missing mailbox identifier' });
+        }
+
+        const mailboxLookupId = String(mailboxIdRaw);
+        const mailbox = await prisma.mailbox.findFirst({
+            where: {
+                OR: [
+                    { id: mailboxLookupId },
+                    { external_email_account_id: mailboxLookupId },
+                ],
+            },
+            select: { organization_id: true },
+        });
+
+        if (!mailbox) {
+            logger.info(`[SMARTLEAD-WEBHOOK] Mailbox ${mailboxLookupId} not found`);
+            return res.json({ received: true, warning: 'Mailbox not found' });
+        }
+
+        const orgId = mailbox.organization_id;
+
+        // Validate webhook signature using org-specific secret
+        const setting = await prisma.organizationSetting.findUnique({
+            where: { organization_id_key: { organization_id: orgId, key: 'smartlead_webhook_secret' } }
+        });
+        if (!validateWebhookSignature(req, setting?.value || null, ['x-smartlead-signature', 'x-webhook-signature'])) {
+            return res.status(401).json({ error: 'Invalid webhook signature' });
+        }
+
+        logger.info('[SMARTLEAD-WEBHOOK] Received event', {
+            organizationId: orgId,
+            eventType: event.event_type || event.type,
+            eventId: event.id,
+            email: event.email || event.lead_email,
+            campaignId: event.campaign_id,
+            mailboxId: mailboxLookupId
+        });
 
         const eventType = event.event_type || event.type;
 

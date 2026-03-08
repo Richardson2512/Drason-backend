@@ -57,8 +57,8 @@ let workerStatus: WorkerStatus = {
     consecutiveFailures: 0,
 };
 
-// Run every 20 minutes (1200000ms)
-const SYNC_INTERVAL_MS = 20 * 60 * 1000;
+// Run every 20 minutes by default (configurable via env var)
+const SYNC_INTERVAL_MS = parseInt(process.env.PLATFORM_SYNC_INTERVAL_MS || String(20 * 60 * 1000), 10);
 
 // Maximum consecutive failures before alerting
 const MAX_CONSECUTIVE_FAILURES = 3;

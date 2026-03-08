@@ -1,9 +1,9 @@
 /**
  * Lead Processor
- * 
+ *
  * Background job that processes held leads.
  * Checks execution gate and pushes leads to campaigns.
- * 
+ *
  * Note: In production, this would be a proper worker using Redis/Bull queues.
  */
 
@@ -12,100 +12,118 @@ import * as executionGateService from './services/executionGateService';
 import { getAdapterForCampaign } from './adapters/platformRegistry';
 import * as auditLogService from './services/auditLogService';
 import { logger } from './services/observabilityService';
+import { acquireLock, releaseLock } from './utils/redis';
+
+const LOCK_KEY = 'worker:lock:lead_processor';
+const LOCK_TTL_SECONDS = 60; // 1 minute TTL (processor runs every 10s, cycle should be fast)
+const PROCESSOR_INTERVAL_MS = parseInt(process.env.PROCESSOR_INTERVAL_MS || '10000', 10);
 
 const processHeldLeads = async () => {
-    logger.info('[PROCESSOR] Scanning for HELD leads...');
+    const acquired = await acquireLock(LOCK_KEY, LOCK_TTL_SECONDS);
+    if (!acquired) {
+        logger.info('[PROCESSOR] Already running on another instance. Skipping.');
+        return;
+    }
 
-    // Get all organizations with leads to process
-    const orgsWithLeads = await prisma.lead.groupBy({
-        by: ['organization_id'],
-        where: {
-            status: 'held',
-            assigned_campaign_id: { not: null },
-            health_state: 'healthy',
-            deleted_at: null
-        }
-    });
+    try {
+        logger.info('[PROCESSOR] Scanning for HELD leads...');
 
-    for (const org of orgsWithLeads) {
-        const orgId = org.organization_id;
-
-        // Find HELD leads for this organization
-        const leads = await prisma.lead.findMany({
+        // Get all organizations with leads to process
+        const orgsWithLeads = await prisma.lead.groupBy({
+            by: ['organization_id'],
             where: {
-                organization_id: orgId,
                 status: 'held',
                 assigned_campaign_id: { not: null },
                 health_state: 'healthy',
                 deleted_at: null
-            },
-            take: 50, // Batch size per org
+            }
         });
 
-        logger.info(`[PROCESSOR] Org ${orgId}: Found ${leads.length} leads to process.`);
+        for (const org of orgsWithLeads) {
+            const orgId = org.organization_id;
 
-        for (const lead of leads) {
-            if (!lead.assigned_campaign_id) continue;
+            // Find HELD leads for this organization
+            const leads = await prisma.lead.findMany({
+                where: {
+                    organization_id: orgId,
+                    status: 'held',
+                    assigned_campaign_id: { not: null },
+                    health_state: 'healthy',
+                    deleted_at: null
+                },
+                take: 50, // Batch size per org
+            });
 
-            const gateResult = await executionGateService.canExecuteLead(
-                orgId,
-                lead.assigned_campaign_id,
-                lead.id
-            );
+            logger.info(`[PROCESSOR] Org ${orgId}: Found ${leads.length} leads to process.`);
 
-            if (gateResult.allowed) {
-                // Transition to ACTIVE
-                await prisma.lead.update({
-                    where: { id: lead.id },
-                    data: { status: 'active' },
-                });
+            for (const lead of leads) {
+                if (!lead.assigned_campaign_id) continue;
 
-                await auditLogService.logAction({
-                    organizationId: orgId,
-                    entity: 'lead',
-                    entityId: lead.id,
-                    trigger: 'processor_gate',
-                    action: 'activated',
-                    details: `Passed execution gate. Risk: ${gateResult.riskScore.toFixed(1)}`
-                });
-                logger.info(`[PROCESSOR] Lead ${lead.id} ACTIVATED.`);
+                const gateResult = await executionGateService.canExecuteLead(
+                    orgId,
+                    lead.assigned_campaign_id,
+                    lead.id
+                );
 
-                // Push to campaign on external platform
-                logger.info(`[PROCESSOR] Pushing Lead ${lead.id} to campaign ${lead.assigned_campaign_id}...`);
-                try {
-                    const adapter = await getAdapterForCampaign(lead.assigned_campaign_id);
-                    const campaign = await prisma.campaign.findUnique({
-                        where: { id: lead.assigned_campaign_id },
-                        select: { external_id: true }
+                if (gateResult.allowed) {
+                    // Transition to ACTIVE
+                    await prisma.lead.update({
+                        where: { id: lead.id },
+                        data: { status: 'active' },
                     });
-                    const externalCampaignId = campaign?.external_id || lead.assigned_campaign_id;
-                    const pushed = await adapter.pushLeadToCampaign(
-                        orgId,
-                        externalCampaignId,
-                        { email: lead.email }
-                    );
 
-                    if (pushed) {
-                        logger.info(`[PROCESSOR] Lead ${lead.id} successfully pushed.`);
-                    } else {
-                        logger.info(`[PROCESSOR] Failed to push Lead ${lead.id} (Check API Key).`);
+                    await auditLogService.logAction({
+                        organizationId: orgId,
+                        entity: 'lead',
+                        entityId: lead.id,
+                        trigger: 'processor_gate',
+                        action: 'activated',
+                        details: `Passed execution gate. Risk: ${gateResult.riskScore.toFixed(1)}`
+                    });
+                    logger.info(`[PROCESSOR] Lead ${lead.id} ACTIVATED.`);
+
+                    // Push to campaign on external platform
+                    logger.info(`[PROCESSOR] Pushing Lead ${lead.id} to campaign ${lead.assigned_campaign_id}...`);
+                    try {
+                        const adapter = await getAdapterForCampaign(lead.assigned_campaign_id);
+                        const campaign = await prisma.campaign.findUnique({
+                            where: { id: lead.assigned_campaign_id },
+                            select: { external_id: true }
+                        });
+                        const externalCampaignId = campaign?.external_id || lead.assigned_campaign_id;
+                        const pushed = await adapter.pushLeadToCampaign(
+                            orgId,
+                            externalCampaignId,
+                            { email: lead.email }
+                        );
+
+                        if (pushed) {
+                            logger.info(`[PROCESSOR] Lead ${lead.id} successfully pushed.`);
+                        } else {
+                            logger.info(`[PROCESSOR] Failed to push Lead ${lead.id} (Check API Key).`);
+                        }
+                    } catch (pushError: any) {
+                        logger.error(`[PROCESSOR] Error pushing lead to campaign`, pushError, {
+                            leadId: lead.id,
+                            campaignId: lead.assigned_campaign_id
+                        });
                     }
-                } catch (pushError: any) {
-                    logger.error(`[PROCESSOR] Error pushing lead to campaign`, pushError, {
-                        leadId: lead.id,
-                        campaignId: lead.assigned_campaign_id
-                    });
-                }
 
-            } else {
-                // Remain HELD, log was already created by gate service
-                logger.info(`[PROCESSOR] Lead ${lead.id} BLOCKED: ${gateResult.reason}`);
+                } else {
+                    // Remain HELD, log was already created by gate service
+                    logger.info(`[PROCESSOR] Lead ${lead.id} BLOCKED: ${gateResult.reason}`);
+                }
             }
         }
+    } catch (err) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        logger.error('[PROCESSOR] Processing cycle failed', error);
+    } finally {
+        await releaseLock(LOCK_KEY);
     }
 };
 
-// Run every 10 seconds
-setInterval(processHeldLeads, 10000);
+// Run on configurable interval (default: 10 seconds)
+setInterval(processHeldLeads, PROCESSOR_INTERVAL_MS);
 
 logger.info('[PROCESSOR] Started.');

@@ -27,7 +27,7 @@ import { logger } from './observabilityService';
 // PERIODIC ASSESSMENT TIMERS
 // ============================================================================
 let periodicAssessmentInterval: NodeJS.Timeout | null = null;
-const ASSESSMENT_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const ASSESSMENT_INTERVAL_MS = parseInt(process.env.ASSESSMENT_INTERVAL_MS || String(24 * 60 * 60 * 1000), 10);
 
 const _resolveTxt = promisify(dns.resolveTxt);
 const _resolve4 = promisify(dns.resolve4);

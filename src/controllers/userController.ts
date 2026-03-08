@@ -18,7 +18,7 @@ export const getCurrentUser = async (req: Request, res: Response): Promise<void>
         const userId = req.orgContext?.userId;
 
         if (!userId) {
-            res.status(401).json({ error: 'User not authenticated' });
+            res.status(401).json({ success: false, error: 'User not authenticated' });
             return;
         }
 
@@ -36,7 +36,7 @@ export const getCurrentUser = async (req: Request, res: Response): Promise<void>
         });
 
         if (!user) {
-            res.status(404).json({ error: 'User not found' });
+            res.status(404).json({ success: false, error: 'User not found' });
             return;
         }
 
@@ -46,7 +46,7 @@ export const getCurrentUser = async (req: Request, res: Response): Promise<void>
         });
     } catch (error) {
         logger.error('[USER] Failed to get current user', error as Error);
-        res.status(500).json({ error: 'Failed to retrieve user information' });
+        res.status(500).json({ success: false, error: 'Failed to retrieve user information' });
     }
 };
 
@@ -59,19 +59,19 @@ export const updateCurrentUser = async (req: Request, res: Response): Promise<vo
         const userId = req.orgContext?.userId;
 
         if (!userId) {
-            res.status(401).json({ error: 'User not authenticated' });
+            res.status(401).json({ success: false, error: 'User not authenticated' });
             return;
         }
 
         const { name } = req.body;
 
         if (!name || typeof name !== 'string' || name.trim().length === 0) {
-            res.status(400).json({ error: 'Name is required and must be a non-empty string' });
+            res.status(400).json({ success: false, error: 'Name is required and must be a non-empty string' });
             return;
         }
 
         if (name.trim().length > 100) {
-            res.status(400).json({ error: 'Name must be 100 characters or less' });
+            res.status(400).json({ success: false, error: 'Name must be 100 characters or less' });
             return;
         }
 
@@ -90,7 +90,7 @@ export const updateCurrentUser = async (req: Request, res: Response): Promise<vo
         res.json({ success: true, data: user });
     } catch (error) {
         logger.error('[USER] Failed to update profile', error as Error);
-        res.status(500).json({ error: 'Failed to update profile' });
+        res.status(500).json({ success: false, error: 'Failed to update profile' });
     }
 };
 
@@ -103,19 +103,19 @@ export const changePassword = async (req: Request, res: Response): Promise<void>
         const userId = req.orgContext?.userId;
 
         if (!userId) {
-            res.status(401).json({ error: 'User not authenticated' });
+            res.status(401).json({ success: false, error: 'User not authenticated' });
             return;
         }
 
         const { currentPassword, newPassword } = req.body;
 
         if (!currentPassword || !newPassword) {
-            res.status(400).json({ error: 'Current password and new password are required' });
+            res.status(400).json({ success: false, error: 'Current password and new password are required' });
             return;
         }
 
         if (newPassword.length < 8) {
-            res.status(400).json({ error: 'New password must be at least 8 characters' });
+            res.status(400).json({ success: false, error: 'New password must be at least 8 characters' });
             return;
         }
 
@@ -126,20 +126,20 @@ export const changePassword = async (req: Request, res: Response): Promise<void>
         });
 
         if (!user) {
-            res.status(404).json({ error: 'User not found' });
+            res.status(404).json({ success: false, error: 'User not found' });
             return;
         }
 
         // OAuth-only users cannot change password
         if (!user.password_hash) {
-            res.status(403).json({ error: 'OAuth users cannot change password' });
+            res.status(403).json({ success: false, error: 'OAuth users cannot change password' });
             return;
         }
 
         // Verify current password
         const isValid = await bcrypt.compare(currentPassword, user.password_hash);
         if (!isValid) {
-            res.status(403).json({ error: 'Current password is incorrect' });
+            res.status(403).json({ success: false, error: 'Current password is incorrect' });
             return;
         }
 
@@ -162,6 +162,6 @@ export const changePassword = async (req: Request, res: Response): Promise<void>
         res.json({ success: true, message: 'Password changed successfully. Please log in again.' });
     } catch (error) {
         logger.error('[USER] Failed to change password', error as Error);
-        res.status(500).json({ error: 'Failed to change password' });
+        res.status(500).json({ success: false, error: 'Failed to change password' });
     }
 };

@@ -10,13 +10,13 @@
  * Returns 200 immediately so Instantly does not retry on slow processing.
  */
 
-import crypto from 'crypto';
 import { Request, Response } from 'express';
 import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
 import { enqueueEvent } from '../services/eventQueue';
 import { storeEvent } from '../services/eventService';
 import { EventType } from '../types';
+import { validateWebhookSignature } from '../utils/webhookSignature';
 
 /**
  * Maps Instantly webhook event_type strings to Drason internal EventType.
@@ -46,39 +46,6 @@ function mapInstantlyEventType(eventName: string): EventType | string | null {
     }
 }
 
-/**
- * Validate HMAC-SHA256 webhook signature.
- * Returns true if valid or if no secret is configured in non-production.
- */
-function validateSignature(req: Request, secret: string | null): boolean {
-    if (!secret) {
-        if (process.env.NODE_ENV === 'production') {
-            logger.warn('[INSTANTLY-WEBHOOK] No webhook secret configured — rejecting in production');
-            return false;
-        }
-        return true; // Allow unsigned in development
-    }
-
-    const signature = req.headers['x-instantly-signature'] as string || req.headers['x-webhook-signature'] as string;
-    if (!signature) {
-        logger.warn('[INSTANTLY-WEBHOOK] Missing signature header');
-        return false;
-    }
-
-    const expectedSignature = crypto
-        .createHmac('sha256', secret)
-        .update(JSON.stringify(req.body))
-        .digest('hex');
-
-    try {
-        return crypto.timingSafeEqual(
-            Buffer.from(signature),
-            Buffer.from(expectedSignature)
-        );
-    } catch {
-        return false; // Length mismatch
-    }
-}
 
 /**
  * Instantly Webhook Handler
@@ -133,7 +100,7 @@ export const handleInstantlyWebhook = async (req: Request, res: Response) => {
         const setting = await prisma.organizationSetting.findUnique({
             where: { organization_id_key: { organization_id: orgId, key: 'instantly_webhook_secret' } }
         });
-        if (!validateSignature(req, setting?.value || null)) {
+        if (!validateWebhookSignature(req, setting?.value || null, ['x-instantly-signature', 'x-webhook-signature'])) {
             return res.status(401).json({ error: 'Invalid webhook signature' });
         }
 

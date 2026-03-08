@@ -96,8 +96,10 @@ import * as infrastructureAssessmentService from './services/infrastructureAsses
 import './processor';
 
 import cookieParser from 'cookie-parser';
+import compression from 'compression';
 
 // Middleware
+app.use(compression());
 app.use(cors({
     origin: (origin, callback) => {
         // Allow requests with no origin (like mobile apps, Postman, etc.)
@@ -686,6 +688,13 @@ const server = app.listen(PORT, () => {
 async function gracefulShutdown(signal: string): Promise<void> {
     logger.info(`${signal} received, shutting down gracefully`);
 
+    // Force exit after 30 seconds if shutdown hangs
+    const forceExitTimeout = setTimeout(() => {
+        logger.error('Graceful shutdown timed out after 30s, forcing exit');
+        process.exit(1);
+    }, 30000);
+    forceExitTimeout.unref(); // Don't let this timer keep the process alive
+
     // Stop background workers
     stopLeadScoringWorker();
     logger.info('Lead scoring worker stopped');
@@ -699,9 +708,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
     infrastructureAssessmentService.stopPeriodicAssessment();
     logger.info('Periodic assessment worker stopped');
 
-    // Stop accepting new connections
-    server.close(() => {
-        logger.info('HTTP server closed');
+    // Stop accepting new connections and wait for in-flight requests to finish
+    await new Promise<void>((resolve) => {
+        server.close(() => {
+            logger.info('HTTP server closed (all in-flight requests completed)');
+            resolve();
+        });
     });
 
     // Disconnect services
@@ -724,8 +736,34 @@ async function gracefulShutdown(signal: string): Promise<void> {
         logger.error('Error disconnecting Redis', err as Error);
     }
 
+    clearTimeout(forceExitTimeout);
     process.exit(0);
 }
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// ============================================================================
+// CRASH HANDLERS — Prevent silent deaths in production
+// ============================================================================
+
+process.on('uncaughtException', (err) => {
+    logger.error('UNCAUGHT EXCEPTION — process will exit', err, {
+        type: 'uncaughtException',
+        message: err.message,
+        stack: err.stack,
+    });
+    // Give logger time to flush, then exit with failure code
+    setTimeout(() => process.exit(1), 1000);
+});
+
+process.on('unhandledRejection', (reason) => {
+    const err = reason instanceof Error ? reason : new Error(String(reason));
+    logger.error('UNHANDLED REJECTION', err, {
+        type: 'unhandledRejection',
+        message: err.message,
+        stack: err.stack,
+    });
+    // Don't exit on unhandled rejections — log and continue
+    // Node.js 15+ would crash by default; this handler prevents that
+});

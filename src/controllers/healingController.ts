@@ -24,7 +24,7 @@ export const getTransitionGate = async (req: Request, res: Response): Promise<vo
         res.json({ success: true, data: result });
     } catch (e: any) {
         logger.error('Failed to check transition gate', e);
-        res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
+        res.status(500).json({ success: false, error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
     }
 };
 
@@ -51,7 +51,7 @@ export const acknowledgeTransition = async (req: Request, res: Response): Promis
         });
     } catch (e: any) {
         logger.error('Failed to acknowledge transition', e);
-        res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
+        res.status(500).json({ success: false, error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
     }
 };
 
@@ -141,6 +141,6 @@ export const getRecoveryStatus = async (req: Request, res: Response): Promise<vo
         });
     } catch (e: any) {
         logger.error('Failed to fetch recovery status', e);
-        res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
+        res.status(500).json({ success: false, error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
     }
 };

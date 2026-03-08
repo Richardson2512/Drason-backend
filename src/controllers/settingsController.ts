@@ -54,7 +54,7 @@ export const getSettings = async (req: Request, res: Response) => {
         res.json({ success: true, data: maskedSettings });
     } catch (error) {
         logger.error('[SETTINGS] getSettings error:', error as Error);
-        res.status(500).json({ error: 'Failed to fetch settings' });
+        res.status(500).json({ success: false, error: 'Failed to fetch settings' });
     }
 };
 
@@ -68,7 +68,7 @@ export const updateSettings = async (req: Request, res: Response) => {
         const settingsToUpdate = req.body;
 
         if (!settingsToUpdate || typeof settingsToUpdate !== 'object') {
-            return res.status(400).json({ error: 'Request body must be an object of settings' });
+            return res.status(400).json({ success: false, error: 'Request body must be an object of settings' });
         }
 
         // Determine which keys are secrets
@@ -114,7 +114,7 @@ export const updateSettings = async (req: Request, res: Response) => {
         res.json({ success: true, message: 'Settings updated successfully' });
     } catch (error) {
         logger.error('[SETTINGS] updateSettings error:', error as Error);
-        res.status(500).json({ error: 'Failed to update settings' });
+        res.status(500).json({ success: false, error: 'Failed to update settings' });
     }
 };
 
@@ -159,6 +159,7 @@ export const getClayWebhookUrl = async (req: Request, res: Response) => {
         const baseUrl = process.env.BACKEND_URL || process.env.BASE_URL;
         if (!baseUrl) {
             return res.status(500).json({
+                success: false,
                 error: 'Server configuration error: BACKEND_URL is not set. Contact your administrator.'
             });
         }
@@ -199,7 +200,7 @@ export const getClayWebhookUrl = async (req: Request, res: Response) => {
         });
     } catch (error) {
         logger.error('[SETTINGS] getClayWebhookUrl error:', error as Error);
-        res.status(500).json({ error: 'Failed to generate webhook URL' });
+        res.status(500).json({ success: false, error: 'Failed to generate webhook URL' });
     }
 };
 
@@ -256,7 +257,7 @@ export const disconnectSlack = async (req: Request, res: Response) => {
         });
 
         if (!existingIntegration) {
-            return res.status(404).json({ error: 'No active Slack integration found for this organization.' });
+            return res.status(404).json({ success: false, error: 'No active Slack integration found for this organization.' });
         }
 
         // Revoke the Slack token to cleanly uninstall the bot from the workspace
@@ -280,6 +281,6 @@ export const disconnectSlack = async (req: Request, res: Response) => {
         res.json({ success: true, message: 'Slack integration disconnected successfully.' });
     } catch (error) {
         logger.error('[SETTINGS] disconnectSlack error:', error as Error);
-        res.status(500).json({ error: 'Failed to disconnect Slack integration' });
+        res.status(500).json({ success: false, error: 'Failed to disconnect Slack integration' });
     }
 };

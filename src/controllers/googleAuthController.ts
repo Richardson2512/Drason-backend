@@ -374,13 +374,13 @@ export const completeOnboarding = async (req: Request, res: Response) => {
 
         if (!pendingToken || typeof pendingToken !== 'string') {
             logger.warn('[GoogleAuth] Onboarding called without pending token');
-            return res.status(401).json({ error: 'No pending registration found. Please sign up again.' });
+            return res.status(401).json({ success: false, error: 'No pending registration found. Please sign up again.' });
         }
 
         const { organizationName } = req.body;
 
         if (!organizationName || typeof organizationName !== 'string' || organizationName.trim().length < 2) {
-            return res.status(400).json({ error: 'Organization name is required (minimum 2 characters).' });
+            return res.status(400).json({ success: false, error: 'Organization name is required (minimum 2 characters).' });
         }
 
         // Find the pending registration
@@ -391,7 +391,7 @@ export const completeOnboarding = async (req: Request, res: Response) => {
         if (!pending) {
             logger.warn('[GoogleAuth] Pending registration not found', { token: pendingToken.substring(0, 8) + '...' });
             clearPendingTokenCookie(res);
-            return res.status(401).json({ error: 'Registration expired. Please sign up again.' });
+            return res.status(401).json({ success: false, error: 'Registration expired. Please sign up again.' });
         }
 
         // Verify not expired
@@ -399,7 +399,7 @@ export const completeOnboarding = async (req: Request, res: Response) => {
             logger.warn('[GoogleAuth] Pending registration expired', { email: pending.email });
             await prisma.pendingRegistration.delete({ where: { id: pending.id } });
             clearPendingTokenCookie(res);
-            return res.status(401).json({ error: 'Registration expired. Please sign up again.' });
+            return res.status(401).json({ success: false, error: 'Registration expired. Please sign up again.' });
         }
 
         // Check if user was already created (e.g., double submission)
@@ -416,7 +416,7 @@ export const completeOnboarding = async (req: Request, res: Response) => {
             logger.warn('[GoogleAuth] User already exists during onboarding', { email: pending.email });
             await prisma.pendingRegistration.delete({ where: { id: pending.id } });
             clearPendingTokenCookie(res);
-            return res.status(409).json({ error: 'An account with this email already exists. Please sign in instead.' });
+            return res.status(409).json({ success: false, error: 'An account with this email already exists. Please sign in instead.' });
         }
 
         // Create org + user atomically
@@ -465,6 +465,6 @@ export const completeOnboarding = async (req: Request, res: Response) => {
 
     } catch (error: any) {
         logger.error('[GoogleAuth] Onboarding error', error);
-        return res.status(500).json({ error: 'Failed to complete registration. Please try again.' });
+        return res.status(500).json({ success: false, error: 'Failed to complete registration. Please try again.' });
     }
 };

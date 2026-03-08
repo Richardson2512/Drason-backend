@@ -18,7 +18,7 @@ export const ingestLead = async (req: Request, res: Response): Promise<void> => 
 
         // 1. Validate Payload
         if (!email || !persona || lead_score === undefined || workable !== true) {
-            res.status(400).json({ error: 'Invalid payload: Missing required fields or not workable' });
+            res.status(400).json({ success: false, error: 'Invalid payload: Missing required fields or not workable' });
             return;
         }
 
@@ -38,7 +38,7 @@ export const ingestLead = async (req: Request, res: Response): Promise<void> => 
         res.status(201).json({ success: true, data: { message: 'Lead ingested successfully', lead } });
     } catch (error) {
         logger.error('Error ingesting lead:', error as Error);
-        res.status(500).json({ error: 'Internal Server Error' });
+        res.status(500).json({ success: false, error: 'Internal Server Error' });
     }
 };
 
@@ -63,7 +63,7 @@ export const getLeadCampaigns = async (req: Request, res: Response): Promise<voi
         });
 
         if (!lead) {
-            res.status(404).json({ error: 'Lead not found' });
+            res.status(404).json({ success: false, error: 'Lead not found' });
             return;
         }
 
@@ -116,6 +116,6 @@ export const getLeadCampaigns = async (req: Request, res: Response): Promise<voi
         });
     } catch (error) {
         logger.error('Error fetching lead campaigns:', error as Error);
-        res.status(500).json({ error: 'Internal Server Error' });
+        res.status(500).json({ success: false, error: 'Internal Server Error' });
     }
 };

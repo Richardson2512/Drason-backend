@@ -292,14 +292,14 @@ export const ingestLead = async (req: Request, res: Response) => {
     const { email, persona, lead_score, source } = req.body;
 
     if (!email || !persona || lead_score === undefined) {
-        return res.status(400).json({ error: 'Missing required fields: email, persona, lead_score' });
+        return res.status(400).json({ success: false, error: 'Missing required fields: email, persona, lead_score' });
     }
 
     let organizationId: string;
     try {
         organizationId = getOrgId(req);
     } catch (error) {
-        return res.status(401).json({ error: 'Organization context required' });
+        return res.status(401).json({ success: false, error: 'Organization context required' });
     }
 
     logger.info(`[INGEST] Org: ${organizationId} | Lead: ${email} (${persona}, ${lead_score})`);
@@ -318,7 +318,7 @@ export const ingestLead = async (req: Request, res: Response) => {
         res.json({ success: true, data: result });
     } catch (error) {
         logger.error('[INGEST] Error:', error as Error);
-        res.status(500).json({ error: 'Internal server error during ingestion' });
+        res.status(500).json({ success: false, error: 'Internal server error during ingestion' });
     }
 };
 
@@ -342,7 +342,7 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
     }
 
     if (!organizationId) {
-        return res.status(400).json({ error: 'Organization ID required in header (X-Organization-ID) or query param (?orgId)' });
+        return res.status(400).json({ success: false, error: 'Organization ID required in header (X-Organization-ID) or query param (?orgId)' });
     }
 
     // Fetch organization and webhook secret
@@ -352,7 +352,7 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
     });
 
     if (!org) {
-        return res.status(404).json({ error: 'Invalid Organization ID' });
+        return res.status(404).json({ success: false, error: 'Invalid Organization ID' });
     }
 
     // === SECURITY: Validate HMAC-SHA256 Signature ===
@@ -361,6 +361,7 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
     if (!signature && process.env.NODE_ENV === 'production') {
         logger.warn('[INGEST CLAY] Missing signature in production - rejecting', { organizationId });
         return res.status(401).json({
+            success: false,
             error: 'Missing webhook signature',
             message: 'Clay webhooks must include X-Clay-Signature header. Configure this in your Clay webhook settings.'
         });
@@ -370,6 +371,7 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
         logger.warn('[INGEST CLAY] No webhook secret configured for org', { organizationId });
         if (process.env.NODE_ENV === 'production') {
             return res.status(500).json({
+                success: false,
                 error: 'Webhook not configured',
                 message: 'Contact support - webhook secret is missing for your organization'
             });
@@ -393,6 +395,7 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
         if (!isValid) {
             logger.warn('[INGEST CLAY] Invalid signature', { organizationId });
             return res.status(401).json({
+                success: false,
                 error: 'Invalid webhook signature',
                 message: 'Signature validation failed. Ensure Clay is configured with the correct webhook secret.'
             });
@@ -417,7 +420,7 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
 
     if (!email) {
         logger.error('[INGEST CLAY] Missing email in payload');
-        return res.status(400).json({ error: 'Missing email field in Clay payload' });
+        return res.status(400).json({ success: false, error: 'Missing email field in Clay payload' });
     }
 
     try {
@@ -438,6 +441,6 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
         res.json(result);
     } catch (e) {
         logger.error('[INGEST CLAY] Error processing webhook:', e as Error);
-        res.status(500).json({ error: 'Internal error processing Clay webhook' });
+        res.status(500).json({ success: false, error: 'Internal error processing Clay webhook' });
     }
 };

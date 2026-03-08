@@ -42,8 +42,8 @@ let workerStatus: WorkerStatus = {
     lastBatchSize: 0,
 };
 
-// Run every 24 hours
-const RE_EVAL_INTERVAL_MS = 24 * 60 * 60 * 1000;
+// Run every 24 hours by default (configurable via env var)
+const RE_EVAL_INTERVAL_MS = parseInt(process.env.LEAD_HEALTH_INTERVAL_MS || String(24 * 60 * 60 * 1000), 10);
 
 // Process in batches to avoid DB overload
 const BATCH_SIZE = 50;
