@@ -1528,6 +1528,9 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
         // Assessment runs inline (not async) to maintain the strict ordering guarantee.
         // The execution gate remains locked until assessment completes.
         let healthCheckResult = null;
+        if (sessionId) {
+            syncProgressService.emitProgress(sessionId, 'health_check', 'in_progress', {});
+        }
         try {
             logger.info('Triggering infrastructure assessment after Smartlead sync', { organizationId });
             healthCheckResult = await assessmentService.assessInfrastructure(organizationId, 'onboarding');
