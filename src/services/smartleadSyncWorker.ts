@@ -20,7 +20,7 @@ import { EventType, LeadState } from '../types';
 import { logger } from './observabilityService';
 import { smartleadBreaker } from '../utils/circuitBreaker';
 import { smartleadRateLimiter } from '../utils/rateLimiter';
-import { acquireLock, releaseLock } from '../utils/redis';
+import { acquireLock, releaseLock, isSyncCancelled, clearSyncCancelled } from '../utils/redis';
 import { calculateEngagementScore, calculateFinalScore } from './leadScoringService';
 import { syncProgressService } from './syncProgressService';
 import { TIER_LIMITS } from './polarClient';
@@ -403,8 +403,17 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
 
     const limits = TIER_LIMITS[org.subscription_tier] || TIER_LIMITS.trial;
 
+    // Helper to check if this sync has been cancelled (API key changed mid-sync)
+    const checkCancelled = async () => {
+        if (await isSyncCancelled(organizationId, 'smartlead')) {
+            await clearSyncCancelled(organizationId, 'smartlead');
+            throw new Error('Sync cancelled: API key was changed');
+        }
+    };
+
     try {
         // ── 1. Fetch campaigns (protected by circuit breaker) ──
+        await checkCancelled();
         if (sessionId) {
             syncProgressService.emitProgress(sessionId, 'campaigns', 'in_progress', { total: 0 });
         }
@@ -563,6 +572,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
         }
 
         // ── 2. Fetch email accounts (mailboxes) (protected by circuit breaker) ──
+        await checkCancelled();
         const mailboxesRes = await smartleadBreaker.call(() =>
             axios.get(`${SMARTLEAD_API_BASE}/email-accounts?api_key=${apiKey}`)
         );
@@ -774,6 +784,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
         }
 
         // ── 3. Link campaigns to mailboxes by fetching email account assignments ──
+        await checkCancelled();
         for (const campaign of campaigns) {
             const campaignId = campaign.id.toString();
 
@@ -863,6 +874,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
         }
 
         // ── 4. Fetch leads for each campaign from Smartlead ──
+        await checkCancelled();
 
         if (sessionId) {
             syncProgressService.emitProgress(sessionId, 'leads', 'in_progress', {
@@ -873,6 +885,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
 
         let campaignIndex = 0;
         for (const campaign of campaigns) {
+            await checkCancelled(); // Check before each campaign
             const campaignId = campaign.id.toString();
             try {
                 logger.info(`[LeadSync] Starting lead sync for campaign`, {
@@ -1485,6 +1498,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
         }
 
         // ── 5. Recalculate engagement_rate for all mailboxes ──
+        await checkCancelled();
         // Re-fetch mailbox data after mailbox-statistics sync to use updated counts.
         try {
             const allMailboxesPostSync = await prisma.mailbox.findMany({
@@ -1612,6 +1626,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
         }
 
         // ── 6. Aggregate mailbox engagement metrics to domains (PHASE 6) ──
+        await checkCancelled();
         try {
             logger.info('[DomainAggregation] Starting domain-level engagement aggregation', {
                 organizationId
@@ -1730,25 +1745,31 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
         return { campaigns: campaignCount, mailboxes: mailboxCount, leads: leadCount };
 
     } catch (error: any) {
-        logger.error(`[SmartleadSync] Sync failed for org ${organizationId}: ${error.message}`, error);
+        // If cancelled due to API key change, log it cleanly and don't alarm the user
+        const isCancelled = error.message?.includes('Sync cancelled');
+        if (isCancelled) {
+            logger.info(`[SmartleadSync] Sync cancelled for org ${organizationId} (API key changed)`);
+        } else {
+            logger.error(`[SmartleadSync] Sync failed for org ${organizationId}: ${error.message}`, error);
 
-        await auditLogService.logAction({
-            organizationId,
-            entity: 'system',
-            trigger: 'manual_sync',
-            action: 'smartlead_sync_failed',
-            details: error.message
-        });
-
-        // Notify user of sync failure
-        try {
-            await notificationService.createNotification(organizationId, {
-                type: 'ERROR',
-                title: 'Smartlead Sync Failed',
-                message: `Smartlead sync failed: ${error.message}. Check your API key in Configuration and try again.`,
+            await auditLogService.logAction({
+                organizationId,
+                entity: 'system',
+                trigger: 'manual_sync',
+                action: 'smartlead_sync_failed',
+                details: error.message
             });
-        } catch (notifError) {
-            logger.warn('Failed to create sync failure notification', { organizationId });
+
+            // Notify user of sync failure
+            try {
+                await notificationService.createNotification(organizationId, {
+                    type: 'ERROR',
+                    title: 'Smartlead Sync Failed',
+                    message: `Smartlead sync failed: ${error.message}. Check your API key in Configuration and try again.`,
+                });
+            } catch (notifError) {
+                logger.warn('Failed to create sync failure notification', { organizationId });
+            }
         }
 
         // NOTE: emitError is handled by the sync route after catching platform errors.

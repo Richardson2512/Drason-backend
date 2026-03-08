@@ -13,6 +13,7 @@ import { logger } from '../services/observabilityService';
 import { encrypt, decrypt, isEncrypted } from '../utils/encryption';
 import axios from 'axios';
 import { SourcePlatform } from '@prisma/client';
+import { setSyncCancelled, releaseLock } from '../utils/redis';
 
 /**
  * Get all settings for the organization.
@@ -123,7 +124,17 @@ export const updateSettings = async (req: Request, res: Response) => {
                 const isRemoving = !value.trim();
 
                 if (isChanging || isRemoving) {
-                    logger.info(`[SETTINGS] ${platformName} API key ${isRemoving ? 'removed' : 'changed'} for org ${orgId}. Purging old synced data.`);
+                    logger.info(`[SETTINGS] ${platformName} API key ${isRemoving ? 'removed' : 'changed'} for org ${orgId}. Cancelling any running sync and purging old data.`);
+
+                    // Signal any in-flight sync to abort
+                    await setSyncCancelled(orgId, platformName);
+
+                    // Release the sync lock so the cancelled sync doesn't block the new one
+                    await releaseLock(`sync:${platformName}:org:${orgId}`);
+
+                    // Small delay to let the running sync hit the cancellation check
+                    await new Promise(resolve => setTimeout(resolve, 500));
+
                     await purgePlatformData(orgId, platformName);
                 }
             }

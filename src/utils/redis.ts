@@ -123,3 +123,55 @@ export async function releaseLock(key: string): Promise<void> {
         logger.error(`Failed to release lock for key ${key}`, err as Error);
     }
 }
+
+/**
+ * Set a cancellation flag for a running sync.
+ * The sync worker checks this flag at key checkpoints and aborts if set.
+ */
+export async function setSyncCancelled(orgId: string, platform: string): Promise<void> {
+    const key = `sync:cancelled:${orgId}:${platform}`;
+    if (!redisClient || !isConnected) {
+        // Fallback: store in-memory
+        inMemoryCancelFlags.add(key);
+        return;
+    }
+    try {
+        await redisClient.set(key, '1', 'EX', 300); // 5 min TTL
+    } catch (err) {
+        logger.error(`Failed to set sync cancel flag for ${key}`, err as Error);
+        inMemoryCancelFlags.add(key);
+    }
+}
+
+/**
+ * Check if a sync has been cancelled.
+ */
+export async function isSyncCancelled(orgId: string, platform: string): Promise<boolean> {
+    const key = `sync:cancelled:${orgId}:${platform}`;
+    if (!redisClient || !isConnected) {
+        return inMemoryCancelFlags.has(key);
+    }
+    try {
+        const val = await redisClient.get(key);
+        return val !== null;
+    } catch {
+        return inMemoryCancelFlags.has(key);
+    }
+}
+
+/**
+ * Clear a cancellation flag (after sync acknowledges it).
+ */
+export async function clearSyncCancelled(orgId: string, platform: string): Promise<void> {
+    const key = `sync:cancelled:${orgId}:${platform}`;
+    inMemoryCancelFlags.delete(key);
+    if (!redisClient || !isConnected) return;
+    try {
+        await redisClient.del(key);
+    } catch (err) {
+        logger.error(`Failed to clear sync cancel flag for ${key}`, err as Error);
+    }
+}
+
+// In-memory fallback for cancel flags when Redis is unavailable
+const inMemoryCancelFlags = new Set<string>();
