@@ -5,6 +5,7 @@ import { getOrgId } from '../middleware/orgContext';
 import { prisma } from '../index';
 import { logger } from '../utils/logger';
 import { syncProgressService } from '../services/syncProgressService';
+import { smartleadBreaker, emailbisonBreaker, instantlyBreaker } from '../utils/circuitBreaker';
 
 const router = Router();
 
@@ -12,6 +13,12 @@ router.post('/', async (req: Request, res: Response) => {
     try {
         const orgId = getOrgId(req);
         const sessionId = req.query.session as string | undefined;
+
+        // Reset circuit breakers on manual sync — auto-sync failures can leave
+        // breakers stuck OPEN, blocking all API calls for the manual trigger
+        smartleadBreaker.reset();
+        emailbisonBreaker.reset();
+        instantlyBreaker.reset();
 
         // Discover and sync all configured platforms for this org
         const adapters = await getActiveAdaptersForOrg(orgId);

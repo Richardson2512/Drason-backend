@@ -400,7 +400,12 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
         const campaignsRes = await smartleadBreaker.call(() =>
             axios.get(`${SMARTLEAD_API_BASE}/campaigns?api_key=${apiKey}`)
         );
-        const campaigns = campaignsRes.data || [];
+        const rawCampaignData = campaignsRes.data;
+        const campaigns = Array.isArray(rawCampaignData)
+            ? rawCampaignData
+            : Array.isArray(rawCampaignData?.data)
+                ? rawCampaignData.data
+                : [];
 
         logger.info(`[DEBUG] Smartlead Campaigns Fetch: ${JSON.stringify({
             organizationId,
@@ -549,13 +554,32 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
         const mailboxesRes = await smartleadBreaker.call(() =>
             axios.get(`${SMARTLEAD_API_BASE}/email-accounts?api_key=${apiKey}`)
         );
-        const mailboxes = mailboxesRes.data || [];
+        // Defensive unwrap: Smartlead may return a flat array OR { data: [...] }
+        const rawMailboxData = mailboxesRes.data;
+        const mailboxes = Array.isArray(rawMailboxData)
+            ? rawMailboxData
+            : Array.isArray(rawMailboxData?.data)
+                ? rawMailboxData.data
+                : [];
 
-        // Log first mailbox structure to see if it includes campaign assignments
+        logger.info('[MailboxSync] Fetched email accounts', {
+            organizationId,
+            rawType: typeof rawMailboxData,
+            isArray: Array.isArray(rawMailboxData),
+            hasDataProp: rawMailboxData?.data !== undefined,
+            count: mailboxes.length
+        });
+
+        // Log first mailbox structure to see field names
         if (mailboxes.length > 0) {
             logger.info('[MailboxSync] First mailbox structure', {
                 mailboxSample: mailboxes[0],
                 mailboxKeys: Object.keys(mailboxes[0])
+            });
+        } else {
+            logger.warn('[MailboxSync] No mailboxes returned from API', {
+                organizationId,
+                rawKeys: rawMailboxData && typeof rawMailboxData === 'object' ? Object.keys(rawMailboxData) : 'not-object'
             });
         }
 
