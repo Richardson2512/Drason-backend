@@ -12,6 +12,7 @@ import { getOrgId } from '../middleware/orgContext';
 import { logger } from '../services/observabilityService';
 import { encrypt, decrypt, isEncrypted } from '../utils/encryption';
 import axios from 'axios';
+import { SourcePlatform } from '@prisma/client';
 
 /**
  * Get all settings for the organization.
@@ -74,19 +75,63 @@ export const updateSettings = async (req: Request, res: Response) => {
         // Determine which keys are secrets
         const secretKeys = ['SMARTLEAD_API_KEY', 'INSTANTLY_API_KEY', 'EMAILBISON_API_KEY'];
 
+        // Check if any API key is already registered under a different org
+        for (const [key, value] of Object.entries(settingsToUpdate)) {
+            if (typeof value !== 'string' || !value.trim() || !secretKeys.includes(key)) continue;
+
+            const existingSettings = await prisma.organizationSetting.findMany({
+                where: {
+                    key,
+                    is_secret: true,
+                    organization_id: { not: orgId },
+                },
+                select: { value: true }
+            });
+
+            for (const existing of existingSettings) {
+                try {
+                    const decryptedValue = isEncrypted(existing.value) ? decrypt(existing.value) : existing.value;
+                    if (decryptedValue === value) {
+                        return res.status(409).json({
+                            success: false,
+                            error: 'This API key is already registered under another organization. Each API key can only be used by one organization.'
+                        });
+                    }
+                } catch {
+                    // Skip entries that fail to decrypt (corrupted data)
+                    continue;
+                }
+            }
+        }
+
+        // Check if any API key is changing — purge old platform data before saving
+        for (const [key, value] of Object.entries(settingsToUpdate)) {
+            if (typeof value !== 'string' || !secretKeys.includes(key)) continue;
+
+            const platformName = key.replace('_API_KEY', '').toLowerCase(); // smartlead, instantly, emailbison
+            const existingSetting = await prisma.organizationSetting.findUnique({
+                where: { organization_id_key: { organization_id: orgId, key } }
+            });
+
+            if (existingSetting?.value) {
+                let oldDecrypted: string | null = null;
+                try {
+                    oldDecrypted = isEncrypted(existingSetting.value) ? decrypt(existingSetting.value) : existingSetting.value;
+                } catch { /* corrupted, treat as changed */ }
+
+                const isChanging = oldDecrypted !== value;
+                const isRemoving = !value.trim();
+
+                if (isChanging || isRemoving) {
+                    logger.info(`[SETTINGS] ${platformName} API key ${isRemoving ? 'removed' : 'changed'} for org ${orgId}. Purging old synced data.`);
+                    await purgePlatformData(orgId, platformName);
+                }
+            }
+        }
+
         // Upsert each setting (encrypt secrets before storing)
         const updates = Object.entries(settingsToUpdate).map(([key, value]) => {
             if (typeof value !== 'string') return null;
-
-            // If the user is removing the Smartlead API key, purge all synced data
-            if (key === 'SMARTLEAD_API_KEY' && (value === '' || value.trim() === '')) {
-                logger.info(`[SETTINGS] Smartlead API key removed for org ${orgId}. Purging all synced data.`);
-
-                // Fire off asynchronous purge (don't block the request)
-                purgeSmartleadData(orgId).catch(err => {
-                    logger.error(`[SETTINGS] Failed to purge Smartlead data for org ${orgId}:`, err);
-                });
-            }
 
             const isSecret = secretKeys.includes(key);
             // Encrypt secret values before storing
@@ -213,32 +258,56 @@ function maskSecret(value: string): string {
 }
 
 /**
- * Purge all Smartlead-synced data when the API key is removed.
+ * Purge all synced data for a specific platform when its API key changes or is removed.
+ * Filters by source_platform so data from other platforms is preserved.
+ * Resets organization entity counts after purge.
  */
-async function purgeSmartleadData(orgId: string) {
+async function purgePlatformData(orgId: string, platform: string) {
     try {
+        // Map settings key prefix to SourcePlatform enum value
+        const platformMap: Record<string, SourcePlatform> = {
+            smartlead: SourcePlatform.smartlead,
+            instantly: SourcePlatform.instantly,
+            emailbison: SourcePlatform.emailbison,
+        };
+        const platformFilter = platformMap[platform];
+        if (!platformFilter) {
+            logger.warn(`[SETTINGS] Unknown platform "${platform}", skipping purge`);
+            return;
+        }
+
         await prisma.$transaction([
-            // Lead has a relation to Campaign, so delete Leads first or cascade will handle it, 
-            // but explicit deletion is safer for counting. However, Prisma handles relations.
-            prisma.lead.deleteMany({ where: { organization_id: orgId } }),
-
-            // Mailboxes belong to Campaigns and Domains
-            prisma.mailboxMetrics.deleteMany({ where: { mailbox: { organization_id: orgId } } }),
-            prisma.mailbox.deleteMany({ where: { organization_id: orgId } }),
-
-            // Routing rules belong to campaigns
+            prisma.lead.deleteMany({ where: { organization_id: orgId, source_platform: platformFilter } }),
+            prisma.mailboxMetrics.deleteMany({ where: { mailbox: { organization_id: orgId, source_platform: platformFilter } } }),
+            prisma.mailbox.deleteMany({ where: { organization_id: orgId, source_platform: platformFilter } }),
             prisma.routingRule.deleteMany({ where: { organization_id: orgId } }),
-
-            // Delete Campaigns
-            prisma.campaign.deleteMany({ where: { organization_id: orgId } }),
-
-            // Delete Domains last
-            prisma.domain.deleteMany({ where: { organization_id: orgId } })
+            prisma.campaign.deleteMany({ where: { organization_id: orgId, source_platform: platformFilter } }),
+            prisma.domain.deleteMany({ where: { organization_id: orgId, source_platform: platformFilter } }),
         ]);
 
-        logger.info(`[SETTINGS] Successfully purged all Smartlead data for org ${orgId}`);
+        // Recount remaining entities and update organization counts
+        const [domainCount, mailboxCount, leadCount] = await Promise.all([
+            prisma.domain.count({ where: { organization_id: orgId } }),
+            prisma.mailbox.count({ where: { organization_id: orgId } }),
+            prisma.lead.count({ where: { organization_id: orgId } }),
+        ]);
+
+        await prisma.organization.update({
+            where: { id: orgId },
+            data: {
+                current_domain_count: domainCount,
+                current_mailbox_count: mailboxCount,
+                current_lead_count: leadCount,
+            }
+        });
+
+        logger.info(`[SETTINGS] Successfully purged ${platform} data for org ${orgId}`, {
+            remainingDomains: domainCount,
+            remainingMailboxes: mailboxCount,
+            remainingLeads: leadCount,
+        });
     } catch (error) {
-        logger.error(`[SETTINGS] Error during Smartlead data purge for org ${orgId}:`, error as Error);
+        logger.error(`[SETTINGS] Error during ${platform} data purge for org ${orgId}:`, error as Error);
         throw error;
     }
 }
