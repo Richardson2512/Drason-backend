@@ -1085,6 +1085,14 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         });
                     }
 
+                    // Check once per campaign if audit backfill has already been done
+                    // Uses OrganizationSetting flag to avoid per-lead DB queries on every sync
+                    const auditBackfillKey = `audit_backfill_done:${campaignId}`;
+                    const campaignBackfillDone = await prisma.organizationSetting.findFirst({
+                        where: { organization_id: organizationId, key: auditBackfillKey },
+                        select: { id: true }
+                    });
+
                     // Update each lead with engagement stats from CSV
                     // NOTE: CSV provides per-lead engagement (open_count, click_count, reply_count)
                     // but does NOT include sender mailbox info. Per-mailbox attribution is handled
@@ -1158,28 +1166,12 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                 select: { id: true }
                             });
 
-                            // Backfill activity for leads in campaign
-                            // Use lead UUID (not email) as entityId so frontend can query correctly
-                            // DEDUP: Only create backfill entries if none exist yet for this lead
-                            // Note: email_sent backfill runs for ALL leads (they're in the campaign),
-                            //       open/click/reply backfill only runs for leads with engagement.
+                            // Backfill activity for leads in campaign (first sync only)
+                            // Uses campaign-level check done above to avoid per-lead DB queries
                             {
                                 const leadUuid = updatedLead.id;
 
-                                // Check if backfill entries already exist for this lead
-                                const existingBackfill = await prisma.auditLog.findFirst({
-                                    where: {
-                                        organization_id: organizationId,
-                                        entity: 'lead',
-                                        entity_id: leadUuid,
-                                        trigger: 'smartlead_sync',
-                                        action: { in: ['email_sent', 'email_opened', 'email_clicked', 'email_replied'] }
-                                    },
-                                    select: { id: true }
-                                });
-
-                                // Only create backfill entries on first sync (no existing entries)
-                                if (!existingBackfill) {
+                                if (!campaignBackfillDone) {
                                     // Backfill email_sent activity — lead is in campaign, so emails were sent
                                     await auditLogService.logAction({
                                         organizationId,
@@ -1243,6 +1235,15 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         recordsWithEngagement,
                         recordsWithoutEngagement: records.length - recordsWithEngagement
                     });
+
+                    // Mark audit backfill as done for this campaign so subsequent syncs skip it
+                    if (!campaignBackfillDone) {
+                        await prisma.organizationSetting.upsert({
+                            where: { organization_id_key: { organization_id: organizationId, key: auditBackfillKey } },
+                            update: { value: new Date().toISOString() },
+                            create: { organization_id: organizationId, key: auditBackfillKey, value: new Date().toISOString() },
+                        });
+                    }
                 } catch (csvError: any) {
                     // Don't fail the entire sync if CSV parsing fails - contact data is already synced
                     logger.error(`[LeadEngagement] Failed to fetch engagement stats from CSV for campaign ${campaignId}`, csvError, {
