@@ -907,8 +907,12 @@ export async function assessInfrastructure(
             logger.warn('Failed to create assessment failure notification', { organizationId });
         }
 
-        // IMPORTANT: Do NOT unlock the gate on failure.
-        // The gate stays locked — manual intervention required.
+        // Unlock the gate on failure so the user isn't permanently stuck
+        await prisma.organization.update({
+            where: { id: organizationId },
+            data: { assessment_completed: true },
+        });
+
         throw error;
     }
 }
