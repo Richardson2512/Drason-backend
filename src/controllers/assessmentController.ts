@@ -91,14 +91,16 @@ export const getAssessmentStatus = async (req: Request, res: Response): Promise<
         const orgId = getOrgId(req);
         const org = await prisma.organization.findUnique({
             where: { id: orgId },
-            select: { assessment_completed: true }
+            select: { assessment_completed: true, _count: { select: { domains: true } } }
         });
+
+        // No domains means nothing to assess — never show "in progress"
+        const hasDomains = (org?._count?.domains ?? 0) > 0;
+        const inProgress = hasDomains && org ? !org.assessment_completed : false;
 
         res.json({
             success: true,
-            data: {
-                inProgress: org ? !org.assessment_completed : false
-            }
+            data: { inProgress }
         });
     } catch (e: any) {
         logger.error('Failed to check assessment status', e);
