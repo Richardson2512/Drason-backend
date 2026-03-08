@@ -583,55 +583,6 @@ export const createRoutingRule = async (req: Request, res: Response) => {
     }
 };
 
-/**
- * Get state transitions for an entity.
- */
-export const getStateTransitions = async (req: Request, res: Response) => {
-    try {
-        const orgId = getOrgId(req);
-        const { entityType, entityId } = req.query;
-
-        const transitions = await prisma.stateTransition.findMany({
-            where: {
-                organization_id: orgId,
-                ...(entityType && { entity_type: entityType as string }),
-                ...(entityId && { entity_id: entityId as string })
-            },
-            orderBy: { created_at: 'desc' },
-            take: 100
-        });
-
-        res.json({ success: true, data: transitions });
-    } catch (error) {
-        logger.error('getStateTransitions error', error as Error);
-        res.status(500).json({ success: false, error: 'Failed to fetch state transitions' });
-    }
-};
-
-/**
- * Get raw events for debugging/replay.
- */
-export const getRawEvents = async (req: Request, res: Response) => {
-    try {
-        const orgId = getOrgId(req);
-        const { eventType, entityType, limit } = req.query;
-
-        const events = await prisma.rawEvent.findMany({
-            where: {
-                organization_id: orgId,
-                ...(eventType && { event_type: eventType as string }),
-                ...(entityType && { entity_type: entityType as string })
-            },
-            orderBy: { created_at: 'desc' },
-            take: limit ? parseInt(limit as string, 10) : 100
-        });
-
-        res.json({ success: true, data: events });
-    } catch (error) {
-        logger.error('getRawEvents error', error as Error);
-        res.status(500).json({ success: false, error: 'Failed to fetch events' });
-    }
-};
 
 /**
  * Get lead health gate statistics.

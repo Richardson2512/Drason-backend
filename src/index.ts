@@ -68,7 +68,6 @@ import emailbisonWebhookRoutes from './routes/emailbisonWebhook';
 import instantlyWebhookRoutes from './routes/instantlyWebhook';
 import findingsRoutes from './routes/findings';
 import analyticsRoutes from './routes/analytics';
-import diagnosticsRoutes from './routes/diagnostics';
 import syncProgressRoutes from './routes/syncProgress';
 import infrastructureRoutes from './routes/infrastructure';
 import slackRoutes from './routes/slack';
@@ -260,7 +259,6 @@ app.use('/api/monitor', emailbisonWebhookRoutes);
 app.use('/api/monitor', instantlyWebhookRoutes);
 app.use('/api/findings', findingsRoutes);
 app.use('/api/analytics', analyticsRoutes);
-app.use('/api/diagnostics', diagnosticsRoutes);
 app.use('/api/sync-progress', syncProgressRoutes);
 app.use('/api/infrastructure', infrastructureRoutes);
 app.use('/api/slack', apiSlackRoutes);
@@ -305,77 +303,6 @@ app.post('/api/admin/dlq/:jobId/retry', requireRole(UserRole.ADMIN), asyncHandle
 app.post('/api/admin/dlq/retry-all', requireRole(UserRole.ADMIN), asyncHandler(async (req, res) => {
     const retried = await retryAllDeadLetterJobs();
     res.json({ success: true, data: { retriedCount: retried } });
-}));
-
-// System Health: Get detailed health status (ADMIN only)
-app.get('/api/health', requireRole(UserRole.ADMIN), asyncHandler(async (req, res) => {
-    // Database check
-    let dbStatus: { status: string; latencyMs?: number } = { status: 'unhealthy' };
-    try {
-        const dbStart = Date.now();
-        await prisma.$queryRaw`SELECT 1`;
-        dbStatus = { status: 'healthy', latencyMs: Date.now() - dbStart };
-    } catch {
-        dbStatus = { status: 'unhealthy' };
-    }
-
-    // Redis check
-    const redisStatus = await checkRedisHealth();
-
-    // Worker checks
-    const metricsWorker = getMetricsWorkerStatus();
-    const retentionJob = getRetentionJobStatus();
-    const eventQueueStatus = await getQueueStatus();
-    const leadHealthWorker = getLeadHealthWorkerStatus();
-    const platformSyncWorker = getPlatformSyncWorkerStatus();
-
-    const components = {
-        database: dbStatus,
-        redis: redisStatus,
-        api: { status: 'healthy' },
-        metricsWorker: {
-            status: metricsWorker.lastRunAt ? 'active' : 'not_started',
-            lastRunAt: metricsWorker.lastRunAt,
-            lastError: metricsWorker.lastError
-        },
-        retentionJob: {
-            status: retentionJob.lastRunAt ? 'active' : 'not_started',
-            lastRunAt: retentionJob.lastRunAt,
-            lastError: retentionJob.lastError
-        },
-        eventQueue: {
-            status: eventQueueStatus.isRunning ? 'active' : 'disabled',
-            active: eventQueueStatus.activeCount,
-            waiting: eventQueueStatus.waitingCount,
-            failed: eventQueueStatus.failedCount,
-            lastProcessedAt: eventQueueStatus.lastProcessedAt
-        },
-        leadHealthWorker: {
-            status: leadHealthWorker.lastRunAt ? 'active' : 'not_started',
-            lastRunAt: leadHealthWorker.lastRunAt,
-            lastError: leadHealthWorker.lastError
-        },
-        platformSyncWorker: {
-            status: platformSyncWorker.lastRunAt ? 'active' : 'not_started',
-            lastRunAt: platformSyncWorker.lastRunAt,
-            lastError: platformSyncWorker.lastError,
-            totalSyncs: platformSyncWorker.totalSyncs,
-            totalOrganizationsSynced: platformSyncWorker.totalOrganizationsSynced,
-            lastSyncDurationMs: platformSyncWorker.lastSyncDurationMs,
-            consecutiveFailures: platformSyncWorker.consecutiveFailures
-        }
-    };
-
-    const allHealthy = dbStatus.status === 'healthy' &&
-        (redisStatus.status === 'healthy' || redisStatus.status === 'not_configured');
-
-    res.status(allHealthy ? 200 : 503).json({
-        status: allHealthy ? 'ok' : 'degraded',
-        timestamp: new Date(),
-        version: '2.1.0',
-        uptime: Math.floor(process.uptime()),
-        components
-    });
 }));
 
 // Event Replay: Trigger replay for an entity (ADMIN only, org-scoped)
