@@ -190,6 +190,18 @@ async function backfillBouncesForCampaign(
                 },
             });
 
+            // ── Mark the lead as bounced ─────────────────────────────────────
+            if (dbLead) {
+                await prisma.lead.update({
+                    where: { id: dbLead.id },
+                    data: {
+                        bounced: true,
+                        health_classification: 'red',
+                        health_state: 'unhealthy',
+                    },
+                });
+            }
+
             // ── Increment mailbox hard_bounce_count if attributed ───────────
             if (mailboxId) {
                 await prisma.mailbox.update({
