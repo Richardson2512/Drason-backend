@@ -505,7 +505,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
                                         emails_sent: emailsSent,
                                         emails_opened: emailsOpened,
                                         emails_replied: emailsReplied,
-                                        ...(isBounced && { health_classification: 'red', status: 'failed' }),
+                                        ...(isBounced && { health_classification: 'red', status: 'failed', bounced: true }),
                                         updated_at: new Date(),
                                     },
                                     create: {
@@ -514,6 +514,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
                                         lead_score: 50,
                                         source: 'emailbison',
                                         source_platform: SourcePlatform.emailbison,
+                                        bounced: isBounced,
                                         status: isBounced ? 'failed' : 'active',
                                         health_classification: isBounced ? 'red' : 'green',
                                         emails_sent: emailsSent,

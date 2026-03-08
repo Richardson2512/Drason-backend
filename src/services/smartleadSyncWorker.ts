@@ -1291,6 +1291,26 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             syncProgressService.emitProgress(sessionId, 'health_check', 'in_progress', {});
         }
 
+        // ── 4a-backfill. Ensure bounced flag is set on leads with failed status ──
+        // Some leads may have status='failed' + health_classification='red' from adapters
+        // but bounced=false because it wasn't set during the initial upsert.
+        try {
+            const backfilled = await prisma.lead.updateMany({
+                where: {
+                    organization_id: organizationId,
+                    status: 'failed',
+                    health_classification: 'red',
+                    bounced: false,
+                },
+                data: { bounced: true },
+            });
+            if (backfilled.count > 0) {
+                logger.info(`[SmartleadSync] Backfilled bounced=true on ${backfilled.count} leads for org ${organizationId}`);
+            }
+        } catch (backfillError) {
+            logger.warn('[SmartleadSync] Failed to backfill bounced flag', { organizationId });
+        }
+
         // ── 4b. Cross-campaign lead tracking ──
         // Count how many campaigns each lead email appears in via Smartlead.
         // This uses our DB (after syncing all campaigns' leads) rather than the

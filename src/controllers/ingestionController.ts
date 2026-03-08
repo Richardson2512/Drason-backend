@@ -240,6 +240,11 @@ async function processLead(
                 `Pushed to ${adapter.platform} campaign ${campaignId} via ${source}`,
                 TriggerType.SYSTEM
             );
+            // Set source_platform based on which platform adapter handled the push
+            await prisma.lead.update({
+                where: { id: createdLead.id },
+                data: { source_platform: adapter.platform },
+            });
             pushedToPlatform = true;
             logger.info(`[${logTag}] Successfully pushed lead ${email} to ${adapter.platform} campaign ${campaignId}`);
         } else {

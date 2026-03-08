@@ -541,7 +541,7 @@ export class InstantlyAdapter implements PlatformAdapter {
                                         emails_opened: emailsOpened,
                                         emails_replied: emailsReplied,
                                         // Mark bounced leads explicitly
-                                        ...(isBounced && { health_classification: 'red', status: 'failed' }),
+                                        ...(isBounced && { health_classification: 'red', status: 'failed', bounced: true }),
                                         updated_at: new Date(),
                                     },
                                     create: {
@@ -550,6 +550,7 @@ export class InstantlyAdapter implements PlatformAdapter {
                                         lead_score: 50,
                                         source: 'instantly',
                                         source_platform: SourcePlatform.instantly,
+                                        bounced: isBounced,
                                         status: isBounced ? 'failed' : 'active',
                                         health_classification: isBounced ? 'red' : 'green',
                                         emails_sent: emailsSent,
