@@ -320,6 +320,17 @@ export const warnMailbox = async (mailboxId: string, reason: string): Promise<vo
             details: `⚠️ SUGGEST: Warning recommended - ${reason} (not enforcing in suggest mode)`
         });
         logger.info(`[MONITOR] [SUGGEST] Warning suggested for mailbox ${mailboxId}: ${reason}`);
+
+        // ── SLACK ALERT: Send suggestion to Slack ──
+        SlackAlertService.sendAlert({
+            organizationId: orgId,
+            eventType: 'suggested_warn_mailbox',
+            entityId: mailboxId,
+            severity: 'warning',
+            title: '⚠️ Mailbox Warning Recommended',
+            message: `Mailbox \`${mailbox.email || mailboxId}\` is showing early warning signs.\n*Reason:* ${reason}\n_No action taken — review recommended._`
+        }).catch(err => logger.warn('[MONITOR] Non-fatal alert error', { error: String(err) }));
+
         return;
     }
 
@@ -386,6 +397,17 @@ export const pauseMailbox = async (mailboxId: string, reason: string): Promise<v
             details: `🛑 SUGGEST: Pause recommended - ${reason} (not enforcing in suggest mode)`
         });
         logger.warn(`[MONITOR] [SUGGEST] Pause recommended for mailbox ${mailboxId}: ${reason}`);
+
+        // ── SLACK ALERT: Send suggestion to Slack ──
+        SlackAlertService.sendAlert({
+            organizationId: orgId,
+            eventType: 'suggested_pause_mailbox',
+            entityId: mailboxId,
+            severity: 'critical',
+            title: '🛑 Mailbox Pause Recommended',
+            message: `Mailbox \`${mailbox.email || mailboxId}\` has exceeded bounce threshold and should be paused.\n*Reason:* ${reason}\n_No action taken — manual intervention recommended._`
+        }).catch(err => logger.warn('[MONITOR] Non-fatal alert error', { error: String(err) }));
+
         return;
     }
 
@@ -705,6 +727,17 @@ const checkDomainHealth = async (domainId: string): Promise<void> => {
                 details: `⚠️ SUGGEST: Warning recommended - ${reason} (not enforcing in suggest mode)`
             });
             logger.info(`[MONITOR] [SUGGEST] Warning suggested for domain ${domain.domain}: ${reason}`);
+
+            // ── SLACK ALERT: Send suggestion to Slack ──
+            SlackAlertService.sendAlert({
+                organizationId: orgId,
+                eventType: 'suggested_warn_domain',
+                entityId: domainId,
+                severity: 'warning',
+                title: '⚠️ Domain Warning Recommended',
+                message: `Domain \`${domain.domain}\` is showing warning signs.\n*Reason:* ${reason}\n_No action taken — review recommended._`
+            }).catch(err => logger.warn('[MONITOR] Non-fatal alert error', { error: String(err) }));
+
             return;
         }
 
@@ -794,6 +827,17 @@ const checkDomainHealth = async (domainId: string): Promise<void> => {
                 details: `🛑 SUGGEST: Pause recommended - ${reason} (not enforcing in suggest mode)`
             });
             logger.warn(`[MONITOR] [SUGGEST] Pause recommended for domain ${domain.domain}: ${reason}`);
+
+            // ── SLACK ALERT: Send suggestion to Slack ──
+            SlackAlertService.sendAlert({
+                organizationId: orgId,
+                eventType: 'suggested_pause_domain',
+                entityId: domainId,
+                severity: 'critical',
+                title: '🛑 Domain Pause Recommended',
+                message: `Domain \`${domain.domain}\` has ${freshUnhealthyCount}/${freshTotalMailboxes} unhealthy mailboxes and should be paused.\n*Reason:* ${reason}\n_No action taken — manual intervention recommended._`
+            }).catch(err => logger.warn('[MONITOR] Non-fatal alert error', { error: String(err) }));
+
             return;
         }
 
@@ -899,6 +943,17 @@ const pauseDomain = async (domainId: string, reason: string): Promise<void> => {
             details: `🛑 SUGGEST: Pause recommended - ${reason} (not enforcing in suggest mode)`
         });
         logger.warn(`[MONITOR] [SUGGEST] Pause recommended for domain ${domainId}: ${reason}`);
+
+        // ── SLACK ALERT: Send suggestion to Slack ──
+        SlackAlertService.sendAlert({
+            organizationId: orgId,
+            eventType: 'suggested_pause_domain_correlation',
+            entityId: domainId,
+            severity: 'critical',
+            title: '🛑 Domain Pause Recommended',
+            message: `Domain \`${domain.domain}\` has critical health issues and should be paused.\n*Reason:* ${reason}\n_No action taken — immediate review recommended._`
+        }).catch(err => logger.warn('[MONITOR] Non-fatal alert error', { error: String(err) }));
+
         return;
     }
 
@@ -1002,6 +1057,17 @@ const pauseCampaign = async (campaignId: string, organizationId: string, reason:
             details: `🛑 SUGGEST: Pause recommended - ${reason} (not enforcing in suggest mode)`
         });
         logger.warn(`[MONITOR] [SUGGEST] Pause recommended for campaign ${campaignId}: ${reason}`);
+
+        // ── SLACK ALERT: Send suggestion to Slack ──
+        SlackAlertService.sendAlert({
+            organizationId,
+            eventType: 'suggested_pause_campaign',
+            entityId: campaignId,
+            severity: 'critical',
+            title: '🛑 Campaign Pause Recommended',
+            message: `Campaign \`${campaign.name || campaignId}\` should be paused due to health correlation.\n*Reason:* ${reason}\n_No action taken — review recommended._`
+        }).catch(err => logger.warn('[MONITOR] Non-fatal alert error', { error: String(err) }));
+
         return;
     }
 
