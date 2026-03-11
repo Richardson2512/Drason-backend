@@ -422,27 +422,32 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             axios.get(`${SMARTLEAD_API_BASE}/campaigns?api_key=${apiKey}`)
         );
         const rawCampaignData = campaignsRes.data;
-        const campaigns = Array.isArray(rawCampaignData)
+        const allCampaigns = Array.isArray(rawCampaignData)
             ? rawCampaignData
             : Array.isArray(rawCampaignData?.data)
                 ? rawCampaignData.data
                 : [];
 
-        logger.info(`[DEBUG] Smartlead Campaigns Fetch: ${JSON.stringify({
-            organizationId,
-            apiKeyLen: apiKey?.length,
-            count: campaigns.length,
-            isArray: Array.isArray(campaigns),
-            firstItem: campaigns.length > 0 ? campaigns[0] : null
-        })}`);
+        // Filter out deleted/archived/completed campaigns to avoid wasting API calls.
+        // Smartlead returns ALL campaigns including deleted ones. With 19 campaigns
+        // vs 5 active, the extra 14 burn ~70 unnecessary API calls and trip the circuit breaker.
+        const INACTIVE_STATUSES = new Set(['DELETED', 'ARCHIVED', 'deleted', 'archived']);
+        const campaigns = allCampaigns.filter((c: any) => {
+            const status = c.status || '';
+            return !INACTIVE_STATUSES.has(status);
+        });
 
-        // Log first campaign structure to see available fields
-        if (campaigns.length > 0) {
-            logger.info('[CampaignSync] First campaign structure', {
-                campaignSample: campaigns[0],
-                campaignKeys: Object.keys(campaigns[0])
-            });
-        }
+        logger.info(`[CampaignSync] Smartlead campaigns fetched`, {
+            organizationId,
+            totalFromApi: allCampaigns.length,
+            afterFilter: campaigns.length,
+            filtered: allCampaigns.length - campaigns.length,
+            statuses: allCampaigns.reduce((acc: Record<string, number>, c: any) => {
+                const s = c.status || 'unknown';
+                acc[s] = (acc[s] || 0) + 1;
+                return acc;
+            }, {}),
+        });
 
         if (sessionId) {
             syncProgressService.emitProgress(sessionId, 'campaigns', 'in_progress', {
