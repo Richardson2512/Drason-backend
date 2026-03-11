@@ -228,6 +228,65 @@ export class InstantlyAdapter implements PlatformAdapter {
                 }
             }
 
+            // ── 1b. Clean up stale campaigns deleted from Instantly ──
+            try {
+                const instantlyCampaignIds = new Set(allCampaigns.map((c: any) => `inst-${c.id}`));
+
+                const dbCampaigns = await prisma.campaign.findMany({
+                    where: {
+                        organization_id: organizationId,
+                        source_platform: SourcePlatform.instantly,
+                        status: { not: 'deleted' },
+                    },
+                    select: { id: true, name: true, status: true },
+                });
+
+                const staleCampaigns = dbCampaigns.filter(c => !instantlyCampaignIds.has(c.id));
+
+                if (staleCampaigns.length > 0) {
+                    logger.info('[InstantlySync] Found campaigns deleted from Instantly', {
+                        organizationId,
+                        count: staleCampaigns.length,
+                        campaigns: staleCampaigns.map(c => ({ id: c.id, name: c.name, previousStatus: c.status })),
+                    });
+
+                    for (const stale of staleCampaigns) {
+                        await prisma.campaign.update({
+                            where: { id: stale.id },
+                            data: {
+                                status: 'deleted',
+                                paused_reason: 'Deleted from Instantly',
+                                paused_at: new Date(),
+                                paused_by: 'system',
+                                mailboxes: { set: [] },
+                            },
+                        });
+
+                        await prisma.stateTransition.create({
+                            data: {
+                                organization_id: organizationId,
+                                entity_type: 'campaign',
+                                entity_id: stale.id,
+                                from_state: stale.status,
+                                to_state: 'deleted',
+                                reason: 'Campaign deleted from Instantly — removed during sync',
+                                triggered_by: 'sync',
+                            },
+                        });
+                    }
+
+                    logger.info('[InstantlySync] Marked stale campaigns as deleted', {
+                        organizationId,
+                        deletedCount: staleCampaigns.length,
+                    });
+                }
+            } catch (cleanupErr: any) {
+                logger.warn('[InstantlySync] Failed to clean up stale campaigns (non-fatal)', {
+                    organizationId,
+                    error: cleanupErr.message,
+                });
+            }
+
             if (sessionId) {
                 syncProgressService.emitProgress(sessionId, 'campaigns', 'completed', { count: campaignCount });
                 syncProgressService.emitProgress(sessionId, 'mailboxes', 'in_progress', { total: 0 });

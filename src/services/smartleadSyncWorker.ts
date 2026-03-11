@@ -564,6 +564,69 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             }
         }
 
+        // ── 1b. Clean up stale campaigns deleted from Smartlead ──
+        // Campaigns that exist in our DB but are no longer returned by Smartlead have been deleted on the platform.
+        // Mark them as 'deleted' and disconnect their mailbox links to keep data consistent.
+        await checkCancelled();
+        try {
+            const smartleadCampaignIds = new Set(campaigns.map((c: any) => c.id.toString()));
+
+            const dbCampaigns = await prisma.campaign.findMany({
+                where: {
+                    organization_id: organizationId,
+                    source_platform: SourcePlatform.smartlead,
+                    status: { not: 'deleted' },
+                },
+                select: { id: true, name: true, status: true },
+            });
+
+            const staleCampaigns = dbCampaigns.filter(c => !smartleadCampaignIds.has(c.id));
+
+            if (staleCampaigns.length > 0) {
+                logger.info('[CampaignCleanup] Found campaigns deleted from Smartlead', {
+                    organizationId,
+                    count: staleCampaigns.length,
+                    campaigns: staleCampaigns.map(c => ({ id: c.id, name: c.name, previousStatus: c.status })),
+                });
+
+                for (const stale of staleCampaigns) {
+                    await prisma.campaign.update({
+                        where: { id: stale.id },
+                        data: {
+                            status: 'deleted',
+                            paused_reason: 'Deleted from Smartlead',
+                            paused_at: new Date(),
+                            paused_by: 'system',
+                            mailboxes: { set: [] }, // Disconnect all mailbox links
+                        },
+                    });
+
+                    await prisma.stateTransition.create({
+                        data: {
+                            organization_id: organizationId,
+                            entity_type: 'campaign',
+                            entity_id: stale.id,
+                            from_state: stale.status,
+                            to_state: 'deleted',
+                            reason: 'Campaign deleted from Smartlead — removed during sync',
+                            triggered_by: 'sync',
+                        },
+                    });
+                }
+
+                logger.info('[CampaignCleanup] Marked stale campaigns as deleted', {
+                    organizationId,
+                    deletedCount: staleCampaigns.length,
+                    campaignIds: staleCampaigns.map(c => c.id),
+                });
+            }
+        } catch (cleanupErr: any) {
+            logger.warn('[CampaignCleanup] Failed to clean up stale campaigns (non-fatal)', {
+                organizationId,
+                error: cleanupErr.message,
+            });
+        }
+
         if (sessionId) {
             syncProgressService.emitProgress(sessionId, 'campaigns', 'completed', {
                 count: campaignCount
@@ -1505,11 +1568,37 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 }
             }
 
+            // Identify mailboxes that got NO stats from any campaign
+            const allDbMailboxes = await prisma.mailbox.findMany({
+                where: { organization_id: organizationId },
+                select: { id: true, email: true, external_email_account_id: true },
+            });
+
+            const enrichedIds = new Set([...mailboxStatsMap.keys()].map(id => id.toString()));
+            const unenrichedMailboxes = allDbMailboxes.filter(
+                mb => mb.external_email_account_id && !enrichedIds.has(mb.external_email_account_id)
+            );
+
+            if (unenrichedMailboxes.length > 0) {
+                logger.warn('[MailboxStatistics] Mailboxes with NO stats from any campaign', {
+                    organizationId,
+                    unenrichedCount: unenrichedMailboxes.length,
+                    totalMailboxes: allDbMailboxes.length,
+                    unenrichedMailboxes: unenrichedMailboxes.map(mb => ({
+                        id: mb.id,
+                        email: mb.email,
+                        externalId: mb.external_email_account_id,
+                    })),
+                });
+            }
+
             logger.info('[MailboxStatistics] Per-mailbox stats aggregation complete', {
                 organizationId,
                 campaignsScanned: campaigns.length,
                 uniqueMailboxes: mailboxStatsMap.size,
                 mailboxesUpdated: mailboxStatsUpdated,
+                totalDbMailboxes: allDbMailboxes.length,
+                unenrichedCount: unenrichedMailboxes.length,
             });
         } catch (mailboxStatsErr: any) {
             logger.warn('[MailboxStatistics] Failed to aggregate mailbox statistics (non-fatal)', {

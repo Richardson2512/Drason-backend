@@ -677,7 +677,7 @@ export async function assessInfrastructure(
 
         // ── Step 4: Assess all campaigns ──
         const campaigns = await prisma.campaign.findMany({
-            where: { organization_id: organizationId },
+            where: { organization_id: organizationId, status: { not: 'deleted' } },
             include: {
                 mailboxes: { include: { domain: true } },
             },

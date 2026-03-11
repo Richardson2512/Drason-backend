@@ -215,6 +215,9 @@ export const getCampaigns = async (req: Request, res: Response, next: NextFuncti
 
         if (status && status !== 'all') {
             where.status = status;
+        } else {
+            // Exclude campaigns deleted from the platform unless explicitly filtered
+            where.status = { not: 'deleted' };
         }
 
         // Platform filter

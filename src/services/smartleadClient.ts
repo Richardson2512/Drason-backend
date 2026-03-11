@@ -774,28 +774,39 @@ export const fetchCampaignMailboxStatistics = async (
 
         const data = response.data;
 
+        let entries: MailboxStatisticsEntry[] = [];
+
         // API returns { ok: true, data: [...] }
         if (data?.ok && Array.isArray(data.data)) {
-            return data.data;
+            entries = data.data;
+        } else if (Array.isArray(data)) {
+            // Fallback: direct array response
+            entries = data;
+        } else {
+            logger.warn('[SMARTLEAD-MAILBOX-STATS] Unexpected response shape — no stats extracted', {
+                organizationId,
+                campaignId,
+                responseKeys: data ? Object.keys(data) : 'null',
+                responseType: typeof data,
+                responseSample: JSON.stringify(data)?.slice(0, 500),
+            });
+            return [];
         }
 
-        // Fallback: direct array response
-        if (Array.isArray(data)) {
-            return data;
-        }
-
-        logger.warn('[SMARTLEAD-MAILBOX-STATS] Unexpected response shape', {
+        logger.info('[SMARTLEAD-MAILBOX-STATS] Fetched mailbox statistics', {
             organizationId,
             campaignId,
-            responseKeys: data ? Object.keys(data) : 'null'
+            mailboxCount: entries.length,
+            emailAccountIds: entries.map(e => e.email_account_id),
         });
-        return [];
+
+        return entries;
     } catch (error: any) {
         logger.error('[SMARTLEAD-MAILBOX-STATS] Failed to fetch mailbox statistics', error, {
             organizationId,
             campaignId,
-            response: error.response?.data,
-            status: error.response?.status
+            status: error.response?.status,
+            responseData: JSON.stringify(error.response?.data)?.slice(0, 500),
         });
         return [];
     }

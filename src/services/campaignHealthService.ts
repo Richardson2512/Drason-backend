@@ -413,7 +413,7 @@ export async function getCampaignHealthStats(organizationId: string): Promise<{
     }>;
 }> {
     const campaigns = await prisma.campaign.findMany({
-        where: { organization_id: organizationId },
+        where: { organization_id: organizationId, status: { not: 'deleted' } },
         select: {
             id: true,
             name: true,

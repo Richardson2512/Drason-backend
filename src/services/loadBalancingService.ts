@@ -151,9 +151,9 @@ export const analyzeLoadBalancing = async (
         }
     });
 
-    // Fetch all campaigns
+    // Fetch all campaigns (exclude deleted)
     const campaigns = await prisma.campaign.findMany({
-        where: { organization_id: organizationId },
+        where: { organization_id: organizationId, status: { not: 'deleted' } },
         include: {
             mailboxes: true
         }

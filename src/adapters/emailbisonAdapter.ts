@@ -217,6 +217,65 @@ export class EmailBisonAdapter implements PlatformAdapter {
                 }
             }
 
+            // ── 1b. Clean up stale campaigns deleted from EmailBison ──
+            try {
+                const emailbisonCampaignIds = new Set(campaigns.map((c: any) => `eb-${c.id}`));
+
+                const dbCampaigns = await prisma.campaign.findMany({
+                    where: {
+                        organization_id: organizationId,
+                        source_platform: SourcePlatform.emailbison,
+                        status: { not: 'deleted' },
+                    },
+                    select: { id: true, name: true, status: true },
+                });
+
+                const staleCampaigns = dbCampaigns.filter(c => !emailbisonCampaignIds.has(c.id));
+
+                if (staleCampaigns.length > 0) {
+                    logger.info('[EmailBisonSync] Found campaigns deleted from EmailBison', {
+                        organizationId,
+                        count: staleCampaigns.length,
+                        campaigns: staleCampaigns.map(c => ({ id: c.id, name: c.name, previousStatus: c.status })),
+                    });
+
+                    for (const stale of staleCampaigns) {
+                        await prisma.campaign.update({
+                            where: { id: stale.id },
+                            data: {
+                                status: 'deleted',
+                                paused_reason: 'Deleted from EmailBison',
+                                paused_at: new Date(),
+                                paused_by: 'system',
+                                mailboxes: { set: [] },
+                            },
+                        });
+
+                        await prisma.stateTransition.create({
+                            data: {
+                                organization_id: organizationId,
+                                entity_type: 'campaign',
+                                entity_id: stale.id,
+                                from_state: stale.status,
+                                to_state: 'deleted',
+                                reason: 'Campaign deleted from EmailBison — removed during sync',
+                                triggered_by: 'sync',
+                            },
+                        });
+                    }
+
+                    logger.info('[EmailBisonSync] Marked stale campaigns as deleted', {
+                        organizationId,
+                        deletedCount: staleCampaigns.length,
+                    });
+                }
+            } catch (cleanupErr: any) {
+                logger.warn('[EmailBisonSync] Failed to clean up stale campaigns (non-fatal)', {
+                    organizationId,
+                    error: cleanupErr.message,
+                });
+            }
+
             if (sessionId) {
                 syncProgressService.emitProgress(sessionId, 'campaigns', 'completed', { count: campaignCount });
                 syncProgressService.emitProgress(sessionId, 'mailboxes', 'in_progress', { total: 0 });
