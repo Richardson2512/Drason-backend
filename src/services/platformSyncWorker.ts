@@ -17,6 +17,7 @@ import { logger } from './observabilityService';
 import { getActiveAdaptersForOrg } from '../adapters/platformRegistry';
 import * as auditLogService from './auditLogService';
 import { acquireLock, releaseLock } from '../utils/redis';
+import { getBreakerForPlatform } from '../utils/circuitBreaker';
 
 // ============================================================================
 // TYPES
@@ -181,6 +182,10 @@ async function runSync(): Promise<void> {
                 const platformSyncStart = Date.now();
 
                 try {
+                    // Reset circuit breaker before each platform sync — a previous
+                    // sync cycle may have tripped it open via rate limits
+                    getBreakerForPlatform(adapter.platform).reset();
+
                     logger.info(`[PLATFORM-SYNC-WORKER] Syncing ${adapter.platform} for ${orgName}`, {
                         organizationId: orgId,
                         platform: adapter.platform,

@@ -239,14 +239,20 @@ export class CircuitBreaker {
  */
 export const smartleadBreaker = new CircuitBreaker({
     name: 'Smartlead API',
-    failureThreshold: 5,
+    failureThreshold: 15,
     resetTimeout: 60_000,      // 60 seconds
     halfOpenSuccessThreshold: 2,
     isFailure: (error: Error) => {
         // 404 = resource not found, not a service failure
         // 400 = bad request, not a service failure
+        // 429 = rate limited, service is healthy but throttled
         const message = error.message.toLowerCase();
         if (message.includes('404') || message.includes('400')) {
+            return false;
+        }
+        // Rate limit errors should NOT trip the circuit breaker
+        const status = (error as any).response?.status;
+        if (status === 429 || message.includes('rate limit') || message.includes('too many requests')) {
             return false;
         }
         return true;
@@ -259,12 +265,16 @@ export const smartleadBreaker = new CircuitBreaker({
  */
 export const emailbisonBreaker = new CircuitBreaker({
     name: 'EmailBison API',
-    failureThreshold: 3,
+    failureThreshold: 10,
     resetTimeout: 45_000,      // 45 seconds
     halfOpenSuccessThreshold: 2,
     isFailure: (error: Error) => {
         const message = error.message.toLowerCase();
         if (message.includes('404') || message.includes('400')) {
+            return false;
+        }
+        const status = (error as any).response?.status;
+        if (status === 429 || message.includes('rate limit') || message.includes('too many requests')) {
             return false;
         }
         return true;
@@ -276,12 +286,15 @@ export const emailbisonBreaker = new CircuitBreaker({
  */
 export const instantlyBreaker = new CircuitBreaker({
     name: 'Instantly API',
-    failureThreshold: 5,
+    failureThreshold: 15,
     resetTimeout: 60_000,
     halfOpenSuccessThreshold: 2,
     isFailure: (error: Error) => {
         const message = error.message.toLowerCase();
-        return !message.includes('404') && !message.includes('400');
+        if (message.includes('404') || message.includes('400')) return false;
+        const status = (error as any).response?.status;
+        if (status === 429 || message.includes('rate limit') || message.includes('too many requests')) return false;
+        return true;
     },
 });
 
@@ -290,12 +303,15 @@ export const instantlyBreaker = new CircuitBreaker({
  */
 export const replyioBreaker = new CircuitBreaker({
     name: 'Reply.io API',
-    failureThreshold: 5,
+    failureThreshold: 15,
     resetTimeout: 60_000,
     halfOpenSuccessThreshold: 2,
     isFailure: (error: Error) => {
         const message = error.message.toLowerCase();
-        return !message.includes('404') && !message.includes('400');
+        if (message.includes('404') || message.includes('400')) return false;
+        const status = (error as any).response?.status;
+        if (status === 429 || message.includes('rate limit') || message.includes('too many requests')) return false;
+        return true;
     },
 });
 
