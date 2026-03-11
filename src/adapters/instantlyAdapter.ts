@@ -29,6 +29,7 @@ import * as assessmentService from '../services/infrastructureAssessmentService'
 import { TIER_LIMITS } from '../services/polarClient';
 import { acquireLock, releaseLock } from '../utils/redis';
 import { instantlyRateLimiter } from '../utils/rateLimiter';
+import { instantlyBreaker } from '../utils/circuitBreaker';
 import {
     PlatformAdapter,
     SyncResult,
@@ -40,6 +41,23 @@ import {
 import { LeadState } from '../types';
 
 const INSTANTLY_API_BASE = 'https://api.instantly.ai/api/v2';
+const SYNC_CONCURRENCY = 5;
+
+async function parallelChunked<T, R>(
+    items: T[],
+    concurrency: number,
+    fn: (item: T, index: number) => Promise<R>
+): Promise<PromiseSettledResult<R>[]> {
+    const results: PromiseSettledResult<R>[] = [];
+    for (let i = 0; i < items.length; i += concurrency) {
+        const chunk = items.slice(i, i + concurrency);
+        const chunkResults = await Promise.allSettled(
+            chunk.map((item, j) => fn(item, i + j))
+        );
+        results.push(...chunkResults);
+    }
+    return results;
+}
 
 export class InstantlyAdapter implements PlatformAdapter {
     readonly platform = SourcePlatform.instantly;
@@ -132,7 +150,7 @@ export class InstantlyAdapter implements PlatformAdapter {
                 if (campaignCursor) params.starting_after = campaignCursor;
 
                 const res = await instantlyRateLimiter.execute(() =>
-                    client.get('/campaigns', { params })
+                    instantlyBreaker.call(() => client.get('/campaigns', { params }))
                 );
 
                 const items: any[] = res.data?.items || res.data || [];
@@ -302,7 +320,7 @@ export class InstantlyAdapter implements PlatformAdapter {
                 if (accountCursor) params.starting_after = accountCursor;
 
                 const res = await instantlyRateLimiter.execute(() =>
-                    client.get('/accounts', { params })
+                    instantlyBreaker.call(() => client.get('/accounts', { params }))
                 );
 
                 const items: any[] = res.data?.items || res.data || [];
@@ -459,7 +477,7 @@ export class InstantlyAdapter implements PlatformAdapter {
 
             // ── 3. Link campaigns to mailboxes via account-campaign-mappings ──
 
-            for (const campaign of allCampaigns) {
+            await parallelChunked(allCampaigns, SYNC_CONCURRENCY, async (campaign: any) => {
                 const externalCampaignId = campaign.id;
                 const internalCampaignId = `inst-${externalCampaignId}`;
 
@@ -475,7 +493,7 @@ export class InstantlyAdapter implements PlatformAdapter {
                         if (mappingCursor) params.starting_after = mappingCursor;
 
                         const res = await instantlyRateLimiter.execute(() =>
-                            client.get('/account-campaign-mappings', { params })
+                            instantlyBreaker.call(() => client.get('/account-campaign-mappings', { params }))
                         );
 
                         const items: any[] = res.data?.items || res.data || [];
@@ -510,7 +528,7 @@ export class InstantlyAdapter implements PlatformAdapter {
                         error: err.message,
                     });
                 }
-            }
+            });
 
             if (sessionId) {
                 syncProgressService.emitProgress(sessionId, 'mailboxes', 'completed', { count: mailboxCount });
@@ -519,7 +537,7 @@ export class InstantlyAdapter implements PlatformAdapter {
 
             // ── 4. Fetch leads per campaign ────────────────────────────
 
-            for (const campaign of allCampaigns) {
+            await parallelChunked(allCampaigns, SYNC_CONCURRENCY, async (campaign: any) => {
                 const externalCampaignId = campaign.id;
                 const internalCampaignId = `inst-${externalCampaignId}`;
 
@@ -537,7 +555,7 @@ export class InstantlyAdapter implements PlatformAdapter {
                         if (leadCursor) body.starting_after = leadCursor;
 
                         const leadsRes = await instantlyRateLimiter.execute(() =>
-                            client.post('/leads/list', body)
+                            instantlyBreaker.call(() => client.post('/leads/list', body))
                         );
 
                         const leadsList: any[] = leadsRes.data?.items || leadsRes.data || [];
@@ -646,6 +664,21 @@ export class InstantlyAdapter implements PlatformAdapter {
                         error: err.message,
                     });
                 }
+            });
+
+            // Reconcile org lead count after parallel sync
+            const authoritativeLeadCount = await prisma.lead.count({ where: { organization_id: organizationId } });
+            if (authoritativeLeadCount !== org.current_lead_count) {
+                logger.info('[InstantlySync] Reconciling lead count after parallel sync', {
+                    organizationId,
+                    inMemory: org.current_lead_count,
+                    authoritative: authoritativeLeadCount,
+                });
+                org.current_lead_count = authoritativeLeadCount;
+                await prisma.organization.update({
+                    where: { id: organizationId },
+                    data: { current_lead_count: authoritativeLeadCount }
+                });
             }
 
             if (sessionId) {

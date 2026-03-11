@@ -30,6 +30,38 @@ import { parse } from 'csv-parse/sync';
 import { getApiKey, SMARTLEAD_API_BASE, ensureWebhooksRegistered, getAnalyticsByDate, getCampaignStatistics, getLeadCampaigns, fetchCampaignMailboxStatistics, MailboxStatisticsEntry } from './smartleadClient';
 
 // ============================================================================
+// PARALLEL EXECUTION HELPER
+// ============================================================================
+
+/**
+ * Max concurrent campaign-level operations during sync.
+ * Rate limiter allows 10 req/2s = 5 req/s; with 5 concurrent campaigns
+ * each doing ~1 req at a time, the queue stays manageable.
+ */
+const SYNC_CONCURRENCY = 5;
+
+/**
+ * Execute async work over an array in parallel chunks.
+ * Processes up to `concurrency` items at a time using Promise.allSettled
+ * so one failure doesn't abort the entire batch.
+ */
+async function parallelChunked<T, R>(
+    items: T[],
+    concurrency: number,
+    fn: (item: T, index: number) => Promise<R>
+): Promise<PromiseSettledResult<R>[]> {
+    const results: PromiseSettledResult<R>[] = [];
+    for (let i = 0; i < items.length; i += concurrency) {
+        const chunk = items.slice(i, i + concurrency);
+        const chunkResults = await Promise.allSettled(
+            chunk.map((item, j) => fn(item, i + j))
+        );
+        results.push(...chunkResults);
+    }
+    return results;
+}
+
+// ============================================================================
 // HISTORICAL BOUNCE BACKFILL
 // ============================================================================
 
@@ -456,24 +488,21 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             });
         }
 
-        let campaignUpserts = [];
-        for (let i = 0; i < campaigns.length; i++) {
-            const campaign = campaigns[i];
-            // ── Fetch detailed analytics from Smartlead (sent, opens, clicks, bounces) ──
-            let analytics = {
-                sent_count: 0,
-                open_count: 0,
-                click_count: 0,
-                reply_count: 0,
-                bounce_count: 0,
-                unsubscribed_count: 0
-            };
+        // ── Fetch campaign analytics in parallel (SYNC_CONCURRENCY at a time) ──
+        const defaultAnalytics = {
+            sent_count: 0, open_count: 0, click_count: 0,
+            reply_count: 0, bounce_count: 0, unsubscribed_count: 0
+        };
 
+        const analyticsResults = await parallelChunked(campaigns, SYNC_CONCURRENCY, async (campaign: any) => {
+            let analytics = { ...defaultAnalytics };
             try {
-                const analyticsRes = await smartleadBreaker.call(() =>
-                    axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaign.id}/analytics`, {
-                        params: { api_key: apiKey }
-                    })
+                const analyticsRes = await smartleadRateLimiter.execute(() =>
+                    smartleadBreaker.call(() =>
+                        axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaign.id}/analytics`, {
+                            params: { api_key: apiKey }
+                        })
+                    )
                 );
                 analytics = analyticsRes.data || analytics;
 
@@ -491,6 +520,15 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     error: analyticsError.message
                 });
             }
+            return { campaign, analytics };
+        });
+
+        // Build upserts from parallel analytics results and batch-write
+        let campaignUpserts = [];
+        for (let i = 0; i < analyticsResults.length; i++) {
+            const result = analyticsResults[i];
+            if (result.status === 'rejected') continue;
+            const { campaign, analytics } = result.value;
 
             const totalSent = parseInt(String(analytics.sent_count || '0'));
             const totalBounced = parseInt(String(analytics.bounce_count || '0'));
@@ -557,7 +595,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
 
             campaignCount++;
 
-            if (campaignUpserts.length >= 50 || i === campaigns.length - 1) {
+            if (campaignUpserts.length >= 50 || i === analyticsResults.length - 1) {
                 await prisma.$transaction(campaignUpserts);
                 campaignUpserts = [];
                 if (sessionId) {
@@ -872,31 +910,30 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             syncProgressService.emitProgress(sessionId, 'leads', 'in_progress', { total: 0 });
         }
 
-        // ── 3. Link campaigns to mailboxes by fetching email account assignments ──
+        // ── 3. Link campaigns to mailboxes by fetching email account assignments (parallel) ──
         await checkCancelled();
-        for (const campaign of campaigns) {
+        await parallelChunked(campaigns, SYNC_CONCURRENCY, async (campaign: any) => {
             const campaignId = campaign.id.toString();
 
             try {
-                // Fetch email accounts assigned to this campaign
                 logger.info(`[CampaignMailboxSync] Fetching email accounts for campaign ${campaignId}`);
 
-                const campaignEmailAccountsRes = await smartleadBreaker.call(() =>
-                    axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/email-accounts`, {
-                        params: { api_key: apiKey }
-                    })
+                const campaignEmailAccountsRes = await smartleadRateLimiter.execute(() =>
+                    smartleadBreaker.call(() =>
+                        axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/email-accounts`, {
+                            params: { api_key: apiKey }
+                        })
+                    )
                 );
 
                 const emailAccounts = campaignEmailAccountsRes.data || [];
                 logger.info(`[CampaignMailboxSync] Found ${emailAccounts.length} email accounts for campaign ${campaignId}`);
 
-                // Connect mailboxes to this campaign
                 const mailboxIds = emailAccounts
                     .map((ea: any) => ea.id?.toString() || ea.email_account_id?.toString())
                     .filter(Boolean);
 
                 if (mailboxIds.length > 0) {
-                    // Update campaign to connect mailboxes
                     await prisma.campaign.update({
                         where: { id: campaignId },
                         data: {
@@ -909,26 +946,22 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     logger.info(`[CampaignMailboxSync] Linked ${mailboxIds.length} mailboxes to campaign ${campaignId}`);
                 }
             } catch (emailAccountError: any) {
-                // Log but don't fail the sync if email account fetching fails
                 logger.error(`[CampaignMailboxSync] Failed to fetch email accounts for campaign ${campaignId}`, emailAccountError, {
                     status: emailAccountError.response?.status,
                     data: emailAccountError.response?.data
                 });
 
-                // Notify user about linking failure
                 try {
-                    const campaign = campaigns.find((c: any) => c.id.toString() === campaignId);
                     await notificationService.createNotification(organizationId, {
                         type: 'WARNING',
                         title: 'Campaign Linking Issue',
                         message: `Could not link mailboxes to campaign "${campaign?.name || campaignId}". Check your Smartlead configuration and API permissions.`
                     });
                 } catch (notifError) {
-                    // Don't fail sync if notification creation fails
                     logger.warn('[CampaignMailboxSync] Failed to create notification', { error: notifError });
                 }
             }
-        }
+        });
 
         // ── 3b. Auto-register webhooks for all campaigns ──
         // Ensures our webhook URL is registered on every campaign for real-time events
@@ -973,7 +1006,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
         }
 
         let campaignIndex = 0;
-        for (const campaign of campaigns) {
+        await parallelChunked(campaigns, SYNC_CONCURRENCY, async (campaign: any) => {
             await checkCancelled(); // Check before each campaign
             const campaignId = campaign.id.toString();
             try {
@@ -992,10 +1025,12 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     // Log before API call
                     logger.debug(`[LeadSync] Fetching leads page`, { campaignId, offset, limit });
 
-                    const leadsRes = await smartleadBreaker.call(() =>
-                        axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/leads`, {
-                            params: { api_key: apiKey, offset, limit }
-                        })
+                    const leadsRes = await smartleadRateLimiter.execute(() =>
+                        smartleadBreaker.call(() =>
+                            axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/leads`, {
+                                params: { api_key: apiKey, offset, limit }
+                            })
+                        )
                     );
 
                     const leadsData = leadsRes.data || [];
@@ -1154,11 +1189,13 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 try {
                     logger.info(`[LeadEngagement] Fetching engagement stats from CSV export for campaign ${campaignId}`);
 
-                    const csvRes = await smartleadBreaker.call(() =>
-                        axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/leads-export`, {
-                            params: { api_key: apiKey },
-                            responseType: 'text' // Important: Get raw text, not parsed JSON
-                        })
+                    const csvRes = await smartleadRateLimiter.execute(() =>
+                        smartleadBreaker.call(() =>
+                            axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/leads-export`, {
+                                params: { api_key: apiKey },
+                                responseType: 'text' // Important: Get raw text, not parsed JSON
+                            })
+                        )
                     );
 
                     const csvData = csvRes.data;
@@ -1397,6 +1434,22 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     total: campaigns.length
                 });
             }
+        });
+
+        // After parallel lead sync, reconcile org lead count with authoritative DB count.
+        // The in-memory org.current_lead_count may drift slightly under concurrency.
+        const authoritativeLeadCount = await prisma.lead.count({ where: { organization_id: organizationId } });
+        if (authoritativeLeadCount !== org.current_lead_count) {
+            logger.info('[SmartleadSync] Reconciling lead count after parallel sync', {
+                organizationId,
+                inMemory: org.current_lead_count,
+                authoritative: authoritativeLeadCount,
+            });
+            org.current_lead_count = authoritativeLeadCount;
+            await prisma.organization.update({
+                where: { id: organizationId },
+                data: { current_lead_count: authoritativeLeadCount }
+            });
         }
 
         if (sessionId) {
@@ -1484,35 +1537,41 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 unsubscribed_count: number;
             }>();
 
-            for (const campaign of campaigns) {
+            // Fetch mailbox stats for all campaigns in parallel, then aggregate
+            const perCampaignStats = await parallelChunked(campaigns, SYNC_CONCURRENCY, async (campaign: any) => {
                 const cId = campaign.id.toString();
-                try {
-                    const stats = await fetchCampaignMailboxStatistics(organizationId, cId);
-                    for (const entry of stats) {
-                        const existing = mailboxStatsMap.get(entry.email_account_id);
-                        if (existing) {
-                            existing.sent_count += entry.sent_count || 0;
-                            existing.open_count += entry.open_count || 0;
-                            existing.click_count += entry.click_count || 0;
-                            existing.reply_count += entry.reply_count || 0;
-                            existing.bounce_count += entry.bounce_count || 0;
-                            existing.unsubscribed_count += entry.unsubscribed_count || 0;
-                        } else {
-                            mailboxStatsMap.set(entry.email_account_id, {
-                                from_email: entry.from_email,
-                                sent_count: entry.sent_count || 0,
-                                open_count: entry.open_count || 0,
-                                click_count: entry.click_count || 0,
-                                reply_count: entry.reply_count || 0,
-                                bounce_count: entry.bounce_count || 0,
-                                unsubscribed_count: entry.unsubscribed_count || 0,
-                            });
-                        }
-                    }
-                } catch (statsErr: any) {
-                    logger.warn(`[MailboxStatistics] Failed for campaign ${cId} (non-fatal)`, {
-                        error: statsErr.message,
+                const stats = await fetchCampaignMailboxStatistics(organizationId, cId);
+                return { campaignId: cId, stats };
+            });
+
+            // Aggregate results into mailboxStatsMap (sequential — safe Map mutation)
+            for (const result of perCampaignStats) {
+                if (result.status === 'rejected') {
+                    logger.warn(`[MailboxStatistics] Failed for a campaign (non-fatal)`, {
+                        error: (result.reason as Error)?.message,
                     });
+                    continue;
+                }
+                for (const entry of result.value.stats) {
+                    const existing = mailboxStatsMap.get(entry.email_account_id);
+                    if (existing) {
+                        existing.sent_count += entry.sent_count || 0;
+                        existing.open_count += entry.open_count || 0;
+                        existing.click_count += entry.click_count || 0;
+                        existing.reply_count += entry.reply_count || 0;
+                        existing.bounce_count += entry.bounce_count || 0;
+                        existing.unsubscribed_count += entry.unsubscribed_count || 0;
+                    } else {
+                        mailboxStatsMap.set(entry.email_account_id, {
+                            from_email: entry.from_email,
+                            sent_count: entry.sent_count || 0,
+                            open_count: entry.open_count || 0,
+                            click_count: entry.click_count || 0,
+                            reply_count: entry.reply_count || 0,
+                            bounce_count: entry.bounce_count || 0,
+                            unsubscribed_count: entry.unsubscribed_count || 0,
+                        });
+                    }
                 }
             }
 
@@ -1645,46 +1704,57 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
         // ── 5b. Fetch analytics-by-date for each campaign (daily trend snapshots) ──
         try {
             let dailyAnalyticsUpserted = 0;
-            for (const campaign of campaigns) {
+
+            // Fetch daily analytics for all campaigns in parallel, upsert sequentially per campaign
+            const dailyResults = await parallelChunked(campaigns, SYNC_CONCURRENCY, async (campaign: any) => {
                 const cId = campaign.id.toString();
+                const dailyData = await getAnalyticsByDate(organizationId, cId);
+                return { campaignId: cId, dailyData };
+            });
+
+            // Upsert daily records sequentially (DB writes, no API calls)
+            for (const result of dailyResults) {
+                if (result.status === 'rejected') {
+                    logger.warn('[SmartleadSync] Failed to fetch analytics-by-date for a campaign', {
+                        error: (result.reason as Error)?.message,
+                    });
+                    continue;
+                }
+                const { campaignId: cId, dailyData } = result.value;
                 try {
-                    const dailyData = await getAnalyticsByDate(organizationId, cId);
-                    if (dailyData.length > 0) {
-                        for (const day of dailyData) {
-                            if (!day.date) continue;
-                            await prisma.campaignDailyAnalytics.upsert({
-                                where: {
-                                    campaign_id_date: {
-                                        campaign_id: cId,
-                                        date: new Date(day.date),
-                                    }
-                                },
-                                update: {
-                                    sent_count: parseInt(String(day.sent_count || 0)),
-                                    open_count: parseInt(String(day.open_count || 0)),
-                                    click_count: parseInt(String(day.click_count || 0)),
-                                    reply_count: parseInt(String(day.reply_count || 0)),
-                                    bounce_count: parseInt(String(day.bounce_count || 0)),
-                                    unsubscribe_count: parseInt(String(day.unsubscribe_count || 0)),
-                                },
-                                create: {
+                    for (const day of dailyData) {
+                        if (!day.date) continue;
+                        await prisma.campaignDailyAnalytics.upsert({
+                            where: {
+                                campaign_id_date: {
                                     campaign_id: cId,
-                                    organization_id: organizationId,
                                     date: new Date(day.date),
-                                    sent_count: parseInt(String(day.sent_count || 0)),
-                                    open_count: parseInt(String(day.open_count || 0)),
-                                    click_count: parseInt(String(day.click_count || 0)),
-                                    reply_count: parseInt(String(day.reply_count || 0)),
-                                    bounce_count: parseInt(String(day.bounce_count || 0)),
-                                    unsubscribe_count: parseInt(String(day.unsubscribe_count || 0)),
                                 }
-                            });
-                            dailyAnalyticsUpserted++;
-                        }
+                            },
+                            update: {
+                                sent_count: parseInt(String(day.sent_count || 0)),
+                                open_count: parseInt(String(day.open_count || 0)),
+                                click_count: parseInt(String(day.click_count || 0)),
+                                reply_count: parseInt(String(day.reply_count || 0)),
+                                bounce_count: parseInt(String(day.bounce_count || 0)),
+                                unsubscribe_count: parseInt(String(day.unsubscribe_count || 0)),
+                            },
+                            create: {
+                                campaign_id: cId,
+                                organization_id: organizationId,
+                                date: new Date(day.date),
+                                sent_count: parseInt(String(day.sent_count || 0)),
+                                open_count: parseInt(String(day.open_count || 0)),
+                                click_count: parseInt(String(day.click_count || 0)),
+                                reply_count: parseInt(String(day.reply_count || 0)),
+                                bounce_count: parseInt(String(day.bounce_count || 0)),
+                                unsubscribe_count: parseInt(String(day.unsubscribe_count || 0)),
+                            }
+                        });
+                        dailyAnalyticsUpserted++;
                     }
                 } catch (dayErr: any) {
-                    // Non-fatal per campaign
-                    logger.warn('[SmartleadSync] Failed to fetch analytics-by-date for campaign', {
+                    logger.warn('[SmartleadSync] Failed to upsert daily analytics for campaign', {
                         campaignId: cId,
                         error: dayErr.message,
                     });

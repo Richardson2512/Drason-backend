@@ -25,6 +25,7 @@ import * as assessmentService from '../services/infrastructureAssessmentService'
 import { TIER_LIMITS } from '../services/polarClient';
 import { acquireLock, releaseLock } from '../utils/redis';
 import { emailbisonRateLimiter } from '../utils/rateLimiter';
+import { emailbisonBreaker } from '../utils/circuitBreaker';
 import {
     PlatformAdapter,
     SyncResult,
@@ -36,6 +37,24 @@ import {
 import { LeadState } from '../types';
 
 const EMAILBISON_API_BASE = 'https://dedi.emailbison.com';
+
+const SYNC_CONCURRENCY = 5;
+
+async function parallelChunked<T, R>(
+    items: T[],
+    concurrency: number,
+    fn: (item: T, index: number) => Promise<R>
+): Promise<PromiseSettledResult<R>[]> {
+    const results: PromiseSettledResult<R>[] = [];
+    for (let i = 0; i < items.length; i += concurrency) {
+        const chunk = items.slice(i, i + concurrency);
+        const chunkResults = await Promise.allSettled(
+            chunk.map((item, j) => fn(item, i + j))
+        );
+        results.push(...chunkResults);
+    }
+    return results;
+}
 
 export class EmailBisonAdapter implements PlatformAdapter {
     readonly platform = SourcePlatform.emailbison;
@@ -125,7 +144,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
             }
 
             // ── Issue D: Rate-limited API call ──
-            const campaignsRes = await emailbisonRateLimiter.execute(() => client.get('/api/campaigns'));
+            const campaignsRes = await emailbisonRateLimiter.execute(() => emailbisonBreaker.call(() => client.get('/api/campaigns')));
             const campaigns = campaignsRes.data?.data || campaignsRes.data || [];
 
             logger.info('[EmailBisonSync] Fetched campaigns', {
@@ -283,7 +302,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
 
             // ── 2. Fetch sender-emails (mailboxes) ─────────────────────
 
-            const mailboxesRes = await emailbisonRateLimiter.execute(() => client.get('/api/sender-emails'));
+            const mailboxesRes = await emailbisonRateLimiter.execute(() => emailbisonBreaker.call(() => client.get('/api/sender-emails')));
             const mailboxes = mailboxesRes.data?.data || mailboxesRes.data || [];
 
             logger.info('[EmailBisonSync] Fetched sender-emails', {
@@ -443,12 +462,12 @@ export class EmailBisonAdapter implements PlatformAdapter {
 
             // ── 3. Link campaigns to mailboxes ─────────────────────────
 
-            for (const campaign of campaigns) {
+            await parallelChunked(campaigns, SYNC_CONCURRENCY, async (campaign: any) => {
                 const externalCampaignId = campaign.id.toString();
                 const internalCampaignId = `eb-${externalCampaignId}`;
 
                 try {
-                    const senderEmailsRes = await emailbisonRateLimiter.execute(() => client.get(`/api/campaigns/${externalCampaignId}/sender-emails`));
+                    const senderEmailsRes = await emailbisonRateLimiter.execute(() => emailbisonBreaker.call(() => client.get(`/api/campaigns/${externalCampaignId}/sender-emails`)));
                     const senderEmails = senderEmailsRes.data?.data || senderEmailsRes.data || [];
 
                     const mailboxIds = senderEmails
@@ -479,7 +498,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
                         error: error.message,
                     });
                 }
-            }
+            });
 
             // ── 4. Fetch leads per campaign ────────────────────────────
 
@@ -490,7 +509,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
                 });
             }
 
-            for (const campaign of campaigns) {
+            await parallelChunked(campaigns, SYNC_CONCURRENCY, async (campaign: any) => {
                 const externalCampaignId = campaign.id.toString();
                 const internalCampaignId = `eb-${externalCampaignId}`;
 
@@ -501,7 +520,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
 
                     while (hasMore) {
                         const leadsRes = await emailbisonRateLimiter.execute(() =>
-                            client.get(`/api/campaigns/${externalCampaignId}/leads`, { params: { page, per_page: 100 } })
+                            emailbisonBreaker.call(() => client.get(`/api/campaigns/${externalCampaignId}/leads`, { params: { page, per_page: 100 } }))
                         );
 
                         const leadsData = leadsRes.data?.data || leadsRes.data || [];
@@ -613,6 +632,21 @@ export class EmailBisonAdapter implements PlatformAdapter {
                         error: error.message,
                     });
                 }
+            });
+
+            // Reconcile org lead count after parallel sync
+            const authoritativeLeadCount = await prisma.lead.count({ where: { organization_id: organizationId } });
+            if (authoritativeLeadCount !== org.current_lead_count) {
+                logger.info('[EmailBisonSync] Reconciling lead count after parallel sync', {
+                    organizationId,
+                    inMemory: org.current_lead_count,
+                    authoritative: authoritativeLeadCount,
+                });
+                org.current_lead_count = authoritativeLeadCount;
+                await prisma.organization.update({
+                    where: { id: organizationId },
+                    data: { current_lead_count: authoritativeLeadCount }
+                });
             }
 
             if (sessionId) {
