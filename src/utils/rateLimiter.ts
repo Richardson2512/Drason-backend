@@ -64,19 +64,14 @@ export class RateLimiter {
     /**
      * Execute a function with rate limiting.
      * If rate limit exceeded, queues the request.
+     * 429 errors are retried indefinitely with exponential backoff (capped at 30s).
      *
      * @param fn - Async function to execute
-     * @param retryOn429 - Whether to retry on 429 errors (default: true)
      * @returns Promise that resolves with function result
      */
     async execute<T>(
         fn: () => Promise<T>,
-        options: {
-            retryOn429?: boolean;
-            maxRetries?: number;
-        } = {}
     ): Promise<T> {
-        const { retryOn429 = true, maxRetries = 3 } = options;
 
         return new Promise<T>((resolve, reject) => {
             const request: QueuedRequest = {
@@ -124,10 +119,14 @@ export class RateLimiter {
                         error.message?.toLowerCase().includes('rate limit') ||
                         error.message?.toLowerCase().includes('too many requests');
 
-                    if (is429 && request.retryCount < 3) {
-                        // Retry with exponential backoff
+                    if (is429) {
+                        // 429 means "slow down" — always retry with exponential backoff,
+                        // capped at 30s. Never give up on a rate limit; the data must land.
                         request.retryCount++;
-                        const delayMs = Math.pow(2, request.retryCount) * 1000; // 2s, 4s, 8s
+                        const delayMs = Math.min(
+                            Math.pow(2, request.retryCount) * 1000, // 2s, 4s, 8s, 16s, ...
+                            30_000                                   // cap at 30s
+                        );
 
                         logger.warn('[RATE_LIMITER] 429 error, retrying after delay', {
                             retryCount: request.retryCount,
@@ -136,10 +135,10 @@ export class RateLimiter {
 
                         await this.delay(delayMs);
 
-                        // Re-queue the request
+                        // Re-queue the request at the front
                         this.queue.unshift(request);
                     } else {
-                        // Max retries exceeded or non-429 error
+                        // Non-429 error — reject immediately
                         request.reject(error);
                     }
                 }

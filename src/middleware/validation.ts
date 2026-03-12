@@ -148,10 +148,16 @@ export const resolveStalledCampaignSchema = z.object({
 
 export const applyLoadBalancingSchema = z.object({
     suggestion: z.object({
-        type: z.string(),
-        campaignId: z.string(),
-        targetMailboxes: z.number().optional(),
-        sourceCampaignId: z.string().optional()
+        type: z.enum(['move_mailbox', 'add_mailbox', 'remove_mailbox']),
+        mailbox_id: z.string(),
+        mailbox_email: z.string(),
+        from_campaign_id: z.string().optional(),
+        from_campaign_name: z.string().optional(),
+        to_campaign_id: z.string().optional(),
+        to_campaign_name: z.string().optional(),
+        reason: z.string(),
+        expected_impact: z.string(),
+        priority: z.enum(['high', 'medium', 'low'])
     })
 });
 

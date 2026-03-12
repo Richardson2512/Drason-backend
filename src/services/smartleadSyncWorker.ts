@@ -35,10 +35,13 @@ import { getApiKey, SMARTLEAD_API_BASE, ensureWebhooksRegistered, getAnalyticsBy
 
 /**
  * Max concurrent campaign-level operations during sync.
- * Rate limiter allows 10 req/2s = 5 req/s; with 5 concurrent campaigns
- * each doing ~1 req at a time, the queue stays manageable.
+ * API-calling steps use SYNC_API_CONCURRENCY = 1 to respect Smartlead's
+ * 10 req/2s rate limit. Running one campaign at a time lets the rate limiter
+ * pace calls naturally — no 429 cascades, no circuit breaker trips, no silent
+ * data loss. DB-only steps keep SYNC_DB_CONCURRENCY = 5 for speed.
  */
-const SYNC_CONCURRENCY = 5;
+const SYNC_API_CONCURRENCY = 1;
+const SYNC_DB_CONCURRENCY = 5;
 
 /**
  * Execute async work over an array in parallel chunks.
@@ -488,13 +491,13 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             });
         }
 
-        // ── Fetch campaign analytics in parallel (SYNC_CONCURRENCY at a time) ──
+        // ── Fetch campaign analytics (one campaign at a time to respect rate limits) ──
         const defaultAnalytics = {
             sent_count: 0, open_count: 0, click_count: 0,
             reply_count: 0, bounce_count: 0, unsubscribed_count: 0
         };
 
-        const analyticsResults = await parallelChunked(campaigns, SYNC_CONCURRENCY, async (campaign: any) => {
+        const analyticsResults = await parallelChunked(campaigns, SYNC_API_CONCURRENCY, async (campaign: any) => {
             let analytics = { ...defaultAnalytics };
             try {
                 const analyticsRes = await smartleadRateLimiter.execute(() =>
@@ -802,7 +805,12 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             const isConnected = mailbox.is_smtp_success === true && mailbox.is_imap_success === true;
             const connectionError = mailbox.smtp_failure_error || mailbox.imap_failure_error;
 
-            let mailboxStatus: string;
+            // Determine mailbox status from Smartlead connection state.
+            // IMPORTANT: Only force a status change for disconnected/inactive mailboxes.
+            // If the mailbox is connected+active, preserve the current DB status (which may
+            // be 'warning' from infra assessment bounce rate analysis). Only default to
+            // 'healthy' for brand-new mailboxes (create path).
+            let mailboxStatus: string | undefined;
             if (!isConnected) {
                 mailboxStatus = 'paused'; // Disconnected/suspended mailboxes are paused
                 if (connectionError) {
@@ -816,7 +824,8 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             } else if (mailbox.status !== 'ACTIVE') {
                 mailboxStatus = 'paused';
             } else {
-                mailboxStatus = 'healthy';
+                // Connected + ACTIVE: don't overwrite assessment-derived statuses (warning, etc.)
+                mailboxStatus = undefined;
             }
 
             // Extract warmup data if available (SOFT SIGNALS - informational only)
@@ -831,28 +840,34 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             // NOTE: total_sent_count is NOT set here — it's calculated from campaign CSV data
             // during lead engagement processing (step 4) for accurate lifetime totals.
             // daily_sent_count from Smartlead is only today's count, not lifetime.
+            const updateData: any = {
+                email,
+                external_email_account_id: String(mailbox.id),
+                smtp_status: mailbox.is_smtp_success === true,
+                imap_status: mailbox.is_imap_success === true,
+                connection_error: connectionError || null,
+                spam_count: warmupSpamCount,
+                warmup_status: warmupStatus,
+                warmup_reputation: warmupReputation,
+                warmup_limit: warmupLimit,
+                last_activity_at: new Date()
+            };
+            // Only overwrite status when we know it should change (disconnected/inactive).
+            // When undefined, the current DB status is preserved (e.g. 'warning' from assessment).
+            if (mailboxStatus !== undefined) {
+                updateData.status = mailboxStatus;
+            }
+
             mailboxUpserts.push(
                 prisma.mailbox.upsert({
                     where: { id: mailbox.id.toString() },
-                    update: {
-                        email,
-                        external_email_account_id: String(mailbox.id),
-                        status: mailboxStatus,
-                        smtp_status: mailbox.is_smtp_success === true,
-                        imap_status: mailbox.is_imap_success === true,
-                        connection_error: connectionError || null,
-                        spam_count: warmupSpamCount,
-                        warmup_status: warmupStatus,
-                        warmup_reputation: warmupReputation,
-                        warmup_limit: warmupLimit,
-                        last_activity_at: new Date()
-                    },
+                    update: updateData,
                     create: {
                         id: mailbox.id.toString(),
                         email,
                         external_email_account_id: String(mailbox.id),
                         source_platform: SourcePlatform.smartlead,
-                        status: mailboxStatus,
+                        status: mailboxStatus || 'healthy', // New mailboxes default to healthy
                         smtp_status: mailbox.is_smtp_success === true,
                         imap_status: mailbox.is_imap_success === true,
                         connection_error: connectionError || null,
@@ -912,7 +927,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
 
         // ── 3. Link campaigns to mailboxes by fetching email account assignments (parallel) ──
         await checkCancelled();
-        await parallelChunked(campaigns, SYNC_CONCURRENCY, async (campaign: any) => {
+        await parallelChunked(campaigns, SYNC_API_CONCURRENCY, async (campaign: any) => {
             const campaignId = campaign.id.toString();
 
             try {
@@ -1009,7 +1024,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
         }
 
         let campaignIndex = 0;
-        await parallelChunked(campaigns, SYNC_CONCURRENCY, async (campaign: any) => {
+        await parallelChunked(campaigns, SYNC_API_CONCURRENCY, async (campaign: any) => {
             await checkCancelled(); // Check before each campaign
             const campaignId = campaign.id.toString();
             try {
@@ -1246,6 +1261,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         const email = rec.email || rec.Email || rec.EMAIL;
                         if (!email) continue;
 
+                        const sentCount = parseInt(rec.sent_count || rec.emails_sent || rec.sequence_number || '0');
                         const openCount = parseInt(rec.open_count || rec.opens || '0');
                         const clickCount = parseInt(rec.click_count || rec.clicks || '0');
                         const replyCount = parseInt(rec.reply_count || rec.replies || '0');
@@ -1257,6 +1273,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         if (updatedCount < 3) {
                             logger.info(`[LeadEngagement] Sample lead ${updatedCount + 1}:`, {
                                 email,
+                                sent: sentCount,
                                 opens: openCount,
                                 clicks: clickCount,
                                 replies: replyCount,
@@ -1265,7 +1282,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                             });
                         }
 
-                        if (openCount > 0 || clickCount > 0 || replyCount > 0) {
+                        if (sentCount > 0 || openCount > 0 || clickCount > 0 || replyCount > 0) {
                             recordsWithEngagement++;
                         }
 
@@ -1275,8 +1292,15 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                 emails_opened: openCount,
                                 emails_clicked: clickCount,
                                 emails_replied: replyCount,
-                                last_activity_at: (openCount > 0 || clickCount > 0 || replyCount > 0) ? new Date() : undefined
+                                last_activity_at: (sentCount > 0 || openCount > 0 || clickCount > 0 || replyCount > 0) ? new Date() : undefined
                             };
+
+                            // Only set emails_sent from CSV if the column actually exists (sentCount > 0).
+                            // If the CSV lacks a sent column, sentCount defaults to 0 — don't overwrite
+                            // webhook-accumulated values with zero.
+                            if (sentCount > 0) {
+                                leadUpdateData.emails_sent = sentCount;
+                            }
 
                             // Add bounce data if lead bounced
                             if (bouncedStatus) {
@@ -1541,7 +1565,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             }>();
 
             // Fetch mailbox stats for all campaigns in parallel, then aggregate
-            const perCampaignStats = await parallelChunked(campaigns, SYNC_CONCURRENCY, async (campaign: any) => {
+            const perCampaignStats = await parallelChunked(campaigns, SYNC_API_CONCURRENCY, async (campaign: any) => {
                 const cId = campaign.id.toString();
                 const stats = await fetchCampaignMailboxStatistics(organizationId, cId);
                 return { campaignId: cId, stats };
@@ -1709,7 +1733,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             let dailyAnalyticsUpserted = 0;
 
             // Fetch daily analytics for all campaigns in parallel, upsert sequentially per campaign
-            const dailyResults = await parallelChunked(campaigns, SYNC_CONCURRENCY, async (campaign: any) => {
+            const dailyResults = await parallelChunked(campaigns, SYNC_API_CONCURRENCY, async (campaign: any) => {
                 const cId = campaign.id.toString();
                 const dailyData = await getAnalyticsByDate(organizationId, cId);
                 return { campaignId: cId, dailyData };
