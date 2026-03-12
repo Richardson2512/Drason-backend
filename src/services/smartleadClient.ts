@@ -763,51 +763,72 @@ export const fetchCampaignMailboxStatistics = async (
     const apiKey = await getApiKey(organizationId);
     if (!apiKey) throw new Error('Smartlead API key not configured');
 
+    const allEntries: MailboxStatisticsEntry[] = [];
+    let offset = 0;
+    const limit = 50;
+    const MAX_PAGES = 20; // Safety cap: 50 * 20 = 1000 mailboxes max
+
     try {
-        const response = await smartleadRateLimiter.execute(() =>
-            smartleadBreaker.call(() =>
-                axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/mailbox-statistics`, {
-                    params: { api_key: apiKey }
-                })
-            )
-        );
+        for (let page = 0; page < MAX_PAGES; page++) {
+            const response = await smartleadRateLimiter.execute(() =>
+                smartleadBreaker.call(() =>
+                    axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/mailbox-statistics`, {
+                        params: { api_key: apiKey, offset, limit }
+                    })
+                )
+            );
 
-        const data = response.data;
+            const data = response.data;
 
-        let entries: MailboxStatisticsEntry[] = [];
+            let entries: MailboxStatisticsEntry[] = [];
 
-        // API returns { ok: true, data: [...] }
-        if (data?.ok && Array.isArray(data.data)) {
-            entries = data.data;
-        } else if (Array.isArray(data)) {
-            // Fallback: direct array response
-            entries = data;
-        } else {
-            logger.warn('[SMARTLEAD-MAILBOX-STATS] Unexpected response shape — no stats extracted', {
-                organizationId,
-                campaignId,
-                responseKeys: data ? Object.keys(data) : 'null',
-                responseType: typeof data,
-                responseSample: JSON.stringify(data)?.slice(0, 500),
-            });
-            return [];
+            // API returns { ok: true, data: [...] }
+            if (data?.ok && Array.isArray(data.data)) {
+                entries = data.data;
+            } else if (Array.isArray(data)) {
+                // Fallback: direct array response
+                entries = data;
+            } else {
+                logger.warn('[SMARTLEAD-MAILBOX-STATS] Unexpected response shape — no stats extracted', {
+                    organizationId,
+                    campaignId,
+                    offset,
+                    responseKeys: data ? Object.keys(data) : 'null',
+                    responseType: typeof data,
+                    responseSample: JSON.stringify(data)?.slice(0, 500),
+                });
+                break;
+            }
+
+            allEntries.push(...entries);
+
+            // If we got fewer than the limit, we've reached the last page
+            if (entries.length < limit) {
+                break;
+            }
+
+            offset += limit;
         }
 
         logger.info('[SMARTLEAD-MAILBOX-STATS] Fetched mailbox statistics', {
             organizationId,
             campaignId,
-            mailboxCount: entries.length,
-            emailAccountIds: entries.map(e => e.email_account_id),
+            mailboxCount: allEntries.length,
+            pagesRead: Math.ceil(offset / limit) + 1,
+            emailAccountIds: allEntries.map(e => e.email_account_id),
         });
 
-        return entries;
+        return allEntries;
     } catch (error: any) {
         logger.error('[SMARTLEAD-MAILBOX-STATS] Failed to fetch mailbox statistics', error, {
             organizationId,
             campaignId,
+            offset,
+            entriesSoFar: allEntries.length,
             status: error.response?.status,
             responseData: JSON.stringify(error.response?.data)?.slice(0, 500),
         });
-        return [];
+        // Return whatever we collected before the error — partial data is better than none
+        return allEntries;
     }
 };

@@ -40,6 +40,48 @@ const EMAILBISON_API_BASE = 'https://dedi.emailbison.com';
 
 const SYNC_CONCURRENCY = 5;
 
+/**
+ * Paginate through an EmailBison list endpoint.
+ * EmailBison defaults to 15 items per page. Response shape:
+ *   { data: [...], links: { next }, meta: { current_page, last_page } }
+ */
+async function fetchAllPages<T>(
+    client: AxiosInstance,
+    path: string,
+    label: string,
+): Promise<T[]> {
+    const allItems: T[] = [];
+    let page = 1;
+    const MAX_PAGES = 100; // Safety cap
+
+    for (let i = 0; i < MAX_PAGES; i++) {
+        const res = await emailbisonRateLimiter.execute(() =>
+            emailbisonBreaker.call(() => client.get(path, { params: { page } }))
+        );
+
+        const data = res.data?.data || res.data || [];
+        const items: T[] = Array.isArray(data) ? data : [];
+        allItems.push(...items);
+
+        // Check if there are more pages via meta or links
+        const lastPage = res.data?.meta?.last_page;
+        const nextLink = res.data?.links?.next;
+
+        if (items.length === 0 || (lastPage && page >= lastPage) || !nextLink) {
+            break;
+        }
+
+        page++;
+    }
+
+    logger.info(`[EmailBisonSync] ${label} fetched all pages`, {
+        totalItems: allItems.length,
+        pagesRead: page,
+    });
+
+    return allItems;
+}
+
 async function parallelChunked<T, R>(
     items: T[],
     concurrency: number,
@@ -143,13 +185,12 @@ export class EmailBisonAdapter implements PlatformAdapter {
                 syncProgressService.emitProgress(sessionId, 'campaigns', 'in_progress', { total: 0 });
             }
 
-            // ── Issue D: Rate-limited API call ──
-            const campaignsRes = await emailbisonRateLimiter.execute(() => emailbisonBreaker.call(() => client.get('/api/campaigns')));
-            const campaigns = campaignsRes.data?.data || campaignsRes.data || [];
+            // ── Issue D: Rate-limited API call (paginated — default 15/page) ──
+            const campaigns = await fetchAllPages<any>(client, '/api/campaigns', 'Campaigns');
 
             logger.info('[EmailBisonSync] Fetched campaigns', {
                 organizationId,
-                count: Array.isArray(campaigns) ? campaigns.length : 0,
+                count: campaigns.length,
             });
 
             if (sessionId) {
@@ -302,12 +343,11 @@ export class EmailBisonAdapter implements PlatformAdapter {
 
             // ── 2. Fetch sender-emails (mailboxes) ─────────────────────
 
-            const mailboxesRes = await emailbisonRateLimiter.execute(() => emailbisonBreaker.call(() => client.get('/api/sender-emails')));
-            const mailboxes = mailboxesRes.data?.data || mailboxesRes.data || [];
+            const mailboxes = await fetchAllPages<any>(client, '/api/sender-emails', 'Sender-emails');
 
             logger.info('[EmailBisonSync] Fetched sender-emails', {
                 organizationId,
-                count: Array.isArray(mailboxes) ? mailboxes.length : 0,
+                count: mailboxes.length,
             });
 
             if (sessionId) {
@@ -467,8 +507,7 @@ export class EmailBisonAdapter implements PlatformAdapter {
                 const internalCampaignId = `eb-${externalCampaignId}`;
 
                 try {
-                    const senderEmailsRes = await emailbisonRateLimiter.execute(() => emailbisonBreaker.call(() => client.get(`/api/campaigns/${externalCampaignId}/sender-emails`)));
-                    const senderEmails = senderEmailsRes.data?.data || senderEmailsRes.data || [];
+                    const senderEmails = await fetchAllPages<any>(client, `/api/campaigns/${externalCampaignId}/sender-emails`, `Campaign ${externalCampaignId} sender-emails`);
 
                     const mailboxIds = senderEmails
                         .map((se: any) => `eb-${se.id}`)
