@@ -478,7 +478,7 @@ export const registerCampaignWebhook = async (
         'LEAD_UNSUBSCRIBED',
         'LEAD_CATEGORY_UPDATED',
         'CAMPAIGN_STATUS_CHANGED',
-        'Email Bounce',
+        'EMAIL_BOUNCE',
     ];
 
     try {
