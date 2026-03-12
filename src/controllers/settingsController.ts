@@ -212,12 +212,16 @@ export const getClayWebhookUrl = async (req: Request, res: Response) => {
         const orgId = getOrgId(req);
 
         // Use configured BACKEND_URL — never trust request Host header
-        const baseUrl = process.env.BACKEND_URL || process.env.BASE_URL;
+        let baseUrl = process.env.BACKEND_URL || process.env.BASE_URL;
         if (!baseUrl) {
             return res.status(500).json({
                 success: false,
                 error: 'Server configuration error: BACKEND_URL is not set. Contact your administrator.'
             });
+        }
+
+        if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
+            baseUrl = `https://${baseUrl}`;
         }
 
         // Fetch organization's webhook secret

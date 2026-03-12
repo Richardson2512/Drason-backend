@@ -965,8 +965,11 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
 
         // ── 3b. Auto-register webhooks for all campaigns ──
         // Ensures our webhook URL is registered on every campaign for real-time events
-        const webhookBaseUrl = process.env.BACKEND_URL || process.env.BASE_URL;
+        let webhookBaseUrl = process.env.BACKEND_URL || process.env.BASE_URL;
         if (webhookBaseUrl) {
+            if (!webhookBaseUrl.startsWith('http://') && !webhookBaseUrl.startsWith('https://')) {
+                webhookBaseUrl = `https://${webhookBaseUrl}`;
+            }
             const webhookUrl = `${webhookBaseUrl}/api/monitor/smartlead-webhook`;
             try {
                 const campaignIdsForWebhook = campaigns.map((c: any) => c.id.toString());
