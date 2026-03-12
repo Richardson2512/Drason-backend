@@ -20,7 +20,11 @@ import * as auditLogService from './auditLogService';
 import * as notificationService from './notificationService';
 import * as entityStateService from './entityStateService';
 import * as campaignHealthService from './campaignHealthService';
-import { MailboxState, DomainState, TriggerType } from '../types';
+import * as eventService from './eventService';
+import * as rotationService from './rotationService';
+import { SlackAlertService } from './SlackAlertService';
+import { getAdapterForMailbox } from '../adapters/platformRegistry';
+import { MailboxState, DomainState, TriggerType, EventType } from '../types';
 import { logger } from './observabilityService';
 
 // ============================================================================
@@ -176,6 +180,118 @@ interface AssessmentResult {
     };
     findings: Finding[];
     recommendations: Recommendation[];
+}
+
+// ─── Mailbox Pause Enforcement ──────────────────────────────────────────────
+// When assessment pauses a mailbox, enforce the same actions as monitoringService:
+// platform removal, healing pipeline entry, Slack alert, and standby rotation.
+
+/**
+ * Enforce platform-side removal and healing pipeline entry for a mailbox
+ * that the assessment has determined should be paused.
+ *
+ * This closes the gap where assessment-detected pauses were DB-only flags
+ * without actual platform enforcement or healing entry.
+ */
+async function enforceMailboxPause(
+    organizationId: string,
+    mailbox: {
+        id: string;
+        email: string;
+        resilience_score: number | null;
+        external_email_account_id: string | null;
+    },
+    reason: string,
+): Promise<void> {
+    // ── 1. Set healing operational fields (enters healing pipeline) ──
+    const currentResilience = mailbox.resilience_score ?? 50;
+    const newResilience = Math.max(0, currentResilience - 15);
+
+    await prisma.mailbox.update({
+        where: { id: mailbox.id },
+        data: {
+            recovery_phase: 'paused',
+            resilience_score: newResilience,
+            clean_sends_since_phase: 0,
+            phase_entered_at: new Date(),
+        },
+    });
+
+    // ── 2. Store event for audit trail ──
+    try {
+        await eventService.storeEvent({
+            organizationId,
+            eventType: EventType.MAILBOX_PAUSED,
+            entityType: 'mailbox',
+            entityId: mailbox.id,
+            payload: { reason, source: 'infrastructure_assessment' },
+        });
+    } catch (err: any) {
+        logger.warn(`[ASSESSMENT] Non-fatal: failed to store event for mailbox ${mailbox.id}`, {
+            organizationId, error: err.message,
+        });
+    }
+
+    // ── 3. Slack alert ──
+    SlackAlertService.sendAlert({
+        organizationId,
+        eventType: 'mailbox_paused',
+        entityId: mailbox.id,
+        severity: 'critical',
+        title: 'Mailbox Paused (Assessment)',
+        message: `Mailbox \`${mailbox.email}\` has been paused during infrastructure assessment.\n*Reason:* ${reason}`,
+    }).catch(err => logger.warn('[ASSESSMENT] Non-fatal Slack alert error', { error: String(err) }));
+
+    // ── 4. Platform removal: remove mailbox from all assigned campaigns ──
+    try {
+        const adapter = await getAdapterForMailbox(mailbox.id);
+        const campaigns = await prisma.campaign.findMany({
+            where: { mailboxes: { some: { id: mailbox.id } } },
+            select: { id: true, external_id: true, name: true },
+        });
+
+        for (const campaign of campaigns) {
+            try {
+                await adapter.removeMailboxFromCampaign(
+                    organizationId,
+                    campaign.external_id || campaign.id,
+                    mailbox.external_email_account_id || mailbox.id,
+                );
+            } catch (removeErr: any) {
+                logger.warn(`[ASSESSMENT] Failed to remove mailbox ${mailbox.id} from campaign ${campaign.id}`, {
+                    organizationId, error: removeErr.message,
+                });
+            }
+        }
+
+        logger.info(`[ASSESSMENT] Removed paused mailbox ${mailbox.id} from ${campaigns.length} platform campaigns`, {
+            organizationId, mailboxId: mailbox.id, platform: adapter.platform,
+        });
+
+        // ── 5. Rotation: attempt to rotate in a standby mailbox ──
+        try {
+            const rotationResult = await rotationService.rotateForPausedMailbox(
+                organizationId,
+                mailbox.id,
+                campaigns,
+            );
+            logger.info(`[ASSESSMENT] Rotation result for paused mailbox ${mailbox.id}`, {
+                organizationId,
+                rotationsSucceeded: rotationResult.rotationsSucceeded,
+                rotationsFailed: rotationResult.rotationsFailed,
+                noStandbyAvailable: rotationResult.noStandbyAvailable,
+            });
+        } catch (rotationError: any) {
+            logger.warn(`[ASSESSMENT] Rotation failed for paused mailbox ${mailbox.id}`, {
+                organizationId, error: rotationError.message,
+            });
+        }
+    } catch (platformError: any) {
+        // Platform enforcement failure must NOT crash the assessment
+        logger.error(`[ASSESSMENT] Failed platform enforcement for mailbox ${mailbox.id}`, platformError, {
+            organizationId, mailboxId: mailbox.id,
+        });
+    }
 }
 
 // ─── DNS Assessment ──────────────────────────────────────────────────────────
@@ -577,11 +693,13 @@ export async function assessInfrastructure(
 
                 // Force paused via state machine — skip bounce rate logic entirely
                 if (mailbox.status !== 'paused') {
+                    const pauseReason = `Connection failed: SMTP=${mailbox.smtp_status}, IMAP=${mailbox.imap_status}`;
                     await entityStateService.setInitialMailboxStatus(
                         organizationId, mailbox.id, MailboxState.PAUSED,
-                        `Connection failed: SMTP=${mailbox.smtp_status}, IMAP=${mailbox.imap_status}`,
-                        TriggerType.SYSTEM
+                        pauseReason, TriggerType.SYSTEM
                     );
+                    // Enforce platform removal + healing pipeline entry
+                    await enforceMailboxPause(organizationId, mailbox, pauseReason);
                 }
                 await prisma.mailbox.update({
                     where: { id: mailbox.id },
@@ -663,11 +781,15 @@ export async function assessInfrastructure(
 
             // Set mailbox status via state machine (assessment uses setInitial to bypass transition validation)
             if (mailboxState !== mailbox.status) {
+                const assessmentReason = `Infrastructure assessment: bounce rate ${(bounceRate * 100).toFixed(1)}%`;
                 await entityStateService.setInitialMailboxStatus(
                     organizationId, mailbox.id, mailboxState as MailboxState,
-                    `Infrastructure assessment: bounce rate ${(bounceRate * 100).toFixed(1)}%`,
-                    TriggerType.SYSTEM
+                    assessmentReason, TriggerType.SYSTEM
                 );
+                // If paused: enforce platform removal + healing pipeline entry
+                if (mailboxState === 'paused') {
+                    await enforceMailboxPause(organizationId, mailbox, assessmentReason);
+                }
             }
 
             if (mailboxState === 'healthy') mailboxSummary.healthy++;

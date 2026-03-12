@@ -13,20 +13,27 @@ router.post('/', async (req: Request, res: Response) => {
     try {
         const orgId = getOrgId(req);
         const sessionId = req.query.session as string | undefined;
+        const platformFilter = req.query.platform as string | undefined;
 
         // Reset circuit breakers on manual sync — auto-sync failures can leave
         // breakers stuck OPEN, blocking all API calls for the manual trigger
-        smartleadBreaker.reset();
-        emailbisonBreaker.reset();
-        instantlyBreaker.reset();
+        if (!platformFilter || platformFilter === 'smartlead') smartleadBreaker.reset();
+        if (!platformFilter || platformFilter === 'emailbison') emailbisonBreaker.reset();
+        if (!platformFilter || platformFilter === 'instantly') instantlyBreaker.reset();
 
-        // Discover and sync all configured platforms for this org
-        const adapters = await getActiveAdaptersForOrg(orgId);
+        // Discover and sync all (or filtered) configured platforms for this org
+        let adapters = await getActiveAdaptersForOrg(orgId);
+
+        if (platformFilter) {
+            adapters = adapters.filter(({ adapter }) => adapter.platform === platformFilter);
+        }
 
         if (adapters.length === 0) {
             return res.status(400).json({
                 success: false,
-                error: 'No platforms configured. Add an API key in Settings.'
+                error: platformFilter
+                    ? `${platformFilter} is not configured. Add an API key in Settings.`
+                    : 'No platforms configured. Add an API key in Settings.'
             });
         }
 
