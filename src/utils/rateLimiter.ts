@@ -114,10 +114,24 @@ export class RateLimiter {
                     const result = await request.fn();
                     request.resolve(result);
                 } catch (error: any) {
-                    // Check if it's a 429 rate limit error
-                    const is429 = error.response?.status === 429 ||
-                        error.message?.toLowerCase().includes('rate limit') ||
-                        error.message?.toLowerCase().includes('too many requests');
+                    const status = error.response?.status;
+                    const message = error.message?.toLowerCase() || '';
+
+                    // Check if it's a retryable error:
+                    // - 429: rate limited (always retry, indefinitely)
+                    // - 500/502/503: transient server error (retry up to 5 times)
+                    // - ECONNRESET/ETIMEDOUT/CircuitOpenError: transient network/breaker (retry up to 5 times)
+                    const is429 = status === 429 ||
+                        message.includes('rate limit') ||
+                        message.includes('too many requests');
+
+                    const isTransient = status === 500 || status === 502 || status === 503 ||
+                        message.includes('econnreset') ||
+                        message.includes('etimedout') ||
+                        message.includes('socket hang up') ||
+                        message.includes('circuit breaker open');
+
+                    const MAX_TRANSIENT_RETRIES = 5;
 
                     if (is429) {
                         // 429 means "slow down" — always retry with exponential backoff,
@@ -134,11 +148,27 @@ export class RateLimiter {
                         });
 
                         await this.delay(delayMs);
+                        this.queue.unshift(request);
+                    } else if (isTransient && request.retryCount < MAX_TRANSIENT_RETRIES) {
+                        // Transient server/network error — retry with backoff, up to limit
+                        request.retryCount++;
+                        const delayMs = Math.min(
+                            Math.pow(2, request.retryCount) * 1000,
+                            15_000
+                        );
 
-                        // Re-queue the request at the front
+                        logger.warn('[RATE_LIMITER] Transient error, retrying after delay', {
+                            retryCount: request.retryCount,
+                            maxRetries: MAX_TRANSIENT_RETRIES,
+                            delayMs,
+                            status,
+                            error: error.message?.slice(0, 200),
+                        });
+
+                        await this.delay(delayMs);
                         this.queue.unshift(request);
                     } else {
-                        // Non-429 error — reject immediately
+                        // Non-retryable error or max retries exceeded — reject
                         request.reject(error);
                     }
                 }

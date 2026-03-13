@@ -642,11 +642,9 @@ export const getAnalyticsByDate = async (
         if (endDate) params.end_date = endDate;
 
         const response = await smartleadRateLimiter.execute(() =>
-            smartleadBreaker.call(() =>
-                axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/analytics-by-date`, {
-                    params
-                })
-            )
+            axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/analytics-by-date`, {
+                params
+            })
         );
 
         return response.data || [];
@@ -678,16 +676,14 @@ export const getCampaignStatistics = async (
 
     try {
         const response = await smartleadRateLimiter.execute(() =>
-            smartleadBreaker.call(() =>
-                axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/statistics`, {
-                    params: {
-                        api_key: apiKey,
-                        email_status: emailStatus,
-                        offset,
-                        limit
-                    }
-                })
-            )
+            axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/statistics`, {
+                params: {
+                    api_key: apiKey,
+                    email_status: emailStatus,
+                    offset,
+                    limit
+                }
+            })
         );
 
         return response.data || { total_stats: 0, data: [] };
@@ -717,11 +713,9 @@ export const getLeadCampaigns = async (
 
     try {
         const response = await smartleadRateLimiter.execute(() =>
-            smartleadBreaker.call(() =>
-                axios.get(`${SMARTLEAD_API_BASE}/leads/${leadId}/campaigns`, {
-                    params: { api_key: apiKey }
-                })
-            )
+            axios.get(`${SMARTLEAD_API_BASE}/leads/${leadId}/campaigns`, {
+                params: { api_key: apiKey }
+            })
         );
 
         return response.data || [];
@@ -770,12 +764,14 @@ export const fetchCampaignMailboxStatistics = async (
 
     try {
         for (let page = 0; page < MAX_PAGES; page++) {
+            // NOTE: No circuit breaker here — sync operations use rate limiter
+            // retries (including transient error retries) instead. The breaker is
+            // counterproductive for batch sync: one bad campaign would trip it and
+            // block stats for all remaining campaigns.
             const response = await smartleadRateLimiter.execute(() =>
-                smartleadBreaker.call(() =>
-                    axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/mailbox-statistics`, {
-                        params: { api_key: apiKey, offset, limit }
-                    })
-                )
+                axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/mailbox-statistics`, {
+                    params: { api_key: apiKey, offset, limit }
+                })
             );
 
             const data = response.data;

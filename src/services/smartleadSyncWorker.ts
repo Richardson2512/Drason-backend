@@ -18,7 +18,6 @@ import * as notificationService from './notificationService';
 import { SourcePlatform } from '@prisma/client';
 import { EventType, LeadState } from '../types';
 import { logger } from './observabilityService';
-import { smartleadBreaker } from '../utils/circuitBreaker';
 import { smartleadRateLimiter } from '../utils/rateLimiter';
 import { acquireLock, releaseLock, isSyncCancelled, clearSyncCancelled } from '../utils/redis';
 import { calculateEngagementScore, calculateFinalScore } from './leadScoringService';
@@ -105,11 +104,9 @@ async function backfillBouncesForCampaign(
     try {
         while (true) {
             const statsRes = await smartleadRateLimiter.execute(() =>
-                smartleadBreaker.call(() =>
-                    axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/statistics`, {
-                        params: { api_key: apiKey, email_status: 'bounced', offset, limit: PAGE_SIZE },
-                    })
-                )
+                axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/statistics`, {
+                    params: { api_key: apiKey, email_status: 'bounced', offset, limit: PAGE_SIZE },
+                })
             );
 
             const body = statsRes.data;
@@ -178,11 +175,9 @@ async function backfillBouncesForCampaign(
             if (smartleadLeadId) {
                 try {
                     const historyRes = await smartleadRateLimiter.execute(() =>
-                        smartleadBreaker.call(() =>
-                            axios.get(
-                                `${SMARTLEAD_API_BASE}/campaigns/${campaignId}/leads/${smartleadLeadId}/message-history`,
-                                { params: { api_key: apiKey } }
-                            )
+                        axios.get(
+                            `${SMARTLEAD_API_BASE}/campaigns/${campaignId}/leads/${smartleadLeadId}/message-history`,
+                            { params: { api_key: apiKey } }
                         )
                     );
                     const senderEmail: string | undefined = historyRes.data?.from;
@@ -453,7 +448,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             syncProgressService.emitProgress(sessionId, 'campaigns', 'in_progress', { total: 0 });
         }
 
-        const campaignsRes = await smartleadBreaker.call(() =>
+        const campaignsRes = await smartleadRateLimiter.execute(() =>
             axios.get(`${SMARTLEAD_API_BASE}/campaigns?api_key=${apiKey}`)
         );
         const rawCampaignData = campaignsRes.data;
@@ -501,11 +496,9 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             let analytics = { ...defaultAnalytics };
             try {
                 const analyticsRes = await smartleadRateLimiter.execute(() =>
-                    smartleadBreaker.call(() =>
-                        axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaign.id}/analytics`, {
-                            params: { api_key: apiKey }
-                        })
-                    )
+                    axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaign.id}/analytics`, {
+                        params: { api_key: apiKey }
+                    })
                 );
                 analytics = analyticsRes.data || analytics;
 
@@ -680,9 +673,9 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             syncProgressService.emitProgress(sessionId, 'mailboxes', 'in_progress', { total: 0 });
         }
 
-        // ── 2. Fetch email accounts (mailboxes) (protected by circuit breaker) ──
+        // ── 2. Fetch email accounts (mailboxes) ──
         await checkCancelled();
-        const mailboxesRes = await smartleadBreaker.call(() =>
+        const mailboxesRes = await smartleadRateLimiter.execute(() =>
             axios.get(`${SMARTLEAD_API_BASE}/email-accounts?api_key=${apiKey}`)
         );
         // Defensive unwrap: Smartlead may return a flat array OR { data: [...] }
@@ -934,11 +927,9 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 logger.info(`[CampaignMailboxSync] Fetching email accounts for campaign ${campaignId}`);
 
                 const campaignEmailAccountsRes = await smartleadRateLimiter.execute(() =>
-                    smartleadBreaker.call(() =>
-                        axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/email-accounts`, {
-                            params: { api_key: apiKey }
-                        })
-                    )
+                    axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/email-accounts`, {
+                        params: { api_key: apiKey }
+                    })
                 );
 
                 const emailAccounts = campaignEmailAccountsRes.data || [];
@@ -1044,11 +1035,9 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     logger.debug(`[LeadSync] Fetching leads page`, { campaignId, offset, limit });
 
                     const leadsRes = await smartleadRateLimiter.execute(() =>
-                        smartleadBreaker.call(() =>
-                            axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/leads`, {
-                                params: { api_key: apiKey, offset, limit }
-                            })
-                        )
+                        axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/leads`, {
+                            params: { api_key: apiKey, offset, limit }
+                        })
                     );
 
                     const leadsData = leadsRes.data || [];
@@ -1208,12 +1197,10 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     logger.info(`[LeadEngagement] Fetching engagement stats from CSV export for campaign ${campaignId}`);
 
                     const csvRes = await smartleadRateLimiter.execute(() =>
-                        smartleadBreaker.call(() =>
-                            axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/leads-export`, {
-                                params: { api_key: apiKey },
-                                responseType: 'text' // Important: Get raw text, not parsed JSON
-                            })
-                        )
+                        axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/leads-export`, {
+                            params: { api_key: apiKey },
+                            responseType: 'text' // Important: Get raw text, not parsed JSON
+                        })
                     );
 
                     const csvData = csvRes.data;
