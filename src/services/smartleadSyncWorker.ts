@@ -20,7 +20,7 @@ import { EventType, LeadState } from '../types';
 import { logger } from './observabilityService';
 import { smartleadRateLimiter } from '../utils/rateLimiter';
 import { acquireLock, releaseLock, isSyncCancelled, clearSyncCancelled } from '../utils/redis';
-import { calculateEngagementScore, calculateFinalScore } from './leadScoringService';
+import { calculateEngagementScore, calculateFinalScore, syncLeadScores } from './leadScoringService';
 import { syncProgressService } from './syncProgressService';
 import { TIER_LIMITS } from './polarClient';
 import { decrypt } from '../utils/encryption';
@@ -1822,6 +1822,25 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
 
         if (sessionId) {
             syncProgressService.emitProgress(sessionId, 'health_check', 'completed', {});
+        }
+
+        // ── 5b. Recalculate all lead scores using freshly synced engagement data ──
+        // Runs AFTER sync updates engagement counters (opens, clicks, replies, bounces)
+        // so scores reflect the latest data without requiring manual reassessment.
+        try {
+            logger.info('[LeadScoring] Recalculating lead scores after sync', { organizationId });
+            const scoringResult = await syncLeadScores(organizationId);
+            logger.info('[LeadScoring] Lead scores updated after sync', {
+                organizationId,
+                leadsScored: scoringResult.updated,
+                topScore: scoringResult.topLeads[0]?.score || 0
+            });
+        } catch (scoringError: any) {
+            // Non-fatal: don't fail sync if scoring fails
+            logger.error('[LeadScoring] Post-sync lead scoring failed (non-fatal)', scoringError, {
+                organizationId,
+                error: scoringError.message
+            });
         }
 
         // ── 6. Aggregate mailbox engagement metrics to domains (PHASE 6) ──
