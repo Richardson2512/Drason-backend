@@ -129,10 +129,22 @@ export async function syncLeadScores(organizationId: string): Promise<{
     logger.info('[LEAD-SCORING] Starting lead score sync', { organizationId });
 
     try {
-        // Get all leads for this organization (all sources: api, clay, smartlead)
+        // Only score leads from active campaigns (skip deleted/archived)
+        const activeCampaignIds = await prisma.campaign.findMany({
+            where: {
+                organization_id: organizationId,
+                status: { notIn: ['deleted', 'DELETED', 'archived', 'ARCHIVED'] }
+            },
+            select: { id: true }
+        }).then(cs => cs.map(c => c.id));
+
         const leads = await prisma.lead.findMany({
             where: {
                 organization_id: organizationId,
+                OR: [
+                    { assigned_campaign_id: { in: activeCampaignIds } },
+                    { assigned_campaign_id: null }
+                ]
             },
             select: {
                 id: true,

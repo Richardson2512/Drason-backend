@@ -34,9 +34,27 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
         const platform = req.query.platform as string;
         const skip = (page - 1) * limit;
 
+        // Only show leads from active campaigns (exclude deleted/archived).
+        // Leads with no campaign (unassigned) are always shown.
+        const activeCampaignIds = await prisma.campaign.findMany({
+            where: {
+                organization_id: orgId,
+                status: { notIn: ['deleted', 'DELETED', 'archived', 'ARCHIVED'] }
+            },
+            select: { id: true }
+        }).then(cs => cs.map(c => c.id));
+
         const where: any = {
             organization_id: orgId,
-            deleted_at: null
+            deleted_at: null,
+            AND: [
+                {
+                    OR: [
+                        { assigned_campaign_id: { in: activeCampaignIds } },
+                        { assigned_campaign_id: null }
+                    ]
+                }
+            ]
         };
 
         // Platform filter
@@ -68,13 +86,15 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
             if (maxScore !== undefined) where.lead_score.lte = maxScore;
         }
 
-        // Engagement filter
+        // Engagement filter (pushed into AND to avoid overwriting campaign OR)
         if (hasEngagement === 'yes') {
-            where.OR = [
-                { emails_opened: { gt: 0 } },
-                { emails_clicked: { gt: 0 } },
-                { emails_replied: { gt: 0 } }
-            ];
+            where.AND.push({
+                OR: [
+                    { emails_opened: { gt: 0 } },
+                    { emails_clicked: { gt: 0 } },
+                    { emails_replied: { gt: 0 } }
+                ]
+            });
         } else if (hasEngagement === 'no') {
             where.emails_opened = 0;
             where.emails_clicked = 0;
@@ -158,9 +178,22 @@ export const getStats = async (req: Request, res: Response, next: NextFunction) 
         const orgId = getOrgId(req);
         const campaignId = req.query.campaignId as string;
 
+        // Exclude leads from deleted/archived campaigns
+        const activeCampaignIds = await prisma.campaign.findMany({
+            where: {
+                organization_id: orgId,
+                status: { notIn: ['deleted', 'DELETED', 'archived', 'ARCHIVED'] }
+            },
+            select: { id: true }
+        }).then(cs => cs.map(c => c.id));
+
         const where: any = {
             organization_id: orgId,
-            deleted_at: null
+            deleted_at: null,
+            OR: [
+                { assigned_campaign_id: { in: activeCampaignIds } },
+                { assigned_campaign_id: null }
+            ]
         };
 
         if (campaignId) {
@@ -624,19 +657,36 @@ export const getLeadHealthStats = async (req: Request, res: Response) => {
     try {
         const orgId = getOrgId(req);
 
+        // Exclude leads from deleted/archived campaigns
+        const activeCampaignIds = await prisma.campaign.findMany({
+            where: {
+                organization_id: orgId,
+                status: { notIn: ['deleted', 'DELETED', 'archived', 'ARCHIVED'] }
+            },
+            select: { id: true }
+        }).then(cs => cs.map(c => c.id));
+
+        const activeCampaignFilter = {
+            OR: [
+                { assigned_campaign_id: { in: activeCampaignIds } },
+                { assigned_campaign_id: null }
+            ]
+        };
+
         // Count leads by health classification (cached for 15s)
         const data = await cached(orgId, 'leadHealthStats', async () => {
             const [total, green, yellow, red, blocked, recentBlocked] = await Promise.all([
-                prisma.lead.count({ where: { organization_id: orgId, deleted_at: null } }),
-                prisma.lead.count({ where: { organization_id: orgId, health_classification: 'green', deleted_at: null } }),
-                prisma.lead.count({ where: { organization_id: orgId, health_classification: 'yellow', deleted_at: null } }),
-                prisma.lead.count({ where: { organization_id: orgId, health_classification: 'red', deleted_at: null } }),
-                prisma.lead.count({ where: { organization_id: orgId, status: 'blocked', deleted_at: null } }),
+                prisma.lead.count({ where: { organization_id: orgId, deleted_at: null, ...activeCampaignFilter } }),
+                prisma.lead.count({ where: { organization_id: orgId, health_classification: 'green', deleted_at: null, ...activeCampaignFilter } }),
+                prisma.lead.count({ where: { organization_id: orgId, health_classification: 'yellow', deleted_at: null, ...activeCampaignFilter } }),
+                prisma.lead.count({ where: { organization_id: orgId, health_classification: 'red', deleted_at: null, ...activeCampaignFilter } }),
+                prisma.lead.count({ where: { organization_id: orgId, status: 'blocked', deleted_at: null, ...activeCampaignFilter } }),
                 prisma.lead.findMany({
                     where: {
                         organization_id: orgId,
                         health_classification: 'red',
-                        deleted_at: null
+                        deleted_at: null,
+                        ...activeCampaignFilter
                     },
                     select: {
                         id: true,
