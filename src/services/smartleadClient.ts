@@ -637,8 +637,13 @@ export const getAnalyticsByDate = async (
     if (!apiKey) throw new Error('Smartlead API key not configured');
 
     try {
-        const params: any = { api_key: apiKey };
-        if (startDate) params.start_date = startDate;
+        // Smartlead API requires start_date — default to 90 days ago
+        const defaultStart = new Date();
+        defaultStart.setDate(defaultStart.getDate() - 90);
+        const params: any = {
+            api_key: apiKey,
+            start_date: startDate || defaultStart.toISOString().split('T')[0],
+        };
         if (endDate) params.end_date = endDate;
 
         const response = await smartleadRateLimiter.execute(() =>
@@ -759,8 +764,8 @@ export const fetchCampaignMailboxStatistics = async (
 
     const allEntries: MailboxStatisticsEntry[] = [];
     let offset = 0;
-    const limit = 50;
-    const MAX_PAGES = 20; // Safety cap: 50 * 20 = 1000 mailboxes max
+    const limit = 20; // Smartlead API enforces max 20 per page
+    const MAX_PAGES = 50; // Safety cap: 20 * 50 = 1000 mailboxes max
 
     try {
         for (let page = 0; page < MAX_PAGES; page++) {

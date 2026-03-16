@@ -42,8 +42,11 @@ export const handleSmartleadWebhook = async (req: Request, res: Response) => {
         }
 
         // Resolve org via mailbox lookup (public endpoint — no JWT)
+        // Smartlead webhooks may include email_account_id, mailbox_id, OR from_email
         const mailboxIdRaw = event.email_account_id || event.mailbox_id;
-        if (!mailboxIdRaw) {
+        const fromEmail = event.from_email;
+
+        if (!mailboxIdRaw && !fromEmail) {
             logger.warn('[SMARTLEAD-WEBHOOK] Event missing mailbox identifier', {
                 eventType: event.event_type || event.type,
                 eventKeys: Object.keys(event),
@@ -51,15 +54,18 @@ export const handleSmartleadWebhook = async (req: Request, res: Response) => {
             return res.json({ success: false, error: 'Missing mailbox identifier' });
         }
 
-        const mailboxLookupId = String(mailboxIdRaw);
+        // Look up mailbox by ID first, fall back to from_email
+        const mailboxLookupId = mailboxIdRaw ? String(mailboxIdRaw) : null;
         const mailbox = await prisma.mailbox.findFirst({
-            where: {
-                OR: [
-                    { id: mailboxLookupId },
-                    { external_email_account_id: mailboxLookupId },
-                ],
-            },
-            select: { organization_id: true },
+            where: mailboxLookupId
+                ? {
+                    OR: [
+                        { id: mailboxLookupId },
+                        { external_email_account_id: mailboxLookupId },
+                    ],
+                }
+                : { email: fromEmail },
+            select: { id: true, organization_id: true },
         });
 
         if (!mailbox) {
@@ -83,21 +89,26 @@ export const handleSmartleadWebhook = async (req: Request, res: Response) => {
             eventId: event.id,
             email: event.email || event.lead_email,
             campaignId: event.campaign_id,
-            mailboxId: mailboxLookupId
+            mailboxId: mailboxLookupId || mailbox?.id,
+            resolvedVia: mailboxLookupId ? 'id' : 'from_email'
         });
 
-        const eventType = event.event_type || event.type;
+        const rawEventType = event.event_type || event.type;
+        // Normalize: Smartlead sends mixed case (EMAIL_OPEN, email_opened, opened)
+        const eventType = rawEventType?.toLowerCase();
 
         // Route event to appropriate handler
         switch (eventType) {
             case 'email_bounced':
+            case 'email_bounce':
             case 'bounce':
             case 'hard_bounce':
             case 'soft_bounce': {
                 // Route bounces through the unified queue path (same as EmailBison/Instantly)
                 const mailboxIdRaw = event.email_account_id || event.mailbox_id;
                 const campaignIdRaw = event.campaign_id;
-                const mailboxId = mailboxIdRaw ? String(mailboxIdRaw) : undefined;
+                // Fall back to resolved mailbox.id if no explicit ID in event
+                const mailboxId = mailboxIdRaw ? String(mailboxIdRaw) : mailbox?.id;
                 const campaignId = campaignIdRaw ? String(campaignIdRaw) : undefined;
                 const recipientEmail = event.email || event.lead_email;
                 const smtpResponse = event.bounce_reason || event.reason || '';
@@ -137,14 +148,19 @@ export const handleSmartleadWebhook = async (req: Request, res: Response) => {
             }
 
             case 'email_sent':
+            case 'email_send':
             case 'sent':
             case 'email_opened':
+            case 'email_open':
             case 'opened':
             case 'email_clicked':
+            case 'email_click':
             case 'clicked':
             case 'email_replied':
+            case 'email_reply':
             case 'replied':
             case 'email_unsubscribed':
+            case 'email_unsubscribe':
             case 'unsubscribed':
             case 'email_spam_reported':
             case 'spam_complaint': {
@@ -152,19 +168,20 @@ export const handleSmartleadWebhook = async (req: Request, res: Response) => {
                 // (same path as EmailBison/Instantly — platform parity)
                 const mailboxIdRaw = event.email_account_id || event.mailbox_id;
                 const campaignIdRaw = event.campaign_id;
-                const mailboxId = mailboxIdRaw ? String(mailboxIdRaw) : undefined;
+                // Fall back to resolved mailbox.id if no explicit ID in event
+                const mailboxId = mailboxIdRaw ? String(mailboxIdRaw) : mailbox?.id;
                 const campaignId = campaignIdRaw ? String(campaignIdRaw) : undefined;
                 const recipientEmail = event.email || event.lead_email;
                 const eventId = event.id || `sl-evt-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
                 // Map Smartlead event type to internal queue event type
                 const internalEventType =
-                    (eventType === 'email_sent' || eventType === 'sent') ? EventType.EMAIL_SENT :
-                    (eventType === 'email_opened' || eventType === 'opened') ? 'EmailOpened' :
-                    (eventType === 'email_clicked' || eventType === 'clicked') ? 'EmailClicked' :
-                    (eventType === 'email_replied' || eventType === 'replied') ? 'EmailReplied' :
-                    (eventType === 'email_unsubscribed' || eventType === 'unsubscribed') ? 'EmailUnsubscribed' :
-                    'SpamComplaint'; // email_spam_reported, spam_complaint
+                    (eventType?.includes('sent') || eventType?.includes('send')) ? EventType.EMAIL_SENT :
+                    (eventType?.includes('open')) ? 'EmailOpened' :
+                    (eventType?.includes('click')) ? 'EmailClicked' :
+                    (eventType?.includes('repl')) ? 'EmailReplied' :
+                    (eventType?.includes('unsub')) ? 'EmailUnsubscribed' :
+                    'SpamComplaint'; // spam_reported, spam_complaint
 
                 if (!mailboxId) {
                     logger.warn('[SMARTLEAD-WEBHOOK] Event missing mailbox ID', { orgId, eventType });
