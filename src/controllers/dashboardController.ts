@@ -15,6 +15,7 @@ import * as entityStateService from '../services/entityStateService';
 import { MailboxState, DomainState, TriggerType } from '../types';
 import { logger } from '../services/observabilityService';
 import { cached } from '../utils/responseCache';
+import { getAdapterForMailbox } from '../adapters/platformRegistry';
 
 /**
  * Get all leads for the organization with pagination.
@@ -852,11 +853,52 @@ export const resumeMailbox = async (req: Request, res: Response, next: NextFunct
             }
         });
 
+        // ── PLATFORM SYNC: Re-add mailbox to its campaigns on the external platform ──
+        // When paused, the mailbox was removed from campaigns on the platform but the
+        // DB relationship was preserved. Re-add it now.
+        let platformAdded = 0;
+        let platformFailed = 0;
+        try {
+            const adapter = await getAdapterForMailbox(mailboxId);
+            const campaigns = await prisma.campaign.findMany({
+                where: {
+                    organization_id: orgId,
+                    mailboxes: { some: { id: mailboxId } },
+                    status: { notIn: ['deleted', 'DELETED', 'archived', 'ARCHIVED'] },
+                },
+                select: { id: true, external_id: true, name: true },
+            });
+
+            for (const campaign of campaigns) {
+                try {
+                    await adapter.addMailboxToCampaign(
+                        orgId,
+                        campaign.external_id || campaign.id,
+                        mailbox.external_email_account_id || mailboxId,
+                    );
+                    platformAdded++;
+                } catch (addErr: any) {
+                    platformFailed++;
+                    logger.warn(`[INFRASTRUCTURE] Failed to re-add mailbox ${mailboxId} to campaign ${campaign.name} on platform`, {
+                        error: addErr.message,
+                    });
+                }
+            }
+
+            logger.info(`[INFRASTRUCTURE] Re-added mailbox ${mailboxId} to ${platformAdded} campaigns on platform`, {
+                platformAdded, platformFailed,
+            });
+        } catch (adapterErr: any) {
+            logger.error(`[INFRASTRUCTURE] Failed to get adapter for mailbox ${mailboxId}`, adapterErr);
+        }
+
         logger.info(`[INFRASTRUCTURE] Mailbox ${mailboxId} manually resumed by user`);
 
         res.json({
             success: true,
-            message: 'Mailbox resumed successfully'
+            message: `Mailbox resumed successfully${platformAdded > 0 ? ` and re-added to ${platformAdded} campaign(s) on platform` : ''}`,
+            platformAdded,
+            platformFailed,
         });
     } catch (error) {
         next(error);
@@ -918,11 +960,69 @@ export const resumeDomain = async (req: Request, res: Response, next: NextFuncti
             }
         });
 
+        // ── PLATFORM SYNC: Re-add domain's mailboxes to their campaigns ──
+        // When domain was paused, its mailboxes were removed from campaigns on the platform.
+        // Re-add each healthy mailbox back to its assigned campaigns.
+        let totalAdded = 0;
+        let totalFailed = 0;
+        try {
+            const mailboxes = await prisma.mailbox.findMany({
+                where: {
+                    domain_id: domainId,
+                    organization_id: orgId,
+                    status: { in: ['healthy', 'active'] },
+                },
+                select: { id: true, external_email_account_id: true, email: true },
+            });
+
+            for (const mb of mailboxes) {
+                try {
+                    const adapter = await getAdapterForMailbox(mb.id);
+                    const campaigns = await prisma.campaign.findMany({
+                        where: {
+                            organization_id: orgId,
+                            mailboxes: { some: { id: mb.id } },
+                            status: { notIn: ['deleted', 'DELETED', 'archived', 'ARCHIVED'] },
+                        },
+                        select: { id: true, external_id: true, name: true },
+                    });
+
+                    for (const campaign of campaigns) {
+                        try {
+                            await adapter.addMailboxToCampaign(
+                                orgId,
+                                campaign.external_id || campaign.id,
+                                mb.external_email_account_id || mb.id,
+                            );
+                            totalAdded++;
+                        } catch (addErr: any) {
+                            totalFailed++;
+                            logger.warn(`[INFRASTRUCTURE] Failed to re-add mailbox ${mb.email} to campaign ${campaign.name} on platform`, {
+                                error: addErr.message,
+                            });
+                        }
+                    }
+                } catch (mbErr: any) {
+                    logger.warn(`[INFRASTRUCTURE] Failed to process mailbox ${mb.email} for domain resume`, {
+                        error: mbErr.message,
+                    });
+                }
+            }
+
+            logger.info(`[INFRASTRUCTURE] Domain ${domainId} resume: re-added ${totalAdded} mailbox-campaign links on platform`, {
+                totalAdded, totalFailed, mailboxCount: mailboxes.length,
+            });
+        } catch (adapterErr: any) {
+            logger.error(`[INFRASTRUCTURE] Failed to re-add mailboxes for domain ${domainId}`, adapterErr);
+        }
+
         logger.info(`[INFRASTRUCTURE] Domain ${domainId} manually resumed by user`);
 
         res.json({
             success: true,
-            message: 'Domain resumed successfully'
+            message: `Domain resumed successfully${totalAdded > 0 ? ` and re-added ${totalAdded} mailbox-campaign link(s) on platform` : ''}`,
+            platformAdded: totalAdded,
+            platformFailed: totalFailed,
         });
     } catch (error) {
         next(error);

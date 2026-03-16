@@ -46,9 +46,9 @@ export const pauseSmartleadCampaign = async (
     }
 
     try {
-        await smartleadBreaker.call(() =>
-            axios.patch(
-                `${SMARTLEAD_API_BASE}/campaigns/${campaignId}`,
+        await smartleadRateLimiter.execute(() =>
+            axios.post(
+                `${SMARTLEAD_API_BASE}/campaigns/${campaignId}/status`,
                 { status: 'PAUSED' },
                 { params: { api_key: apiKey } }
             )
@@ -205,10 +205,10 @@ export const resumeSmartleadCampaign = async (
     }
 
     try {
-        await smartleadBreaker.call(() =>
-            axios.patch(
-                `${SMARTLEAD_API_BASE}/campaigns/${campaignId}`,
-                { status: 'ACTIVE' },
+        await smartleadRateLimiter.execute(() =>
+            axios.post(
+                `${SMARTLEAD_API_BASE}/campaigns/${campaignId}/status`,
+                { status: 'START' },
                 { params: { api_key: apiKey } }
             )
         );
