@@ -4,10 +4,17 @@
  * Analyzes mailbox-campaign distribution and suggests optimal rebalancing.
  * Considers mailbox health, domain health, and campaign load.
  *
- * Thresholds:
- * - Overloaded: 5+ campaigns per mailbox
- * - Underutilized: < 3 campaigns per mailbox
- * - Ideal: 3-4 campaigns per mailbox
+ * Load is measured by "effective load share" — the fraction of each campaign's
+ * sending burden that falls on a single mailbox. A mailbox in 5 campaigns that
+ * each have 20 mailboxes carries 5 × (1/20) = 0.25 effective load. A mailbox
+ * that is the sole sender in 3 campaigns carries 3.0 effective load.
+ *
+ * Thresholds (effective load share):
+ * - Overloaded: >= 3.0 effective load (equivalent to being the sole mailbox in 3+ campaigns)
+ * - Optimal: 1.0 - 2.99 effective load
+ * - Underutilized: < 1.0 effective load
+ *
+ * Fallback: If a mailbox has no send data and is in 0 campaigns, it's underutilized.
  */
 
 import { prisma } from '../index';
@@ -22,6 +29,7 @@ interface MailboxLoad {
     domain_id: string;
     domain_status: string;
     campaign_count: number;
+    effective_load: number; // Sum of (1 / mailboxes_in_campaign) across all campaigns
     load_category: 'overloaded' | 'optimal' | 'underutilized';
     health_score: number; // 0-100, based on metrics
     total_sent: number; // Lifetime send volume from sync + webhooks
@@ -57,10 +65,13 @@ interface LoadBalancingReport {
 }
 
 const THRESHOLDS = {
-    OVERLOADED: 5,
-    OPTIMAL_MIN: 3,
-    OPTIMAL_MAX: 4,
-    UNDERUTILIZED: 3
+    // Effective load share thresholds
+    OVERLOADED: 3.0,   // Carrying the load of 3+ solo campaigns
+    OPTIMAL_MIN: 1.0,
+    OPTIMAL_MAX: 2.99,
+    UNDERUTILIZED: 1.0, // Less than 1 solo-campaign equivalent
+    // Campaign-level: campaigns with fewer than this many mailboxes need more
+    MIN_MAILBOXES_PER_CAMPAIGN: 3
 };
 
 /**
@@ -119,11 +130,33 @@ function calculateMailboxHealthScore(mailbox: any): number {
 }
 
 /**
- * Categorize mailbox load.
+ * Calculate effective load share for a mailbox.
+ * For each campaign the mailbox belongs to, its share is 1/N where N is
+ * how many mailboxes that campaign has. The sum across all campaigns gives
+ * the effective load.
+ *
+ * Example: mailbox in 5 campaigns each with 20 mailboxes = 5 × (1/20) = 0.25 (underutilized)
+ * Example: mailbox as sole sender in 2 campaigns = 2 × (1/1) = 2.0 (optimal)
+ * Example: mailbox as sole sender in 4 campaigns = 4 × (1/1) = 4.0 (overloaded)
  */
-function categorizeLoad(campaignCount: number): 'overloaded' | 'optimal' | 'underutilized' {
-    if (campaignCount >= THRESHOLDS.OVERLOADED) return 'overloaded';
-    if (campaignCount >= THRESHOLDS.OPTIMAL_MIN && campaignCount <= THRESHOLDS.OPTIMAL_MAX) return 'optimal';
+function calculateEffectiveLoad(
+    mailboxCampaignIds: string[],
+    campaignMailboxCounts: Map<string, number>
+): number {
+    let effectiveLoad = 0;
+    for (const campaignId of mailboxCampaignIds) {
+        const mailboxesInCampaign = campaignMailboxCounts.get(campaignId) || 1;
+        effectiveLoad += 1 / mailboxesInCampaign;
+    }
+    return effectiveLoad;
+}
+
+/**
+ * Categorize mailbox load based on effective load share.
+ */
+function categorizeLoad(effectiveLoad: number): 'overloaded' | 'optimal' | 'underutilized' {
+    if (effectiveLoad >= THRESHOLDS.OVERLOADED) return 'overloaded';
+    if (effectiveLoad >= THRESHOLDS.OPTIMAL_MIN) return 'optimal';
     return 'underutilized';
 }
 
@@ -162,11 +195,19 @@ export const analyzeLoadBalancing = async (
     const healthWarnings: string[] = [];
     const suggestions: LoadBalancingSuggestion[] = [];
 
+    // Build a map of campaign → active mailbox count (for effective load calculation)
+    const campaignMailboxCounts = new Map<string, number>();
+    for (const campaign of campaigns) {
+        campaignMailboxCounts.set(campaign.id, campaign.mailboxes.length);
+    }
+
     // Analyze each mailbox
     const mailboxLoads: MailboxLoad[] = mailboxes.map(mailbox => {
         const campaignCount = mailbox.campaigns.length;
+        const campaignIds = mailbox.campaigns.map(c => c.id);
+        const effectiveLoad = calculateEffectiveLoad(campaignIds, campaignMailboxCounts);
         const healthScore = calculateMailboxHealthScore(mailbox);
-        const loadCategory = categorizeLoad(campaignCount);
+        const loadCategory = categorizeLoad(effectiveLoad);
 
         const totalSent = mailbox.total_sent_count || 0;
         const bounceRate = totalSent > 0 ? (mailbox.hard_bounce_count / totalSent) * 100 : 0;
@@ -178,6 +219,7 @@ export const analyzeLoadBalancing = async (
             domain_id: mailbox.domain_id,
             domain_status: mailbox.domain?.status || 'unknown',
             campaign_count: campaignCount,
+            effective_load: Number(effectiveLoad.toFixed(2)),
             load_category: loadCategory,
             health_score: healthScore,
             total_sent: totalSent,
@@ -209,8 +251,9 @@ export const analyzeLoadBalancing = async (
 
     // Generate suggestions
     // Strategy 1: Move mailboxes from overloaded to underutilized
-    for (const overloadedMailbox of overloadedMailboxes) {
-        if (overloadedMailbox.status !== 'healthy') continue; // Don't move unhealthy mailboxes
+    // Sort overloaded by highest effective load first
+    for (const overloadedMailbox of overloadedMailboxes.sort((a, b) => b.effective_load - a.effective_load)) {
+        if (overloadedMailbox.status !== 'healthy') continue;
 
         // Find underutilized mailboxes from the same domain
         const underutilizedSameDomain = underutilizedMailboxes.filter(
@@ -220,37 +263,45 @@ export const analyzeLoadBalancing = async (
         );
 
         if (underutilizedSameDomain.length > 0) {
-            // Find campaigns where this overloaded mailbox is used
             const mailbox = mailboxes.find(m => m.id === overloadedMailbox.id);
             const activeCampaigns = mailbox?.campaigns.filter(c => c.status === 'active') || [];
 
-            // Suggest moving some campaigns to underutilized mailboxes
-            const excessCampaigns = overloadedMailbox.campaign_count - THRESHOLDS.OPTIMAL_MAX;
-            const campaignsToMove = Math.min(excessCampaigns, activeCampaigns.length);
+            // Sort campaigns by fewest mailboxes first (move from campaigns where this mailbox carries the most load)
+            const sortedCampaigns = [...activeCampaigns].sort((a, b) => {
+                const countA = campaignMailboxCounts.get(a.id) || 1;
+                const countB = campaignMailboxCounts.get(b.id) || 1;
+                return countA - countB; // Campaigns with fewer mailboxes first (highest load share)
+            });
 
-            for (let i = 0; i < campaignsToMove && i < underutilizedSameDomain.length; i++) {
-                const targetMailbox = underutilizedSameDomain[i];
-                const campaignToMove = activeCampaigns[i];
+            // Suggest adding underutilized mailboxes to campaigns where this mailbox is carrying heavy load
+            let suggestionsAdded = 0;
+            for (const campaign of sortedCampaigns) {
+                if (suggestionsAdded >= underutilizedSameDomain.length) break;
+                const mailboxesInCampaign = campaignMailboxCounts.get(campaign.id) || 1;
+                // Only suggest if this campaign has few mailboxes (high per-mailbox load)
+                if (mailboxesInCampaign >= 5) continue;
 
+                const targetMailbox = underutilizedSameDomain[suggestionsAdded];
                 suggestions.push({
                     type: 'move_mailbox',
                     mailbox_id: overloadedMailbox.id,
                     mailbox_email: overloadedMailbox.email,
-                    from_campaign_id: campaignToMove.id,
-                    from_campaign_name: campaignToMove.name || undefined,
+                    from_campaign_id: campaign.id,
+                    from_campaign_name: campaign.name || undefined,
                     to_campaign_id: undefined,
                     to_campaign_name: undefined,
-                    reason: `Mailbox ${overloadedMailbox.email} is overloaded (${overloadedMailbox.campaign_count} campaigns, ${overloadedMailbox.total_sent} sends). Move to ${targetMailbox.email} which has only ${targetMailbox.campaign_count} campaigns.`,
-                    expected_impact: `Reduces load from ${overloadedMailbox.campaign_count} to ${overloadedMailbox.campaign_count - 1} campaigns`,
-                    priority: overloadedMailbox.campaign_count >= 7 ? 'high' : 'medium'
+                    reason: `Mailbox ${overloadedMailbox.email} has high effective load (${overloadedMailbox.effective_load} — equivalent to being sole sender in ${overloadedMailbox.effective_load} campaigns). Campaign "${campaign.name}" only has ${mailboxesInCampaign} mailbox(es). Add ${targetMailbox.email} (effective load: ${targetMailbox.effective_load}) to share the burden.`,
+                    expected_impact: `Reduces effective load on ${overloadedMailbox.email} and adds redundancy to "${campaign.name}"`,
+                    priority: overloadedMailbox.effective_load >= 4.0 ? 'high' : 'medium'
                 });
+                suggestionsAdded++;
             }
         }
     }
 
     // Strategy 2: Add healthy underutilized mailboxes to campaigns lacking mailboxes
     const campaignsWithFewMailboxes = campaigns.filter(c =>
-        c.status === 'active' && c.mailboxes.length < 3
+        c.status === 'active' && c.mailboxes.length < THRESHOLDS.MIN_MAILBOXES_PER_CAMPAIGN
     );
 
     for (const campaign of campaignsWithFewMailboxes) {

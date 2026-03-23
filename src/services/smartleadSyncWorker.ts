@@ -78,6 +78,76 @@ async function parallelChunked<T, R>(
  * A completed-flag is persisted in OrganizationSetting so the backfill only
  * runs once per campaign even across multiple syncs.
  */
+/**
+ * Sync bounced leads from Smartlead on every sync cycle.
+ * Unlike backfillBouncesForCampaign (one-time), this runs every sync to catch
+ * new bounces that occurred since the last sync. Uses the /statistics endpoint
+ * with email_status=bounced to get all bounced leads, then marks them in our DB.
+ */
+async function syncBouncedLeadsForCampaign(
+    campaignId: string,
+    organizationId: string,
+    apiKey: string
+): Promise<number> {
+    let offset = 0;
+    const PAGE_SIZE = 100;
+    let markedCount = 0;
+
+    try {
+        while (true) {
+            const statsRes = await smartleadRateLimiter.execute(() =>
+                axios.get(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/statistics`, {
+                    params: { api_key: apiKey, email_status: 'bounced', offset, limit: PAGE_SIZE },
+                })
+            );
+
+            const body = statsRes.data;
+            const totalBounces = parseInt(String(body?.total_stats || 0));
+            const page: any[] = body?.data || [];
+
+            if (page.length === 0) break;
+
+            // Extract emails from bounced leads
+            const bouncedEmails = page
+                .map((b: any) => (b.lead_email || b.email || '').toLowerCase().trim())
+                .filter(Boolean);
+
+            if (bouncedEmails.length > 0) {
+                // Bulk mark leads as bounced
+                const result = await prisma.lead.updateMany({
+                    where: {
+                        organization_id: organizationId,
+                        email: { in: bouncedEmails },
+                        bounced: false,
+                    },
+                    data: {
+                        bounced: true,
+                        health_classification: 'red',
+                    },
+                });
+                markedCount += result.count;
+            }
+
+            if (offset + page.length >= totalBounces) break;
+            offset += PAGE_SIZE;
+        }
+
+        if (markedCount > 0) {
+            logger.info(`[BounceSync] Marked ${markedCount} leads as bounced for campaign ${campaignId}`, {
+                organizationId,
+                campaignId,
+            });
+        }
+    } catch (err: any) {
+        logger.warn(`[BounceSync] Failed to sync bounced leads for campaign ${campaignId}`, {
+            error: err.message,
+            organizationId,
+        });
+    }
+
+    return markedCount;
+}
+
 async function backfillBouncesForCampaign(
     campaignId: string,
     organizationId: string,
@@ -1438,6 +1508,16 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             } catch (engBackfillErr: any) {
                 logger.warn(`[EngagementBackfill] Non-fatal error for campaign ${campaignId}`, {
                     error: engBackfillErr.message,
+                });
+            }
+
+            // ── Recurring bounce sync ─────────────────────────────────────────
+            // Runs every sync to catch new bounces (unlike one-time backfill above)
+            try {
+                await syncBouncedLeadsForCampaign(campaignId.toString(), organizationId, apiKey);
+            } catch (bounceSyncErr: any) {
+                logger.warn(`[BounceSync] Non-fatal error for campaign ${campaignId}`, {
+                    error: bounceSyncErr.message,
                 });
             }
 

@@ -259,11 +259,20 @@ export const removeMailboxFromSmartleadCampaign = async (
     }
 
     try {
-        // Remove the email account from the campaign
-        await smartleadBreaker.call(() =>
+        // Smartlead API: DELETE /campaigns/{id}/email-accounts with body { email_account_ids: [...] }
+        // mailboxId here is the Smartlead external_email_account_id (numeric string)
+        const numericId = Number(mailboxId);
+        if (isNaN(numericId)) {
+            throw new Error(`Invalid Smartlead email account ID: ${mailboxId} — expected numeric external_email_account_id`);
+        }
+
+        await smartleadRateLimiter.execute(() =>
             axios.delete(
-                `${SMARTLEAD_API_BASE}/campaigns/${campaignId}/email-accounts/${mailboxId}`,
-                { params: { api_key: apiKey } }
+                `${SMARTLEAD_API_BASE}/campaigns/${campaignId}/email-accounts`,
+                {
+                    params: { api_key: apiKey },
+                    data: { email_account_ids: [numericId] }
+                }
             )
         );
 
@@ -438,19 +447,30 @@ export const removeDomainMailboxesFromSmartlead = async (
     // Get all mailboxes for this domain with their campaign assignments
     const mailboxes = await prisma.mailbox.findMany({
         where: { domain_id: domainId },
-        include: { campaigns: true }
+        include: {
+            campaigns: {
+                select: { id: true, external_id: true, name: true }
+            }
+        }
     });
 
     let successCount = 0;
     let failedCount = 0;
 
     for (const mailbox of mailboxes) {
+        const externalMailboxId = mailbox.external_email_account_id;
+        if (!externalMailboxId) {
+            logger.warn(`[SMARTLEAD] Mailbox ${mailbox.id} has no external_email_account_id, skipping platform removal`);
+            continue;
+        }
+
         // Remove this mailbox from all assigned campaigns
         for (const campaign of mailbox.campaigns) {
+            const externalCampaignId = campaign.external_id || campaign.id;
             const removed = await removeMailboxFromSmartleadCampaign(
                 organizationId,
-                campaign.id,
-                mailbox.id
+                externalCampaignId,
+                externalMailboxId
             );
             if (removed) {
                 successCount++;

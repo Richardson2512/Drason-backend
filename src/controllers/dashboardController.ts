@@ -58,19 +58,38 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
             ]
         };
 
-        // Platform filter
+        // Platform filter (supports comma-separated multi-select)
         if (platform && platform !== 'all') {
-            where.source_platform = platform;
+            const platforms = platform.split(',').filter(Boolean);
+            where.source_platform = platforms.length === 1 ? platforms[0] : { in: platforms };
         }
 
         if (status === 'bounced') {
             where.bounced = true;
         } else if (status && status !== 'all') {
-            where.status = status;
+            const statuses = status.split(',').filter(Boolean);
+            if (statuses.includes('bounced')) {
+                // Mixed: bounced + other statuses
+                const nonBounced = statuses.filter(s => s !== 'bounced');
+                if (nonBounced.length > 0) {
+                    where.AND.push({
+                        OR: [
+                            { bounced: true },
+                            { status: { in: nonBounced } }
+                        ]
+                    });
+                } else {
+                    where.bounced = true;
+                }
+            } else {
+                where.status = statuses.length === 1 ? statuses[0] : { in: statuses };
+            }
         }
 
+        // Campaign filter (supports comma-separated multi-select)
         if (campaignId) {
-            where.assigned_campaign_id = campaignId;
+            const campaignIds = campaignId.split(',').filter(Boolean);
+            where.assigned_campaign_id = campaignIds.length === 1 ? campaignIds[0] : { in: campaignIds };
         }
 
         if (search && search.trim()) {
@@ -247,16 +266,19 @@ export const getCampaigns = async (req: Request, res: Response, next: NextFuncti
             organization_id: orgId
         };
 
+        // Status filter (supports comma-separated multi-select)
         if (status && status !== 'all') {
-            where.status = status;
+            const statuses = status.split(',').filter(Boolean);
+            where.status = statuses.length === 1 ? statuses[0] : { in: statuses };
         } else {
             // Exclude campaigns deleted from the platform unless explicitly filtered
             where.status = { not: 'deleted' };
         }
 
-        // Platform filter
+        // Platform filter (supports comma-separated multi-select)
         if (platform && platform !== 'all') {
-            where.source_platform = platform;
+            const platforms = platform.split(',').filter(Boolean);
+            where.source_platform = platforms.length === 1 ? platforms[0] : { in: platforms };
         }
 
         if (search && search.trim()) {
@@ -370,9 +392,10 @@ export const getDomains = async (req: Request, res: Response, next: NextFunction
             organization_id: orgId
         };
 
-        // Platform filter
+        // Platform filter (supports comma-separated multi-select)
         if (platform && platform !== 'all') {
-            where.source_platform = platform;
+            const platforms = platform.split(',').filter(Boolean);
+            where.source_platform = platforms.length === 1 ? platforms[0] : { in: platforms };
         }
 
         // Search by domain name
@@ -380,9 +403,10 @@ export const getDomains = async (req: Request, res: Response, next: NextFunction
             where.domain = { contains: search.trim(), mode: 'insensitive' };
         }
 
-        // Status filter
+        // Status filter (supports comma-separated multi-select)
         if (status && status !== 'all') {
-            where.status = status;
+            const statuses = status.split(',').filter(Boolean);
+            where.status = statuses.length === 1 ? statuses[0] : { in: statuses };
         }
 
         // Engagement rate range filter
@@ -488,9 +512,10 @@ export const getMailboxes = async (req: Request, res: Response, next: NextFuncti
             organization_id: orgId
         };
 
-        // Platform filter
+        // Platform filter (supports comma-separated multi-select)
         if (platform && platform !== 'all') {
-            where.source_platform = platform;
+            const platforms = platform.split(',').filter(Boolean);
+            where.source_platform = platforms.length === 1 ? platforms[0] : { in: platforms };
         }
 
         // Search by email
@@ -498,19 +523,24 @@ export const getMailboxes = async (req: Request, res: Response, next: NextFuncti
             where.email = { contains: search.trim(), mode: 'insensitive' };
         }
 
-        // Status filter
+        // Status filter (supports comma-separated multi-select)
         if (status && status !== 'all') {
-            where.status = status;
+            const statuses = status.split(',').filter(Boolean);
+            where.status = statuses.length === 1 ? statuses[0] : { in: statuses };
         }
 
-        // Domain filter
+        // Domain filter (supports comma-separated multi-select)
         if (domainId && domainId !== 'all') {
-            where.domain_id = domainId;
+            const domainIds = domainId.split(',').filter(Boolean);
+            where.domain_id = domainIds.length === 1 ? domainIds[0] : { in: domainIds };
         }
 
-        // Campaign filter
+        // Campaign filter (supports comma-separated multi-select)
         if (campaignId && campaignId !== 'all') {
-            where.campaigns = { some: { id: campaignId } };
+            const campaignIds = campaignId.split(',').filter(Boolean);
+            where.campaigns = campaignIds.length === 1
+                ? { some: { id: campaignIds[0] } }
+                : { some: { id: { in: campaignIds } } };
         }
 
         // Warmup status filter
