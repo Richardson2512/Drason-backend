@@ -266,10 +266,12 @@ export const getEntityStats = async (req: Request, res: Response, next: NextFunc
             ]
         };
 
+        const mbWhere = { organization_id: orgId };
         const [
             leadTotal, leadActive, leadHeld, leadPaused, leadBounced,
             campaignTotal, campaignActive, campaignPaused, campaignCompleted,
             mailboxTotal, mailboxHealthy, mailboxWarning, mailboxPaused,
+            mbQuarantine, mbRestrictedSend, mbWarmRecovery, mbInRecovery,
             domainTotal, domainHealthy, domainWarning, domainPaused
         ] = await Promise.all([
             prisma.lead.count({ where: leadWhere }),
@@ -281,23 +283,42 @@ export const getEntityStats = async (req: Request, res: Response, next: NextFunc
             prisma.campaign.count({ where: { organization_id: orgId, status: 'active' } }),
             prisma.campaign.count({ where: { organization_id: orgId, status: 'paused' } }),
             prisma.campaign.count({ where: { organization_id: orgId, status: 'completed' } }),
-            prisma.mailbox.count({ where: { organization_id: orgId } }),
-            prisma.mailbox.count({ where: { organization_id: orgId, status: 'healthy' } }),
-            prisma.mailbox.count({ where: { organization_id: orgId, status: 'warning' } }),
-            prisma.mailbox.count({ where: { organization_id: orgId, status: 'paused' } }),
+            prisma.mailbox.count({ where: mbWhere }),
+            prisma.mailbox.count({ where: { ...mbWhere, status: 'healthy' } }),
+            prisma.mailbox.count({ where: { ...mbWhere, status: 'warning' } }),
+            prisma.mailbox.count({ where: { ...mbWhere, status: 'paused' } }),
+            prisma.mailbox.count({ where: { ...mbWhere, recovery_phase: 'quarantine' } }),
+            prisma.mailbox.count({ where: { ...mbWhere, recovery_phase: 'restricted_send' } }),
+            prisma.mailbox.count({ where: { ...mbWhere, recovery_phase: 'warm_recovery' } }),
+            prisma.mailbox.count({ where: { ...mbWhere, recovery_phase: { notIn: ['healthy', 'paused'] } } }),
             prisma.domain.count({ where: { organization_id: orgId } }),
             prisma.domain.count({ where: { organization_id: orgId, status: 'healthy' } }),
             prisma.domain.count({ where: { organization_id: orgId, status: 'warning' } }),
             prisma.domain.count({ where: { organization_id: orgId, status: 'paused' } }),
         ]);
 
+        // Get recent rotation events from audit logs
+        const recentRotations = await prisma.auditLog.findMany({
+            where: {
+                organization_id: orgId,
+                action: { in: ['rotated_into_campaign', 'mailbox_rotated_in'] },
+            },
+            orderBy: { timestamp: 'desc' },
+            take: 20,
+            select: { id: true, entity: true, entity_id: true, action: true, details: true, timestamp: true }
+        });
+
         res.json({
             success: true,
             data: {
                 leads: { total: leadTotal, active: leadActive, held: leadHeld, paused: leadPaused, bounced: leadBounced },
                 campaigns: { total: campaignTotal, active: campaignActive, paused: campaignPaused, completed: campaignCompleted },
-                mailboxes: { total: mailboxTotal, healthy: mailboxHealthy, warning: mailboxWarning, paused: mailboxPaused },
+                mailboxes: {
+                    total: mailboxTotal, healthy: mailboxHealthy, warning: mailboxWarning, paused: mailboxPaused,
+                    quarantine: mbQuarantine, restricted_send: mbRestrictedSend, warm_recovery: mbWarmRecovery, in_recovery: mbInRecovery,
+                },
                 domains: { total: domainTotal, healthy: domainHealthy, warning: domainWarning, paused: domainPaused },
+                rotations: recentRotations,
             }
         });
     } catch (error) {

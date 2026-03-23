@@ -273,8 +273,8 @@ export async function executeTransition(
     }
 
     try {
-        // 3. Update entity state
-        await updateEntityState(entityType, entityId, toState);
+        // 3. Update entity state (includes paused_reason for pause/clear on recovery)
+        await updateEntityState(entityType, entityId, toState, reason);
 
         // 4. Handle cooldown logic
         let cooldownUntil: Date | undefined;
@@ -355,19 +355,47 @@ export async function executeTransition(
 async function updateEntityState(
     entityType: EntityType,
     entityId: string,
-    newState: string
+    newState: string,
+    reason?: string
 ): Promise<void> {
+    const isPaused = newState === MailboxState.PAUSED || newState === DomainState.PAUSED;
+    const isHealthy = newState === MailboxState.HEALTHY || newState === DomainState.HEALTHY;
+
     switch (entityType) {
         case EntityType.MAILBOX:
             await prisma.mailbox.update({
                 where: { id: entityId },
-                data: { status: newState }
+                data: {
+                    status: newState,
+                    ...(isPaused && {
+                        paused_reason: reason || 'Health degradation detected',
+                        paused_by: 'system',
+                        paused_at: new Date(),
+                    }),
+                    ...(isHealthy && {
+                        paused_reason: null,
+                        paused_by: null,
+                        paused_at: null,
+                    }),
+                }
             });
             break;
         case EntityType.DOMAIN:
             await prisma.domain.update({
                 where: { id: entityId },
-                data: { status: newState }
+                data: {
+                    status: newState,
+                    ...(isPaused && {
+                        paused_reason: reason || 'Infrastructure health issue',
+                        paused_by: 'system',
+                        paused_at: new Date(),
+                        last_pause_at: new Date(),
+                    }),
+                    ...(isHealthy && {
+                        paused_reason: null,
+                        paused_by: null,
+                    }),
+                }
             });
             break;
         case EntityType.LEAD:
