@@ -408,6 +408,40 @@ export interface OrgContext {
 }
 
 // ============================================================================
+// EMAIL VALIDATION (Hybrid Validation Layer)
+// ============================================================================
+
+export const ValidationStatus = {
+    PENDING: 'pending',
+    VALID: 'valid',
+    RISKY: 'risky',
+    INVALID: 'invalid',
+    UNKNOWN: 'unknown',
+} as const;
+export type ValidationStatusType = typeof ValidationStatus[keyof typeof ValidationStatus];
+
+export const ValidationSource = {
+    INTERNAL: 'internal',
+    MILLION_VERIFIER: 'millionverifier',
+} as const;
+export type ValidationSourceType = typeof ValidationSource[keyof typeof ValidationSource];
+
+export interface ValidationResult {
+    status: ValidationStatusType;
+    score: number;
+    source: ValidationSourceType;
+    is_catch_all: boolean;
+    is_disposable: boolean;
+    details: {
+        syntax_ok: boolean;
+        mx_found: boolean;
+        disposable_check: boolean;
+        catch_all_check: boolean;
+        api_response?: any;
+    };
+}
+
+// ============================================================================
 // CONSTANTS
 // ============================================================================
 

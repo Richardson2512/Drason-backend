@@ -18,8 +18,9 @@ import * as leadHealthService from '../services/leadHealthService';
 import { getAdapterForCampaign } from '../adapters/platformRegistry';
 import * as leadAssignmentService from '../services/leadAssignmentService';
 import * as entityStateService from '../services/entityStateService';
+import * as emailValidationService from '../services/emailValidationService';
 import { getOrgId } from '../middleware/orgContext';
-import { EventType, LeadState, TriggerType } from '../types';
+import { EventType, LeadState, TriggerType, ValidationStatus } from '../types';
 import { logger } from '../services/observabilityService';
 
 // ============================================================================
@@ -43,6 +44,8 @@ interface ProcessResult {
     leadId: string;
     healthClassification: string;
     healthScore: number;
+    validationStatus?: string;
+    validationScore?: number;
     blockReasons?: string[];
     assignedCampaignId: string | null;
     pushedToPlatform: boolean;
@@ -62,8 +65,25 @@ async function processLead(
     const email = input.email.toLowerCase().trim();
     const logTag = source === 'clay' ? 'INGEST CLAY' : 'INGEST';
 
-    // === 1. HEALTH GATE ===
-    const healthResult = await leadHealthService.classifyLeadHealth(email);
+    // === 0. EMAIL VALIDATION (before health gate) ===
+    // Fetch org tier to gate MillionVerifier API usage
+    const org = await prisma.organization.findUnique({
+        where: { id: organizationId },
+        select: { subscription_tier: true },
+    });
+    const validationResult = await emailValidationService.validateLeadEmail(
+        organizationId,
+        email,
+        org?.subscription_tier || 'starter'
+    );
+    logger.info(`[VALIDATION] Lead: ${email} | Status: ${validationResult.status} | Score: ${validationResult.score} | Source: ${validationResult.source} | Tier: ${org?.subscription_tier || 'starter'}`);
+
+    // === 1. HEALTH GATE (enhanced with validation context) ===
+    const healthResult = await leadHealthService.classifyLeadHealth(email, {
+        validationScore: validationResult.score,
+        isDisposable: validationResult.is_disposable,
+        isCatchAll: validationResult.is_catch_all,
+    });
     logger.info(`[HEALTH GATE] Lead: ${email} | Classification: ${healthResult.classification} | Score: ${healthResult.score}`);
 
     // Store raw event (Section 5.1 — store before processing)
@@ -83,6 +103,13 @@ async function processLead(
     });
 
     // === 2. UPSERT LEAD ===
+    // Determine initial status: invalid validation → BLOCKED, red health → BLOCKED, else HELD
+    const initialStatus = validationResult.status === ValidationStatus.INVALID
+        ? LeadState.BLOCKED
+        : healthResult.classification === 'red'
+            ? LeadState.BLOCKED
+            : LeadState.HELD;
+
     const createdLead = await prisma.lead.upsert({
         where: {
             organization_id_email: {
@@ -96,23 +123,69 @@ async function processLead(
             source,
             health_classification: healthResult.classification,
             health_score_calc: healthResult.score,
-            health_checks: healthResult.checks
+            health_checks: healthResult.checks,
+            // Validation fields (single writer: emailValidationService populated these,
+            // ingestion controller persists them alongside the upsert)
+            validation_status: validationResult.status,
+            validation_score: validationResult.score,
+            validation_source: validationResult.source,
+            validated_at: new Date(),
+            is_catch_all: validationResult.is_catch_all,
+            is_disposable: validationResult.is_disposable,
         },
         create: {
             email,
             persona,
             lead_score,
             source,
-            status: healthResult.classification === 'red' ? LeadState.BLOCKED : LeadState.HELD,
+            status: initialStatus,
             health_state: 'healthy',
             health_classification: healthResult.classification,
             health_score_calc: healthResult.score,
             health_checks: healthResult.checks,
+            validation_status: validationResult.status,
+            validation_score: validationResult.score,
+            validation_source: validationResult.source,
+            validated_at: new Date(),
+            is_catch_all: validationResult.is_catch_all,
+            is_disposable: validationResult.is_disposable,
             organization_id: organizationId
         }
     });
 
-    // === 3. HEALTH GATE DECISION ===
+    // === 3. VALIDATION + HEALTH GATE DECISION ===
+    // Block if validation says invalid OR health gate says red
+    if (validationResult.status === ValidationStatus.INVALID) {
+        const blockReason = validationResult.is_disposable
+            ? 'Disposable email domain detected'
+            : validationResult.score <= 0
+                ? 'Invalid email syntax'
+                : 'Email address is invalid (no MX records or failed verification)';
+
+        logger.info(`[VALIDATION] BLOCKED lead ${createdLead.id}: ${blockReason}`);
+        await auditLogService.logAction({
+            organizationId,
+            entity: 'lead',
+            entityId: createdLead.id,
+            trigger: 'email_validation',
+            action: 'blocked',
+            details: `Lead blocked by email validation (${source}): ${blockReason}. Score: ${validationResult.score}/100`
+        });
+
+        return {
+            success: true,
+            leadId: createdLead.id,
+            healthClassification: healthResult.classification,
+            healthScore: healthResult.score,
+            validationStatus: validationResult.status,
+            validationScore: validationResult.score,
+            blockReasons: [blockReason],
+            assignedCampaignId: null,
+            pushedToPlatform: false,
+            message: 'Lead blocked by email validation',
+        };
+    }
+
     if (healthResult.classification === 'red') {
         logger.info(`[HEALTH GATE] BLOCKED lead ${createdLead.id}: ${healthResult.reasons.join(', ')}`);
         await auditLogService.logAction({
@@ -129,6 +202,8 @@ async function processLead(
             leadId: createdLead.id,
             healthClassification: healthResult.classification,
             healthScore: healthResult.score,
+            validationStatus: validationResult.status,
+            validationScore: validationResult.score,
             blockReasons: healthResult.reasons,
             assignedCampaignId: null,
             pushedToPlatform: false,

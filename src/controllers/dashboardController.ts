@@ -64,25 +64,28 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
             where.source_platform = platforms.length === 1 ? platforms[0] : { in: platforms };
         }
 
-        if (status === 'bounced') {
+        if (status === 'invalid') {
+            where.validation_status = 'invalid';
+        } else if (status === 'bounced') {
             where.bounced = true;
         } else if (status && status !== 'all') {
             const statuses = status.split(',').filter(Boolean);
-            if (statuses.includes('bounced')) {
-                // Mixed: bounced + other statuses
-                const nonBounced = statuses.filter(s => s !== 'bounced');
-                if (nonBounced.length > 0) {
-                    where.AND.push({
-                        OR: [
-                            { bounced: true },
-                            { status: { in: nonBounced } }
-                        ]
-                    });
-                } else {
-                    where.bounced = true;
-                }
-            } else {
-                where.status = statuses.length === 1 ? statuses[0] : { in: statuses };
+            // Separate special statuses that map to different fields
+            const hasInvalid = statuses.includes('invalid');
+            const hasBounced = statuses.includes('bounced');
+            const normalStatuses = statuses.filter(s => s !== 'bounced' && s !== 'invalid');
+
+            const orConditions: any[] = [];
+            if (hasInvalid) orConditions.push({ validation_status: 'invalid' });
+            if (hasBounced) orConditions.push({ bounced: true });
+            if (normalStatuses.length > 0) {
+                orConditions.push({ status: normalStatuses.length === 1 ? normalStatuses[0] : { in: normalStatuses } });
+            }
+
+            if (orConditions.length > 1) {
+                where.AND.push({ OR: orConditions });
+            } else if (orConditions.length === 1) {
+                Object.assign(where, orConditions[0]);
             }
         }
 
@@ -268,7 +271,7 @@ export const getEntityStats = async (req: Request, res: Response, next: NextFunc
 
         const mbWhere = { organization_id: orgId };
         const [
-            leadTotal, leadActive, leadHeld, leadPaused, leadBounced,
+            leadTotal, leadActive, leadHeld, leadPaused, leadBounced, leadInvalid,
             campaignTotal, campaignActive, campaignPaused, campaignCompleted,
             mailboxTotal, mailboxHealthy, mailboxWarning, mailboxPaused,
             mbQuarantine, mbRestrictedSend, mbWarmRecovery, mbInRecovery,
@@ -279,6 +282,7 @@ export const getEntityStats = async (req: Request, res: Response, next: NextFunc
             prisma.lead.count({ where: { ...leadWhere, status: 'held' } }),
             prisma.lead.count({ where: { ...leadWhere, status: 'paused' } }),
             prisma.lead.count({ where: { ...leadWhere, bounced: true } }),
+            prisma.lead.count({ where: { ...leadWhere, validation_status: 'invalid' } }),
             prisma.campaign.count({ where: { organization_id: orgId, status: { notIn: ['deleted', 'DELETED', 'archived', 'ARCHIVED'] } } }),
             prisma.campaign.count({ where: { organization_id: orgId, status: 'active' } }),
             prisma.campaign.count({ where: { organization_id: orgId, status: 'paused' } }),
@@ -311,7 +315,7 @@ export const getEntityStats = async (req: Request, res: Response, next: NextFunc
         res.json({
             success: true,
             data: {
-                leads: { total: leadTotal, active: leadActive, held: leadHeld, paused: leadPaused, bounced: leadBounced },
+                leads: { total: leadTotal, active: leadActive, held: leadHeld, paused: leadPaused, bounced: leadBounced, invalid: leadInvalid },
                 campaigns: { total: campaignTotal, active: campaignActive, paused: campaignPaused, completed: campaignCompleted },
                 mailboxes: {
                     total: mailboxTotal, healthy: mailboxHealthy, warning: mailboxWarning, paused: mailboxPaused,
@@ -692,6 +696,63 @@ export const getMailboxes = async (req: Request, res: Response, next: NextFuncti
         });
     } catch (error) {
         logger.error('[DEBUG] getMailboxes error', error as Error);
+        next(error);
+    }
+};
+
+/**
+ * Get recent email validation activity.
+ * Returns the latest validation attempts with lead email and result.
+ */
+export const getValidationActivity = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const orgId = getOrgId(req);
+        const limit = Math.min(parseInt(req.query.limit as string || '20'), 50);
+
+        // Get recent validation attempts
+        const attempts = await prisma.validationAttempt.findMany({
+            where: { organization_id: orgId },
+            orderBy: { created_at: 'desc' },
+            take: limit,
+        });
+
+        // Get summary counts for the last 24 hours
+        const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const [total24h, valid24h, risky24h, invalid24h, unknown24h] = await Promise.all([
+            prisma.validationAttempt.count({ where: { organization_id: orgId, created_at: { gte: since24h } } }),
+            prisma.validationAttempt.count({ where: { organization_id: orgId, created_at: { gte: since24h }, result_status: 'valid' } }),
+            prisma.validationAttempt.count({ where: { organization_id: orgId, created_at: { gte: since24h }, result_status: 'risky' } }),
+            prisma.validationAttempt.count({ where: { organization_id: orgId, created_at: { gte: since24h }, result_status: 'invalid' } }),
+            prisma.validationAttempt.count({ where: { organization_id: orgId, created_at: { gte: since24h }, result_status: 'unknown' } }),
+        ]);
+
+        // Enrich attempts with lead email by looking up lead_id
+        const leadIds = [...new Set(attempts.map(a => a.lead_id).filter(id => id !== 'pre-upsert'))];
+        const leads = leadIds.length > 0 ? await prisma.lead.findMany({
+            where: { id: { in: leadIds } },
+            select: { id: true, email: true },
+        }) : [];
+        const leadMap = new Map(leads.map(l => [l.id, l.email]));
+
+        const enrichedAttempts = attempts.map(a => ({
+            id: a.id,
+            email: leadMap.get(a.lead_id) || 'Unknown',
+            source: a.source,
+            status: a.result_status,
+            score: a.result_score,
+            details: a.result_details,
+            duration_ms: a.duration_ms,
+            created_at: a.created_at,
+        }));
+
+        res.json({
+            success: true,
+            data: {
+                summary: { total: total24h, valid: valid24h, risky: risky24h, invalid: invalid24h, unknown: unknown24h },
+                activity: enrichedAttempts,
+            }
+        });
+    } catch (error) {
         next(error);
     }
 };

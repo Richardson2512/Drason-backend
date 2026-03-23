@@ -143,7 +143,14 @@ function validateEmailFormat(email: string): string | null {
  * Classify lead health based on email address.
  * Returns GREEN/YELLOW/RED classification with detailed checks.
  */
-export async function classifyLeadHealth(email: string): Promise<LeadHealthResult> {
+export async function classifyLeadHealth(
+    email: string,
+    validationContext?: {
+        validationScore: number;
+        isDisposable: boolean;
+        isCatchAll: boolean;
+    }
+): Promise<LeadHealthResult> {
     const emailLower = email.toLowerCase().trim();
 
     // ── VALIDATION: Email format must be valid ──
@@ -168,10 +175,11 @@ export async function classifyLeadHealth(email: string): Promise<LeadHealthResul
         };
     }
 
+    // Use validation context if available (from emailValidationService), else run checks inline
     const checks = {
-        isDisposable: isDisposableDomain(domain),
+        isDisposable: validationContext?.isDisposable ?? isDisposableDomain(domain),
         isRoleEmail: isRoleBasedEmail(localPart),
-        isCatchAll: false, // Could integrate with email verification API
+        isCatchAll: validationContext?.isCatchAll ?? false,
         domainAgeDays: null as number | null
     };
 
@@ -194,6 +202,16 @@ export async function classifyLeadHealth(email: string): Promise<LeadHealthResul
     if (hasSuspiciousTLD(domain)) {
         score -= SUSPICIOUS_TLD_PENALTY;
         reasons.push(`Suspicious TLD: ${domain}`);
+    }
+
+    // Factor in email validation score when available
+    // A low validation score applies a penalty to the health score
+    if (validationContext && validationContext.validationScore >= 0) {
+        const validationPenalty = Math.max(0, 50 - Math.round(validationContext.validationScore / 2));
+        if (validationPenalty > 0) {
+            score -= validationPenalty;
+            reasons.push(`Email validation concern (validation score: ${validationContext.validationScore}/100)`);
+        }
     }
 
     // Ensure score stays between 0-100

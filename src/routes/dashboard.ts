@@ -10,6 +10,7 @@ router.get('/leads', validateQuery(paginationSchema), dashboardController.getLea
 router.get('/campaigns', validateQuery(paginationSchema), dashboardController.getCampaigns);
 router.get('/stats', dashboardController.getStats);
 router.get('/entity-stats', dashboardController.getEntityStats);
+router.get('/validation-activity', dashboardController.getValidationActivity);
 router.get('/domains', validateQuery(paginationSchema), dashboardController.getDomains);
 router.get('/mailboxes', validateQuery(paginationSchema), dashboardController.getMailboxes);
 router.get('/audit-logs', validateQuery(auditLogQuerySchema), dashboardController.getAuditLogs);

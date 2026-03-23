@@ -131,6 +131,15 @@ model Lead {
   lead_category    String?   // Smartlead category: interested, not_interested, do_not_contact, etc.
   cross_campaign_count Int   @default(0) // Number of campaigns this lead is enrolled in across Smartlead
 
+  // Email Validation Layer (written ONLY by emailValidationService)
+  // NULL = never validated (existing leads), values set only for newly ingested leads
+  validation_status    String?                         // valid, risky, invalid, unknown (null = not validated)
+  validation_score     Int?                            // 0-100 (null = not validated)
+  validation_source    String?                         // internal, millionverifier
+  validated_at         DateTime?
+  is_catch_all         Boolean?                        // null = not checked
+  is_disposable        Boolean?                        // null = not checked
+
   created_at   DateTime     @default(now())
   updated_at   DateTime     @updatedAt
   deleted_at   DateTime?
@@ -141,9 +150,43 @@ model Lead {
   @@index([organization_id, assigned_campaign_id])
   @@index([organization_id, health_classification])
   @@index([organization_id, source_platform])
+  @@index([organization_id, validation_status])
   @@index([health_classification, health_checked_at]) // For health worker queries
   @@index([status])
   @@index([bounced])
+}
+
+model ValidationAttempt {
+  id              String   @id @default(uuid())
+  lead_id         String
+  organization_id String
+  source          String   // internal, millionverifier
+  result_status   String   // valid, risky, invalid, unknown, error
+  result_score    Int      // 0-100
+  result_details  Json?    // { syntax_ok, mx_found, is_disposable, is_catch_all, api_response }
+  error_message   String?
+  duration_ms     Int?
+  created_at      DateTime @default(now())
+
+  @@index([lead_id])
+  @@index([organization_id, created_at])
+}
+
+model DomainInsight {
+  id              String   @id @default(uuid())
+  domain          String
+  organization_id String
+  has_mx          Boolean  @default(false)
+  is_catch_all    Boolean  @default(false)
+  is_disposable   Boolean  @default(false)
+  mx_records      Json?    // [{ priority, exchange }]
+  checked_at      DateTime @default(now())
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@unique([organization_id, domain])
+  @@index([domain])
+  @@index([organization_id])
 }
 
 model Campaign {
