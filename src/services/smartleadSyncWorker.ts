@@ -1299,13 +1299,8 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         });
                     }
 
-                    // Check once per campaign if audit backfill has already been done
-                    // Uses OrganizationSetting flag to avoid per-lead DB queries on every sync
-                    const auditBackfillKey = `audit_backfill_done:${campaignId}`;
-                    const campaignBackfillDone = await prisma.organizationSetting.findFirst({
-                        where: { organization_id: organizationId, key: auditBackfillKey },
-                        select: { id: true }
-                    });
+                    // Per-lead audit backfill check is done inside the loop below —
+                    // each lead checks if it already has audit logs before writing.
 
                     // Update each lead with engagement stats from CSV
                     // NOTE: CSV provides per-lead engagement (open_count, click_count, reply_count)
@@ -1389,13 +1384,17 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                 select: { id: true }
                             });
 
-                            // Backfill activity for leads in campaign (first sync only)
-                            // Uses campaign-level check done above to avoid per-lead DB queries
+                            // Backfill activity timeline for leads that don't have any audit logs yet.
+                            // This runs per-lead (not per-campaign) so new leads added after the
+                            // initial sync still get their activity timeline populated.
                             {
                                 const leadUuid = updatedLead.id;
+                                const hasLogs = await prisma.auditLog.count({
+                                    where: { organization_id: organizationId, entity: 'lead', entity_id: leadUuid },
+                                    take: 1
+                                });
 
-                                if (!campaignBackfillDone) {
-                                    // Backfill email_sent activity — lead is in campaign, so emails were sent
+                                if (hasLogs === 0 && (sentCount > 0 || openCount > 0 || clickCount > 0 || replyCount > 0)) {
                                     await auditLogService.logAction({
                                         organizationId,
                                         entity: 'lead',
@@ -1459,14 +1458,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         recordsWithoutEngagement: records.length - recordsWithEngagement
                     });
 
-                    // Mark audit backfill as done for this campaign so subsequent syncs skip it
-                    if (!campaignBackfillDone) {
-                        await prisma.organizationSetting.upsert({
-                            where: { organization_id_key: { organization_id: organizationId, key: auditBackfillKey } },
-                            update: { value: new Date().toISOString() },
-                            create: { organization_id: organizationId, key: auditBackfillKey, value: new Date().toISOString() },
-                        });
-                    }
+                    // Per-lead audit backfill is handled inline above — no campaign-level flag needed.
                 } catch (csvError: any) {
                     // Don't fail the entire sync if CSV parsing fails - contact data is already synced
                     logger.error(`[LeadEngagement] Failed to fetch engagement stats from CSV for campaign ${campaignId}`, csvError, {

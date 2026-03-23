@@ -34,7 +34,7 @@ import { getApiKey, SMARTLEAD_API_BASE } from './smartleadClient';
 
 /**
  * Pause a Smartlead campaign.
- * Called when Drason detects infrastructure health degradation.
+ * Called when Superkabe detects infrastructure health degradation.
  */
 export const pauseSmartleadCampaign = async (
     organizationId: string,
@@ -193,7 +193,7 @@ export const removeMailboxFromCampaigns = async (
 
 /**
  * Resume a Smartlead campaign.
- * Called when Drason detects infrastructure health recovery.
+ * Called when Superkabe detects infrastructure health recovery.
  */
 export const resumeSmartleadCampaign = async (
     organizationId: string,

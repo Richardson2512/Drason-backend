@@ -537,7 +537,7 @@ export const pauseMailbox = async (mailboxId: string, reason: string): Promise<v
             });
         }
     } catch (platformError: any) {
-        // Platform removal failure doesn't block the pause — mailbox is already paused in Drason
+        // Platform removal failure doesn't block the pause — mailbox is already paused in Superkabe
         logger.error(`[MONITOR] Failed to remove mailbox ${mailboxId} from platform campaigns`, platformError, {
             organizationId: orgId,
             mailboxId
@@ -1008,7 +1008,7 @@ const pauseDomain = async (domainId: string, reason: string): Promise<void> => {
             platform: adapter.platform
         });
     } catch (platformError: any) {
-        // Platform removal failure doesn't block the pause — domain is already paused in Drason
+        // Platform removal failure doesn't block the pause — domain is already paused in Superkabe
         logger.error(`[MONITOR] Failed to remove domain ${domainId} mailboxes from platform`, platformError, {
             organizationId: orgId,
             domainId

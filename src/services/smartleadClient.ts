@@ -178,7 +178,7 @@ export const pushLeadToCampaign = async (
                 await notificationService.createNotification(organizationId, {
                     type: 'ERROR',
                     title: 'Campaign Deleted in Smartlead',
-                    message: `Campaign ${campaignId} was deleted in Smartlead but still existed in Drason. It has been marked inactive. Please sync with Smartlead or update routing rules.`
+                    message: `Campaign ${campaignId} was deleted in Smartlead but still existed in Superkabe. It has been marked inactive. Please sync with Smartlead or update routing rules.`
                 });
 
                 await auditLogService.logAction({
@@ -485,7 +485,7 @@ export const registerCampaignWebhook = async (
         await smartleadRateLimiter.execute(() =>
             smartleadBreaker.call(() =>
                 axios.post(`${SMARTLEAD_API_BASE}/campaigns/${campaignId}/webhooks`, {
-                    name: 'Drason Webhook',
+                    name: 'Superkabe Webhook',
                     webhook_url: webhookUrl,
                     event_types: eventTypes || defaultEventTypes,
                 }, {

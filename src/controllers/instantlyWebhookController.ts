@@ -19,7 +19,7 @@ import { EventType } from '../types';
 import { validateWebhookSignature } from '../utils/webhookSignature';
 
 /**
- * Maps Instantly webhook event_type strings to Drason internal EventType.
+ * Maps Instantly webhook event_type strings to Superkabe internal EventType.
  * Instantly V2 event names follow snake_case conventions.
  */
 function mapInstantlyEventType(eventName: string): EventType | string | null {

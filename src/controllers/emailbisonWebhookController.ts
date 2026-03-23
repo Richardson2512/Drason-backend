@@ -29,7 +29,7 @@ import { EventType } from '../types';
 import { validateWebhookSignature } from '../utils/webhookSignature';
 
 /**
- * Maps EmailBison webhook event type strings to Drason's internal EventType enums.
+ * Maps EmailBison webhook event type strings to Superkabe's internal EventType enums.
  * EmailBison uses UPPERCASE in the payload (e.g., "EMAIL_SENT") but lowercase in the
  * API spec enum (e.g., "email_sent"). We handle both.
  */

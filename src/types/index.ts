@@ -1,5 +1,5 @@
 /**
- * Drason Type Definitions
+ * Superkabe Type Definitions
  * 
  * Central location for all enums, types, and interfaces used across the application.
  * These provide type safety and explicit state definitions as required by the
@@ -11,7 +11,7 @@
 // ============================================================================
 
 /**
- * System mode controls how Drason responds to detected risks.
+ * System mode controls how Superkabe responds to detected risks.
  * - OBSERVE: No automated actions, only logging
  * - SUGGEST: Generate recommendations, no auto-actions
  * - ENFORCE: Automated pausing and escalation
@@ -191,7 +191,7 @@ export enum EmailProvider {
  */
 export enum HealingOrigin {
     REHAB = 'rehab',       // Inherited from brownfield onboarding
-    RECOVERY = 'recovery', // Caused during Drason operation
+    RECOVERY = 'recovery', // Caused during Superkabe operation
 }
 
 // ============================================================================

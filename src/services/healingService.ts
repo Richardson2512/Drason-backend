@@ -864,7 +864,7 @@ export async function transitionPhase(
                     where: { id: entityId },
                     select: { external_email_account_id: true }
                 });
-                // Get all campaigns this mailbox is assigned to in Drason
+                // Get all campaigns this mailbox is assigned to in Superkabe
                 const campaigns = await prisma.campaign.findMany({
                     where: {
                         mailboxes: {
@@ -896,7 +896,7 @@ export async function transitionPhase(
                 await checkAndRestartWaitingCampaigns(organizationId, campaigns);
 
             } catch (platformError: any) {
-                // Platform re-add failure doesn't block the recovery — mailbox is already healthy in Drason
+                // Platform re-add failure doesn't block the recovery — mailbox is already healthy in Superkabe
                 logger.error(`[HEALING] Failed to re-add mailbox ${entityId} to platform campaigns`, platformError, {
                     organizationId,
                     entityId

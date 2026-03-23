@@ -245,6 +245,67 @@ export const getStats = async (req: Request, res: Response, next: NextFunction) 
 };
 
 /**
+ * Get entity breakdown stats for all entity types.
+ * Returns status counts for leads, campaigns, mailboxes, and domains.
+ */
+export const getEntityStats = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const orgId = getOrgId(req);
+
+        const activeCampaignIds = await prisma.campaign.findMany({
+            where: { organization_id: orgId, status: { notIn: ['deleted', 'DELETED', 'archived', 'ARCHIVED'] } },
+            select: { id: true }
+        }).then(cs => cs.map(c => c.id));
+
+        const leadWhere = {
+            organization_id: orgId,
+            deleted_at: null,
+            OR: [
+                { assigned_campaign_id: { in: activeCampaignIds } },
+                { assigned_campaign_id: null }
+            ]
+        };
+
+        const [
+            leadTotal, leadActive, leadHeld, leadPaused, leadBounced,
+            campaignTotal, campaignActive, campaignPaused, campaignCompleted,
+            mailboxTotal, mailboxHealthy, mailboxWarning, mailboxPaused,
+            domainTotal, domainHealthy, domainWarning, domainPaused
+        ] = await Promise.all([
+            prisma.lead.count({ where: leadWhere }),
+            prisma.lead.count({ where: { ...leadWhere, status: 'active' } }),
+            prisma.lead.count({ where: { ...leadWhere, status: 'held' } }),
+            prisma.lead.count({ where: { ...leadWhere, status: 'paused' } }),
+            prisma.lead.count({ where: { ...leadWhere, bounced: true } }),
+            prisma.campaign.count({ where: { organization_id: orgId, status: { notIn: ['deleted', 'DELETED', 'archived', 'ARCHIVED'] } } }),
+            prisma.campaign.count({ where: { organization_id: orgId, status: 'active' } }),
+            prisma.campaign.count({ where: { organization_id: orgId, status: 'paused' } }),
+            prisma.campaign.count({ where: { organization_id: orgId, status: 'completed' } }),
+            prisma.mailbox.count({ where: { organization_id: orgId } }),
+            prisma.mailbox.count({ where: { organization_id: orgId, status: 'healthy' } }),
+            prisma.mailbox.count({ where: { organization_id: orgId, status: 'warning' } }),
+            prisma.mailbox.count({ where: { organization_id: orgId, status: 'paused' } }),
+            prisma.domain.count({ where: { organization_id: orgId } }),
+            prisma.domain.count({ where: { organization_id: orgId, status: 'healthy' } }),
+            prisma.domain.count({ where: { organization_id: orgId, status: 'warning' } }),
+            prisma.domain.count({ where: { organization_id: orgId, status: 'paused' } }),
+        ]);
+
+        res.json({
+            success: true,
+            data: {
+                leads: { total: leadTotal, active: leadActive, held: leadHeld, paused: leadPaused, bounced: leadBounced },
+                campaigns: { total: campaignTotal, active: campaignActive, paused: campaignPaused, completed: campaignCompleted },
+                mailboxes: { total: mailboxTotal, healthy: mailboxHealthy, warning: mailboxWarning, paused: mailboxPaused },
+                domains: { total: domainTotal, healthy: domainHealthy, warning: domainWarning, paused: domainPaused },
+            }
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
  * Get all campaigns with pagination.
  */
 export const getCampaigns = async (req: Request, res: Response, next: NextFunction) => {
