@@ -124,6 +124,24 @@ export const recordBounce = async (
         return; // Skip threshold checks entirely
     }
 
+    // ── Create BounceEvent record for analytics ──
+    try {
+        await prisma.bounceEvent.create({
+            data: {
+                organization_id: orgId,
+                mailbox_id: mailboxId,
+                campaign_id: campaignId || null,
+                bounce_type: classification.degradesHealth ? 'hard_bounce' : 'soft_bounce',
+                bounce_reason: smtpResponse || classification.rawReason || '',
+                email_address: recipientEmail || '',
+                bounced_at: new Date(),
+            }
+        });
+    } catch (bounceEventErr) {
+        // Non-fatal — counter increment below is the critical path
+        logger.warn('[MONITOR] Failed to create BounceEvent record', { error: String(bounceEventErr) });
+    }
+
     // ── Health-degrading bounce: update counters ATOMICALLY ──
     // Using atomic increment prevents race conditions when multiple bounces arrive simultaneously
     const updatedMailbox = await prisma.mailbox.update({

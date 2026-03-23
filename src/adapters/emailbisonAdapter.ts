@@ -35,6 +35,7 @@ import {
     PushLeadResult,
 } from './platformAdapter';
 import { LeadState } from '../types';
+import * as auditLogService from '../services/auditLogService';
 
 const EMAILBISON_API_BASE = 'https://dedi.emailbison.com';
 
@@ -653,6 +654,35 @@ export class EmailBisonAdapter implements PlatformAdapter {
                                 where: { id: organizationId },
                                 data: { current_lead_count: org.current_lead_count },
                             });
+                        }
+
+                        // Activity timeline backfill — write audit logs for leads with engagement but no timeline
+                        for (const lead of leadsList) {
+                            const email = lead.email || '';
+                            if (!email) continue;
+                            const stats = lead.overall_stats || {};
+                            const sent = parseInt(String(stats.emails_sent || 0));
+                            const opens = parseInt(String(stats.opens || stats.unique_opens || 0));
+                            const replies = parseInt(String(stats.replies || stats.unique_replies || 0));
+                            if (sent === 0 && opens === 0 && replies === 0) continue;
+
+                            try {
+                                const dbLead = await prisma.lead.findUnique({
+                                    where: { organization_id_email: { organization_id: organizationId, email } },
+                                    select: { id: true },
+                                });
+                                if (!dbLead) continue;
+
+                                const hasLogs = await prisma.auditLog.count({
+                                    where: { organization_id: organizationId, entity: 'lead', entity_id: dbLead.id },
+                                    take: 1,
+                                });
+                                if (hasLogs > 0) continue;
+
+                                await auditLogService.logAction({ organizationId, entity: 'lead', entityId: dbLead.id, trigger: 'emailbison_sync', action: 'email_sent', details: `Email(s) sent to lead in campaign ${internalCampaignId} (backfilled from sync)` });
+                                if (opens > 0) await auditLogService.logAction({ organizationId, entity: 'lead', entityId: dbLead.id, trigger: 'emailbison_sync', action: 'email_opened', details: `Email opened ${opens} time(s) (backfilled from sync)` });
+                                if (replies > 0) await auditLogService.logAction({ organizationId, entity: 'lead', entityId: dbLead.id, trigger: 'emailbison_sync', action: 'email_replied', details: `Email replied ${replies} time(s) (backfilled from sync)` });
+                            } catch { /* non-fatal */ }
                         }
 
                         if (leadsList.length < 100) {

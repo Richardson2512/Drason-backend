@@ -39,6 +39,7 @@ import {
     PushLeadResult,
 } from './platformAdapter';
 import { LeadState } from '../types';
+import * as auditLogService from '../services/auditLogService';
 
 const INSTANTLY_API_BASE = 'https://api.instantly.ai/api/v2';
 const SYNC_CONCURRENCY = 5;
@@ -616,6 +617,7 @@ export class InstantlyAdapter implements PlatformAdapter {
                                         source_platform: SourcePlatform.instantly,
                                         emails_sent: emailsSent,
                                         emails_opened: emailsOpened,
+                                        emails_clicked: emailsClicked,
                                         emails_replied: emailsReplied,
                                         // Mark bounced leads explicitly
                                         ...(isBounced && { health_classification: 'red', status: 'failed', bounced: true }),
@@ -649,6 +651,36 @@ export class InstantlyAdapter implements PlatformAdapter {
                                 where: { id: organizationId },
                                 data: { current_lead_count: org.current_lead_count },
                             });
+                        }
+
+                        // Activity timeline backfill — write audit logs for leads with engagement but no timeline
+                        for (const lead of leadsList) {
+                            const email = lead.email || '';
+                            if (!email) continue;
+                            const sent = parseInt(String(lead.emails_sent_count || lead.email_sent_count || 0));
+                            const opens = parseInt(String(lead.email_open_count || lead.opens || 0));
+                            const replies = parseInt(String(lead.email_reply_count || lead.replies || 0));
+                            const clicks = parseInt(String(lead.email_click_count || lead.clicks || 0));
+                            if (sent === 0 && opens === 0 && replies === 0 && clicks === 0) continue;
+
+                            try {
+                                const dbLead = await prisma.lead.findUnique({
+                                    where: { organization_id_email: { organization_id: organizationId, email } },
+                                    select: { id: true },
+                                });
+                                if (!dbLead) continue;
+
+                                const hasLogs = await prisma.auditLog.count({
+                                    where: { organization_id: organizationId, entity: 'lead', entity_id: dbLead.id },
+                                    take: 1,
+                                });
+                                if (hasLogs > 0) continue;
+
+                                await auditLogService.logAction({ organizationId, entity: 'lead', entityId: dbLead.id, trigger: 'instantly_sync', action: 'email_sent', details: `Email(s) sent to lead in campaign ${internalCampaignId} (backfilled from sync)` });
+                                if (opens > 0) await auditLogService.logAction({ organizationId, entity: 'lead', entityId: dbLead.id, trigger: 'instantly_sync', action: 'email_opened', details: `Email opened ${opens} time(s) (backfilled from sync)` });
+                                if (clicks > 0) await auditLogService.logAction({ organizationId, entity: 'lead', entityId: dbLead.id, trigger: 'instantly_sync', action: 'email_clicked', details: `Email link clicked ${clicks} time(s) (backfilled from sync)` });
+                                if (replies > 0) await auditLogService.logAction({ organizationId, entity: 'lead', entityId: dbLead.id, trigger: 'instantly_sync', action: 'email_replied', details: `Email replied ${replies} time(s) (backfilled from sync)` });
+                            } catch { /* non-fatal */ }
                         }
 
                         leadCursor = leadsRes.data?.next_starting_after || undefined;
