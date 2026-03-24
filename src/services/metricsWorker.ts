@@ -258,15 +258,24 @@ async function checkRecoveryEligibility(
 ): Promise<void> {
     const now = new Date();
 
-    // Find paused mailboxes with expired cooldowns
+    // Find paused mailboxes with expired cooldowns (or null cooldown — treat as immediately eligible)
     const eligibleMailboxes = await prisma.mailbox.findMany({
         where: {
             organization_id: organizationId,
             status: MailboxState.PAUSED,
-            cooldown_until: { lte: now }
+            OR: [
+                { cooldown_until: { lte: now } },
+                { cooldown_until: null }
+            ]
         },
         select: { id: true, resilience_score: true, healing_origin: true }
     });
+
+    if (eligibleMailboxes.length > 0) {
+        logger.info('[METRICS] Found paused mailboxes eligible for quarantine', {
+            count: eligibleMailboxes.length, organizationId, systemMode
+        });
+    }
 
     for (const mailbox of eligibleMailboxes) {
         if (systemMode === 'enforce') {
@@ -292,21 +301,34 @@ async function checkRecoveryEligibility(
                 logger.info('[METRICS] Mailbox entered QUARANTINE phase', {
                     mailboxId: mailbox.id, organizationId
                 });
+            } else {
+                logger.warn('[METRICS] Failed to transition mailbox to QUARANTINE', {
+                    mailboxId: mailbox.id, organizationId, error: result.error
+                });
             }
         } else {
             logger.info('Mailbox eligible for recovery (observe mode)', { mailboxId: mailbox.id, systemMode });
         }
     }
 
-    // Find paused domains with expired cooldowns
+    // Find paused domains with expired cooldowns (or null cooldown — treat as immediately eligible)
     const eligibleDomains = await prisma.domain.findMany({
         where: {
             organization_id: organizationId,
             status: DomainState.PAUSED,
-            cooldown_until: { lte: now }
+            OR: [
+                { cooldown_until: { lte: now } },
+                { cooldown_until: null }
+            ]
         },
         select: { id: true, resilience_score: true, healing_origin: true }
     });
+
+    if (eligibleDomains.length > 0) {
+        logger.info('[METRICS] Found paused domains eligible for quarantine', {
+            count: eligibleDomains.length, organizationId, systemMode
+        });
+    }
 
     for (const domain of eligibleDomains) {
         if (systemMode === 'enforce') {
@@ -330,6 +352,10 @@ async function checkRecoveryEligibility(
                 });
                 logger.info('[METRICS] Domain entered QUARANTINE phase', {
                     domainId: domain.id, organizationId
+                });
+            } else {
+                logger.warn('[METRICS] Failed to transition domain to QUARANTINE', {
+                    domainId: domain.id, organizationId, error: result.error
                 });
             }
         } else {
