@@ -258,11 +258,13 @@ async function checkRecoveryEligibility(
 ): Promise<void> {
     const now = new Date();
 
-    // Find paused mailboxes with expired cooldowns (or null cooldown — treat as immediately eligible)
+    // Find system-paused mailboxes with expired cooldowns (or null cooldown — treat as immediately eligible)
+    // Exclude manually paused mailboxes — those should only be resumed by the user
     const eligibleMailboxes = await prisma.mailbox.findMany({
         where: {
             organization_id: organizationId,
             status: MailboxState.PAUSED,
+            paused_by: { not: 'manual' },
             OR: [
                 { cooldown_until: { lte: now } },
                 { cooldown_until: null }
@@ -311,11 +313,13 @@ async function checkRecoveryEligibility(
         }
     }
 
-    // Find paused domains with expired cooldowns (or null cooldown — treat as immediately eligible)
+    // Find system-paused domains with expired cooldowns (or null cooldown — treat as immediately eligible)
+    // Exclude manually paused domains — those should only be resumed by the user
     const eligibleDomains = await prisma.domain.findMany({
         where: {
             organization_id: organizationId,
             status: DomainState.PAUSED,
+            paused_by: { not: 'manual' },
             OR: [
                 { cooldown_until: { lte: now } },
                 { cooldown_until: null }
