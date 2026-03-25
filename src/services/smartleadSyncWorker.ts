@@ -869,10 +869,9 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             const connectionError = mailbox.smtp_failure_error || mailbox.imap_failure_error;
 
             // Determine mailbox status from Smartlead connection state.
-            // IMPORTANT: Only force a status change for disconnected/inactive mailboxes.
-            // If the mailbox is connected+active, preserve the current DB status (which may
-            // be 'warning' from infra assessment bounce rate analysis). Only default to
-            // 'healthy' for brand-new mailboxes (create path).
+            // IMPORTANT: Only pause on actual connection failure or explicit suspension.
+            // A connected mailbox in WARMUP or no-campaign state is still healthy — don't pause it.
+            // If connected, preserve the current DB status (which may be 'warning' from assessment).
             let mailboxStatus: string | undefined;
             if (!isConnected) {
                 mailboxStatus = 'paused'; // Disconnected/suspended mailboxes are paused
@@ -884,10 +883,12 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         error: connectionError
                     });
                 }
-            } else if (mailbox.status !== 'ACTIVE') {
+            } else if (mailbox.status === 'SUSPENDED' || mailbox.status === 'DISABLED') {
+                // Only pause on explicit Smartlead suspension — not WARMUP, INACTIVE, or other states
                 mailboxStatus = 'paused';
             } else {
-                // Connected + ACTIVE: don't overwrite assessment-derived statuses (warning, etc.)
+                // Connected (ACTIVE, WARMUP, INACTIVE, etc.): preserve current DB status
+                // A mailbox doing warmup-only or idle between campaigns is not paused
                 mailboxStatus = undefined;
             }
 
