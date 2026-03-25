@@ -1201,3 +1201,422 @@ export const resumeDomain = async (req: Request, res: Response, next: NextFuncti
         next(error);
     }
 };
+
+// ============================================================================
+// REPORT GENERATION
+// ============================================================================
+
+/**
+ * Convert an array of objects to a CSV string.
+ * Handles quoting fields that contain commas, quotes, or newlines.
+ */
+function toCsv(rows: Record<string, any>[], columns: { key: string; label: string }[]): string {
+    const escapeField = (val: any): string => {
+        if (val === null || val === undefined) return '';
+        const str = String(val);
+        if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+            return `"${str.replace(/"/g, '""')}"`;
+        }
+        return str;
+    };
+
+    const header = columns.map(c => escapeField(c.label)).join(',');
+    const lines = rows.map(row =>
+        columns.map(c => escapeField(row[c.key])).join(',')
+    );
+    return [header, ...lines].join('\n');
+}
+
+/**
+ * Generate CSV reports for various entity types.
+ * GET /api/dashboard/reports/generate
+ */
+export const generateReport = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const orgId = getOrgId(req);
+        const reportType = req.query.report_type as string;
+        const startDateStr = req.query.start_date as string;
+        const endDateStr = req.query.end_date as string;
+        const statusFilter = req.query.status as string;
+        const campaignIdFilter = req.query.campaign_id as string;
+        const domainIdFilter = req.query.domain_id as string;
+        const platformFilter = req.query.platform as string;
+
+        const validTypes = ['leads', 'campaigns', 'mailboxes', 'domains', 'analytics', 'audit_logs', 'load_balancing', 'full'];
+        if (!reportType || !validTypes.includes(reportType)) {
+            res.status(400).json({ success: false, error: `Invalid report_type. Must be one of: ${validTypes.join(', ')}` });
+            return;
+        }
+
+        const endDate = endDateStr ? new Date(endDateStr) : new Date();
+        const startDate = startDateStr ? new Date(startDateStr) : new Date(endDate.getTime() - 30 * 24 * 60 * 60 * 1000);
+        // Set end date to end of day
+        endDate.setHours(23, 59, 59, 999);
+
+        const statuses = statusFilter ? statusFilter.split(',').filter(Boolean) : [];
+        const campaignIds = campaignIdFilter ? campaignIdFilter.split(',').filter(Boolean) : [];
+        const domainIds = domainIdFilter ? domainIdFilter.split(',').filter(Boolean) : [];
+        const platforms = platformFilter ? platformFilter.split(',').filter(Boolean) : [];
+
+        const sections: string[] = [];
+
+        // ---- LEADS ----
+        if (reportType === 'leads' || reportType === 'full') {
+            const where: any = {
+                organization_id: orgId,
+                deleted_at: null,
+                created_at: { gte: startDate, lte: endDate },
+            };
+            if (statuses.length > 0) {
+                const normalStatuses = statuses.filter(s => s !== 'bounced' && s !== 'invalid');
+                const orConds: any[] = [];
+                if (statuses.includes('bounced')) orConds.push({ bounced: true });
+                if (statuses.includes('invalid')) orConds.push({ validation_status: 'invalid' });
+                if (normalStatuses.length > 0) orConds.push({ status: { in: normalStatuses } });
+                if (orConds.length > 0) where.OR = orConds;
+            }
+            if (campaignIds.length > 0) where.assigned_campaign_id = { in: campaignIds };
+            if (platforms.length > 0) where.source_platform = { in: platforms };
+
+            const leads = await prisma.lead.findMany({
+                where,
+                orderBy: { created_at: 'desc' },
+                take: 50000,
+            });
+
+            // Get campaign names
+            const cIds = [...new Set(leads.filter(l => l.assigned_campaign_id).map(l => l.assigned_campaign_id as string))];
+            const campaignMap = new Map<string, string>();
+            if (cIds.length > 0) {
+                const campaigns = await prisma.campaign.findMany({
+                    where: { id: { in: cIds }, organization_id: orgId },
+                    select: { id: true, name: true },
+                });
+                campaigns.forEach(c => campaignMap.set(c.id, c.name));
+            }
+
+            const columns = [
+                { key: 'email', label: 'Email' },
+                { key: 'status', label: 'Status' },
+                { key: 'lead_score', label: 'Lead Score' },
+                { key: 'health_classification', label: 'Health Classification' },
+                { key: 'validation_status', label: 'Validation Status' },
+                { key: 'validation_score', label: 'Validation Score' },
+                { key: 'campaign_name', label: 'Campaign Name' },
+                { key: 'emails_sent', label: 'Emails Sent' },
+                { key: 'emails_opened', label: 'Emails Opened' },
+                { key: 'emails_clicked', label: 'Emails Clicked' },
+                { key: 'emails_replied', label: 'Emails Replied' },
+                { key: 'bounced', label: 'Bounced' },
+                { key: 'created_at', label: 'Created At' },
+                { key: 'last_activity_at', label: 'Last Activity At' },
+            ];
+
+            const rows = leads.map(l => ({
+                ...l,
+                campaign_name: l.assigned_campaign_id ? (campaignMap.get(l.assigned_campaign_id) || '') : '',
+                bounced: l.bounced ? 'Yes' : 'No',
+                created_at: l.created_at?.toISOString() || '',
+                last_activity_at: l.last_activity_at?.toISOString() || '',
+            }));
+
+            if (reportType === 'full') sections.push(`--- LEADS REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
+        // ---- CAMPAIGNS ----
+        if (reportType === 'campaigns' || reportType === 'full') {
+            const where: any = {
+                organization_id: orgId,
+                status: { notIn: ['deleted', 'DELETED', 'archived', 'ARCHIVED'] },
+                created_at: { gte: startDate, lte: endDate },
+            };
+            if (statuses.length > 0) where.status = { in: statuses };
+            if (campaignIds.length > 0) where.id = { in: campaignIds };
+            if (platforms.length > 0) where.source_platform = { in: platforms };
+
+            const campaigns = await prisma.campaign.findMany({
+                where,
+                include: {
+                    mailboxes: { select: { id: true } },
+                },
+                orderBy: { created_at: 'desc' },
+                take: 10000,
+            });
+
+            // Count leads per campaign
+            const leadCounts = await prisma.lead.groupBy({
+                by: ['assigned_campaign_id'],
+                where: { organization_id: orgId, deleted_at: null, assigned_campaign_id: { in: campaigns.map(c => c.id) } },
+                _count: true,
+            });
+            const leadCountMap = new Map(leadCounts.map(lc => [lc.assigned_campaign_id, lc._count]));
+
+            const columns = [
+                { key: 'name', label: 'Name' },
+                { key: 'status', label: 'Status' },
+                { key: 'source_platform', label: 'Platform' },
+                { key: 'mailbox_count', label: 'Mailbox Count' },
+                { key: 'lead_count', label: 'Lead Count' },
+                { key: 'total_sent', label: 'Total Sent' },
+                { key: 'total_opens', label: 'Total Opens' },
+                { key: 'total_replies', label: 'Total Replies' },
+                { key: 'total_bounces', label: 'Total Bounces' },
+                { key: 'open_rate', label: 'Open Rate (%)' },
+                { key: 'reply_rate', label: 'Reply Rate (%)' },
+                { key: 'bounce_rate', label: 'Bounce Rate (%)' },
+                { key: 'paused_reason', label: 'Paused Reason' },
+                { key: 'created_at', label: 'Created At' },
+            ];
+
+            const rows = campaigns.map(c => ({
+                ...c,
+                mailbox_count: c.mailboxes.length,
+                lead_count: leadCountMap.get(c.id) || 0,
+                total_opens: c.open_count,
+                total_replies: c.reply_count,
+                total_bounces: c.total_bounced,
+                open_rate: c.open_rate.toFixed(1),
+                reply_rate: c.reply_rate.toFixed(1),
+                bounce_rate: c.bounce_rate.toFixed(1),
+                created_at: c.created_at?.toISOString() || '',
+            }));
+
+            if (reportType === 'full') sections.push(`\n--- CAMPAIGNS REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
+        // ---- MAILBOXES ----
+        if (reportType === 'mailboxes' || reportType === 'full') {
+            const where: any = {
+                organization_id: orgId,
+                created_at: { gte: startDate, lte: endDate },
+            };
+            if (statuses.length > 0) where.status = { in: statuses };
+            if (domainIds.length > 0) where.domain_id = { in: domainIds };
+            if (platforms.length > 0) where.source_platform = { in: platforms };
+
+            const mailboxes = await prisma.mailbox.findMany({
+                where,
+                include: {
+                    domain: { select: { domain: true } },
+                    campaigns: { select: { id: true } },
+                },
+                orderBy: { created_at: 'desc' },
+                take: 50000,
+            });
+
+            const columns = [
+                { key: 'email', label: 'Email' },
+                { key: 'status', label: 'Status' },
+                { key: 'recovery_phase', label: 'Recovery Phase' },
+                { key: 'domain_name', label: 'Domain' },
+                { key: 'source_platform', label: 'Platform' },
+                { key: 'resilience_score', label: 'Resilience Score' },
+                { key: 'bounce_rate', label: 'Bounce Rate (%)' },
+                { key: 'total_sent', label: 'Total Sent' },
+                { key: 'total_opens', label: 'Total Opens' },
+                { key: 'engagement_rate', label: 'Engagement Rate (%)' },
+                { key: 'warmup_status', label: 'Warmup Status' },
+                { key: 'campaign_count', label: 'Campaign Count' },
+                { key: 'paused_reason', label: 'Paused Reason' },
+                { key: 'consecutive_pauses', label: 'Consecutive Pauses' },
+                { key: 'created_at', label: 'Created At' },
+            ];
+
+            const rows = mailboxes.map(m => {
+                const bounceRate = m.total_sent_count > 0
+                    ? ((m.hard_bounce_count / m.total_sent_count) * 100).toFixed(1)
+                    : '0.0';
+                return {
+                    ...m,
+                    domain_name: m.domain?.domain || '',
+                    bounce_rate: bounceRate,
+                    total_sent: m.total_sent_count,
+                    total_opens: m.open_count_lifetime,
+                    engagement_rate: m.engagement_rate.toFixed(1),
+                    campaign_count: m.campaigns.length,
+                    created_at: m.created_at?.toISOString() || '',
+                };
+            });
+
+            if (reportType === 'full') sections.push(`\n--- MAILBOXES REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
+        // ---- DOMAINS ----
+        if (reportType === 'domains' || reportType === 'full') {
+            const where: any = {
+                organization_id: orgId,
+                created_at: { gte: startDate, lte: endDate },
+            };
+            if (statuses.length > 0) where.status = { in: statuses };
+            if (domainIds.length > 0) where.id = { in: domainIds };
+            if (platforms.length > 0) where.source_platform = { in: platforms };
+
+            const domains = await prisma.domain.findMany({
+                where,
+                include: {
+                    mailboxes: { select: { id: true, status: true } },
+                },
+                orderBy: { created_at: 'desc' },
+                take: 10000,
+            });
+
+            const columns = [
+                { key: 'domain', label: 'Domain' },
+                { key: 'status', label: 'Status' },
+                { key: 'mailbox_count', label: 'Mailbox Count' },
+                { key: 'healthy_mailboxes', label: 'Healthy Mailboxes' },
+                { key: 'paused_mailboxes', label: 'Paused Mailboxes' },
+                { key: 'bounce_rate', label: 'Bounce Rate (%)' },
+                { key: 'engagement_rate', label: 'Engagement Rate (%)' },
+                { key: 'spf_valid', label: 'SPF Valid' },
+                { key: 'dkim_valid', label: 'DKIM Valid' },
+                { key: 'dmarc_valid', label: 'DMARC Valid' },
+                { key: 'blacklisted', label: 'Blacklisted' },
+                { key: 'created_at', label: 'Created At' },
+            ];
+
+            const rows = domains.map(d => {
+                const healthyCount = d.mailboxes.filter(m => m.status === 'healthy').length;
+                const pausedCount = d.mailboxes.filter(m => m.status === 'paused').length;
+                const isBlacklisted = d.blacklist_results
+                    ? Object.values(d.blacklist_results as Record<string, string>).some(v => v === 'CONFIRMED')
+                    : false;
+                return {
+                    domain: d.domain,
+                    status: d.status,
+                    mailbox_count: d.mailboxes.length,
+                    healthy_mailboxes: healthyCount,
+                    paused_mailboxes: pausedCount,
+                    bounce_rate: d.bounce_rate.toFixed(1),
+                    engagement_rate: d.engagement_rate.toFixed(1),
+                    spf_valid: d.spf_valid === null ? 'Unknown' : d.spf_valid ? 'Yes' : 'No',
+                    dkim_valid: d.dkim_valid === null ? 'Unknown' : d.dkim_valid ? 'Yes' : 'No',
+                    dmarc_valid: d.dmarc_policy ? d.dmarc_policy : 'Unknown',
+                    blacklisted: isBlacklisted ? 'Yes' : 'No',
+                    created_at: d.created_at?.toISOString() || '',
+                };
+            });
+
+            if (reportType === 'full') sections.push(`\n--- DOMAINS REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
+        // ---- ANALYTICS ----
+        if (reportType === 'analytics' || reportType === 'full') {
+            const where: any = {
+                organization_id: orgId,
+                date: { gte: startDate, lte: endDate },
+            };
+            if (campaignIds.length > 0) where.campaign_id = { in: campaignIds };
+
+            const analytics = await prisma.campaignDailyAnalytics.findMany({
+                where,
+                include: { campaign: { select: { name: true } } },
+                orderBy: [{ date: 'desc' }, { campaign_id: 'asc' }],
+                take: 100000,
+            });
+
+            const columns = [
+                { key: 'campaign_name', label: 'Campaign Name' },
+                { key: 'date', label: 'Date' },
+                { key: 'sent_count', label: 'Sent' },
+                { key: 'open_count', label: 'Opens' },
+                { key: 'click_count', label: 'Clicks' },
+                { key: 'reply_count', label: 'Replies' },
+                { key: 'bounce_count', label: 'Bounces' },
+                { key: 'unsubscribe_count', label: 'Unsubscribes' },
+            ];
+
+            const rows = analytics.map(a => ({
+                ...a,
+                campaign_name: a.campaign?.name || '',
+                date: a.date?.toISOString().split('T')[0] || '',
+            }));
+
+            if (reportType === 'full') sections.push(`\n--- ANALYTICS REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
+        // ---- AUDIT LOGS ----
+        if (reportType === 'audit_logs' || reportType === 'full') {
+            const where: any = {
+                organization_id: orgId,
+                timestamp: { gte: startDate, lte: endDate },
+            };
+
+            const logs = await prisma.auditLog.findMany({
+                where,
+                orderBy: { timestamp: 'desc' },
+                take: 100000,
+            });
+
+            const columns = [
+                { key: 'timestamp', label: 'Timestamp' },
+                { key: 'entity', label: 'Entity' },
+                { key: 'entity_id', label: 'Entity ID' },
+                { key: 'action', label: 'Action' },
+                { key: 'trigger', label: 'Trigger' },
+                { key: 'details', label: 'Details' },
+            ];
+
+            const rows = logs.map(l => ({
+                ...l,
+                timestamp: l.timestamp?.toISOString() || '',
+            }));
+
+            if (reportType === 'full') sections.push(`\n--- AUDIT LOGS REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
+        // ---- LOAD BALANCING ----
+        if (reportType === 'load_balancing' || reportType === 'full') {
+            const mailboxes = await prisma.mailbox.findMany({
+                where: { organization_id: orgId },
+                include: {
+                    domain: { select: { domain: true } },
+                    campaigns: { select: { id: true } },
+                },
+                orderBy: { total_sent_count: 'desc' },
+                take: 50000,
+            });
+
+            const columns = [
+                { key: 'email', label: 'Mailbox Email' },
+                { key: 'domain_name', label: 'Domain' },
+                { key: 'campaign_count', label: 'Campaign Count' },
+                { key: 'effective_load', label: 'Effective Load' },
+                { key: 'status', label: 'Status' },
+                { key: 'total_sent', label: 'Total Sent' },
+            ];
+
+            const rows = mailboxes.map(m => ({
+                email: m.email,
+                domain_name: m.domain?.domain || '',
+                campaign_count: m.campaigns.length,
+                effective_load: m.campaigns.length * (m.window_sent_count || 0),
+                status: m.status,
+                total_sent: m.total_sent_count,
+            }));
+
+            if (reportType === 'full') sections.push(`\n--- LOAD BALANCING REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
+        const csvContent = sections.join('\n');
+        const filename = `superkabe-${reportType}-report-${new Date().toISOString().split('T')[0]}.csv`;
+
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.send(csvContent);
+
+        logger.info(`[REPORTS] Generated ${reportType} report for org ${orgId}`, {
+            reportType, startDate: startDate.toISOString(), endDate: endDate.toISOString(),
+            filters: { statuses, campaignIds, domainIds, platforms },
+        });
+    } catch (error) {
+        next(error);
+    }
+};

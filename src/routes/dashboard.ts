@@ -58,6 +58,9 @@ router.post('/notifications/read-all', notificationController.markAllAsRead);
 router.get('/warmup-status', dashboardController.getWarmupStatus);
 router.post('/warmup/check', dashboardController.checkWarmupProgress);
 
+// Report generation endpoint
+router.get('/reports/generate', dashboardController.generateReport);
+
 // Support ticket endpoints
 import * as ticketController from '../controllers/ticketController';
 router.post('/tickets', ticketController.createTicket);
