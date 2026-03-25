@@ -16,8 +16,9 @@ const MV_API_BASE = 'https://api.millionverifier.com/api/v3';
 // Platform-level API key — NOT per-org. Set via MILLION_VERIFIER_API_KEY env var on Railway.
 const API_KEY = process.env.MILLION_VERIFIER_API_KEY || '';
 
-interface MillionVerifierResult {
-    result: string;         // ok, catch_all, unknown, invalid, disposable, error
+interface MillionVerifierRawResponse {
+    result: string;         // "ok", "catch_all", "unknown", "error", "disposable", "invalid"
+    resultcode: number;     // 1=ok, 2=catch_all, 3=unknown, 4=error, 5=disposable, 6=invalid
     subresult: string;      // Additional detail
     free: boolean;          // Is free email provider
     role: boolean;          // Is role-based email
@@ -25,6 +26,27 @@ interface MillionVerifierResult {
     credits: number;        // Remaining credits
     executed_time: number;  // Execution time in ms
 }
+
+// Normalized result — always uses string labels regardless of API response format
+interface MillionVerifierResult {
+    result: string;
+    subresult: string;
+    free: boolean;
+    role: boolean;
+    did_you_mean: string;
+    credits: number;
+    executed_time: number;
+}
+
+// Map numeric result codes to string labels (API returns both, but be safe)
+const RESULT_CODE_MAP: Record<number, string> = {
+    1: 'ok',
+    2: 'catch_all',
+    3: 'unknown',
+    4: 'error',
+    5: 'disposable',
+    6: 'invalid',
+};
 
 /**
  * Verify a single email address via MillionVerifier API.
@@ -38,17 +60,29 @@ export async function verifyEmail(
 
     try {
         const response = await axios.get(MV_API_BASE, {
-            params: { api: API_KEY, email },
-            timeout: 15000,
+            params: { api: API_KEY, email, timeout: 20 },
+            timeout: 25000,
         });
 
-        const data = response.data as MillionVerifierResult;
+        const raw = response.data as MillionVerifierRawResponse;
+
+        // Normalize: ensure result is a string label even if API returns numeric code
+        const normalizedResult = typeof raw.resultcode === 'number' && RESULT_CODE_MAP[raw.resultcode]
+            ? RESULT_CODE_MAP[raw.resultcode]
+            : (raw.result || 'unknown');
+
+        const data: MillionVerifierResult = {
+            ...raw,
+            result: normalizedResult,
+        };
 
         logger.info('[MILLION_VERIFIER] Email verified', {
             organizationId,
             email: email.substring(0, 3) + '***', // Partial for privacy
             result: data.result,
+            resultcode: raw.resultcode,
             subresult: data.subresult,
+            credits: data.credits,
             executionTime: data.executed_time,
         });
 
