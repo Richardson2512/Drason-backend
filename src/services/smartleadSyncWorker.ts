@@ -1340,10 +1340,15 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         const email = rec.email || rec.Email || rec.EMAIL;
                         if (!email) continue;
 
-                        const sentCount = parseInt(rec.sent_count || rec.emails_sent || rec.sequence_number || '0');
-                        const openCount = parseInt(rec.open_count || rec.opens || '0');
-                        const clickCount = parseInt(rec.click_count || rec.clicks || '0');
-                        const replyCount = parseInt(rec.reply_count || rec.replies || '0');
+                        // Smartlead CSV uses 'last_email_sequence_sent' (not 'sent_count')
+                        // to indicate how many sequence steps were delivered to this lead
+                        const sentCount = parseInt(
+                            rec.sent_count || rec.emails_sent || rec.last_email_sequence_sent
+                            || rec.sequence_number || rec.email_sent_count || rec.sent || '0'
+                        );
+                        const openCount = parseInt(rec.open_count || rec.opens || rec.email_open_count || '0');
+                        const clickCount = parseInt(rec.click_count || rec.clicks || rec.email_click_count || '0');
+                        const replyCount = parseInt(rec.reply_count || rec.replies || rec.email_reply_count || '0');
 
                         // Extract bounce data (is_bounced is a documented CSV column)
                         const bouncedStatus = rec.is_bounced === 'true' || rec.is_bounced === '1' || rec.bounced === 'true' || rec.bounced === '1';
@@ -1374,11 +1379,17 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                                 last_activity_at: (sentCount > 0 || openCount > 0 || clickCount > 0 || replyCount > 0) ? new Date() : undefined
                             };
 
-                            // Only set emails_sent from CSV if the column actually exists (sentCount > 0).
-                            // If the CSV lacks a sent column, sentCount defaults to 0 — don't overwrite
-                            // webhook-accumulated values with zero.
-                            if (sentCount > 0) {
-                                leadUpdateData.emails_sent = sentCount;
+                            // Set emails_sent from CSV if available.
+                            // Fallback: if sent column missing but lead has engagement, derive minimum sent count.
+                            // A lead can't have opens/clicks/replies without being sent to.
+                            const effectiveSent = sentCount > 0
+                                ? sentCount
+                                : (openCount > 0 || clickCount > 0 || replyCount > 0)
+                                    ? Math.max(1, openCount) // At least 1 email was sent if any engagement exists
+                                    : 0;
+
+                            if (effectiveSent > 0) {
+                                leadUpdateData.emails_sent = effectiveSent;
                             }
 
                             // Add bounce data if lead bounced
