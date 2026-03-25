@@ -673,11 +673,11 @@ export class EmailBisonAdapter implements PlatformAdapter {
                                 });
                                 if (!dbLead) continue;
 
-                                const hasLogs = await prisma.auditLog.count({
-                                    where: { organization_id: organizationId, entity: 'lead', entity_id: dbLead.id },
+                                const hasActivityLogs = await prisma.auditLog.count({
+                                    where: { organization_id: organizationId, entity: 'lead', entity_id: dbLead.id, action: { in: ['email_sent', 'email_opened', 'email_clicked', 'email_replied'] } },
                                     take: 1,
                                 });
-                                if (hasLogs > 0) continue;
+                                if (hasActivityLogs > 0) continue;
 
                                 await auditLogService.logAction({ organizationId, entity: 'lead', entityId: dbLead.id, trigger: 'emailbison_sync', action: 'email_sent', details: `Email(s) sent to lead in campaign ${internalCampaignId} (backfilled from sync)` });
                                 if (opens > 0) await auditLogService.logAction({ organizationId, entity: 'lead', entityId: dbLead.id, trigger: 'emailbison_sync', action: 'email_opened', details: `Email opened ${opens} time(s) (backfilled from sync)` });

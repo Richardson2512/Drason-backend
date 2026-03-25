@@ -1389,12 +1389,18 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                             // initial sync still get their activity timeline populated.
                             {
                                 const leadUuid = updatedLead.id;
-                                const hasLogs = await prisma.auditLog.count({
-                                    where: { organization_id: organizationId, entity: 'lead', entity_id: leadUuid },
+                                // Check specifically for email activity logs — routing/ingestion logs don't count
+                                const hasActivityLogs = await prisma.auditLog.count({
+                                    where: {
+                                        organization_id: organizationId,
+                                        entity: 'lead',
+                                        entity_id: leadUuid,
+                                        action: { in: ['email_sent', 'email_opened', 'email_clicked', 'email_replied'] }
+                                    },
                                     take: 1
                                 });
 
-                                if (hasLogs === 0 && (sentCount > 0 || openCount > 0 || clickCount > 0 || replyCount > 0)) {
+                                if (hasActivityLogs === 0 && (sentCount > 0 || openCount > 0 || clickCount > 0 || replyCount > 0)) {
                                     await auditLogService.logAction({
                                         organizationId,
                                         entity: 'lead',
