@@ -916,10 +916,28 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 warmup_limit: warmupLimit,
                 last_activity_at: new Date()
             };
-            // Only overwrite status when we know it should change (disconnected/inactive).
+            // Only overwrite status when we know it should change (disconnected/suspended).
             // When undefined, the current DB status is preserved (e.g. 'warning' from assessment).
             if (mailboxStatus !== undefined) {
                 updateData.status = mailboxStatus;
+            }
+
+            // If the mailbox is connected and NOT being paused, ensure recovery_phase is consistent.
+            // A connected, non-paused mailbox should not be stuck in quarantine/restricted/warm_recovery.
+            if (isConnected && mailboxStatus === undefined) {
+                const existing = await prisma.mailbox.findUnique({
+                    where: { id: mailbox.id.toString() },
+                    select: { status: true, recovery_phase: true }
+                });
+                if (existing && existing.status !== 'paused' && existing.recovery_phase !== 'healthy') {
+                    updateData.recovery_phase = 'healthy';
+                    updateData.paused_reason = null;
+                    updateData.paused_at = null;
+                    updateData.paused_by = null;
+                    logger.info('[MailboxSync] Clearing stale recovery_phase for connected healthy mailbox', {
+                        email, oldPhase: existing.recovery_phase, oldStatus: existing.status
+                    });
+                }
             }
 
             mailboxUpserts.push(
