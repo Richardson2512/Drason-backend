@@ -281,8 +281,16 @@ export const getDailyAnalytics = async (req: Request, res: Response) => {
             }
         };
 
-        if (campaign_id) {
-            where.campaign_id = campaign_id as string;
+        // Support comma-separated campaign_ids for comparison mode
+        const campaignIds = campaign_id
+            ? (campaign_id as string).split(',').map(id => id.trim()).filter(Boolean)
+            : [];
+        const isComparison = campaignIds.length > 1;
+
+        if (campaignIds.length === 1) {
+            where.campaign_id = campaignIds[0];
+        } else if (campaignIds.length > 1) {
+            where.campaign_id = { in: campaignIds };
         }
 
         const dailyData = await prisma.campaignDailyAnalytics.findMany({
@@ -299,6 +307,48 @@ export const getDailyAnalytics = async (req: Request, res: Response) => {
                 unsubscribe_count: true,
             }
         });
+
+        // Comparison mode: return per-campaign grouped data
+        if (isComparison) {
+            // Look up campaign names
+            const campaignRecords = await prisma.campaign.findMany({
+                where: { id: { in: campaignIds }, organization_id: orgId },
+                select: { id: true, name: true },
+            });
+            const nameMap = new Map(campaignRecords.map(c => [c.id, c.name]));
+
+            // Group by campaign
+            const byCampaign: Record<string, { name: string; totals: { sent: number; opens: number; clicks: number; replies: number; bounces: number }; daily: any[] }> = {};
+            for (const id of campaignIds) {
+                byCampaign[id] = {
+                    name: nameMap.get(id) || id,
+                    totals: { sent: 0, opens: 0, clicks: 0, replies: 0, bounces: 0 },
+                    daily: [],
+                };
+            }
+
+            for (const row of dailyData) {
+                const entry = byCampaign[row.campaign_id];
+                if (!entry) continue;
+                const dateStr = row.date.toISOString().split('T')[0];
+                entry.daily.push({
+                    date: dateStr,
+                    sent_count: row.sent_count,
+                    open_count: row.open_count,
+                    click_count: row.click_count,
+                    reply_count: row.reply_count,
+                    bounce_count: row.bounce_count,
+                });
+                entry.totals.sent += row.sent_count;
+                entry.totals.opens += row.open_count;
+                entry.totals.clicks += row.click_count;
+                entry.totals.replies += row.reply_count;
+                entry.totals.bounces += row.bounce_count;
+            }
+
+            res.json({ success: true, comparison: true, data: byCampaign });
+            return;
+        }
 
         // If no campaign_id filter, aggregate across all campaigns per day
         if (!campaign_id) {
