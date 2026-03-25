@@ -38,13 +38,14 @@ export const getReport = async (req: Request, res: Response): Promise<void> => {
 };
 
 /**
- * GET /api/assessment/reports
- * Fetch all infrastructure health reports (up to 10 most recent).
+ * GET /api/assessment/reports?days=30
+ * Fetch infrastructure health reports for the given time range.
  */
 export const getReports = async (req: Request, res: Response): Promise<void> => {
     try {
         const orgId = getOrgId(req);
-        const reports = await assessmentService.getReports(orgId);
+        const days = req.query.days ? parseInt(req.query.days as string, 10) : 30;
+        const reports = await assessmentService.getReports(orgId, days);
         res.json({ success: true, data: reports });
     } catch (e: any) {
         logger.error('Failed to fetch assessment reports', e);
