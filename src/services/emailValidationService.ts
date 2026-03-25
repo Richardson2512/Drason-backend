@@ -323,15 +323,20 @@ async function recordAttempt(
     durationMs: number
 ): Promise<void> {
     try {
-        // Find the lead (may not exist yet during ingestion — that's OK)
+        // Find the lead — skip recording if lead doesn't exist yet (will be recorded post-upsert)
         const lead = await prisma.lead.findUnique({
             where: { organization_id_email: { organization_id: organizationId, email } },
             select: { id: true },
         });
 
+        if (!lead) {
+            logger.debug('[VALIDATION] Skipping attempt record — lead not yet created', { email });
+            return;
+        }
+
         await prisma.validationAttempt.create({
             data: {
-                lead_id: lead?.id || 'pre-upsert', // Lead may not exist yet
+                lead_id: lead.id,
                 organization_id: organizationId,
                 source: result.source,
                 result_status: result.status,

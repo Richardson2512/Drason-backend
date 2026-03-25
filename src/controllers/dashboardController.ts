@@ -1213,7 +1213,11 @@ export const resumeDomain = async (req: Request, res: Response, next: NextFuncti
 function toCsv(rows: Record<string, any>[], columns: { key: string; label: string }[]): string {
     const escapeField = (val: any): string => {
         if (val === null || val === undefined) return '';
-        const str = String(val);
+        let str = String(val);
+        // CSV injection protection: prefix formula-triggering characters with single quote
+        if (/^[=+\-@\t\r]/.test(str)) {
+            str = "'" + str;
+        }
         if (str.includes(',') || str.includes('"') || str.includes('\n')) {
             return `"${str.replace(/"/g, '""')}"`;
         }

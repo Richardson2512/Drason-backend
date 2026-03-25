@@ -883,8 +883,8 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         error: connectionError
                     });
                 }
-            } else if (mailbox.status === 'SUSPENDED' || mailbox.status === 'DISABLED') {
-                // Only pause on explicit Smartlead suspension — not WARMUP, INACTIVE, or other states
+            } else if (mailbox.status === 'SUSPENDED' || mailbox.status === 'DISABLED' || mailbox.status === 'DELETED') {
+                // Pause on explicit Smartlead suspension/deletion — not WARMUP, INACTIVE, or other states
                 mailboxStatus = 'paused';
             } else {
                 // Connected (ACTIVE, WARMUP, INACTIVE, etc.): preserve current DB status
@@ -922,14 +922,22 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 updateData.status = mailboxStatus;
             }
 
-            // If the mailbox is connected and NOT being paused, ensure recovery_phase is consistent.
-            // A connected, non-paused mailbox should not be stuck in quarantine/restricted/warm_recovery.
+            // If the mailbox is connected and NOT being paused, check for stale recovery_phase.
+            // Only reset recovery_phase if the mailbox is genuinely healthy (status = 'healthy')
+            // and not actively in the healing pipeline (no healing_origin set).
+            // DO NOT reset if status is quarantine/restricted_send/warm_recovery/warning — those
+            // are active healing states managed by healingService.
             if (isConnected && mailboxStatus === undefined) {
                 const existing = await prisma.mailbox.findUnique({
                     where: { id: mailbox.id.toString() },
-                    select: { status: true, recovery_phase: true }
+                    select: { status: true, recovery_phase: true, healing_origin: true }
                 });
-                if (existing && existing.status !== 'paused' && existing.recovery_phase !== 'healthy') {
+                const activeHealingStatuses = ['paused', 'quarantine', 'restricted_send', 'warm_recovery', 'recovering'];
+                if (existing
+                    && existing.recovery_phase !== 'healthy'
+                    && !activeHealingStatuses.includes(existing.status)
+                    && !existing.healing_origin
+                ) {
                     updateData.recovery_phase = 'healthy';
                     updateData.paused_reason = null;
                     updateData.paused_at = null;
