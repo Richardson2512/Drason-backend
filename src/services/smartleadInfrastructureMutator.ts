@@ -323,10 +323,12 @@ export const addMailboxToSmartleadCampaign = async (
 
     try {
         // Add the email account back to the campaign
+        // Smartlead API expects email_account_ids as an array (plural), not singular
+        const numericId = parseInt(String(mailboxId), 10);
         await smartleadBreaker.call(() =>
             axios.post(
                 `${SMARTLEAD_API_BASE}/campaigns/${campaignId}/email-accounts`,
-                { email_account_id: mailboxId },
+                { email_account_ids: [isNaN(numericId) ? mailboxId : numericId] },
                 { params: { api_key: apiKey } }
             )
         );

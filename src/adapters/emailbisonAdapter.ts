@@ -10,7 +10,8 @@
  *   Mailboxes:  GET /api/sender-emails
  *   Leads:      GET /api/campaigns/{id}/leads, GET /api/leads
  *   Warmup:     GET/PATCH /api/warmup/sender-emails
- *   Pause/Resume: PATCH /api/campaigns/v1.1/{id}/status
+ *   Pause:   PATCH /api/campaigns/{id}/pause
+ *   Resume:  PATCH /api/campaigns/{id}/resume
  *   Attach mailbox: POST /api/campaigns/{id}/attach-sender-emails
  *   Remove mailbox: DELETE /api/campaigns/{id}/remove-sender-emails
  */
