@@ -115,13 +115,15 @@ export const getOrganizations = async (req: Request, res: Response, next: NextFu
 
         res.json({
             success: true,
-            data: enriched,
-            platformStats: {
-                totalValidations,
-                totalApiCalls,
-                smartleadConnections,
-                instantlyConnections,
-                emailbisonConnections,
+            data: {
+                organizations: enriched,
+                platformStats: {
+                    totalValidations,
+                    totalApiCalls,
+                    smartleadConnections,
+                    instantlyConnections,
+                    emailbisonConnections,
+                },
             },
         });
     } catch (error) {
