@@ -8,6 +8,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
+import { getApiCallStats } from '../services/apiCallTracker';
 
 // ============================================================================
 // CSV HELPERS
@@ -103,10 +104,13 @@ export const getOrganizations = async (req: Request, res: Response, next: NextFu
 
         // Platform-wide aggregates
         const totalValidations = enriched.reduce((s, o) => s + o.validationStats.total, 0);
-        const totalApiCalls = enriched.reduce((s, o) => s + o.validationStats.apiCalls, 0);
+        const totalMvApiCalls = enriched.reduce((s, o) => s + o.validationStats.apiCalls, 0);
         const smartleadConnections = enriched.filter(o => o.platforms.includes('smartlead')).length;
         const instantlyConnections = enriched.filter(o => o.platforms.includes('instantly')).length;
         const emailbisonConnections = enriched.filter(o => o.platforms.includes('emailbison')).length;
+
+        // API call tracking stats
+        const apiCallStats = await getApiCallStats();
 
         logger.info('[SUPER_ADMIN] Listed organizations', {
             userId: req.orgContext?.userId,
@@ -119,10 +123,11 @@ export const getOrganizations = async (req: Request, res: Response, next: NextFu
                 organizations: enriched,
                 platformStats: {
                     totalValidations,
-                    totalApiCalls,
+                    totalMvApiCalls,
                     smartleadConnections,
                     instantlyConnections,
                     emailbisonConnections,
+                    apiCalls: apiCallStats,
                 },
             },
         });

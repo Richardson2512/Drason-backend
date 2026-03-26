@@ -479,6 +479,21 @@ model OrganizationSetting {
   @@index([organization_id])
 }
 
+model ApiCallLog {
+  id              String   @id @default(uuid())
+  organization_id String
+  platform        String   // smartlead, instantly, emailbison, millionverifier
+  endpoint        String   // e.g. GET /campaigns, POST /campaigns/{id}/status
+  status_code     Int?     // HTTP status code (null if network error)
+  duration_ms     Int?
+  error           String?
+  created_at      DateTime @default(now())
+
+  @@index([organization_id, platform])
+  @@index([organization_id, created_at])
+  @@index([platform, created_at])
+}
+
 model Notification {
   id              String       @id @default(uuid())
   type            String // INFO, SUCCESS, WARNING, ERROR, SYSTEM

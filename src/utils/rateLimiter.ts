@@ -12,11 +12,13 @@
  */
 
 import { logger } from '../services/observabilityService';
+import { trackApiCall } from '../services/apiCallTracker';
 
 interface RateLimiterConfig {
     maxRequests: number;      // Maximum requests allowed
     windowMs: number;         // Time window in milliseconds
     queueLimit?: number;      // Maximum queued requests (default: 1000)
+    platform?: string;        // Platform name for API call tracking
 }
 
 interface QueuedRequest {
@@ -34,6 +36,7 @@ export class RateLimiter {
     private queue: QueuedRequest[] = [];
     private processing: boolean = false;
     private readonly queueLimit: number;
+    private readonly platform: string;
 
     constructor(config: RateLimiterConfig) {
         this.maxTokens = config.maxRequests;
@@ -41,6 +44,7 @@ export class RateLimiter {
         this.refillRate = config.maxRequests / config.windowMs;
         this.lastRefill = Date.now();
         this.queueLimit = config.queueLimit || 1000;
+        this.platform = config.platform || 'unknown';
 
         logger.info('[RATE_LIMITER] Initialized', {
             maxRequests: config.maxRequests,
@@ -71,13 +75,36 @@ export class RateLimiter {
      */
     async execute<T>(
         fn: () => Promise<T>,
+        trackingInfo?: { orgId: string; endpoint: string },
     ): Promise<T> {
+        const startTime = Date.now();
 
         return new Promise<T>((resolve, reject) => {
+            const wrappedFn = async () => {
+                const result = await fn();
+                // Track successful call
+                if (trackingInfo) {
+                    const duration = Date.now() - startTime;
+                    const statusCode = (result as any)?.status || (result as any)?.data ? 200 : undefined;
+                    trackApiCall(trackingInfo.orgId, this.platform, trackingInfo.endpoint, statusCode, duration);
+                }
+                return result;
+            };
+
+            const wrappedReject = (error: any) => {
+                // Track failed call
+                if (trackingInfo) {
+                    const duration = Date.now() - startTime;
+                    const statusCode = error?.response?.status;
+                    trackApiCall(trackingInfo.orgId, this.platform, trackingInfo.endpoint, statusCode, duration, error?.message?.substring(0, 200));
+                }
+                reject(error);
+            };
+
             const request: QueuedRequest = {
                 resolve,
-                reject,
-                fn,
+                reject: wrappedReject,
+                fn: wrappedFn,
                 retryCount: 0
             };
 
@@ -212,7 +239,8 @@ export class RateLimiter {
 export const smartleadRateLimiter = new RateLimiter({
     maxRequests: 10,
     windowMs: 2000,
-    queueLimit: 5000 // Allow up to 5000 queued requests
+    queueLimit: 5000,
+    platform: 'smartlead',
 });
 
 /**
@@ -222,7 +250,8 @@ export const smartleadRateLimiter = new RateLimiter({
 export const emailbisonRateLimiter = new RateLimiter({
     maxRequests: 5,
     windowMs: 2000,
-    queueLimit: 3000
+    queueLimit: 3000,
+    platform: 'emailbison',
 });
 
 /**
@@ -232,7 +261,8 @@ export const emailbisonRateLimiter = new RateLimiter({
 export const instantlyRateLimiter = new RateLimiter({
     maxRequests: 10,
     windowMs: 2000,
-    queueLimit: 5000
+    queueLimit: 5000,
+    platform: 'instantly',
 });
 
 /**
@@ -242,7 +272,8 @@ export const instantlyRateLimiter = new RateLimiter({
 export const replyioRateLimiter = new RateLimiter({
     maxRequests: 10,
     windowMs: 2000,
-    queueLimit: 5000
+    queueLimit: 5000,
+    platform: 'replyio',
 });
 
 // ============================================================================
