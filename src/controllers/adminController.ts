@@ -63,12 +63,67 @@ export const getOrganizations = async (req: Request, res: Response, next: NextFu
             orderBy: { created_at: 'desc' }
         });
 
+        // Enrich each org with platform connections and validation stats
+        const enriched = await Promise.all(organizations.map(async (org) => {
+            // Platform connections (check which API keys are configured)
+            const settings = await prisma.organizationSetting.findMany({
+                where: { organization_id: org.id, key: { in: ['SMARTLEAD_API_KEY', 'INSTANTLY_API_KEY', 'EMAILBISON_API_KEY'] } },
+                select: { key: true },
+            });
+            const platforms = settings.map(s => s.key.replace('_API_KEY', '').toLowerCase());
+
+            // Also check source_platform on campaigns for actual connected platforms
+            const campaignPlatforms = await prisma.campaign.groupBy({
+                by: ['source_platform'],
+                where: { organization_id: org.id },
+                _count: true,
+            });
+
+            // Validation stats
+            const validationCount = await prisma.validationAttempt.count({
+                where: { organization_id: org.id },
+            });
+            const apiValidations = await prisma.validationAttempt.count({
+                where: { organization_id: org.id, source: 'millionverifier' },
+            });
+
+            return {
+                ...org,
+                platforms: [...new Set([...platforms, ...campaignPlatforms.map(cp => cp.source_platform)])],
+                campaignsByPlatform: campaignPlatforms.reduce((acc, cp) => {
+                    acc[cp.source_platform] = cp._count;
+                    return acc;
+                }, {} as Record<string, number>),
+                validationStats: {
+                    total: validationCount,
+                    apiCalls: apiValidations,
+                },
+            };
+        }));
+
+        // Platform-wide aggregates
+        const totalValidations = enriched.reduce((s, o) => s + o.validationStats.total, 0);
+        const totalApiCalls = enriched.reduce((s, o) => s + o.validationStats.apiCalls, 0);
+        const smartleadConnections = enriched.filter(o => o.platforms.includes('smartlead')).length;
+        const instantlyConnections = enriched.filter(o => o.platforms.includes('instantly')).length;
+        const emailbisonConnections = enriched.filter(o => o.platforms.includes('emailbison')).length;
+
         logger.info('[SUPER_ADMIN] Listed organizations', {
             userId: req.orgContext?.userId,
-            count: organizations.length,
+            count: enriched.length,
         });
 
-        res.json({ success: true, data: organizations });
+        res.json({
+            success: true,
+            data: enriched,
+            platformStats: {
+                totalValidations,
+                totalApiCalls,
+                smartleadConnections,
+                instantlyConnections,
+                emailbisonConnections,
+            },
+        });
     } catch (error) {
         next(error);
     }
