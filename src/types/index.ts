@@ -264,6 +264,7 @@ export enum CampaignState {
  * - VIEWER: Read-only access to dashboards and logs
  */
 export enum UserRole {
+    SUPER_ADMIN = 'super_admin',
     ADMIN = 'admin',
     OPERATOR = 'operator',
     VIEWER = 'viewer'

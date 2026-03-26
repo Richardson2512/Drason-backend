@@ -145,6 +145,11 @@ export const extractOrgContext = async (
                 organizationId = jwtPayload.orgId;
                 authMethod = 'jwt';
 
+                // Super admin can switch org context via query param
+                if (role === UserRole.SUPER_ADMIN && req.query.org_id) {
+                    organizationId = req.query.org_id as string;
+                }
+
                 // X-Organization-ID header: ONLY trust if it matches JWT claim
                 const orgHeader = req.headers['x-organization-id'];
                 if (orgHeader && typeof orgHeader === 'string') {
@@ -264,8 +269,9 @@ export const requireRole = (requiredRole: UserRole) => {
             return res.status(401).json({ error: 'Authentication required' });
         }
 
-        // Role hierarchy: admin > operator > viewer
+        // Role hierarchy: super_admin > admin > operator > viewer
         const roleHierarchy: Record<UserRole, number> = {
+            [UserRole.SUPER_ADMIN]: 4,
             [UserRole.ADMIN]: 3,
             [UserRole.OPERATOR]: 2,
             [UserRole.VIEWER]: 1
@@ -284,6 +290,17 @@ export const requireRole = (requiredRole: UserRole) => {
 
         next();
     };
+};
+
+/**
+ * Require super admin role for the route.
+ * Unlike requireRole, this checks for exact super_admin match — no hierarchy fallback.
+ */
+export const requireSuperAdmin = (req: Request, res: Response, next: NextFunction) => {
+    if (!req.orgContext?.role || req.orgContext.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Super admin access required' });
+    }
+    next();
 };
 
 /**

@@ -131,6 +131,16 @@ function getClientIdentifier(req: Request): string {
 // ============================================================================
 
 const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
+    [UserRole.SUPER_ADMIN]: [
+        'users:read', 'users:write', 'users:delete',
+        'org:read', 'org:write',
+        'settings:read', 'settings:write',
+        'leads:read', 'leads:write', 'leads:delete',
+        'campaigns:read', 'campaigns:write',
+        'audit:read',
+        'webhooks:manage',
+        'admin:read', 'admin:write'
+    ],
     [UserRole.ADMIN]: [
         'users:read', 'users:write', 'users:delete',
         'org:read', 'org:write',
