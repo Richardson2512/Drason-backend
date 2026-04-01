@@ -830,7 +830,7 @@ export const deleteRoutingRule = async (req: Request, res: Response) => {
         const orgId = getOrgId(req);
         const { id } = req.params;
 
-        const deleted = await routingService.deleteRule(orgId, id);
+        const deleted = await routingService.deleteRule(orgId, String(id));
 
         if (!deleted) {
             return res.status(404).json({ success: false, error: 'Routing rule not found' });
