@@ -1929,11 +1929,48 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
             });
         }
 
-        // ── 5b. Fetch analytics-by-date for each campaign (daily trend snapshots) ──
+        // ── 5b. Daily analytics: snapshot from campaign totals + analytics-by-date API ──
         try {
             let dailyAnalyticsUpserted = 0;
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
 
-            // Fetch daily analytics for all campaigns in parallel, upsert sequentially per campaign
+            // First: snapshot today's totals from campaign stats (guaranteed to work)
+            const allCampaigns = await prisma.campaign.findMany({
+                where: { organization_id: organizationId },
+                select: { id: true, total_sent: true, total_bounced: true, open_count: true, click_count: true, reply_count: true, unsubscribed_count: true },
+            });
+            for (const c of allCampaigns) {
+                try {
+                    await prisma.campaignDailyAnalytics.upsert({
+                        where: { campaign_id_date: { campaign_id: c.id, date: today } },
+                        update: {
+                            sent_count: c.total_sent || 0,
+                            open_count: c.open_count || 0,
+                            click_count: c.click_count || 0,
+                            reply_count: c.reply_count || 0,
+                            bounce_count: c.total_bounced || 0,
+                            unsubscribe_count: c.unsubscribed_count || 0,
+                        },
+                        create: {
+                            campaign_id: c.id,
+                            organization_id: organizationId,
+                            date: today,
+                            sent_count: c.total_sent || 0,
+                            open_count: c.open_count || 0,
+                            click_count: c.click_count || 0,
+                            reply_count: c.reply_count || 0,
+                            bounce_count: c.total_bounced || 0,
+                            unsubscribe_count: c.unsubscribed_count || 0,
+                        },
+                    });
+                    dailyAnalyticsUpserted++;
+                } catch {
+                    // Non-fatal per campaign
+                }
+            }
+
+            // Second: try analytics-by-date API for historical daily breakdowns
             const dailyResults = await parallelChunked(campaigns, SYNC_API_CONCURRENCY, async (campaign: any) => {
                 const cId = campaign.id.toString();
                 const dailyData = await getAnalyticsByDate(organizationId, cId);
