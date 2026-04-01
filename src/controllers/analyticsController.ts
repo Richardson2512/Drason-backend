@@ -310,18 +310,23 @@ export const getDailyAnalytics = async (req: Request, res: Response) => {
 
         // Comparison mode: return per-campaign grouped data
         if (isComparison) {
-            // Look up campaign names
+            // Look up campaign records with stats for fallback
             const campaignRecords = await prisma.campaign.findMany({
                 where: { id: { in: campaignIds }, organization_id: orgId },
-                select: { id: true, name: true },
+                select: {
+                    id: true, name: true,
+                    total_sent: true, total_bounced: true,
+                    open_count: true, click_count: true, reply_count: true,
+                },
             });
-            const nameMap = new Map(campaignRecords.map(c => [c.id, c.name]));
+            const campaignMap = new Map(campaignRecords.map(c => [c.id, c]));
 
             // Group by campaign
             const byCampaign: Record<string, { name: string; totals: { sent: number; opens: number; clicks: number; replies: number; bounces: number }; daily: any[] }> = {};
             for (const id of campaignIds) {
+                const c = campaignMap.get(id);
                 byCampaign[id] = {
-                    name: nameMap.get(id) || id,
+                    name: c?.name || id,
                     totals: { sent: 0, opens: 0, clicks: 0, replies: 0, bounces: 0 },
                     daily: [],
                 };
@@ -344,6 +349,19 @@ export const getDailyAnalytics = async (req: Request, res: Response) => {
                 entry.totals.clicks += row.click_count;
                 entry.totals.replies += row.reply_count;
                 entry.totals.bounces += row.bounce_count;
+            }
+
+            // Fallback: if daily data is empty/sparse, use campaign-level totals
+            for (const id of campaignIds) {
+                const entry = byCampaign[id];
+                const c = campaignMap.get(id);
+                if (entry && c && entry.totals.sent === 0) {
+                    entry.totals.sent = c.total_sent || 0;
+                    entry.totals.opens = c.open_count || 0;
+                    entry.totals.clicks = c.click_count || 0;
+                    entry.totals.replies = c.reply_count || 0;
+                    entry.totals.bounces = c.total_bounced || 0;
+                }
             }
 
             res.json({ success: true, comparison: true, data: byCampaign });
