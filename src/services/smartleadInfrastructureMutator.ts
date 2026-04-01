@@ -379,9 +379,9 @@ export const removeLeadFromSmartleadCampaign = async (
     }
 
     try {
-        await smartleadBreaker.call(() =>
+        await smartleadRateLimiter.execute(() =>
             axios.post(
-                `${SMARTLEAD_API_BASE}/campaigns/${campaignId}/leads/delete`, // Smartlead uses POST /delete usually for bulk, or a specific delete endpoint
+                `${SMARTLEAD_API_BASE}/campaigns/${campaignId}/leads/delete`,
                 {
                     lead_list: [leadEmail]
                 },
