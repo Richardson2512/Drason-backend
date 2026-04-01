@@ -25,6 +25,7 @@ import * as entityStateService from './entityStateService';
 import { MailboxState, DomainState } from '../types';
 import { getAdapterForMailbox, getAdapterForCampaign } from '../adapters/platformRegistry';
 import { SlackAlertService } from './SlackAlertService';
+import { assessDomainDNS } from './infrastructureAssessmentService';
 import logger from '../utils/logger';
 
 // ============================================================================
@@ -182,10 +183,33 @@ async function checkQuarantineToRestricted(
     });
     if (!domain) return null;
 
+    // Trigger live DNS check before graduation attempt
+    try {
+        const dnsResult = await assessDomainDNS(domain.domain);
+        await prisma.domain.update({
+            where: { id: domain.id },
+            data: {
+                spf_valid: dnsResult.spfValid,
+                dkim_valid: dnsResult.dkimValid,
+                dmarc_policy: dnsResult.dmarcPolicy,
+                blacklist_results: dnsResult.blacklistResults,
+                dns_checked_at: new Date(),
+            },
+        });
+    } catch (err: any) {
+        logger.warn(`[HEALING] Live DNS check failed for domain ${domain.domain}, using cached values`, { error: err?.message });
+    }
+
+    // Re-read domain with fresh data
+    const freshDomain = await prisma.domain.findUnique({
+        where: { id: domain.id },
+    });
+    if (!freshDomain) return null;
+
     // DNS must be healthy — no blacklists, SPF/DKIM present
-    const dnsHealthy = domain.spf_valid === true
-        && domain.dkim_valid === true
-        && !isBlacklisted(domain.blacklist_results);
+    const dnsHealthy = freshDomain.spf_valid === true
+        && freshDomain.dkim_valid === true
+        && !isBlacklisted(freshDomain.blacklist_results);
 
     if (!dnsHealthy) {
         return null; // Cannot promote until DNS is clean

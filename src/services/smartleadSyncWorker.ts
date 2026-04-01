@@ -27,6 +27,7 @@ import { decrypt } from '../utils/encryption';
 import { parse } from 'csv-parse/sync';
 
 import { getApiKey, SMARTLEAD_API_BASE, ensureWebhooksRegistered, getAnalyticsByDate, getCampaignStatistics, getLeadCampaigns, fetchCampaignMailboxStatistics, MailboxStatisticsEntry } from './smartleadClient';
+import { removeMailboxFromSmartleadCampaign } from './smartleadInfrastructureMutator';
 
 // ============================================================================
 // PARALLEL EXECUTION HELPER
@@ -1053,16 +1054,29 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     .filter(Boolean);
 
                 if (mailboxIds.length > 0) {
-                    await prisma.campaign.update({
-                        where: { id: campaignId },
-                        data: {
-                            mailboxes: {
-                                connect: mailboxIds.map((id: string) => ({ id }))
-                            }
-                        }
+                    // Filter out mailboxes that are paused or in healing pipeline
+                    const pausedMailboxIds = await prisma.mailbox.findMany({
+                        where: {
+                            id: { in: mailboxIds },
+                            status: { in: ['paused', 'quarantine', 'restricted_send', 'warm_recovery'] }
+                        },
+                        select: { id: true }
                     });
+                    const pausedIds = new Set(pausedMailboxIds.map(m => m.id));
+                    const activeMailboxIds = mailboxIds.filter((id: string) => !pausedIds.has(id));
 
-                    logger.info(`[CampaignMailboxSync] Linked ${mailboxIds.length} mailboxes to campaign ${campaignId}`);
+                    if (activeMailboxIds.length > 0) {
+                        await prisma.campaign.update({
+                            where: { id: campaignId },
+                            data: {
+                                mailboxes: {
+                                    connect: activeMailboxIds.map((id: string) => ({ id }))
+                                }
+                            }
+                        });
+                    }
+
+                    logger.info(`[CampaignMailboxSync] Linked ${activeMailboxIds.length} mailboxes to campaign ${campaignId} (${pausedIds.size} paused/healing mailboxes excluded)`);
                 }
             } catch (emailAccountError: any) {
                 logger.error(`[CampaignMailboxSync] Failed to fetch email accounts for campaign ${campaignId}`, emailAccountError, {
@@ -1081,6 +1095,49 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                 }
             }
         });
+
+        // ── 3a-reconcile. Re-issue removal for paused mailboxes still linked on Smartlead ──
+        try {
+            const pausedButConnected = await prisma.mailbox.findMany({
+                where: {
+                    organization_id: organizationId,
+                    status: { in: ['paused', 'quarantine', 'restricted_send'] },
+                    campaigns: { some: {} }
+                },
+                select: {
+                    id: true,
+                    external_email_account_id: true,
+                    email: true,
+                    campaigns: { select: { id: true, external_id: true } }
+                }
+            });
+
+            for (const mb of pausedButConnected) {
+                for (const campaign of mb.campaigns) {
+                    try {
+                        await removeMailboxFromSmartleadCampaign(
+                            organizationId,
+                            campaign.external_id || campaign.id,
+                            mb.external_email_account_id || mb.id
+                        );
+                        logger.info(`[SYNC-RECONCILE] Removed paused mailbox ${mb.email} from campaign ${campaign.id} on Smartlead`);
+                    } catch (err: any) {
+                        logger.warn(`[SYNC-RECONCILE] Failed to remove paused mailbox ${mb.email} from campaign ${campaign.id}`, { error: err.message });
+                    }
+                }
+                // Disconnect from campaigns in DB
+                await prisma.mailbox.update({
+                    where: { id: mb.id },
+                    data: { campaigns: { disconnect: mb.campaigns.map(c => ({ id: c.id })) } }
+                });
+            }
+
+            if (pausedButConnected.length > 0) {
+                logger.info(`[SYNC-RECONCILE] Reconciled ${pausedButConnected.length} paused mailboxes still linked to campaigns`);
+            }
+        } catch (reconcileError: any) {
+            logger.warn('[SYNC-RECONCILE] Reconciliation failed (non-fatal)', { error: reconcileError.message });
+        }
 
         // ── 3b. Auto-register webhooks for all campaigns ──
         // Ensures our webhook URL is registered on every campaign for real-time events
