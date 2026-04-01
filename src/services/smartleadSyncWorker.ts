@@ -126,7 +126,9 @@ async function syncBouncedLeadsForCampaign(
                     },
                     data: {
                         bounced: true,
+                        status: 'bounced',
                         health_classification: 'red',
+                        health_state: 'unhealthy',
                     },
                 });
                 markedCount += result.count;
@@ -303,6 +305,7 @@ async function backfillBouncesForCampaign(
                     where: { id: dbLead.id },
                     data: {
                         bounced: true,
+                        status: 'bounced',
                         health_classification: 'red',
                         health_state: 'unhealthy',
                     },
@@ -1673,13 +1676,35 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     health_classification: 'red',
                     bounced: false,
                 },
-                data: { bounced: true },
+                data: { bounced: true, status: 'bounced' },
             });
             if (backfilled.count > 0) {
                 logger.info(`[SmartleadSync] Backfilled bounced=true on ${backfilled.count} leads for org ${organizationId}`);
             }
         } catch (backfillError) {
             logger.warn('[SmartleadSync] Failed to backfill bounced flag', { organizationId });
+        }
+
+        // ── 4a-fix. Repair bounced leads with stale status/health ──
+        // Leads marked bounced=true but still showing active/healthy from before this fix
+        try {
+            const repaired = await prisma.lead.updateMany({
+                where: {
+                    organization_id: organizationId,
+                    bounced: true,
+                    status: { notIn: ['bounced', 'blocked'] },
+                },
+                data: {
+                    status: 'bounced',
+                    health_classification: 'red',
+                    health_state: 'unhealthy',
+                },
+            });
+            if (repaired.count > 0) {
+                logger.info(`[SmartleadSync] Repaired ${repaired.count} bounced leads with stale status for org ${organizationId}`);
+            }
+        } catch (repairError) {
+            logger.warn('[SmartleadSync] Failed to repair bounced leads', { organizationId });
         }
 
         // ── 4b. Cross-campaign lead tracking ──
