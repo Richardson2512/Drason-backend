@@ -393,16 +393,35 @@ export const checkGraduationCriteria = async (
         };
     }
 
-    // Get warmup stats from platform
+    // Get campaign send stats from platform
     const adapter = await getAdapterForMailbox(mailboxId);
     const stats = await adapter.getMailboxDetails(
         mailbox.organization_id,
         externalAccountId
     );
 
+    // Get warmup stats separately — warmup sends count toward healing graduation
+    // because warmup emails (opens, replies, mark-not-spam) actively rebuild reputation
+    let warmupSentCount = 0;
+    let warmupSpamCount = 0;
+    try {
+        const { getWarmupStats } = require('./smartleadClient');
+        const warmupStats = await getWarmupStats(
+            mailbox.organization_id,
+            parseInt(externalAccountId)
+        );
+        warmupSentCount = parseInt(warmupStats?.sent_count || '0', 10);
+        warmupSpamCount = parseInt(warmupStats?.spam_count || '0', 10);
+    } catch {
+        // Warmup stats unavailable (non-Smartlead platform or API error) — continue with campaign sends only
+    }
+
     // Calculate phase-specific counts using DB fields as baselines
-    const lifetimeSent = stats?.dailySentCount || 0;
-    const lifetimeSpam = stats?.spamCount || 0;
+    // Include BOTH campaign sends and warmup sends toward clean send count
+    const campaignSent = stats?.dailySentCount || 0;
+    const campaignSpam = stats?.spamCount || 0;
+    const lifetimeSent = campaignSent + warmupSentCount;
+    const lifetimeSpam = campaignSpam + warmupSpamCount;
     const totalSent = Math.max(0, lifetimeSent - mailbox.phase_clean_sends);
     const totalSpam = Math.max(0, lifetimeSpam - mailbox.phase_bounces);
     const warmupReputation = stats?.warmupReputation || '0%';
