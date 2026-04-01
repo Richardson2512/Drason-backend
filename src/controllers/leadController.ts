@@ -1,15 +1,19 @@
 /**
  * Lead Controller
- * 
+ *
  * Alternative lead ingestion endpoint.
- * Delegates to lead service for processing.
+ * Delegates to ingestionController.processLead() so that ALL leads go through
+ * the same pipeline: email validation → health gate → upsert → routing → push.
+ *
+ * BUG FIX (BE-3): Previously called leadService.createLead() which skipped
+ * email validation, health gate, and platform push.
  */
 
 import { Request, Response } from 'express';
-import * as leadService from '../services/leadService';
 import { getOrgId } from '../middleware/orgContext';
 import { logger } from '../services/observabilityService';
 import { prisma } from '../index';
+import { processLead } from './ingestionController';
 
 export const ingestLead = async (req: Request, res: Response): Promise<void> => {
     try {
@@ -22,11 +26,15 @@ export const ingestLead = async (req: Request, res: Response): Promise<void> => 
             return;
         }
 
-        // 2. Create Lead (Held)
-        const lead = await leadService.createLead(orgId, {
+        // 2. Process through the unified ingestion pipeline (validation + health gate + routing + push)
+        const result = await processLead(orgId, {
             email,
             persona,
             lead_score,
+            source: 'api',
+            first_name: req.body.first_name,
+            last_name: req.body.last_name,
+            company: req.body.company,
         });
 
         // 3. Increment usage count for billing/capacity tracking
@@ -35,7 +43,7 @@ export const ingestLead = async (req: Request, res: Response): Promise<void> => 
             data: { current_lead_count: { increment: 1 } }
         });
 
-        res.status(201).json({ success: true, data: { message: 'Lead ingested successfully', lead } });
+        res.status(201).json({ success: true, data: result });
     } catch (error) {
         logger.error('Error ingesting lead:', error as Error);
         res.status(500).json({ success: false, error: 'Internal Server Error' });

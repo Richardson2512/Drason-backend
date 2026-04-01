@@ -126,7 +126,7 @@ export const removeMailboxFromCampaigns = async (
     const campaigns = mailbox.campaigns;
 
     // Fetch Smartlead campaigns to get their IDs
-    const smartleadCampaigns = await smartleadBreaker.call(() =>
+    const smartleadCampaigns = await smartleadRateLimiter.execute(() =>
         axios.get(`${SMARTLEAD_API_BASE}/campaigns`, {
             params: { api_key: apiKey }
         })
@@ -144,7 +144,7 @@ export const removeMailboxFromCampaigns = async (
         if (!ourCampaign) continue;
 
         try {
-            await smartleadBreaker.call(() =>
+            await smartleadRateLimiter.execute(() =>
                 axios.delete(
                     `${SMARTLEAD_API_BASE}/campaigns/${campaign.id}/email-accounts`,
                     {
@@ -325,7 +325,7 @@ export const addMailboxToSmartleadCampaign = async (
         // Add the email account back to the campaign
         // Smartlead API expects email_account_ids as an array (plural), not singular
         const numericId = parseInt(String(mailboxId), 10);
-        await smartleadBreaker.call(() =>
+        await smartleadRateLimiter.execute(() =>
             axios.post(
                 `${SMARTLEAD_API_BASE}/campaigns/${campaignId}/email-accounts`,
                 { email_account_ids: [isNaN(numericId) ? mailboxId : numericId] },

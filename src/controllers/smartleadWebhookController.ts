@@ -112,7 +112,8 @@ export const handleSmartleadWebhook = async (req: Request, res: Response) => {
                 const campaignId = campaignIdRaw ? String(campaignIdRaw) : undefined;
                 const recipientEmail = event.email || event.lead_email;
                 const smtpResponse = event.bounce_reason || event.reason || '';
-                const bounceType = event.bounce_type || 'hard';
+                const rawBounceType = event.bounce_type || 'hard';
+                const bounceType = (rawBounceType === 'soft' || rawBounceType === 'soft_bounce') ? 'soft_bounce' : 'hard_bounce';
                 const eventId = event.id || `sl-evt-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
                 if (!mailboxId) {

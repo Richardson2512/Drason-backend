@@ -26,12 +26,12 @@ import { RecoveryPhase } from '../types';
  *
  * Note: PAUSED → QUARANTINE is handled by metricsWorker (cooldown expiry check).
  */
-export const checkWarmupProgress = async (): Promise<{
+export const checkWarmupProgress = async (orgId?: string): Promise<{
     checked: number;
     graduated: number;
     errors: number;
 }> => {
-    logger.info('[WARMUP-WORKER] Starting healing pipeline check');
+    logger.info('[WARMUP-WORKER] Starting healing pipeline check', { orgId: orgId || 'all' });
 
     let checked = 0;
     let graduated = 0;
@@ -44,7 +44,8 @@ export const checkWarmupProgress = async (): Promise<{
         const quarantinedMailboxes = await prisma.mailbox.findMany({
             where: {
                 recovery_phase: RecoveryPhase.QUARANTINE,
-                status: 'quarantine'
+                status: 'quarantine',
+                ...(orgId ? { organization_id: orgId } : {}),
             },
             select: {
                 id: true,
@@ -66,7 +67,8 @@ export const checkWarmupProgress = async (): Promise<{
                 },
                 external_email_account_id: {
                     not: null
-                }
+                },
+                ...(orgId ? { organization_id: orgId } : {}),
             },
             select: {
                 id: true,

@@ -127,7 +127,7 @@ export async function processBounce(params: BounceProcessingParams): Promise<voi
             lead_id: leadId || null,
             mailbox_id: mailboxId,
             campaign_id: campaignId || null,
-            bounce_type: bounceType || 'hard',
+            bounce_type: (bounceType === 'soft' || bounceType === 'soft_bounce') ? 'soft_bounce' : 'hard_bounce',
             bounce_reason: smtpResponse || '',
             email_address: recipientEmail || '',
             sent_at: sentAt || null,

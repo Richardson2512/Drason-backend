@@ -113,7 +113,10 @@ async function syncBouncedLeadsForCampaign(
                 .filter(Boolean);
 
             if (bouncedEmails.length > 0) {
-                // Bulk mark leads as bounced
+                // Bulk mark leads as bounced.
+                // EXCEPTION: Direct prisma.lead.updateMany bypasses entityStateService intentionally.
+                // Same justification as healingService.transitionPhase — bulk operation where
+                // per-record state transitions would be prohibitively expensive (N API-synced bounces).
                 const result = await prisma.lead.updateMany({
                     where: {
                         organization_id: organizationId,
@@ -209,7 +212,8 @@ async function backfillBouncesForCampaign(
     logger.info(`[HistoricalBackfill] Found ${totalBounces} historical bounces for campaign ${campaignId}`, { organizationId });
 
     // ── 2. Process bounces with rate limiting ───────────────────────────────
-    const internalCampaignId = `sl-${campaignId}`;
+    // Use raw campaignId — Campaign records store Smartlead IDs without prefix
+    const internalCampaignId = campaignId;
     const BATCH_SIZE = 10;
     let processed = 0;
     let attributed = 0;
@@ -284,13 +288,15 @@ async function backfillBouncesForCampaign(
                     lead_id: dbLead?.id ?? null,
                     mailbox_id: mailboxId,
                     campaign_id: internalCampaignId,
-                    bounce_type: 'HARD',
+                    bounce_type: 'hard_bounce',
                     email_address: leadEmail,
                     bounced_at: bouncedAt,
                 },
             });
 
             // ── Mark the lead as bounced ─────────────────────────────────────
+            // Note: Direct prisma.lead.update bypasses entityStateService for historical backfill.
+            // Audit log below provides traceability.
             if (dbLead) {
                 await prisma.lead.update({
                     where: { id: dbLead.id },
@@ -299,6 +305,14 @@ async function backfillBouncesForCampaign(
                         health_classification: 'red',
                         health_state: 'unhealthy',
                     },
+                });
+                await auditLogService.logAction({
+                    organizationId,
+                    entity: 'lead',
+                    entityId: dbLead.id,
+                    trigger: 'historical_backfill',
+                    action: 'marked_bounced',
+                    details: `Historical bounce backfill: lead marked bounced for campaign ${campaignId}. Mailbox: ${mailboxId || 'unattributed'}.`,
                 });
             }
 
@@ -624,6 +638,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                     update: {
                         name: campaign.name,
                         status: (campaign.status || 'active').toLowerCase(),
+                        external_id: campaign.id.toString(),
                         bounce_rate: bounceRate,
                         total_sent: totalSent,
                         total_bounced: totalBounced,
@@ -643,6 +658,7 @@ export const syncSmartlead = async (organizationId: string, sessionId?: string):
                         name: campaign.name,
                         status: (campaign.status || 'active').toLowerCase(),
                         source_platform: SourcePlatform.smartlead,
+                        external_id: campaign.id.toString(),
                         bounce_rate: bounceRate,
                         total_sent: totalSent,
                         total_bounced: totalBounced,

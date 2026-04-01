@@ -960,7 +960,7 @@ export const checkWarmupProgress = async (req: Request, res: Response, next: Nex
         const orgId = getOrgId(req);
         const { checkWarmupProgress } = require('../workers/warmupTrackingWorker');
 
-        const result = await checkWarmupProgress();
+        const result = await checkWarmupProgress(orgId);
 
         res.json({
             success: true,

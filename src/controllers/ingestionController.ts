@@ -57,7 +57,7 @@ interface ProcessResult {
  * Single pipeline for all lead ingestion — health gate → upsert → route → assign → push.
  * Both API and Clay endpoints call this. Bug fixes apply once.
  */
-async function processLead(
+export async function processLead(
     organizationId: string,
     input: LeadInput
 ): Promise<ProcessResult> {
@@ -307,7 +307,7 @@ async function processLead(
             { email, first_name, last_name, company }
         );
 
-        if (pushSuccess) {
+        if (pushSuccess?.success) {
             await entityStateService.transitionLead(
                 organizationId,
                 createdLead.id,
