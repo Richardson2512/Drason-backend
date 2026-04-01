@@ -93,6 +93,8 @@ export class SmartleadAdapter implements PlatformAdapter {
                 totalWarmupPerDay: details.warmup_details?.warmup_max_count || 0,
                 dailySentCount: details.warmup_details?.total_sent_count || 0,
                 spamCount: details.warmup_details?.total_spam_count || 0,
+                warmupSentCount: details.warmup_details?.total_sent_count || 0,
+                warmupSpamCount: details.warmup_details?.total_spam_count || 0,
                 smtpSuccess: true,
                 imapSuccess: true,
                 connectionError: null,

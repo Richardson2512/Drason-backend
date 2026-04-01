@@ -1075,6 +1075,8 @@ export class InstantlyAdapter implements PlatformAdapter {
                 totalWarmupPerDay: data.daily_warmup_limit || data.warmup_limit || 0,
                 dailySentCount: data.daily_sent_count || 0,
                 spamCount: data.spam_count || 0,
+                warmupSentCount: data.warmup_sent_count || data.daily_warmup_sent || 0,
+                warmupSpamCount: data.warmup_spam_count || 0,
                 smtpSuccess: isActive,
                 imapSuccess: isActive,
                 connectionError: data.connection_error || null,

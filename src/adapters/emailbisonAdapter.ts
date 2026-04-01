@@ -870,6 +870,8 @@ export class EmailBisonAdapter implements PlatformAdapter {
                 totalWarmupPerDay: data.daily_warmup_limit || 0,
                 dailySentCount: data.emails_sent_count || 0,
                 spamCount: 0,
+                warmupSentCount: data.warmup_sent_count || data.warmup_emails_sent || 0,
+                warmupSpamCount: data.warmup_spam_count || 0,
                 smtpSuccess: (data.status || '').toLowerCase() === 'connected',
                 imapSuccess: (data.status || '').toLowerCase() === 'connected',
                 connectionError: null,

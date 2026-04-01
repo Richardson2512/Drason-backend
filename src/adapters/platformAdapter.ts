@@ -30,6 +30,8 @@ export interface MailboxDetails {
     totalWarmupPerDay: number;
     dailySentCount: number;
     spamCount: number;
+    warmupSentCount: number;   // Warmup emails sent (counts toward healing graduation)
+    warmupSpamCount: number;   // Warmup emails flagged as spam
     smtpSuccess: boolean;
     imapSuccess: boolean;
     connectionError: string | null;
