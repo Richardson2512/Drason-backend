@@ -822,6 +822,26 @@ export const createRoutingRule = async (req: Request, res: Response) => {
     }
 };
 
+/**
+ * Delete a routing rule.
+ */
+export const deleteRoutingRule = async (req: Request, res: Response) => {
+    try {
+        const orgId = getOrgId(req);
+        const { id } = req.params;
+
+        const deleted = await routingService.deleteRule(orgId, id);
+
+        if (!deleted) {
+            return res.status(404).json({ success: false, error: 'Routing rule not found' });
+        }
+
+        res.json({ success: true });
+    } catch (error) {
+        logger.error('deleteRoutingRule error', error as Error);
+        res.status(500).json({ success: false, error: 'Failed to delete routing rule' });
+    }
+};
 
 /**
  * Get lead health gate statistics.

@@ -153,6 +153,25 @@ export async function processLead(
         }
     });
 
+    // Record validation attempt now that the lead exists
+    if (validationResult.attempt) {
+        try {
+            await prisma.validationAttempt.create({
+                data: {
+                    lead_id: createdLead.id,
+                    organization_id: organizationId,
+                    source: validationResult.attempt.source,
+                    result_status: validationResult.attempt.result_status,
+                    result_score: validationResult.attempt.result_score,
+                    result_details: validationResult.attempt.result_details,
+                    duration_ms: validationResult.attempt.duration_ms,
+                },
+            });
+        } catch (err) {
+            logger.warn('[VALIDATION] Failed to record attempt post-upsert', { error: String(err) });
+        }
+    }
+
     // === 3. VALIDATION + HEALTH GATE DECISION ===
     // Block if validation says invalid OR health gate says red
     if (validationResult.status === ValidationStatus.INVALID) {

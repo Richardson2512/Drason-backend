@@ -177,6 +177,7 @@ export async function validateLeadEmail(
 
     // ── Step 1: Syntax check ──
     if (!isValidSyntax(emailLower)) {
+        const durationMs = Date.now() - startMs;
         const result: ValidationResult = {
             status: ValidationStatus.INVALID,
             score: 0,
@@ -184,9 +185,10 @@ export async function validateLeadEmail(
             is_catch_all: false,
             is_disposable: false,
             details: { syntax_ok: false, mx_found: false, disposable_check: false, catch_all_check: false },
+            attempt: { source: ValidationSource.INTERNAL, result_status: ValidationStatus.INVALID, result_score: 0, result_details: { syntax_ok: false, mx_found: false, disposable_check: false, catch_all_check: false }, duration_ms: durationMs },
         };
 
-        await recordAttempt(organizationId, emailLower, result, Date.now() - startMs);
+        await recordAttempt(organizationId, emailLower, result, durationMs);
         return result;
     }
 
@@ -203,38 +205,34 @@ export async function validateLeadEmail(
 
     // Short-circuit: clearly invalid
     if (domainInsight.is_disposable) {
+        const durationMs = Date.now() - startMs;
+        const details = { syntax_ok: true, mx_found: domainInsight.has_mx, disposable_check: true, catch_all_check: false };
         const result: ValidationResult = {
             status: ValidationStatus.INVALID,
             score: 5,
             source: ValidationSource.INTERNAL,
             is_catch_all: false,
             is_disposable: true,
-            details: {
-                syntax_ok: true,
-                mx_found: domainInsight.has_mx,
-                disposable_check: true,
-                catch_all_check: false,
-            },
+            details,
+            attempt: { source: ValidationSource.INTERNAL, result_status: ValidationStatus.INVALID, result_score: 5, result_details: details, duration_ms: durationMs },
         };
-        await recordAttempt(organizationId, emailLower, result, Date.now() - startMs);
+        await recordAttempt(organizationId, emailLower, result, durationMs);
         return result;
     }
 
     if (!domainInsight.has_mx) {
+        const durationMs = Date.now() - startMs;
+        const details = { syntax_ok: true, mx_found: false, disposable_check: false, catch_all_check: false };
         const result: ValidationResult = {
             status: ValidationStatus.INVALID,
             score: 10,
             source: ValidationSource.INTERNAL,
             is_catch_all: false,
             is_disposable: false,
-            details: {
-                syntax_ok: true,
-                mx_found: false,
-                disposable_check: false,
-                catch_all_check: false,
-            },
+            details,
+            attempt: { source: ValidationSource.INTERNAL, result_status: ValidationStatus.INVALID, result_score: 10, result_details: details, duration_ms: durationMs },
         };
-        await recordAttempt(organizationId, emailLower, result, Date.now() - startMs);
+        await recordAttempt(organizationId, emailLower, result, durationMs);
         return result;
     }
 
@@ -279,7 +277,9 @@ export async function validateLeadEmail(
                 });
             }
 
-            await recordAttempt(organizationId, emailLower, result, Date.now() - startMs);
+            const durationMs = Date.now() - startMs;
+            result.attempt = { source: result.source, result_status: result.status as any, result_score: result.score, result_details: result.details, duration_ms: durationMs };
+            await recordAttempt(organizationId, emailLower, result, durationMs);
             return result;
         }
         // API not configured or failed — fall through to internal result
@@ -291,21 +291,19 @@ export async function validateLeadEmail(
     else if (internalScore >= 50) status = ValidationStatus.RISKY;
     else status = ValidationStatus.UNKNOWN;
 
+    const durationMs = Date.now() - startMs;
+    const details = { syntax_ok: true, mx_found: true, disposable_check: false, catch_all_check: domainInsight.is_catch_all };
     const result: ValidationResult = {
         status,
         score: internalScore,
         source: ValidationSource.INTERNAL,
         is_catch_all: domainInsight.is_catch_all,
         is_disposable: false,
-        details: {
-            syntax_ok: true,
-            mx_found: true,
-            disposable_check: false,
-            catch_all_check: domainInsight.is_catch_all,
-        },
+        details,
+        attempt: { source: ValidationSource.INTERNAL, result_status: status, result_score: internalScore, result_details: details, duration_ms: durationMs },
     };
 
-    await recordAttempt(organizationId, emailLower, result, Date.now() - startMs);
+    await recordAttempt(organizationId, emailLower, result, durationMs);
     return result;
 }
 

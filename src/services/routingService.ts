@@ -4,7 +4,7 @@
  * Deterministic rule-based routing for leads.
  * Section 9 of Audit: Execution Gate Logic - deterministic decisions.
  * 
- * Rules are evaluated in priority order (highest first).
+ * Rules are evaluated in priority order (lowest number first, i.e. priority 1 before 99).
  * Matching is based on persona (case-insensitive) and minimum lead score.
  */
 
@@ -21,10 +21,10 @@ export const resolveCampaignForLead = async (
     organizationId: string,
     lead: Lead
 ): Promise<string | null> => {
-    // Fetch all rules for this organization, ordered by priority (highest first)
+    // Fetch all rules for this organization, ordered by priority (lowest number first)
     const rules = await prisma.routingRule.findMany({
         where: { organization_id: organizationId },
-        orderBy: { priority: 'desc' }
+        orderBy: { priority: 'asc' }
     });
 
     logger.info(`[ROUTING] Org: ${organizationId} | Found ${rules.length} rules | Lead: ${lead.persona}, ${lead.lead_score}`);
@@ -41,8 +41,8 @@ export const resolveCampaignForLead = async (
     for (const rule of rules) {
         logger.info(`[ROUTING] Checking rule ${rule.id}: Persona=${rule.persona}, MinScore=${rule.min_score}`);
 
-        // Check Persona Match (Case-insensitive)
-        const personaMatch = rule.persona.toLowerCase() === lead.persona.toLowerCase();
+        // Check Persona Match (Case-insensitive, wildcard * matches any persona)
+        const personaMatch = rule.persona === '*' || rule.persona.toLowerCase() === lead.persona.toLowerCase();
 
         // Check Score Match
         const scoreMatch = lead.lead_score >= rule.min_score;
@@ -112,7 +112,7 @@ export const resolveCampaignForLead = async (
 export const getRules = async (organizationId: string): Promise<any[]> => {
     return prisma.routingRule.findMany({
         where: { organization_id: organizationId },
-        orderBy: { priority: 'desc' }
+        orderBy: { priority: 'asc' }
     });
 };
 
@@ -145,4 +145,31 @@ export const createRule = async (
     });
 
     return rule;
+};
+
+/**
+ * Delete a routing rule.
+ */
+export const deleteRule = async (
+    organizationId: string,
+    ruleId: string
+): Promise<boolean> => {
+    const rule = await prisma.routingRule.findFirst({
+        where: { id: ruleId, organization_id: organizationId },
+    });
+
+    if (!rule) return false;
+
+    await prisma.routingRule.delete({ where: { id: ruleId } });
+
+    await auditLogService.logAction({
+        organizationId,
+        entity: 'routing_rule',
+        entityId: ruleId,
+        trigger: 'manual',
+        action: 'deleted',
+        details: `Rule deleted: ${rule.persona} >= ${rule.min_score} -> ${rule.target_campaign_id}`
+    });
+
+    return true;
 };

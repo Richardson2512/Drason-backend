@@ -16,6 +16,7 @@ router.get('/mailboxes', validateQuery(paginationSchema), dashboardController.ge
 router.get('/audit-logs', validateQuery(auditLogQuerySchema), dashboardController.getAuditLogs);
 router.get('/routing-rules', dashboardController.getRoutingRules);
 router.post('/routing-rules', validateBody(routingRuleSchema), dashboardController.createRoutingRule);
+router.delete('/routing-rules/:id', dashboardController.deleteRoutingRule);
 
 // Lead Health Gate endpoints
 router.get('/lead-health-stats', dashboardController.getLeadHealthStats);

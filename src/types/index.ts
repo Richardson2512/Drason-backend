@@ -440,6 +440,14 @@ export interface ValidationResult {
         catch_all_check: boolean;
         api_response?: any;
     };
+    /** Attempt data to be persisted after lead upsert (since lead may not exist at validation time) */
+    attempt?: {
+        source: ValidationSourceType;
+        result_status: ValidationStatusType;
+        result_score: number;
+        result_details: any;
+        duration_ms: number;
+    };
 }
 
 // ============================================================================
