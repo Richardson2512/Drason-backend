@@ -84,19 +84,11 @@ export const enableWarmupForRecovery = async (
             throw new Error(`Invalid recovery phase for warmup: ${recoveryPhase}`);
         }
 
-        logger.info('[WARMUP] Enabling warmup for recovery', {
-            organizationId,
-            mailboxId,
-            mailboxEmail: mailbox.email,
-            recoveryPhase,
-            warmupPerDay: config.total_warmup_per_day,
-            dailyRampup: config.daily_rampup
-        });
-
-        // Fetch baseline stats for accurate phase tracking
+        // Fetch baseline stats and check if warmup is already active
         const adapter = await getAdapterForMailbox(mailboxId);
         let baselineSends = 0;
         let baselineSpam = 0;
+        let warmupAlreadyActive = false;
         try {
             const stats = await adapter.getMailboxDetails(
                 organizationId,
@@ -104,21 +96,43 @@ export const enableWarmupForRecovery = async (
             );
             baselineSends = stats?.dailySentCount || 0;
             baselineSpam = stats?.spamCount || 0;
+            warmupAlreadyActive = stats?.warmupEnabled === true;
         } catch (e) {
             logger.warn('[WARMUP] Could not fetch baseline stats, using 0', { mailboxId });
         }
 
-        // Enable warmup via platform API
-        const result = await adapter.updateWarmupSettings(
-            organizationId,
-            externalAccountId,
-            {
-                warmup_enabled: true,
-                total_warmup_per_day: config.total_warmup_per_day,
-                daily_rampup: config.daily_rampup,
-                reply_rate_percentage: config.reply_rate_percentage
-            }
-        );
+        // Only modify warmup settings if warmup is NOT already active.
+        // If warmup is running (e.g. configured by Zapmail or user), don't override their settings.
+        // Just track the existing warmup activity toward graduation.
+        let result: any = { ok: true };
+        if (!warmupAlreadyActive) {
+            logger.info('[WARMUP] Enabling warmup for recovery (was disabled)', {
+                organizationId,
+                mailboxId,
+                mailboxEmail: mailbox.email,
+                recoveryPhase,
+                warmupPerDay: config.total_warmup_per_day,
+                dailyRampup: config.daily_rampup
+            });
+
+            result = await adapter.updateWarmupSettings(
+                organizationId,
+                externalAccountId,
+                {
+                    warmup_enabled: true,
+                    total_warmup_per_day: config.total_warmup_per_day,
+                    daily_rampup: config.daily_rampup,
+                    reply_rate_percentage: config.reply_rate_percentage
+                }
+            );
+        } else {
+            logger.info('[WARMUP] Warmup already active — not overriding settings, will track existing warmup toward graduation', {
+                organizationId,
+                mailboxId,
+                mailboxEmail: mailbox.email,
+                recoveryPhase,
+            });
+        }
 
         // Reset phase tracking counters - using them as baselines for Smartlead lifetime stats
         await prisma.mailbox.update({
@@ -204,19 +218,11 @@ export const updateWarmupForPhaseTransition = async (
             return { success: false };
         }
 
-        logger.info('[WARMUP] Updating warmup for phase transition', {
-            organizationId,
-            mailboxId,
-            mailboxEmail: mailbox.email,
-            newPhase,
-            newWarmupPerDay: config.total_warmup_per_day,
-            newDailyRampup: config.daily_rampup
-        });
-
-        // Fetch baseline stats
+        // Fetch baseline stats and check if warmup is already active
         const adapter = await getAdapterForMailbox(mailboxId);
         let baselineSends = 0;
         let baselineSpam = 0;
+        let warmupAlreadyActive = false;
         try {
             const stats = await adapter.getMailboxDetails(
                 organizationId,
@@ -224,21 +230,40 @@ export const updateWarmupForPhaseTransition = async (
             );
             baselineSends = stats?.dailySentCount || 0;
             baselineSpam = stats?.spamCount || 0;
+            warmupAlreadyActive = stats?.warmupEnabled === true;
         } catch (e) {
             logger.warn('[WARMUP] Could not fetch baseline stats for transition, using 0', { mailboxId });
         }
 
-        // Update warmup settings
-        await adapter.updateWarmupSettings(
-            organizationId,
-            externalAccountId,
-            {
-                warmup_enabled: true,
-                total_warmup_per_day: config.total_warmup_per_day,
-                daily_rampup: config.daily_rampup,
-                reply_rate_percentage: config.reply_rate_percentage
-            }
-        );
+        // Only modify warmup if not already active — don't override Zapmail/user settings
+        if (!warmupAlreadyActive) {
+            logger.info('[WARMUP] Updating warmup for phase transition (was disabled)', {
+                organizationId,
+                mailboxId,
+                mailboxEmail: mailbox.email,
+                newPhase,
+                newWarmupPerDay: config.total_warmup_per_day,
+                newDailyRampup: config.daily_rampup
+            });
+
+            await adapter.updateWarmupSettings(
+                organizationId,
+                externalAccountId,
+                {
+                    warmup_enabled: true,
+                    total_warmup_per_day: config.total_warmup_per_day,
+                    daily_rampup: config.daily_rampup,
+                    reply_rate_percentage: config.reply_rate_percentage
+                }
+            );
+        } else {
+            logger.info('[WARMUP] Warmup already active during phase transition — not overriding settings', {
+                organizationId,
+                mailboxId,
+                mailboxEmail: mailbox.email,
+                newPhase,
+            });
+        }
 
         // Reset phase tracking with new baselines
         await prisma.mailbox.update({
