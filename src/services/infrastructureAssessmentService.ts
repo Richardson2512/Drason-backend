@@ -544,15 +544,17 @@ export async function assessInfrastructure(
                 });
             }
 
-            // UNREACHABLE blacklist checks → warning (never healthy)
-            if (hasUnreachableBlacklist && domainState !== 'paused') {
-                domainState = 'warning';
+            // UNREACHABLE blacklist checks → log but do NOT downgrade status
+            // UNREACHABLE means "we couldn't reach the DNSBL server" (rate-limited, network issue),
+            // NOT "the domain is blacklisted." Treating this as warning creates false positives.
+            if (hasUnreachableBlacklist && !hasConfirmedBlacklist) {
                 const unreachableLists = Object.entries(dnsResult.blacklistResults)
                     .filter(([, s]) => s === 'UNREACHABLE')
                     .map(([name]) => name);
 
+                // Only log as info-level finding, don't change domain state
                 findings.push({
-                    severity: 'warning',
+                    severity: 'info',
                     category: 'domain_dns',
                     entity: 'domain',
                     entityId: domain.id,
