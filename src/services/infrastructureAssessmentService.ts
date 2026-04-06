@@ -36,6 +36,12 @@ const ASSESSMENT_INTERVAL_MS = parseInt(process.env.ASSESSMENT_INTERVAL_MS || St
 const _resolveTxt = promisify(dns.resolveTxt);
 const _resolve4 = promisify(dns.resolve4);
 
+// Dedicated DNS resolver using public DNS servers (Google + Cloudflare)
+// for blacklist lookups — Railway's default resolver often can't reach DNSBL servers
+const blacklistResolver = new dns.Resolver();
+blacklistResolver.setServers(['8.8.8.8', '1.1.1.1', '8.8.4.4']);
+const _blResolve4 = promisify(blacklistResolver.resolve4.bind(blacklistResolver));
+
 // ─── DNS Cache ───────────────────────────────────────────────────────────────
 // Caches DNS results for 5 minutes to avoid redundant lookups within a single
 // assessment run (same domain checked for SPF, DKIM, DMARC, + N blacklists).
@@ -366,16 +372,23 @@ async function checkBlacklist(
     blacklistZone: string
 ): Promise<BlacklistStatus> {
     try {
-        // First resolve the domain to IP
-        const ips = await resolve4(domainName);
+        // Resolve domain to IP using the dedicated public DNS resolver
+        let ips: string[];
+        try {
+            ips = await _blResolve4(domainName);
+        } catch {
+            // Fallback to system resolver if public DNS fails
+            ips = await resolve4(domainName);
+        }
         if (!ips || ips.length === 0) return 'UNREACHABLE';
 
         const ip = ips[0];
         const reversed = ip.split('.').reverse().join('.');
         const query = `${reversed}.${blacklistZone}`;
 
+        // Query the DNSBL using public DNS (Google/Cloudflare can reach DNSBL servers)
         try {
-            await resolve4(query);
+            await _blResolve4(query);
             // If it resolves, the IP IS listed
             return 'CONFIRMED';
         } catch (err: any) {
@@ -383,11 +396,18 @@ async function checkBlacklist(
                 // Not listed — this is the clean result
                 return 'NOT_LISTED';
             }
-            // DNS lookup failed for unknown reason
-            return 'UNREACHABLE';
+            // DNS lookup failed — try system resolver as fallback
+            try {
+                await resolve4(query);
+                return 'CONFIRMED';
+            } catch (fallbackErr: any) {
+                if (fallbackErr.code === 'ENOTFOUND' || fallbackErr.code === 'ENODATA') {
+                    return 'NOT_LISTED';
+                }
+                return 'UNREACHABLE';
+            }
         }
     } catch (err: any) {
-        // Cannot resolve domain IP — cannot check
         return 'UNREACHABLE';
     }
 }
@@ -544,17 +564,15 @@ export async function assessInfrastructure(
                 });
             }
 
-            // UNREACHABLE blacklist checks → log but do NOT downgrade status
-            // UNREACHABLE means "we couldn't reach the DNSBL server" (rate-limited, network issue),
-            // NOT "the domain is blacklisted." Treating this as warning creates false positives.
-            if (hasUnreachableBlacklist && !hasConfirmedBlacklist) {
+            // UNREACHABLE blacklist checks → warning (cannot confirm clean)
+            if (hasUnreachableBlacklist && domainState !== 'paused') {
+                domainState = 'warning';
                 const unreachableLists = Object.entries(dnsResult.blacklistResults)
                     .filter(([, s]) => s === 'UNREACHABLE')
                     .map(([name]) => name);
 
-                // Only log as info-level finding, don't change domain state
                 findings.push({
-                    severity: 'info',
+                    severity: 'warning',
                     category: 'domain_dns',
                     entity: 'domain',
                     entityId: domain.id,
