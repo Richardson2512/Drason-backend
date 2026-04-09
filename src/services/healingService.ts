@@ -184,15 +184,15 @@ async function checkQuarantineToRestricted(
     if (!domain) return null;
 
     // Trigger live DNS check before graduation attempt
+    // Uses critical-only depth (fast check, no need for full 400+ list scan during healing)
     try {
-        const dnsResult = await assessDomainDNS(domain.domain);
+        const dnsResult = await assessDomainDNS(domain.domain, domain.id);
         await prisma.domain.update({
             where: { id: domain.id },
             data: {
                 spf_valid: dnsResult.spfValid,
                 dkim_valid: dnsResult.dkimValid,
                 dmarc_policy: dnsResult.dmarcPolicy,
-                blacklist_results: dnsResult.blacklistResults,
                 dns_checked_at: new Date(),
             },
         });
@@ -991,10 +991,19 @@ export async function transitionPhase(
 }
 
 /**
- * Check if any blacklist result is CONFIRMED (listed).
+ * Check if domain has blocking blacklist listings.
+ * Uses the summary cache from dnsblService: checks if any critical or 2+ major lists are CONFIRMED.
+ * For backward compatibility, also handles legacy flat { name: status } format.
  */
 function isBlacklisted(blacklistResults: any): boolean {
     if (!blacklistResults || typeof blacklistResults !== 'object') return false;
+
+    // New summary format from dnsblService: { critical_listed, major_listed, ... }
+    if ('critical_listed' in blacklistResults) {
+        return blacklistResults.critical_listed > 0 || blacklistResults.major_listed >= 2;
+    }
+
+    // Legacy flat format: { spamhaus: 'CONFIRMED', ... }
     return Object.values(blacklistResults).some((result) => result === 'CONFIRMED');
 }
 

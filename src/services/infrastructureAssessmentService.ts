@@ -23,6 +23,8 @@ import * as campaignHealthService from './campaignHealthService';
 import * as eventService from './eventService';
 import * as rotationService from './rotationService';
 import { SlackAlertService } from './SlackAlertService';
+import * as dnsblService from './dnsblService';
+import { TIER_LIMITS } from './polarClient';
 import { getAdapterForMailbox } from '../adapters/platformRegistry';
 import { MailboxState, DomainState, TriggerType, EventType } from '../types';
 import { logger } from './observabilityService';
@@ -120,13 +122,8 @@ async function resolve4(hostname: string, retries = 3): Promise<string[]> {
 
 const ASSESSMENT_VERSION = '1.0';
 
-/** Blacklists to check via DNSBL reverse DNS lookup */
-const BLACKLISTS = [
-    { name: 'spamhaus', zone: 'zen.spamhaus.org' },
-    { name: 'barracuda', zone: 'b.barracudacentral.org' },
-    { name: 'sorbs', zone: 'dnsbl.sorbs.net' },
-    { name: 'spamcop', zone: 'bl.spamcop.net' },
-] as const;
+// Blacklist checking is now handled by dnsblService.ts
+// See: services/dnsblService.ts for tiered DNSBL architecture
 
 /** Common DKIM selectors to check */
 const DKIM_SELECTORS = ['default', 'google', 'selector1', 'selector2', 's1', 's2'];
@@ -155,6 +152,7 @@ interface DomainDNSResult {
     dmarcPolicy: string | null;
     blacklistResults: Record<string, BlacklistStatus>;
     score: number;
+    _dnsblCheckResult?: dnsblService.DnsblCheckResult | null;
 }
 
 interface Finding {
@@ -361,79 +359,59 @@ async function checkDMARC(domainName: string): Promise<string | null> {
     }
 }
 
-/**
- * Check a domain's IP against a single DNSBL blacklist.
- * Returns tri-state: CONFIRMED, NOT_LISTED, or UNREACHABLE.
- * 
- * RULE: UNREACHABLE is NEVER treated as clean.
- */
-async function checkBlacklist(
-    domainName: string,
-    blacklistZone: string
-): Promise<BlacklistStatus> {
-    try {
-        // Resolve domain to IP using the dedicated public DNS resolver
-        let ips: string[];
-        try {
-            ips = await _blResolve4(domainName);
-        } catch {
-            // Fallback to system resolver if public DNS fails
-            ips = await resolve4(domainName);
-        }
-        if (!ips || ips.length === 0) return 'UNREACHABLE';
-
-        const ip = ips[0];
-        const reversed = ip.split('.').reverse().join('.');
-        const query = `${reversed}.${blacklistZone}`;
-
-        // Query the DNSBL using public DNS (Google/Cloudflare can reach DNSBL servers)
-        try {
-            await _blResolve4(query);
-            // If it resolves, the IP IS listed
-            return 'CONFIRMED';
-        } catch (err: any) {
-            if (err.code === 'ENOTFOUND' || err.code === 'ENODATA') {
-                // Not listed — this is the clean result
-                return 'NOT_LISTED';
-            }
-            // DNS lookup failed — try system resolver as fallback
-            try {
-                await resolve4(query);
-                return 'CONFIRMED';
-            } catch (fallbackErr: any) {
-                if (fallbackErr.code === 'ENOTFOUND' || fallbackErr.code === 'ENODATA') {
-                    return 'NOT_LISTED';
-                }
-                return 'UNREACHABLE';
-            }
-        }
-    } catch (err: any) {
-        return 'UNREACHABLE';
-    }
-}
+// checkBlacklist() has been replaced by dnsblService.checkDomainBlacklists()
+// which supports 400+ tiered DNSBL lists with concurrency throttling.
 
 /**
  * Perform full DNS assessment for a domain.
- * Checks SPF, DKIM, DMARC, and blacklists.
+ * Checks SPF, DKIM, DMARC, and blacklists (via dnsblService).
+ *
+ * @param domainName - The domain to assess
+ * @param domainId - The domain's database ID (for DNSBL result persistence)
+ * @param dnsblLists - Pre-fetched DNSBL lists for this run (from dnsblService.getListsForRun)
  */
-export async function assessDomainDNS(domainName: string): Promise<DomainDNSResult> {
+export async function assessDomainDNS(
+    domainName: string,
+    domainId?: string,
+    dnsblLists?: import('@prisma/client').DnsblList[]
+): Promise<DomainDNSResult> {
     const [spfValid, dkimValid, dmarcPolicy] = await Promise.all([
         checkSPF(domainName),
         checkDKIM(domainName),
         checkDMARC(domainName),
     ]);
 
-    // Check all blacklists in parallel
-    const blacklistChecks = await Promise.all(
-        BLACKLISTS.map(async (bl) => ({
-            name: bl.name,
-            status: await checkBlacklist(domainName, bl.zone),
-        }))
-    );
+    // Check blacklists via dnsblService (tiered, throttled, 400+ lists)
+    let blacklistResults: Record<string, BlacklistStatus> = {};
+    let blacklistPenalty = 0;
+    let dnsblCheckResult: dnsblService.DnsblCheckResult | null = null;
 
-    const blacklistResults: Record<string, BlacklistStatus> = {};
-    for (const check of blacklistChecks) {
-        blacklistResults[check.name] = check.status;
+    if (domainId && dnsblLists && dnsblLists.length > 0) {
+        dnsblCheckResult = await dnsblService.checkDomainBlacklists(domainName, domainId, dnsblLists);
+        blacklistPenalty = dnsblCheckResult.penalty;
+
+        // Build legacy-compatible blacklistResults for backward compatibility
+        for (const r of dnsblCheckResult.results) {
+            if (r.status !== 'SKIPPED') {
+                blacklistResults[r.listName] = r.status;
+            }
+        }
+
+        // Persist detailed results to DnsblResult table
+        await dnsblService.persistResults(domainId, dnsblCheckResult.results, dnsblCheckResult.penalty, dnsblCheckResult.summary);
+    } else {
+        // Fallback: check critical lists only (for healingService quarantine gate calls without pre-fetched lists)
+        const criticalLists = await dnsblService.getListsForRun('critical_only');
+        if (criticalLists.length > 0 && domainId) {
+            dnsblCheckResult = await dnsblService.checkDomainBlacklists(domainName, domainId, criticalLists);
+            blacklistPenalty = dnsblCheckResult.penalty;
+            for (const r of dnsblCheckResult.results) {
+                if (r.status !== 'SKIPPED') {
+                    blacklistResults[r.listName] = r.status;
+                }
+            }
+            await dnsblService.persistResults(domainId, dnsblCheckResult.results, dnsblCheckResult.penalty, dnsblCheckResult.summary);
+        }
     }
 
     // Calculate domain assessment score (0-100)
@@ -441,7 +419,7 @@ export async function assessDomainDNS(domainName: string): Promise<DomainDNSResu
 
     // SPF penalty
     if (spfValid === false) score -= 25;
-    else if (spfValid === null) score -= 15; // Cannot determine
+    else if (spfValid === null) score -= 15;
 
     // DKIM penalty
     if (dkimValid === false) score -= 20;
@@ -451,11 +429,8 @@ export async function assessDomainDNS(domainName: string): Promise<DomainDNSResu
     if (dmarcPolicy === null) score -= 15;
     else if (dmarcPolicy === 'none') score -= 10;
 
-    // Blacklist penalties
-    for (const [, status] of Object.entries(blacklistResults)) {
-        if (status === 'CONFIRMED') score -= 30;
-        else if (status === 'UNREACHABLE') score -= 10;
-    }
+    // Blacklist penalty (weighted, from dnsblService)
+    score += blacklistPenalty; // penalty is already negative
 
     score = Math.max(0, score);
 
@@ -466,6 +441,7 @@ export async function assessDomainDNS(domainName: string): Promise<DomainDNSResu
         dmarcPolicy,
         blacklistResults,
         score,
+        _dnsblCheckResult: dnsblCheckResult, // Attach for tier-aware pause logic
     };
 }
 
@@ -508,10 +484,25 @@ export async function assessInfrastructure(
 
         const domainSummary = { total: domains.length, healthy: 0, warning: 0, paused: 0 };
 
-        // Assess all domains in parallel — DNS lookups are I/O bound and independent
-        const dnsResults = await Promise.allSettled(
-            domains.map(domain => assessDomainDNS(domain.domain))
-        );
+        // Determine DNSBL check depth from organization's subscription tier
+        const org = await prisma.organization.findUnique({ where: { id: organizationId } });
+        const tierLimits = TIER_LIMITS[org?.subscription_tier || 'trial'] || TIER_LIMITS.trial;
+        const dnsblDepth = (tierLimits as any).dnsblDepth || 'critical_only';
+
+        // Pre-fetch DNSBL lists once for the entire run (avoids N queries)
+        const dnsblLists = await dnsblService.getListsForRun(dnsblDepth);
+        dnsblService.clearIpCache(); // Fresh cache for each assessment run
+
+        // Assess all domains — batch in groups of 10 to avoid overwhelming DNS resolvers
+        const DOMAIN_BATCH_SIZE = 10;
+        const dnsResults: PromiseSettledResult<DomainDNSResult>[] = [];
+        for (let b = 0; b < domains.length; b += DOMAIN_BATCH_SIZE) {
+            const batch = domains.slice(b, b + DOMAIN_BATCH_SIZE);
+            const batchResults = await Promise.allSettled(
+                batch.map(domain => assessDomainDNS(domain.domain, domain.id, dnsblLists))
+            );
+            dnsResults.push(...batchResults);
+        }
 
         // Process results and write DB updates in parallel
         await Promise.allSettled(domains.map(async (domain, i) => {
@@ -539,49 +530,85 @@ export async function assessInfrastructure(
             // Determine domain state from DNS results
             let domainState = 'healthy';
 
-            // Check blacklists — any CONFIRMED → paused
-            const hasConfirmedBlacklist = Object.values(dnsResult.blacklistResults)
-                .some(s => s === 'CONFIRMED');
-            const hasUnreachableBlacklist = Object.values(dnsResult.blacklistResults)
-                .some(s => s === 'UNREACHABLE');
+            // Check blacklists — tier-aware pause logic via dnsblService
+            const dnsblCheck = dnsResult._dnsblCheckResult;
+            if (dnsblCheck) {
+                const { shouldPause, reason } = dnsblService.isBlockingBlacklisted(dnsblCheck.results, dnsblLists);
 
-            if (hasConfirmedBlacklist) {
-                domainState = 'paused';
-                const confirmedLists = Object.entries(dnsResult.blacklistResults)
-                    .filter(([, s]) => s === 'CONFIRMED')
-                    .map(([name]) => name);
+                if (shouldPause) {
+                    domainState = 'paused';
+                    const confirmedLists = dnsblCheck.results
+                        .filter(r => r.status === 'CONFIRMED')
+                        .map(r => r.listName);
 
-                findings.push({
-                    severity: 'critical',
-                    category: 'domain_dns',
-                    entity: 'domain',
-                    entityId: domain.id,
-                    entityName: domain.domain,
-                    title: `Blacklisted: ${domain.domain}`,
-                    details: `Listed on: ${confirmedLists.join(', ')}. Submit delisting requests and trigger a manual re-assessment.`,
-                    message: `Domain ${domain.domain} is listed on blacklist(s): ${confirmedLists.join(', ')}`,
-                    remediation: `Visit the blacklist removal pages for ${confirmedLists.join(', ')} and submit a delisting request. After confirmed removal, trigger a manual re-assessment.`,
-                });
-            }
+                    findings.push({
+                        severity: 'critical',
+                        category: 'domain_dns',
+                        entity: 'domain',
+                        entityId: domain.id,
+                        entityName: domain.domain,
+                        title: `Blacklisted: ${domain.domain}`,
+                        details: `${reason}. Listed on: ${confirmedLists.join(', ')}. Submit delisting requests and trigger a manual re-assessment.`,
+                        message: `Domain ${domain.domain} is listed on blacklist(s): ${confirmedLists.join(', ')}`,
+                        remediation: `Visit the blacklist removal pages and submit a delisting request. After confirmed removal, trigger a manual re-assessment.`,
+                    });
+                } else if (dnsblCheck.summary.total_listed > 0) {
+                    // Listed on minor lists only — warning, no pause
+                    if (domainState === 'healthy') domainState = 'warning';
+                    const minorListed = dnsblCheck.results
+                        .filter(r => r.status === 'CONFIRMED' && r.tier === 'minor')
+                        .map(r => r.listName);
 
-            // UNREACHABLE blacklist checks → warning (cannot confirm clean)
-            if (hasUnreachableBlacklist && domainState !== 'paused') {
-                domainState = 'warning';
-                const unreachableLists = Object.entries(dnsResult.blacklistResults)
-                    .filter(([, s]) => s === 'UNREACHABLE')
-                    .map(([name]) => name);
+                    findings.push({
+                        severity: 'warning',
+                        category: 'domain_dns',
+                        entity: 'domain',
+                        entityId: domain.id,
+                        entityName: domain.domain,
+                        title: `Minor Blacklist Listing: ${domain.domain}`,
+                        details: `Listed on ${minorListed.length} minor blacklist(s): ${minorListed.join(', ')}. Monitor but no action required.`,
+                        message: `Domain ${domain.domain} is listed on minor blacklist(s): ${minorListed.join(', ')}`,
+                        remediation: `Minor blacklist listings typically resolve automatically. Monitor for escalation to major lists.`,
+                    });
+                }
 
-                findings.push({
-                    severity: 'warning',
-                    category: 'domain_dns',
-                    entity: 'domain',
-                    entityId: domain.id,
-                    entityName: domain.domain,
-                    title: `Blacklist Check Unreachable: ${domain.domain}`,
-                    details: `Cannot confirm clean status for: ${unreachableLists.join(', ')}. Re-assess later.`,
-                    message: `Domain ${domain.domain}: blacklist check(s) unreachable for: ${unreachableLists.join(', ')}. Cannot confirm clean status.`,
-                    remediation: `Trigger a manual re-assessment later to verify blacklist status. Do not assume clean.`,
-                });
+                // UNREACHABLE checks → warning
+                const unreachableCount = dnsblCheck.results.filter(r => r.status === 'UNREACHABLE').length;
+                if (unreachableCount > 0 && domainState !== 'paused') {
+                    if (domainState === 'healthy') domainState = 'warning';
+                    findings.push({
+                        severity: 'warning',
+                        category: 'domain_dns',
+                        entity: 'domain',
+                        entityId: domain.id,
+                        entityName: domain.domain,
+                        title: `Blacklist Check Unreachable: ${domain.domain}`,
+                        details: `${unreachableCount} blacklist check(s) could not be completed. Re-assess later.`,
+                        message: `Domain ${domain.domain}: ${unreachableCount} blacklist check(s) unreachable. Cannot confirm clean status.`,
+                        remediation: `Trigger a manual re-assessment later to verify blacklist status. Do not assume clean.`,
+                    });
+                }
+            } else {
+                // No DNSBL check was performed — legacy fallback
+                const hasConfirmedBlacklist = Object.values(dnsResult.blacklistResults)
+                    .some(s => s === 'CONFIRMED');
+                if (hasConfirmedBlacklist) {
+                    domainState = 'paused';
+                    const confirmedLists = Object.entries(dnsResult.blacklistResults)
+                        .filter(([, s]) => s === 'CONFIRMED')
+                        .map(([name]) => name);
+                    findings.push({
+                        severity: 'critical',
+                        category: 'domain_dns',
+                        entity: 'domain',
+                        entityId: domain.id,
+                        entityName: domain.domain,
+                        title: `Blacklisted: ${domain.domain}`,
+                        details: `Listed on: ${confirmedLists.join(', ')}. Submit delisting requests.`,
+                        message: `Domain ${domain.domain} is listed on blacklist(s): ${confirmedLists.join(', ')}`,
+                        remediation: `Visit the blacklist removal pages and submit a delisting request.`,
+                    });
+                }
             }
 
             // Missing SPF → warning
@@ -657,13 +684,14 @@ export async function assessInfrastructure(
             }
 
             // Update domain DNS results (operational fields)
+            // Note: blacklist_results and blacklist_score are already persisted by dnsblService.persistResults()
+            // inside assessDomainDNS(). Here we only update SPF/DKIM/DMARC and the assessment score.
             await prisma.domain.update({
                 where: { id: domain.id },
                 data: {
                     spf_valid: dnsResult.spfValid,
                     dkim_valid: dnsResult.dkimValid,
                     dmarc_policy: dnsResult.dmarcPolicy,
-                    blacklist_results: dnsResult.blacklistResults,
                     dns_checked_at: new Date(),
                     initial_assessment_score: dnsResult.score,
                     ...(domainState === 'paused' ? {

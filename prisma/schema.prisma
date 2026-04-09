@@ -344,7 +344,9 @@ model Domain {
   spf_valid                    Boolean? // SPF record check result
   dkim_valid                   Boolean? // DKIM record check result
   dmarc_policy                 String? // DMARC policy: 'none' | 'quarantine' | 'reject'
-  blacklist_results            Json? // { spamhaus: 'CONFIRMED'|'NOT_LISTED'|'UNREACHABLE', ... }
+  blacklist_results            Json? // Summary cache: { critical_listed: N, major_listed: N, minor_listed: N, total_checked: N }
+  blacklist_score              Float    @default(0) // Computed weighted blacklist penalty
+  last_full_blacklist_check    DateTime? // When all DNSBL lists were last checked
   dns_checked_at               DateTime? // When DNS was last checked
   initial_assessment_score     Float? // REPORT-ONLY. Never use in execution gate logic.
 
@@ -362,6 +364,7 @@ model Domain {
   updated_at      DateTime     @updatedAt
   organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
   mailboxes       Mailbox[]
+  dnsblResults    DnsblResult[]
 
   @@unique([organization_id, domain])
   @@index([organization_id, status])
@@ -648,4 +651,43 @@ model PendingRegistration {
 
   @@index([token])
   @@index([expires_at])
+}
+
+// ─── DNSBL Monitoring ─────────────────────────────────────────────────────────
+
+model DnsblList {
+  id              String   @id @default(uuid())
+  name            String   @unique          // e.g. "spamhaus_zen"
+  zone            String                     // e.g. "zen.spamhaus.org"
+  tier            String                     // "critical" | "major" | "minor"
+  category        String   @default("general") // "spam" | "exploit" | "policy" | "general"
+  weight          Int      @default(1)       // scoring weight multiplier
+  enabled         Boolean  @default(true)
+  requires_auth   Boolean  @default(false)   // needs API key (e.g. Spamhaus DQS)
+  auth_config_key String?                    // env var name for API key
+  rotation_group  Int      @default(0)       // 0-6 for weekly rotation of minor lists
+  delisting_url   String?                    // URL for delisting requests
+  notes           String?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+  results         DnsblResult[]
+
+  @@index([tier])
+  @@index([enabled])
+}
+
+model DnsblResult {
+  id            String   @id @default(uuid())
+  domain_id     String
+  dnsbl_list_id String
+  status        String   // "CONFIRMED" | "NOT_LISTED" | "UNREACHABLE" | "SKIPPED"
+  response_code String?  // A-record returned (e.g. "127.0.0.2")
+  checked_at    DateTime @default(now())
+
+  domain    Domain    @relation(fields: [domain_id], references: [id], onDelete: Cascade)
+  dnsblList DnsblList @relation(fields: [dnsbl_list_id], references: [id], onDelete: Cascade)
+
+  @@unique([domain_id, dnsbl_list_id]) // upsert pattern — only keep latest result
+  @@index([domain_id, checked_at])
+  @@index([dnsbl_list_id])
 }

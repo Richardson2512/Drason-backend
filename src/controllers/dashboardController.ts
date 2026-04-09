@@ -1505,8 +1505,11 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
             const rows = domains.map(d => {
                 const healthyCount = d.mailboxes.filter(m => m.status === 'healthy').length;
                 const pausedCount = d.mailboxes.filter(m => m.status === 'paused').length;
-                const isBlacklisted = d.blacklist_results
-                    ? Object.values(d.blacklist_results as Record<string, string>).some(v => v === 'CONFIRMED')
+                const blResults = d.blacklist_results as Record<string, any> | null;
+                const isBlacklisted = blResults
+                    ? ('critical_listed' in blResults
+                        ? blResults.critical_listed > 0 || blResults.major_listed >= 2
+                        : Object.values(blResults).some(v => v === 'CONFIRMED'))
                     : false;
                 return {
                     domain: d.domain,

@@ -17,6 +17,7 @@ export interface TierLimits {
     leads: number;
     domains: number;
     mailboxes: number;
+    dnsblDepth: 'critical_only' | 'standard' | 'comprehensive';
 }
 
 export interface CheckoutSession {
@@ -29,11 +30,11 @@ export interface CheckoutSession {
 // ============================================================================
 
 export const TIER_LIMITS: Record<string, TierLimits> = {
-    trial: { leads: 10000, domains: 20, mailboxes: 75 },
-    starter: { leads: 10000, domains: 20, mailboxes: 75 },
-    growth: { leads: 50000, domains: 75, mailboxes: 350 },
-    scale: { leads: 100000, domains: 150, mailboxes: 700 },
-    enterprise: { leads: Infinity, domains: Infinity, mailboxes: Infinity }
+    trial: { leads: 10000, domains: 20, mailboxes: 75, dnsblDepth: 'critical_only' },
+    starter: { leads: 10000, domains: 20, mailboxes: 75, dnsblDepth: 'critical_only' },
+    growth: { leads: 50000, domains: 75, mailboxes: 350, dnsblDepth: 'standard' },
+    scale: { leads: 100000, domains: 150, mailboxes: 700, dnsblDepth: 'comprehensive' },
+    enterprise: { leads: Infinity, domains: Infinity, mailboxes: Infinity, dnsblDepth: 'comprehensive' }
 };
 
 const POLAR_API_BASE = 'https://api.polar.sh/v1';

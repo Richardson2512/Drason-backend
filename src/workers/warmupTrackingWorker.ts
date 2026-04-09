@@ -340,10 +340,19 @@ async function checkDomainGraduation(domain: {
 }
 
 /**
- * Check if any blacklist result is CONFIRMED (listed).
+ * Check if domain has blocking blacklist listings.
+ * Supports both new summary format { critical_listed, major_listed, ... }
+ * and legacy flat format { name: status }.
  */
 function isBlacklisted(blacklistResults: any): boolean {
     if (!blacklistResults || typeof blacklistResults !== 'object') return false;
+
+    // New summary format from dnsblService
+    if ('critical_listed' in blacklistResults) {
+        return blacklistResults.critical_listed > 0 || blacklistResults.major_listed >= 2;
+    }
+
+    // Legacy flat format
     return Object.values(blacklistResults).some((result) => result === 'CONFIRMED');
 }
 
