@@ -606,6 +606,13 @@ const server = app.listen(PORT, () => {
     scheduleWarmupTracking();
     logger.info('Warmup tracking worker started (runs every 4h for auto-graduation)');
 
+    // Seed DNSBL lists (upserts — safe to run on every startup)
+    import('./services/dnsblService').then(dnsblService => {
+        dnsblService.seedDnsblLists().catch(err => {
+            logger.error('Failed to seed DNSBL lists', err instanceof Error ? err : new Error(String(err)));
+        });
+    });
+
     // Start periodic domain infrastructure assessment
     infrastructureAssessmentService.startPeriodicAssessment();
 });

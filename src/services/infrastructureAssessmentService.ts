@@ -38,11 +38,7 @@ const ASSESSMENT_INTERVAL_MS = parseInt(process.env.ASSESSMENT_INTERVAL_MS || St
 const _resolveTxt = promisify(dns.resolveTxt);
 const _resolve4 = promisify(dns.resolve4);
 
-// Dedicated DNS resolver using public DNS servers (Google + Cloudflare)
-// for blacklist lookups — Railway's default resolver often can't reach DNSBL servers
-const blacklistResolver = new dns.Resolver();
-blacklistResolver.setServers(['8.8.8.8', '1.1.1.1', '8.8.4.4']);
-const _blResolve4 = promisify(blacklistResolver.resolve4.bind(blacklistResolver));
+// Blacklist DNS resolution is now handled by dnsblService.ts (resolver pool with 6 upstream servers)
 
 // ─── DNS Cache ───────────────────────────────────────────────────────────────
 // Caches DNS results for 5 minutes to avoid redundant lookups within a single
@@ -487,7 +483,7 @@ export async function assessInfrastructure(
         // Determine DNSBL check depth from organization's subscription tier
         const org = await prisma.organization.findUnique({ where: { id: organizationId } });
         const tierLimits = TIER_LIMITS[org?.subscription_tier || 'trial'] || TIER_LIMITS.trial;
-        const dnsblDepth = (tierLimits as any).dnsblDepth || 'critical_only';
+        const dnsblDepth = tierLimits.dnsblDepth || 'critical_only';
 
         // Pre-fetch DNSBL lists once for the entire run (avoids N queries)
         const dnsblLists = await dnsblService.getListsForRun(dnsblDepth);
