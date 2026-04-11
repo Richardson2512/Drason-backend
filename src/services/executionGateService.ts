@@ -16,6 +16,7 @@ import { prisma } from '../index';
 import * as auditLogService from './auditLogService';
 import * as healingService from './healingService';
 import * as notificationService from './notificationService';
+import * as inactivityService from './inactivityService';
 import { logger } from './observabilityService';
 import {
     SystemMode,
@@ -173,13 +174,21 @@ export const canExecuteLead = async (
 
     // Filter out mailboxes that have hit their warmup daily send cap.
     // warmup_limit > 0 means a daily cap is configured; window_sent_count tracks today's sends.
-    const availableMailboxes = healthyMailboxes.filter(mb => {
+    const afterWarmupFilter = healthyMailboxes.filter(mb => {
         if (mb.warmup_status === 'enabled' && mb.warmup_limit > 0) {
             return mb.window_sent_count < mb.warmup_limit;
         }
         return true;
     });
-    const warmupCappedCount = healthyMailboxes.length - availableMailboxes.length;
+    const warmupCappedCount = healthyMailboxes.length - afterWarmupFilter.length;
+
+    // Filter out mailboxes that have hit their provider daily sending limit
+    // (Gmail: 1800, Microsoft 365: 9000, etc.)
+    const availableMailboxes = afterWarmupFilter.filter(mb => {
+        const { atLimit } = inactivityService.checkProviderCapacity(mb.email, mb.window_sent_count);
+        return !atLimit;
+    });
+    const providerCappedCount = afterWarmupFilter.length - availableMailboxes.length;
 
     if (availableMailboxes.length === 0) {
         // Check why no mailboxes are available
@@ -189,6 +198,14 @@ export const canExecuteLead = async (
 
         if (totalMailboxes === 0) {
             recommendations.push('No mailboxes configured. Sync with Smartlead.');
+        } else if (providerCappedCount > 0 && afterWarmupFilter.length > 0) {
+            // All healthy mailboxes have hit their provider daily limit
+            recommendations.push(`All ${providerCappedCount} healthy mailbox(es) have reached their email provider daily sending limit. Leads will be deferred until tomorrow.`);
+            logger.info('[GATE] All mailboxes at provider capacity', {
+                organizationId,
+                providerCappedCount,
+                healthyTotal: healthyMailboxes.length,
+            });
         } else if (warmupCappedCount > 0 && healthyMailboxes.length > 0) {
             // All healthy mailboxes have hit their warmup daily limit — soft block
             recommendations.push(`All ${warmupCappedCount} healthy mailbox(es) have reached their warmup send limit for today. Leads will be deferred until tomorrow.`);

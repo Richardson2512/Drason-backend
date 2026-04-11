@@ -14,6 +14,7 @@
 import { prisma } from '../index';
 import * as metricsService from './metricsService';
 import * as stateTransitionService from './stateTransitionService';
+import * as inactivityService from './inactivityService';
 import {
     MailboxState,
     DomainState,
@@ -165,6 +166,14 @@ async function processOrganization(
     const domains = [...new Set(mailboxes.map(m => m.domain_id))];
     for (const domainId of domains) {
         await updateDomainHealth(organizationId, domainId, systemMode);
+    }
+
+    // Check for inactive entities (30+ days no activity → needs re-warmup)
+    try {
+        const inactivityReport = await inactivityService.checkInactivity(organizationId);
+        await inactivityService.flagColdEntities(organizationId, inactivityReport, systemMode);
+    } catch (error) {
+        logger.error('Error checking inactivity', error as Error, { organizationId });
     }
 }
 

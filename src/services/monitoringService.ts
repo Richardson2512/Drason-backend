@@ -22,6 +22,7 @@ import * as correlationService from './correlationService';
 import { getAdapterForMailbox, getAdapterForDomain, getAdapterForCampaign } from '../adapters/platformRegistry';
 import * as executionGateService from './executionGateService';
 import * as notificationService from './notificationService';
+import { updateDomainLastSent } from './inactivityService';
 import { SlackAlertService } from './SlackAlertService';
 import * as entityStateService from './entityStateService';
 import * as campaignHealthService from './campaignHealthService';
@@ -246,6 +247,11 @@ export const recordSent = async (mailboxId: string, campaignId: string): Promise
             clean_sends_since_phase: mailbox.clean_sends_since_phase + 1,
         }
     });
+
+    // Update domain last_sent_at for inactivity tracking
+    if (mailbox.domain_id) {
+        updateDomainLastSent(mailbox.domain_id);
+    }
 
     // Rolling window: After ROLLING_WINDOW_SIZE sends, we shift the window
     // This is NOT a hard reset - we keep tracking but with sliding perspective

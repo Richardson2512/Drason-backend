@@ -350,6 +350,9 @@ model Domain {
   dns_checked_at               DateTime? // When DNS was last checked
   initial_assessment_score     Float? // REPORT-ONLY. Never use in execution gate logic.
 
+  // Inactivity tracking
+  last_sent_at                 DateTime? // Last time any mailbox under this domain sent an email
+
   // Domain-Level Analytics (SOFT SIGNALS - aggregated from all mailboxes)
   total_sent_lifetime Int   @default(0) // Total emails sent across all mailboxes in this domain
   total_opens         Int   @default(0) // Total opens across all mailboxes
