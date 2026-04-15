@@ -26,6 +26,7 @@ export interface UsageCounts {
     leads: number;
     domains: number;
     mailboxes: number;
+    emailsValidated: number;
 }
 
 // ============================================================================
@@ -302,7 +303,7 @@ export async function refreshUsageCounts(orgId: string): Promise<UsageCounts> {
         }
     });
 
-    const [leadCount, domainCount, mailboxCount] = await Promise.all([
+    const [leadCount, domainCount, mailboxCount, emailsValidatedCount] = await Promise.all([
         prisma.lead.count({
             where: {
                 organization_id: orgId,
@@ -310,7 +311,8 @@ export async function refreshUsageCounts(orgId: string): Promise<UsageCounts> {
             }
         }),
         prisma.domain.count({ where: { organization_id: orgId } }),
-        prisma.mailbox.count({ where: { organization_id: orgId } })
+        prisma.mailbox.count({ where: { organization_id: orgId } }),
+        prisma.validationAttempt.count({ where: { organization_id: orgId } })
     ]);
 
     // Use a high-water mark approach so usage doesn't drop when data is purged or API keys are removed
@@ -328,7 +330,7 @@ export async function refreshUsageCounts(orgId: string): Promise<UsageCounts> {
         }
     });
 
-    return { leads: maxLeadCount, domains: maxDomainCount, mailboxes: maxMailboxCount };
+    return { leads: maxLeadCount, domains: maxDomainCount, mailboxes: maxMailboxCount, emailsValidated: emailsValidatedCount };
 }
 
 /**
@@ -355,11 +357,18 @@ export async function getUsageAndLimits(orgId: string): Promise<{
 
     const limits = TIER_LIMITS[org.subscription_tier] || TIER_LIMITS.trial;
 
+    // ValidationAttempt rows are append-only, so a live count is always accurate
+    // (no high-water mark needed — the table never shrinks).
+    const emailsValidated = await prisma.validationAttempt.count({
+        where: { organization_id: orgId }
+    });
+
     return {
         usage: {
             leads: org.current_lead_count,
             domains: org.current_domain_count,
-            mailboxes: org.current_mailbox_count
+            mailboxes: org.current_mailbox_count,
+            emailsValidated
         },
         limits,
         tier: org.subscription_tier

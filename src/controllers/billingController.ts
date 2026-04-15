@@ -155,11 +155,6 @@ export const getSubscriptionStatus = async (req: Request, res: Response): Promis
             }
         });
 
-        // Total email validations performed (ValidationAttempt rows for this org)
-        const emailsValidated = await prisma.validationAttempt.count({
-            where: { organization_id: orgId }
-        });
-
         return res.json({
             success: true,
             subscription: {
@@ -170,7 +165,7 @@ export const getSubscriptionStatus = async (req: Request, res: Response): Promis
                 subscriptionStartedAt: org?.subscription_started_at,
                 nextBillingDate: org?.next_billing_date
             },
-            usage: { ...data.usage, emailsValidated },
+            usage: data.usage,
             limits: data.limits
         });
     } catch (error) {
