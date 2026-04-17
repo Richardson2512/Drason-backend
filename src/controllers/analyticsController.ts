@@ -472,3 +472,50 @@ export const getDailyAnalytics = async (req: Request, res: Response) => {
         });
     }
 };
+
+/**
+ * GET /api/analytics/esp-performance
+ * Returns per-mailbox ESP performance matrix for the dashboard.
+ */
+export const getEspPerformance = async (req: Request, res: Response) => {
+    try {
+        const orgId = getOrgId(req);
+
+        const performances = await prisma.mailboxEspPerformance.findMany({
+            where: { organization_id: orgId },
+            orderBy: { send_count_30d: 'desc' },
+        });
+
+        // Group by mailbox, with email lookup
+        const mailboxIds = [...new Set(performances.map(p => p.mailbox_id))];
+        const mailboxes = await prisma.mailbox.findMany({
+            where: { id: { in: mailboxIds } },
+            select: { id: true, email: true, status: true },
+        });
+        const mailboxMap = new Map(mailboxes.map(m => [m.id, m]));
+
+        const matrix = mailboxIds.map(mbId => {
+            const mb = mailboxMap.get(mbId);
+            const espData = performances.filter(p => p.mailbox_id === mbId);
+            return {
+                mailbox_id: mbId,
+                email: mb?.email || 'Unknown',
+                status: mb?.status || 'unknown',
+                esp_scores: espData.reduce((acc, p) => {
+                    acc[p.esp_bucket] = {
+                        send_count: p.send_count_30d,
+                        bounce_count: p.bounce_count_30d,
+                        bounce_rate: p.bounce_rate_30d,
+                        reply_count: p.reply_count_30d,
+                    };
+                    return acc;
+                }, {} as Record<string, { send_count: number; bounce_count: number; bounce_rate: number; reply_count: number }>),
+            };
+        });
+
+        res.json({ success: true, data: matrix });
+    } catch (error) {
+        logger.error('[ANALYTICS] Error fetching ESP performance', error instanceof Error ? error : new Error(String(error)));
+        res.status(500).json({ success: false, error: 'Failed to fetch ESP performance' });
+    }
+};

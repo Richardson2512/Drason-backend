@@ -130,7 +130,8 @@ export interface PlatformAdapter {
     pushLeadToCampaign(
         organizationId: string,
         externalCampaignId: string,
-        lead: LeadPayload
+        lead: LeadPayload,
+        options?: { assignedEmailAccounts?: string[] }
     ): Promise<PushLeadResult>;
 
     /**

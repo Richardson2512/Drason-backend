@@ -1126,7 +1126,8 @@ export class InstantlyAdapter implements PlatformAdapter {
     async pushLeadToCampaign(
         organizationId: string,
         externalCampaignId: string,
-        lead: LeadPayload
+        lead: LeadPayload,
+        _options?: { assignedEmailAccounts?: string[] }
     ): Promise<PushLeadResult> {
         try {
             // Idempotency check: skip if lead already active in this campaign

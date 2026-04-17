@@ -17,4 +17,10 @@ router.get('/bounces', analyticsController.getBounceAnalytics);
  */
 router.get('/daily', analyticsController.getDailyAnalytics);
 
+/**
+ * GET /api/analytics/esp-performance
+ * Get per-mailbox ESP performance matrix (30-day rolling)
+ */
+router.get('/esp-performance', analyticsController.getEspPerformance);
+
 export default router;

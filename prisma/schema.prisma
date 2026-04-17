@@ -746,3 +746,37 @@ model ValidationBatchLead {
   @@index([batch_id, validation_status])
   @@index([batch_id, esp_bucket])
 }
+
+// ============================================================================
+// ESP-AWARE ROUTING — Send tracking + per-mailbox ESP performance
+// ============================================================================
+
+model SendEvent {
+  id              String   @id @default(uuid())
+  organization_id String
+  mailbox_id      String
+  campaign_id     String?
+  recipient_email String
+  recipient_esp   String?  // gmail, microsoft, yahoo, other (classified on capture)
+  sent_at         DateTime @default(now())
+
+  @@index([organization_id, sent_at])
+  @@index([mailbox_id, recipient_esp])
+  @@index([mailbox_id, sent_at])
+}
+
+model MailboxEspPerformance {
+  id              String   @id @default(uuid())
+  organization_id String
+  mailbox_id      String
+  esp_bucket      String   // gmail, microsoft, yahoo, other
+  send_count_30d  Int      @default(0)
+  bounce_count_30d Int     @default(0)
+  reply_count_30d Int      @default(0)
+  bounce_rate_30d Float    @default(0) // bounce_count / send_count (0.0 - 1.0)
+  last_updated_at DateTime @default(now())
+
+  @@unique([mailbox_id, esp_bucket])
+  @@index([organization_id, mailbox_id])
+  @@index([mailbox_id, bounce_rate_30d])
+}

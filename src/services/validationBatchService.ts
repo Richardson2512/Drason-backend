@@ -13,6 +13,7 @@ import * as espClassifierService from './espClassifierService';
 import * as entityStateService from './entityStateService';
 import * as auditLogService from './auditLogService';
 import { getAdapterForCampaign } from '../adapters/platformRegistry';
+import { scoreMailboxesForEsp } from './espMailboxScoringService';
 import { LeadState, TriggerType } from '../types';
 import type { ParsedLead } from './csvParserService';
 
@@ -408,6 +409,13 @@ export async function routeLeads(
                 }
             });
 
+            // ESP-aware mailbox scoring: pick the best mailboxes for this recipient's ESP
+            let assignedMailboxIds: string[] | undefined;
+            if (batchLead.esp_bucket && adapter.platform === 'smartlead') {
+                const topMailboxes = await scoreMailboxesForEsp(organizationId, campaignId, batchLead.esp_bucket);
+                if (topMailboxes) assignedMailboxIds = topMailboxes;
+            }
+
             // Push to sending platform
             const pushResult = await adapter.pushLeadToCampaign(
                 organizationId,
@@ -417,7 +425,9 @@ export async function routeLeads(
                     first_name: batchLead.first_name || undefined,
                     last_name: batchLead.last_name || undefined,
                     company: batchLead.company || undefined,
-                }
+                },
+                // Pass ESP-pinned mailboxes if available (Smartlead adapter supports this)
+                assignedMailboxIds ? { assignedEmailAccounts: assignedMailboxIds } : undefined
             );
 
             if (pushResult?.success) {

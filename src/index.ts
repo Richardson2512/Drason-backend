@@ -91,6 +91,7 @@ import { startLeadScoringWorker, stopLeadScoringWorker } from './services/leadSc
 import { startTrialWorker, stopTrialWorker } from './services/trialWorker';
 import { startPlatformSyncWorker, stopPlatformSyncWorker, getPlatformSyncWorkerStatus } from './services/platformSyncWorker';
 import { scheduleWarmupTracking } from './workers/warmupTrackingWorker';
+import { scheduleEspPerformanceAggregation } from './workers/espPerformanceWorker';
 import * as infrastructureAssessmentService from './services/infrastructureAssessmentService';
 
 // Lead Processor — background job that pushes held leads through the execution gate
@@ -607,6 +608,10 @@ const server = app.listen(PORT, () => {
     // Start warmup tracking worker for automated recovery
     scheduleWarmupTracking();
     logger.info('Warmup tracking worker started (runs every 4h for auto-graduation)');
+
+    // Start ESP performance aggregation worker
+    scheduleEspPerformanceAggregation();
+    logger.info('ESP performance worker started (runs every 6h for mailbox ESP scoring)');
 
     // Seed DNSBL lists (upserts — safe to run on every startup)
     import('./services/dnsblService').then(dnsblService => {

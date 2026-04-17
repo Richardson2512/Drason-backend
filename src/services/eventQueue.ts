@@ -210,6 +210,50 @@ async function processSentEvent(
     campaignId: string | undefined,
     recipientEmail: string | undefined
 ): Promise<void> {
+    // 0. Record SendEvent for ESP-aware routing intelligence
+    if (recipientEmail && mailboxId) {
+        try {
+            const domain = recipientEmail.split('@')[1]?.toLowerCase();
+            let recipientEsp: string | null = null;
+            if (domain) {
+                // Classify ESP from cached DomainInsight (no DNS lookup)
+                const insight = await prisma.domainInsight.findFirst({
+                    where: { domain, organization_id: organizationId },
+                    select: { esp_bucket: true, mx_records: true },
+                });
+                if (insight?.esp_bucket) {
+                    recipientEsp = insight.esp_bucket;
+                } else if (insight?.mx_records) {
+                    // Inline classify from MX records
+                    const records = insight.mx_records as unknown as Array<{ exchange: string }>;
+                    for (const r of records) {
+                        const host = r.exchange?.toLowerCase() || '';
+                        if (host.includes('google') || host.includes('gmail')) { recipientEsp = 'gmail'; break; }
+                        if (host.includes('outlook') || host.includes('microsoft')) { recipientEsp = 'microsoft'; break; }
+                        if (host.includes('yahoo') || host.includes('yahoodns')) { recipientEsp = 'yahoo'; break; }
+                    }
+                    if (!recipientEsp) recipientEsp = 'other';
+                    // Cache the classification
+                    if (insight) {
+                        await prisma.domainInsight.update({ where: { id: (insight as any).id || undefined, organization_id_domain: { organization_id: organizationId, domain } }, data: { esp_bucket: recipientEsp } }).catch(() => {});
+                    }
+                }
+            }
+            await prisma.sendEvent.create({
+                data: {
+                    organization_id: organizationId,
+                    mailbox_id: mailboxId,
+                    campaign_id: campaignId || null,
+                    recipient_email: recipientEmail.toLowerCase(),
+                    recipient_esp: recipientEsp,
+                },
+            });
+        } catch (err: any) {
+            // Best-effort — don't block the main sent processing path
+            logger.warn(`[QUEUE] Failed to record SendEvent`, { error: err.message, mailboxId, recipientEmail });
+        }
+    }
+
     // 1. Update lead sent counter
     if (recipientEmail) {
         try {

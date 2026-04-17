@@ -132,12 +132,14 @@ export class SmartleadAdapter implements PlatformAdapter {
     async pushLeadToCampaign(
         organizationId: string,
         externalCampaignId: string,
-        lead: LeadPayload
+        lead: LeadPayload,
+        options?: { assignedEmailAccounts?: string[] }
     ): Promise<PushLeadResult> {
         const success = await smartleadClient.pushLeadToCampaign(
             organizationId,
             externalCampaignId,
-            lead
+            lead,
+            options
         );
         return { success };
     }
