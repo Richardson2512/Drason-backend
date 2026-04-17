@@ -735,6 +735,9 @@ model ValidationBatchLead {
   lead_score            Int?
   validation_status     String    @default("pending") // pending, valid, risky, invalid, duplicate
   validation_score      Int?
+  rejection_reason      String?   // disposable, no_mx, syntax, role_based, catch_all, smtp_fail, api_invalid
+  is_disposable         Boolean?
+  is_catch_all          Boolean?
   esp_bucket            String?   // gmail, microsoft, yahoo, other
   routed_to_campaign_id String?
   routed_at             DateTime?

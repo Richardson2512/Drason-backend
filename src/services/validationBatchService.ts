@@ -150,12 +150,27 @@ export async function processBatch(organizationId: string, batchId: string): Pro
                         // ESP classification is best-effort — don't fail the lead
                     }
 
+                    // --- Derive rejection reason ---
+                    let rejectionReason: string | null = null;
+                    if (validationResult.status === 'invalid') {
+                        if (validationResult.is_disposable) rejectionReason = 'disposable';
+                        else if (validationResult.details?.syntax_ok === false) rejectionReason = 'syntax';
+                        else if (validationResult.details?.mx_found === false) rejectionReason = 'no_mx';
+                        else rejectionReason = 'smtp_fail';
+                    } else if (validationResult.status === 'risky') {
+                        if (validationResult.is_catch_all) rejectionReason = 'catch_all';
+                        else rejectionReason = 'low_score';
+                    }
+
                     // --- Update batch lead ---
                     await prisma.validationBatchLead.update({
                         where: { id: batchLead.id },
                         data: {
                             validation_status: validationResult.status,
                             validation_score: validationResult.score,
+                            rejection_reason: rejectionReason,
+                            is_disposable: validationResult.is_disposable ?? null,
+                            is_catch_all: validationResult.is_catch_all ?? null,
                             esp_bucket: espBucket,
                         }
                     });
@@ -560,6 +575,13 @@ export async function getAnalytics(organizationId: string) {
         GROUP BY vb.source
     `;
 
+    // Rejection reasons breakdown
+    const rejectionCounts = await prisma.validationBatchLead.groupBy({
+        by: ['rejection_reason'],
+        where: { batch: { organization_id: organizationId }, rejection_reason: { not: null } },
+        _count: true,
+    });
+
     // ESP distribution
     const espCounts = await prisma.validationBatchLead.groupBy({
         by: ['esp_bucket'],
@@ -596,6 +618,10 @@ export async function getAnalytics(organizationId: string) {
             invalid: Number(s.invalid),
             rate: Number(s.total) > 0 ? Number(s.invalid) / Number(s.total) : 0,
         })),
+        rejectionReasons: rejectionCounts
+            .filter(r => r.rejection_reason)
+            .map(r => ({ reason: r.rejection_reason!, count: r._count }))
+            .sort((a, b) => b.count - a.count),
         espDistribution: espCounts.reduce((acc, e) => {
             if (e.esp_bucket) acc[e.esp_bucket] = e._count;
             return acc;
