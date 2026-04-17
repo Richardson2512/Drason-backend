@@ -74,12 +74,30 @@ async function aggregateEspPerformance(): Promise<{ updated: number; orgs: numbe
                 bounceMap.set(`${row.mailbox_id}:${row.esp_bucket}`, Number(row.bounce_count));
             }
 
+            // Aggregate replies per mailbox × ESP from ReplyEvent
+            const replyAgg = await prisma.replyEvent.groupBy({
+                by: ['mailbox_id', 'recipient_esp'],
+                where: {
+                    organization_id: orgId,
+                    replied_at: { gte: thirtyDaysAgo },
+                    recipient_esp: { not: null },
+                },
+                _count: true,
+            });
+            const replyMap = new Map<string, number>();
+            for (const row of replyAgg) {
+                if (row.recipient_esp) {
+                    replyMap.set(`${row.mailbox_id}:${row.recipient_esp}`, row._count);
+                }
+            }
+
             // Upsert MailboxEspPerformance rows
             for (const sendRow of sendAgg) {
                 if (!sendRow.recipient_esp) continue;
                 const key = `${sendRow.mailbox_id}:${sendRow.recipient_esp}`;
                 const sendCount = sendRow._count;
                 const bounceCount = bounceMap.get(key) || 0;
+                const replyCount = replyMap.get(key) || 0;
                 const bounceRate = sendCount > 0 ? bounceCount / sendCount : 0;
 
                 await prisma.mailboxEspPerformance.upsert({
@@ -92,6 +110,7 @@ async function aggregateEspPerformance(): Promise<{ updated: number; orgs: numbe
                     update: {
                         send_count_30d: sendCount,
                         bounce_count_30d: bounceCount,
+                        reply_count_30d: replyCount,
                         bounce_rate_30d: bounceRate,
                         last_updated_at: new Date(),
                     },
@@ -101,6 +120,7 @@ async function aggregateEspPerformance(): Promise<{ updated: number; orgs: numbe
                         esp_bucket: sendRow.recipient_esp,
                         send_count_30d: sendCount,
                         bounce_count_30d: bounceCount,
+                        reply_count_30d: replyCount,
                         bounce_rate_30d: bounceRate,
                     },
                 });

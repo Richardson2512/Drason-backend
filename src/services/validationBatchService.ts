@@ -14,6 +14,7 @@ import * as entityStateService from './entityStateService';
 import * as auditLogService from './auditLogService';
 import { getAdapterForCampaign } from '../adapters/platformRegistry';
 import { scoreMailboxesForEsp } from './espMailboxScoringService';
+import { TIER_LIMITS } from './polarClient';
 import { LeadState, TriggerType } from '../types';
 import type { ParsedLead } from './csvParserService';
 
@@ -78,18 +79,36 @@ export async function processBatch(organizationId: string, batchId: string): Pro
     const logTag = 'VALIDATION_BATCH';
 
     try {
-        // Get the org subscription tier for MillionVerifier gating
+        // Get the org subscription tier for MillionVerifier gating + credit limits
         const org = await prisma.organization.findUnique({
             where: { id: organizationId },
             select: { subscription_tier: true }
         });
         const tier = org?.subscription_tier || 'trial';
+        const tierLimits = TIER_LIMITS[tier] || TIER_LIMITS.trial;
+
+        // Check monthly validation credit usage
+        const monthStart = new Date();
+        monthStart.setDate(1);
+        monthStart.setHours(0, 0, 0, 0);
+        const monthlyUsage = await prisma.validationBatchLead.count({
+            where: {
+                batch: { organization_id: organizationId },
+                validation_status: { notIn: ['pending', 'duplicate'] },
+                created_at: { gte: monthStart },
+            }
+        });
+
+        const creditsRemaining = Math.max(0, tierLimits.validationCredits - monthlyUsage);
 
         // Fetch all pending leads for this batch
         const batchLeads = await prisma.validationBatchLead.findMany({
             where: { batch_id: batchId, validation_status: 'pending' },
             orderBy: { created_at: 'asc' },
         });
+
+        // If batch exceeds remaining credits, only process what we can
+        let creditsUsed = 0;
 
         let validCount = 0;
         let invalidCount = 0;
@@ -133,6 +152,43 @@ export async function processBatch(organizationId: string, batchId: string): Pro
                         processedCount++;
                         continue;
                     }
+
+                    // Check for cross-batch duplicate (same email in a previous batch)
+                    const previousBatchLead = await prisma.validationBatchLead.findFirst({
+                        where: {
+                            batch_id: { not: batchId },
+                            email: batchLead.email,
+                            batch: { organization_id: organizationId },
+                            validation_status: { not: 'pending' },
+                        },
+                        select: { batch_id: true, validation_status: true, routed_to_campaign_id: true },
+                        orderBy: { created_at: 'desc' },
+                    });
+
+                    if (previousBatchLead) {
+                        const msg = previousBatchLead.routed_to_campaign_id
+                            ? `Previously uploaded and routed to campaign`
+                            : `Previously uploaded (status: ${previousBatchLead.validation_status})`;
+                        await prisma.validationBatchLead.update({
+                            where: { id: batchLead.id },
+                            data: { validation_status: 'duplicate', error_message: msg }
+                        });
+                        duplicateCount++;
+                        processedCount++;
+                        continue;
+                    }
+
+                    // --- Credit check ---
+                    if (creditsUsed >= creditsRemaining && tierLimits.validationCredits !== Infinity) {
+                        await prisma.validationBatchLead.update({
+                            where: { id: batchLead.id },
+                            data: { validation_status: 'invalid', error_message: 'Monthly validation credit limit reached. Upgrade your plan.' }
+                        });
+                        invalidCount++;
+                        processedCount++;
+                        continue;
+                    }
+                    creditsUsed++;
 
                     // --- Validate email ---
                     const validationResult = await emailValidationService.validateLeadEmail(

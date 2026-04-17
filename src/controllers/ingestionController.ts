@@ -19,6 +19,8 @@ import { getAdapterForCampaign } from '../adapters/platformRegistry';
 import * as leadAssignmentService from '../services/leadAssignmentService';
 import * as entityStateService from '../services/entityStateService';
 import * as emailValidationService from '../services/emailValidationService';
+import * as espClassifierService from '../services/espClassifierService';
+import { scoreMailboxesForEsp } from '../services/espMailboxScoringService';
 import { getOrgId } from '../middleware/orgContext';
 import { EventType, LeadState, TriggerType, ValidationStatus } from '../types';
 import { logger } from '../services/observabilityService';
@@ -320,10 +322,29 @@ export async function processLead(
         });
         const externalCampaignId = campaign?.external_id || campaignId;
 
+        // ESP-aware mailbox scoring: pick the best mailboxes for this recipient's ESP
+        let espOptions: { assignedEmailAccounts?: string[] } | undefined;
+        if (adapter.platform === 'smartlead') {
+            try {
+                const domain = email.split('@')[1]?.toLowerCase();
+                if (domain) {
+                    const espBucket = await espClassifierService.getEspBucket(organizationId, domain);
+                    if (espBucket && espBucket !== 'other') {
+                        const topMailboxes = await scoreMailboxesForEsp(organizationId, campaignId, espBucket);
+                        if (topMailboxes) espOptions = { assignedEmailAccounts: topMailboxes };
+                    }
+                }
+            } catch (espErr: any) {
+                // Best-effort — don't block the push if ESP scoring fails
+                logger.warn(`[${logTag}] ESP scoring failed, using standard routing`, { error: espErr.message });
+            }
+        }
+
         const pushSuccess = await adapter.pushLeadToCampaign(
             organizationId,
             externalCampaignId,
-            { email, first_name, last_name, company }
+            { email, first_name, last_name, company },
+            espOptions
         );
 
         if (pushSuccess?.success) {

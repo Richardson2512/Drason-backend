@@ -768,6 +768,20 @@ model SendEvent {
   @@index([mailbox_id, sent_at])
 }
 
+model ReplyEvent {
+  id              String   @id @default(uuid())
+  organization_id String
+  mailbox_id      String
+  campaign_id     String?
+  recipient_email String
+  recipient_esp   String?  // gmail, microsoft, yahoo, other
+  replied_at      DateTime @default(now())
+
+  @@index([organization_id, replied_at])
+  @@index([mailbox_id, recipient_esp])
+  @@index([mailbox_id, replied_at])
+}
+
 model MailboxEspPerformance {
   id              String   @id @default(uuid())
   organization_id String

@@ -372,6 +372,43 @@ async function processEngagementEvent(
         : type === 'click' ? 'email_clicked'
         : 'email_replied';
 
+    // 0. Record ReplyEvent for ESP-aware routing intelligence (replies only)
+    if (type === 'reply' && recipientEmail && mailboxId) {
+        try {
+            const domain = recipientEmail.split('@')[1]?.toLowerCase();
+            let recipientEsp: string | null = null;
+            if (domain) {
+                const insight = await prisma.domainInsight.findFirst({
+                    where: { domain, organization_id: organizationId },
+                    select: { esp_bucket: true, mx_records: true },
+                });
+                if (insight?.esp_bucket) {
+                    recipientEsp = insight.esp_bucket;
+                } else if (insight?.mx_records) {
+                    const records = insight.mx_records as unknown as Array<{ exchange: string }>;
+                    for (const r of records) {
+                        const host = r.exchange?.toLowerCase() || '';
+                        if (host.includes('google') || host.includes('gmail')) { recipientEsp = 'gmail'; break; }
+                        if (host.includes('outlook') || host.includes('microsoft')) { recipientEsp = 'microsoft'; break; }
+                        if (host.includes('yahoo') || host.includes('yahoodns')) { recipientEsp = 'yahoo'; break; }
+                    }
+                    if (!recipientEsp) recipientEsp = 'other';
+                }
+            }
+            await prisma.replyEvent.create({
+                data: {
+                    organization_id: organizationId,
+                    mailbox_id: mailboxId,
+                    campaign_id: campaignId || null,
+                    recipient_email: recipientEmail.toLowerCase(),
+                    recipient_esp: recipientEsp,
+                },
+            });
+        } catch (err: any) {
+            logger.warn(`[QUEUE] Failed to record ReplyEvent`, { error: err.message, mailboxId, recipientEmail });
+        }
+    }
+
     // 1. Find and update Lead engagement counter + recalculate score
     if (recipientEmail) {
         try {
