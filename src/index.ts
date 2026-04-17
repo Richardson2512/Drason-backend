@@ -69,6 +69,7 @@ import instantlyWebhookRoutes from './routes/instantlyWebhook';
 import findingsRoutes from './routes/findings';
 import analyticsRoutes from './routes/analytics';
 import syncProgressRoutes from './routes/syncProgress';
+import validationRoutes from './routes/validation';
 import infrastructureRoutes from './routes/infrastructure';
 import slackRoutes from './routes/slack';
 import apiSlackRoutes from './routes/apiSlack';
@@ -264,6 +265,7 @@ app.use('/api/sync-progress', syncProgressRoutes);
 app.use('/api/infrastructure', infrastructureRoutes);
 app.use('/api/slack', apiSlackRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/validation', validationRoutes);
 
 // Ingestion endpoints
 app.post('/api/ingest', checkLeadCapacity, asyncHandler(ingestionController.ingestLead));

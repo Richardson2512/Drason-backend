@@ -62,6 +62,9 @@ export const pushLeadToCampaign = async (
         first_name?: string;
         last_name?: string;
         company?: string;
+    },
+    options?: {
+        assignedEmailAccounts?: string[];  // Email account IDs for ESP-aware mailbox pinning
     }
 ): Promise<boolean> => {
     const apiKey = await getApiKey(organizationId);
@@ -103,12 +106,17 @@ export const pushLeadToCampaign = async (
         }
 
         // Transform to Smartlead API format
-        const smartleadLead = {
+        const smartleadLead: Record<string, any> = {
             email: lead.email,
             first_name: lead.first_name || '',
             last_name: lead.last_name || '',
             company_name: lead.company || '' // Smartlead expects 'company_name', not 'company'
         };
+
+        // ESP-aware mailbox pinning: restrict which email accounts can send to this lead
+        if (options?.assignedEmailAccounts?.length) {
+            smartleadLead.assigned_email_accounts = options.assignedEmailAccounts;
+        }
 
         // Rate limit: 10 requests per 2 seconds
         // Wrap API call in rate limiter to prevent 429 errors during bulk operations

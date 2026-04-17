@@ -52,7 +52,8 @@ model Organization {
   subscriptionEvents SubscriptionEvent[]
   slackIntegration   SlackIntegration?
   campaignDailyAnalytics CampaignDailyAnalytics[]
-  supportTickets  SupportTicket[]
+  supportTickets     SupportTicket[]
+  validationBatches  ValidationBatch[]
 
   @@index([slug])
   @@index([subscription_status])
@@ -179,6 +180,7 @@ model DomainInsight {
   has_mx          Boolean  @default(false)
   is_catch_all    Boolean  @default(false)
   is_disposable   Boolean  @default(false)
+  esp_bucket      String?  // gmail, microsoft, yahoo, other (cached ESP classification)
   mx_records      Json?    // [{ priority, exchange }]
   checked_at      DateTime @default(now())
   created_at      DateTime @default(now())
@@ -693,4 +695,54 @@ model DnsblResult {
   @@unique([domain_id, dnsbl_list_id]) // upsert pattern — only keep latest result
   @@index([domain_id, checked_at])
   @@index([dnsbl_list_id])
+}
+
+// ============================================================================
+// EMAIL VALIDATION — Batch upload + ESP classification
+// ============================================================================
+
+model ValidationBatch {
+  id                 String    @id @default(uuid())
+  organization_id    String
+  source             String    // csv, clay, hubspot, salesforce, api
+  status             String    @default("processing") // processing, completed, failed
+  file_name          String?
+  total_count        Int       @default(0)
+  valid_count        Int       @default(0)
+  invalid_count      Int       @default(0)
+  risky_count        Int       @default(0)
+  duplicate_count    Int       @default(0)
+  routed_count       Int       @default(0)
+  target_campaign_id String?
+  created_at         DateTime  @default(now())
+  completed_at       DateTime?
+
+  organization       Organization          @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  leads              ValidationBatchLead[]
+
+  @@index([organization_id, created_at])
+  @@index([organization_id, status])
+}
+
+model ValidationBatchLead {
+  id                    String    @id @default(uuid())
+  batch_id              String
+  email                 String
+  first_name            String?
+  last_name             String?
+  company               String?
+  persona               String?
+  lead_score            Int?
+  validation_status     String    @default("pending") // pending, valid, risky, invalid, duplicate
+  validation_score      Int?
+  esp_bucket            String?   // gmail, microsoft, yahoo, other
+  routed_to_campaign_id String?
+  routed_at             DateTime?
+  error_message         String?
+  created_at            DateTime  @default(now())
+
+  batch                 ValidationBatch @relation(fields: [batch_id], references: [id], onDelete: Cascade)
+
+  @@index([batch_id, validation_status])
+  @@index([batch_id, esp_bucket])
 }
