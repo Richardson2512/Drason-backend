@@ -25,8 +25,8 @@ import * as rotationService from './rotationService';
 import { SlackAlertService } from './SlackAlertService';
 import * as dnsblService from './dnsblService';
 import { TIER_LIMITS } from './polarClient';
-import { getAdapterForMailbox } from '../adapters/platformRegistry';
-import { MailboxState, DomainState, TriggerType, EventType } from '../types';
+import { getAdapterForMailbox, tryGetAdapterForMailbox } from '../adapters/platformRegistry';
+import { MailboxState, DomainState, TriggerType, EventType, MONITORING_THRESHOLDS } from '../types';
 import { logger } from './observabilityService';
 
 // ============================================================================
@@ -37,6 +37,7 @@ const ASSESSMENT_INTERVAL_MS = parseInt(process.env.ASSESSMENT_INTERVAL_MS || St
 
 const _resolveTxt = promisify(dns.resolveTxt);
 const _resolve4 = promisify(dns.resolve4);
+const _resolveMx = promisify(dns.resolveMx);
 
 // Blacklist DNS resolution is now handled by dnsblService.ts (resolver pool with 6 upstream servers)
 
@@ -124,13 +125,14 @@ const ASSESSMENT_VERSION = '1.0';
 /** Common DKIM selectors to check */
 const DKIM_SELECTORS = ['default', 'google', 'selector1', 'selector2', 's1', 's2'];
 
-/** Mailbox classification thresholds - Volume-aware for better protection */
+/** Mailbox classification thresholds - Volume-aware for better protection.
+ *  Sourced from MONITORING_THRESHOLDS so bounceProcessingService and assessment agree. */
 const MAILBOX_THRESHOLDS = {
-    PAUSE_BOUNCE_RATE: 0.03,        // 3% → paused (after 60 sends)
-    WARNING_BOUNCE_RATE: 0.02,      // 2% → warning (early detection)
-    EARLY_WARNING: 0.03,            // 3% → warning (20-60 sends)
-    MIN_SENDS_FOR_PAUSE: 60,        // Minimum sends before auto-pause
-    MIN_SENDS_FOR_WARNING: 20,      // Minimum sends before warning
+    PAUSE_BOUNCE_RATE: MONITORING_THRESHOLDS.MAILBOX_PAUSE_BOUNCE_RATE,       // 3% → paused (after MIN_SENDS_FOR_PAUSE sends)
+    WARNING_BOUNCE_RATE: MONITORING_THRESHOLDS.MAILBOX_WARNING_BOUNCE_RATE,   // 2% → warning (early detection)
+    EARLY_WARNING: MONITORING_THRESHOLDS.MAILBOX_PAUSE_BOUNCE_RATE,           // 3% → warning (MIN_SENDS_FOR_WARNING-MIN_SENDS_FOR_PAUSE sends)
+    MIN_SENDS_FOR_PAUSE: MONITORING_THRESHOLDS.MAILBOX_PAUSE_BOUNCE_RATE_MIN_SENDS, // Minimum sends before auto-pause
+    MIN_SENDS_FOR_WARNING: 20,      // Minimum sends before warning (early window, kept local)
 };
 
 // CAMPAIGN_THRESHOLDS removed — campaigns are NEVER paused based on bounce rate.
@@ -146,9 +148,35 @@ interface DomainDNSResult {
     spfValid: boolean | null;
     dkimValid: boolean | null;
     dmarcPolicy: string | null;
+    /** [{ priority, exchange }] sorted by priority asc; empty array = no MX. */
+    mxRecords: Array<{ priority: number; exchange: string }>;
+    /** True iff mxRecords.length > 0. Persisted alongside the array for cheap "has MX?" filters. */
+    mxValid: boolean;
     blacklistResults: Record<string, BlacklistStatus>;
     score: number;
     _dnsblCheckResult?: dnsblService.DnsblCheckResult | null;
+}
+
+/**
+ * Resolve a domain's MX records. Returns sorted [{priority, exchange}].
+ * Treats NXDOMAIN / no-records as "no MX" (empty array, mxValid=false) — not
+ * a hard error — so the assessment continues for misconfigured domains.
+ */
+async function resolveMxRecords(domainName: string): Promise<Array<{ priority: number; exchange: string }>> {
+    try {
+        const records = await _resolveMx(domainName);
+        return records
+            .map((r) => ({ priority: r.priority, exchange: r.exchange.toLowerCase() }))
+            .sort((a, b) => a.priority - b.priority);
+    } catch (err: unknown) {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code === 'ENODATA' || code === 'ENOTFOUND' || code === 'NXDOMAIN') return [];
+        // Transient errors (e.g. SERVFAIL) — log and treat as empty so the
+        // domain isn't penalised for a brittle resolver. The next assessment
+        // run will retry.
+        logger.warn(`[DNS] MX lookup failed for ${domainName}`, { code, error: (err as Error).message });
+        return [];
+    }
 }
 
 interface Finding {
@@ -243,30 +271,39 @@ async function enforceMailboxPause(
     }).catch(err => logger.warn('[ASSESSMENT] Non-fatal Slack alert error', { error: String(err) }));
 
     // ── 4. Platform removal: remove mailbox from all assigned campaigns ──
+    let campaigns: Array<{ id: string; external_id: string | null; name: string }> = [];
     try {
-        const adapter = await getAdapterForMailbox(mailbox.id);
-        const campaigns = await prisma.campaign.findMany({
+        const adapter = await tryGetAdapterForMailbox(mailbox.id);
+        campaigns = await prisma.campaign.findMany({
             where: { mailboxes: { some: { id: mailbox.id } } },
             select: { id: true, external_id: true, name: true },
         });
 
-        for (const campaign of campaigns) {
-            try {
-                await adapter.removeMailboxFromCampaign(
-                    organizationId,
-                    campaign.external_id || campaign.id,
-                    mailbox.external_email_account_id || mailbox.id,
-                );
-            } catch (removeErr: any) {
-                logger.warn(`[ASSESSMENT] Failed to remove mailbox ${mailbox.id} from campaign ${campaign.id}`, {
-                    organizationId, error: removeErr.message,
-                });
+        if (!adapter) {
+            // Sequencer mailbox — no external platform to remove from; pause is enforced
+            // directly by the send queue which checks mailbox.status before sending.
+            logger.info(`[ASSESSMENT] Sequencer mailbox ${mailbox.id} paused (no external platform action needed)`, {
+                organizationId, mailboxId: mailbox.id,
+            });
+        } else {
+            for (const campaign of campaigns) {
+                try {
+                    await adapter.removeMailboxFromCampaign(
+                        organizationId,
+                        campaign.external_id || campaign.id,
+                        mailbox.external_email_account_id || mailbox.id,
+                    );
+                } catch (removeErr: any) {
+                    logger.warn(`[ASSESSMENT] Failed to remove mailbox ${mailbox.id} from campaign ${campaign.id}`, {
+                        organizationId, error: removeErr.message,
+                    });
+                }
             }
-        }
 
-        logger.info(`[ASSESSMENT] Removed paused mailbox ${mailbox.id} from ${campaigns.length} platform campaigns`, {
-            organizationId, mailboxId: mailbox.id, platform: adapter.platform,
-        });
+            logger.info(`[ASSESSMENT] Removed paused mailbox ${mailbox.id} from ${campaigns.length} platform campaigns`, {
+                organizationId, mailboxId: mailbox.id, platform: adapter.platform,
+            });
+        }
 
         // ── 5. Rotation: attempt to rotate in a standby mailbox ──
         try {
@@ -371,11 +408,13 @@ export async function assessDomainDNS(
     domainId?: string,
     dnsblLists?: import('@prisma/client').DnsblList[]
 ): Promise<DomainDNSResult> {
-    const [spfValid, dkimValid, dmarcPolicy] = await Promise.all([
+    const [spfValid, dkimValid, dmarcPolicy, mxRecords] = await Promise.all([
         checkSPF(domainName),
         checkDKIM(domainName),
         checkDMARC(domainName),
+        resolveMxRecords(domainName),
     ]);
+    const mxValid = mxRecords.length > 0;
 
     // Check blacklists via dnsblService (tiered, throttled, 400+ lists)
     let blacklistResults: Record<string, BlacklistStatus> = {};
@@ -435,6 +474,8 @@ export async function assessDomainDNS(
         spfValid,
         dkimValid,
         dmarcPolicy,
+        mxRecords,
+        mxValid,
         blacklistResults,
         score,
         _dnsblCheckResult: dnsblCheckResult, // Attach for tier-aware pause logic
@@ -688,6 +729,8 @@ export async function assessInfrastructure(
                     spf_valid: dnsResult.spfValid,
                     dkim_valid: dnsResult.dkimValid,
                     dmarc_policy: dnsResult.dmarcPolicy,
+                    mx_records: dnsResult.mxRecords,
+                    mx_valid: dnsResult.mxValid,
                     dns_checked_at: new Date(),
                     initial_assessment_score: dnsResult.score,
                     ...(domainState === 'paused' ? {
@@ -833,6 +876,43 @@ export async function assessInfrastructure(
                 // If paused: enforce platform removal + healing pipeline entry
                 if (mailboxState === 'paused') {
                     await enforceMailboxPause(organizationId, mailbox, assessmentReason);
+                }
+            }
+
+            // Sending-IP blacklist findings — emitted only when the IP-blacklist
+            // worker has populated ip_blacklist_results AND there's at least one
+            // critical or major listing. These are mailbox-scoped (not domain) so
+            // a single SMTP relay's bad IP doesn't drag every domain into warning.
+            const ipResults = mailbox.ip_blacklist_results as Record<string, any> | null;
+            if (ipResults && mailbox.sending_ip) {
+                const critical = ipResults.critical_listed || 0;
+                const major = ipResults.major_listed || 0;
+                if (critical > 0) {
+                    if (mailboxState === 'healthy') mailboxState = 'warning';
+                    findings.push({
+                        severity: 'critical',
+                        category: 'mailbox_health',
+                        entity: 'mailbox',
+                        entityId: mailbox.id,
+                        entityName: mailbox.email,
+                        title: `IP Blacklisted (Critical): ${mailbox.email}`,
+                        details: `Sending IP ${mailbox.sending_ip} is on ${critical} critical blacklist${critical === 1 ? '' : 's'} (Spamhaus-tier). Pause sends and request delisting.`,
+                        message: `Mailbox ${mailbox.email}'s sending IP ${mailbox.sending_ip} is listed on ${critical} critical blacklist${critical === 1 ? '' : 's'}.`,
+                        remediation: `Visit Spamhaus's lookup tool, request delisting, and pause this mailbox until cleared.`,
+                    });
+                } else if (major > 0) {
+                    if (mailboxState === 'healthy') mailboxState = 'warning';
+                    findings.push({
+                        severity: 'warning',
+                        category: 'mailbox_health',
+                        entity: 'mailbox',
+                        entityId: mailbox.id,
+                        entityName: mailbox.email,
+                        title: `IP Blacklisted (Major): ${mailbox.email}`,
+                        details: `Sending IP ${mailbox.sending_ip} is on ${major} major blacklist${major === 1 ? '' : 's'}. Likely affecting inbox placement.`,
+                        message: `Mailbox ${mailbox.email}'s sending IP ${mailbox.sending_ip} is listed on ${major} major blacklist${major === 1 ? '' : 's'}.`,
+                        remediation: `Run a blacklist lookup at MxToolbox, then request delisting from each list.`,
+                    });
                 }
             }
 

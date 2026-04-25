@@ -144,3 +144,85 @@ export const getDomainDNS = async (req: Request, res: Response): Promise<void> =
         res.status(500).json({ success: false, error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
     }
 };
+
+/**
+ * POST /api/assessment/domain/:domainId/dns/recheck
+ *
+ * Live re-check + persist. Distinct from getDomainDNS, which is a non-persisting
+ * preview. This endpoint runs the same DNS sweep the periodic worker runs and
+ * writes the result back to the Domain row, so the Domains UI reflects fresh
+ * state immediately after the user clicks "Check now". Findings are NOT
+ * regenerated here — that's owned by the assessment worker's full sweep — but
+ * the per-record badges on the DNS Authentication card flip the moment this
+ * call returns.
+ *
+ * Soft-rate-limited at the application layer: re-checks for the same domain
+ * within 30s reuse the cached row and skip the network calls. This protects
+ * against accidental double-clicks turning into a DNS storm without forcing
+ * a hard 429.
+ */
+const RECHECK_COOLDOWN_MS = 30_000;
+export const recheckDomainDNS = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const domainId = req.params.domainId as string;
+        const orgId = getOrgId(req);
+
+        const domain = await prisma.domain.findFirst({
+            where: { id: domainId, organization_id: orgId },
+        });
+        if (!domain) {
+            res.status(404).json({ success: false, error: 'Domain not found' });
+            return;
+        }
+
+        if (domain.dns_checked_at && Date.now() - domain.dns_checked_at.getTime() < RECHECK_COOLDOWN_MS) {
+            res.json({
+                success: true,
+                cached: true,
+                cooldown_seconds_remaining: Math.ceil(
+                    (RECHECK_COOLDOWN_MS - (Date.now() - domain.dns_checked_at.getTime())) / 1000,
+                ),
+                domain: {
+                    id: domain.id,
+                    spf_valid: domain.spf_valid,
+                    dkim_valid: domain.dkim_valid,
+                    dmarc_policy: domain.dmarc_policy,
+                    mx_records: domain.mx_records,
+                    mx_valid: domain.mx_valid,
+                    dns_checked_at: domain.dns_checked_at,
+                },
+            });
+            return;
+        }
+
+        const dnsResult = await assessmentService.assessDomainDNS(domain.domain, domain.id);
+        const updated = await prisma.domain.update({
+            where: { id: domain.id },
+            data: {
+                spf_valid: dnsResult.spfValid,
+                dkim_valid: dnsResult.dkimValid,
+                dmarc_policy: dnsResult.dmarcPolicy,
+                mx_records: dnsResult.mxRecords,
+                mx_valid: dnsResult.mxValid,
+                dns_checked_at: new Date(),
+            },
+            select: {
+                id: true,
+                spf_valid: true,
+                dkim_valid: true,
+                dmarc_policy: true,
+                mx_records: true,
+                mx_valid: true,
+                dns_checked_at: true,
+            },
+        });
+
+        res.json({ success: true, cached: false, domain: updated });
+    } catch (e: any) {
+        logger.error('DNS recheck failed', e);
+        res.status(500).json({
+            success: false,
+            error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message,
+        });
+    }
+};

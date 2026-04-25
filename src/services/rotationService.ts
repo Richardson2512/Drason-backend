@@ -19,6 +19,7 @@ import { logger } from './observabilityService';
 import { getAdapterForCampaign } from '../adapters/platformRegistry';
 import * as auditLogService from './auditLogService';
 import * as notificationService from './notificationService';
+import { MONITORING_THRESHOLDS } from '../types';
 
 // ============================================================================
 // TYPES
@@ -160,7 +161,10 @@ export async function rotateForPausedMailbox(
             continue;
         }
 
-        if (campaignData.bounce_rate >= 5) {
+        // Skip rotating into campaigns already toxic — bounce_rate stored as percentage (0-100),
+        // compared against fraction constant × 100 to keep MONITORING_THRESHOLDS consistent.
+        const rotationMaxPct = MONITORING_THRESHOLDS.ROTATION_MAX_CAMPAIGN_BOUNCE_RATE * 100;
+        if (campaignData.bounce_rate >= rotationMaxPct) {
             result.skippedUnhealthyCampaigns++;
             result.details.push({
                 campaignId: campaign.id,
@@ -169,7 +173,7 @@ export async function rotateForPausedMailbox(
                 standbyMailboxEmail: null,
                 standbyTier: 'none',
                 success: false,
-                error: `Campaign bounce rate ${campaignData.bounce_rate}% too high, skipped`
+                error: `Campaign bounce rate ${campaignData.bounce_rate}% >= ${rotationMaxPct}% threshold, skipped`
             });
             continue;
         }

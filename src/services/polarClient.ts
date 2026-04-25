@@ -18,7 +18,10 @@ export interface TierLimits {
     domains: number;
     mailboxes: number;
     validationCredits: number;
+    monthlySendLimit: number;
     dnsblDepth: 'critical_only' | 'standard' | 'comprehensive';
+    /** Max customer-facing webhook endpoints (internal Slack-shim endpoints don't count). */
+    webhookEndpointsMax: number;
 }
 
 export interface CheckoutSession {
@@ -30,19 +33,97 @@ export interface CheckoutSession {
 // CONSTANTS
 // ============================================================================
 
-export const TIER_LIMITS: Record<string, TierLimits> = {
-    trial: { leads: 10000, domains: 20, mailboxes: 75, validationCredits: 10000, dnsblDepth: 'critical_only' },
-    starter: { leads: 10000, domains: 20, mailboxes: 75, validationCredits: 10000, dnsblDepth: 'critical_only' },
-    growth: { leads: 50000, domains: 75, mailboxes: 350, validationCredits: 50000, dnsblDepth: 'standard' },
-    scale: { leads: 100000, domains: 150, mailboxes: 700, validationCredits: 100000, dnsblDepth: 'comprehensive' },
-    enterprise: { leads: Infinity, domains: Infinity, mailboxes: Infinity, validationCredits: Infinity, dnsblDepth: 'comprehensive' }
+// ────────────────────────────────────────────────────────────────────
+// Pro tier — volume dropdown
+// ────────────────────────────────────────────────────────────────────
+// Pro keeps its infra profile (10k leads, 20 domains, 75 mailboxes) across
+// every volume. Only monthly sends and validation credits scale. Each
+// variant maps to a distinct Polar product so checkout can be routed
+// correctly once the product IDs are filled in.
+// Keep this array in sync with the frontend dropdown in
+// frontend/src/app/pricing/page.tsx (PricingCard `sendsDropdown` prop).
+
+interface ProSendTier {
+    key: string;          // tier key written to Organization.subscription_tier
+    sends: number;
+    credits: number;
+    price: number;        // USD, monthly
+}
+
+export const PRO_SEND_TIERS: ProSendTier[] = [
+    { key: 'pro',      sends:  60000, credits: 10000, price:  49 }, // default / anchor
+    { key: 'pro_80k',  sends:  80000, credits: 15000, price:  59 },
+    { key: 'pro_100k', sends: 100000, credits: 20000, price:  79 },
+    { key: 'pro_150k', sends: 150000, credits: 30000, price: 109 },
+    { key: 'pro_200k', sends: 200000, credits: 40000, price: 139 },
+    { key: 'pro_250k', sends: 250000, credits: 50000, price: 169 },
+];
+
+// Pro keeps its infra profile (10k leads, 20 domains, 75 mailboxes) across
+// every volume variant. Only monthly sends + validation credits scale.
+const PRO_BASE = {
+    leads: 10000,
+    domains: 20,
+    mailboxes: 75,
+    dnsblDepth: 'critical_only' as const,
 };
+
+const PRO_TIER_LIMITS: Record<string, TierLimits> = Object.fromEntries(
+    PRO_SEND_TIERS.map(t => [
+        t.key,
+        {
+            ...PRO_BASE,
+            validationCredits: t.credits,
+            monthlySendLimit: t.sends,
+            webhookEndpointsMax: 3,
+        },
+    ])
+);
+
+export const TIER_LIMITS: Record<string, TierLimits> = {
+    trial:      { leads: 10000, domains: 20, mailboxes: 75, validationCredits: 10000, monthlySendLimit: 60000, dnsblDepth: 'critical_only', webhookEndpointsMax: 1 },
+    starter:    { leads: 3000, domains: 7, mailboxes: 25, validationCredits: 3000, monthlySendLimit: 20000, dnsblDepth: 'critical_only', webhookEndpointsMax: 1 },
+    // Pro family — default 60k anchor + 5 dropdown variants (80k/100k/150k/200k/250k).
+    ...PRO_TIER_LIMITS,
+    growth:     { leads: 50000, domains: 75, mailboxes: 350, validationCredits: 50000, monthlySendLimit: 300000, dnsblDepth: 'standard', webhookEndpointsMax: 10 },
+    scale:      { leads: 100000, domains: 150, mailboxes: 700, validationCredits: 100000, monthlySendLimit: 600000, dnsblDepth: 'comprehensive', webhookEndpointsMax: 25 },
+    enterprise: { leads: Infinity, domains: Infinity, mailboxes: Infinity, validationCredits: Infinity, monthlySendLimit: Infinity, dnsblDepth: 'comprehensive', webhookEndpointsMax: Infinity }
+};
+
+/**
+ * Given a `sends` value from the pricing page dropdown, return the tier key
+ * that should be written to Organization.subscription_tier. Falls back to
+ * the default 'pro' tier if the value does not match any configured variant.
+ */
+export function proTierKeyForSends(sends: number): string {
+    const match = PRO_SEND_TIERS.find(t => t.sends === sends);
+    return match ? match.key : 'pro';
+}
+
+/**
+ * True for any Pro family tier (pro, pro_80k, …, pro_250k).
+ */
+export function isProTier(tierKey: string): boolean {
+    return PRO_SEND_TIERS.some(t => t.key === tierKey);
+}
 
 const POLAR_API_BASE = 'https://api.polar.sh/v1';
 const POLAR_ACCESS_TOKEN = process.env.POLAR_ACCESS_TOKEN;
 
+// Each Pro volume option corresponds to its own Polar product. Until the
+// matching Polar products exist the values fall back to the 60k product so
+// checkout still resolves to *something* while the UI is being validated.
+// Replace each env var once the Polar dashboard has the matching products.
+const PRO_PRODUCT_FALLBACK = process.env.POLAR_PRO_PRODUCT_ID || process.env.POLAR_STARTER_PRODUCT_ID || '';
+
 const PRODUCT_IDS: Record<string, string> = {
-    starter: process.env.POLAR_STARTER_PRODUCT_ID || '',
+    starter: process.env.POLAR_STARTER_PRODUCT_ID || 'dfa51c15-8e20-452d-b51a-476d94b73d21',
+    pro: process.env.POLAR_PRO_PRODUCT_ID || PRO_PRODUCT_FALLBACK,
+    pro_80k:  process.env.POLAR_PRO_80K_PRODUCT_ID  || PRO_PRODUCT_FALLBACK,
+    pro_100k: process.env.POLAR_PRO_100K_PRODUCT_ID || PRO_PRODUCT_FALLBACK,
+    pro_150k: process.env.POLAR_PRO_150K_PRODUCT_ID || PRO_PRODUCT_FALLBACK,
+    pro_200k: process.env.POLAR_PRO_200K_PRODUCT_ID || PRO_PRODUCT_FALLBACK,
+    pro_250k: process.env.POLAR_PRO_250K_PRODUCT_ID || PRO_PRODUCT_FALLBACK,
     growth: process.env.POLAR_GROWTH_PRODUCT_ID || '',
     scale: process.env.POLAR_SCALE_PRODUCT_ID || ''
 };
@@ -219,6 +300,55 @@ export async function cancelSubscription(orgId: string): Promise<void> {
     } catch (error) {
         logger.error('[POLAR] Failed to cancel subscription', error instanceof Error ? error : new Error(String(error)));
         throw new Error('Failed to cancel subscription');
+    }
+}
+
+/**
+ * Change subscription to a different tier (upgrade or downgrade).
+ * Upgrades: prorated, take effect immediately.
+ * Downgrades: take effect at end of current billing period.
+ */
+export async function changeSubscription(orgId: string, newTier: string): Promise<{ success: boolean; effective: 'immediate' | 'end_of_period' }> {
+    const org = await prisma.organization.findUnique({
+        where: { id: orgId },
+        select: { polar_subscription_id: true, subscription_tier: true }
+    });
+
+    if (!org?.polar_subscription_id) {
+        throw new Error('No active subscription found. Use checkout for new subscriptions.');
+    }
+
+    const newProductId = PRODUCT_IDS[newTier];
+    if (!newProductId) {
+        throw new Error(`Invalid tier or missing product ID: ${newTier}`);
+    }
+
+    const tierOrder: Record<string, number> = { trial: 0, starter: 1, pro: 2, growth: 3, scale: 4, enterprise: 5 };
+    const currentRank = tierOrder[org.subscription_tier || 'trial'] || 0;
+    const newRank = tierOrder[newTier] || 0;
+    const isUpgrade = newRank > currentRank;
+
+    try {
+        await polarApi.patch(`/subscriptions/${org.polar_subscription_id}`, {
+            product_id: newProductId,
+            proration_behavior: isUpgrade ? 'create_prorations' : 'none',
+        });
+
+        // Update org tier
+        await prisma.organization.update({
+            where: { id: orgId },
+            data: { subscription_tier: newTier },
+        });
+
+        logger.info(`[POLAR] Subscription changed for ${orgId}: ${org.subscription_tier} → ${newTier}`, {
+            subscriptionId: org.polar_subscription_id,
+            direction: isUpgrade ? 'upgrade' : 'downgrade',
+        });
+
+        return { success: true, effective: isUpgrade ? 'immediate' : 'end_of_period' };
+    } catch (error) {
+        logger.error('[POLAR] Failed to change subscription', error instanceof Error ? error : new Error(String(error)));
+        throw new Error('Failed to change subscription');
     }
 }
 

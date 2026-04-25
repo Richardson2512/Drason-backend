@@ -70,10 +70,18 @@ import findingsRoutes from './routes/findings';
 import analyticsRoutes from './routes/analytics';
 import syncProgressRoutes from './routes/syncProgress';
 import validationRoutes from './routes/validation';
+import uniboxRoutes from './routes/unibox';
+import sequencerRoutes from './routes/sequencer';
+import coldCallListRoutes from './routes/coldCallList';
+import trackingRoutes from './routes/tracking';
 import infrastructureRoutes from './routes/infrastructure';
 import slackRoutes from './routes/slack';
 import apiSlackRoutes from './routes/apiSlack';
 import adminRoutes from './routes/admin';
+import apiKeyRoutes from './routes/apiKeys';
+import v1Routes from './routes/v1';
+import aiRoutes from './routes/ai';
+import webhookRoutes from './routes/webhooks';
 
 import { checkLeadCapacity, checkSubscriptionStatus } from './middleware/featureGate';
 
@@ -92,6 +100,11 @@ import { startTrialWorker, stopTrialWorker } from './services/trialWorker';
 import { startPlatformSyncWorker, stopPlatformSyncWorker, getPlatformSyncWorkerStatus } from './services/platformSyncWorker';
 import { scheduleWarmupTracking } from './workers/warmupTrackingWorker';
 import { scheduleEspPerformanceAggregation } from './workers/espPerformanceWorker';
+import { scheduleSendQueue } from './services/sendQueueService';
+import { scheduleImapPolling } from './workers/imapReplyWorker';
+import { startWebhookDispatcherWorker } from './workers/webhookDispatcherWorker';
+import { scheduleMailboxIpBlacklist } from './workers/mailboxIpBlacklistWorker';
+import { scheduleColdCallListSnapshots } from './workers/coldCallListWorker';
 import * as infrastructureAssessmentService from './services/infrastructureAssessmentService';
 
 // Lead Processor — background job that pushes held leads through the execution gate
@@ -130,7 +143,7 @@ app.use(cors({
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Organization-ID'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Organization-ID', 'X-API-Key'],
 }));
 app.use(cookieParser());
 
@@ -235,10 +248,12 @@ app.get('/metrics', (req, res) => {
 // Apply organization context middleware to all /api routes
 app.use('/api', extractOrgContext);
 
-// Enforce subscription status on all /api routes (except auth, billing, GET user/me, webhooks)
+// Enforce subscription status on all /api routes (except auth, billing, GET user/me, webhooks, OAuth callbacks)
 app.use('/api', (req, res, next) => {
     const prefixExempt = ['/auth/', '/billing/', '/monitor/', '/ingest/'];
     if (prefixExempt.some(p => req.path.startsWith(p))) return next();
+    // OAuth callbacks from Google/Microsoft don't carry our auth — exempt them
+    if (req.path === '/sequencer/accounts/google/callback' || req.path === '/sequencer/accounts/microsoft/callback') return next();
     // Allow only GET /user/me so the dashboard shell can render — block all other user routes
     if (req.path === '/user/me' && req.method === 'GET') return next();
     checkSubscriptionStatus(req, res, next);
@@ -266,7 +281,15 @@ app.use('/api/sync-progress', syncProgressRoutes);
 app.use('/api/infrastructure', infrastructureRoutes);
 app.use('/api/slack', apiSlackRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/api-keys', apiKeyRoutes);
+app.use('/api/v1', v1Routes);
 app.use('/api/validation', validationRoutes);
+app.use('/api/unibox', uniboxRoutes);
+app.use('/api/sequencer', sequencerRoutes);
+app.use('/api/cold-call-list', coldCallListRoutes);
+app.use('/api/ai', aiRoutes);
+app.use('/api/webhooks', webhookRoutes);
+app.use('/t', trackingRoutes); // public, no auth — tracking pixels + click redirects + unsubscribe
 
 // Ingestion endpoints
 app.post('/api/ingest', checkLeadCapacity, asyncHandler(ingestionController.ingestLead));
@@ -612,6 +635,27 @@ const server = app.listen(PORT, () => {
     // Start ESP performance aggregation worker
     scheduleEspPerformanceAggregation();
     logger.info('ESP performance worker started (runs every 6h for mailbox ESP scoring)');
+
+    // Start send queue (processes campaign emails every 30s)
+    scheduleSendQueue();
+    logger.info('Send queue worker started (runs every 30s for campaign email delivery)');
+
+    // Start IMAP reply detection (polls every 60s)
+    scheduleImapPolling();
+    logger.info('IMAP reply worker started (runs every 60s for reply detection)');
+
+    // Start outbound webhook dispatcher (BullMQ worker + 60s rescue scan)
+    startWebhookDispatcherWorker();
+    logger.info('Webhook dispatcher worker started (BullMQ + 60s rescue scan)');
+
+    // Per-mailbox sending-IP DNSBL check (runs every 6h)
+    scheduleMailboxIpBlacklist();
+    logger.info('Mailbox IP blacklist worker scheduled (every 6h)');
+
+    // Cold Call List daily snapshot worker (runs hourly, fires per-org at
+    // 06:00 in each workspace's local timezone)
+    scheduleColdCallListSnapshots();
+    logger.info('Cold Call List snapshot worker scheduled (hourly tick, 06:00 workspace-local trigger)');
 
     // Seed DNSBL lists (upserts — safe to run on every startup)
     import('./services/dnsblService').then(dnsblService => {

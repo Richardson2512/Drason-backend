@@ -13,6 +13,7 @@ import PDFDocument from 'pdfkit';
 import { logger } from '../services/observabilityService';
 import * as billingService from '../services/billingService';
 import * as polarClient from '../services/polarClient';
+import { TIER_LIMITS } from '../services/polarClient';
 import { getOrgId } from '../middleware/orgContext';
 import { prisma } from '../index';
 
@@ -67,8 +68,8 @@ export const createCheckout = async (req: Request, res: Response): Promise<Respo
         const orgId = getOrgId(req);
         const { tier } = req.body;
 
-        if (!tier || !['starter', 'growth', 'scale'].includes(tier)) {
-            return res.status(400).json({ success: false, error: 'Invalid tier. Must be one of: starter, growth, scale' });
+        if (!tier || !['starter', 'pro', 'growth', 'scale'].includes(tier)) {
+            return res.status(400).json({ success: false, error: 'Invalid tier. Must be one of: starter, pro, growth, scale' });
         }
 
         // Check subscription status instead of tier
@@ -86,28 +87,13 @@ export const createCheckout = async (req: Request, res: Response): Promise<Respo
             return res.status(404).json({ success: false, error: 'Organization not found' });
         }
 
-        // Allow upgrades for active subscriptions, but block downgrades and lateral moves
+        // Active subscribers should use the change-plan endpoint instead
         if (org.subscription_status === 'active') {
-            const tierOrder: Record<string, number> = {
-                'trial': 0,
-                'starter': 1,
-                'growth': 2,
-                'scale': 3,
-                'enterprise': 4
-            };
-
-            const currentTierRank = tierOrder[org.subscription_tier || 'trial'] || 0;
-            const requestedTierRank = tierOrder[tier] || 0;
-
-            // Block downgrades and lateral moves
-            if (requestedTierRank <= currentTierRank) {
-                return res.status(400).json({
-                    success: false,
-                    error: `Cannot downgrade or switch to same tier. Current tier: ${org.subscription_tier}. To change to ${tier}, please cancel your subscription first.`
-                });
-            }
-
-            // Allow upgrade - proceed to create checkout
+            return res.status(400).json({
+                success: false,
+                error: 'You already have an active subscription. Use the change-plan endpoint to upgrade or downgrade.',
+                useChangePlan: true
+            });
         }
 
         // Create checkout session
@@ -252,6 +238,165 @@ export const getInvoices = async (req: Request, res: Response): Promise<Response
     } catch (error) {
         logger.error('[BILLING] Failed to fetch invoices', error instanceof Error ? error : new Error(String(error)));
         return res.status(500).json({ success: false, error: 'Failed to fetch invoices' });
+    }
+};
+
+// ============================================================================
+// TIER CONFIG
+// ============================================================================
+
+/**
+ * GET /api/billing/tiers
+ * Returns full tier catalog for frontend display (pricing page, billing page, settings).
+ * Replaces hardcoded TIER_INFO/TIER_STATS in the frontend.
+ */
+export const getTiers = async (_req: Request, res: Response): Promise<Response> => {
+    const tierMeta: Record<string, { name: string; price: string; priceValue: number; color: string }> = {
+        trial: { name: 'Free Trial', price: '$0', priceValue: 0, color: '#6B7280' },
+        starter: { name: 'Starter', price: '$19', priceValue: 19, color: '#3B82F6' },
+        pro: { name: 'Pro', price: '$49', priceValue: 49, color: '#6366F1' },
+        growth: { name: 'Growth', price: '$199', priceValue: 199, color: '#8B5CF6' },
+        scale: { name: 'Scale', price: '$349', priceValue: 349, color: '#22C55E' },
+        enterprise: { name: 'Enterprise', price: 'Custom', priceValue: 0, color: '#F59E0B' },
+    };
+
+    // Replace Infinity with a JSON-safe sentinel (null) for serialization
+    const serialize = (n: number) => n === Infinity ? null : n;
+
+    const tiers = Object.entries(TIER_LIMITS).map(([key, limits]) => ({
+        key,
+        name: tierMeta[key]?.name || key,
+        price: tierMeta[key]?.price || 'Custom',
+        priceValue: tierMeta[key]?.priceValue || 0,
+        color: tierMeta[key]?.color || '#6B7280',
+        limits: {
+            leads: serialize(limits.leads),
+            domains: serialize(limits.domains),
+            mailboxes: serialize(limits.mailboxes),
+            validationCredits: serialize(limits.validationCredits),
+            monthlySendLimit: serialize(limits.monthlySendLimit),
+            dnsblDepth: limits.dnsblDepth,
+        },
+    }));
+
+    return res.json({ success: true, tiers });
+};
+
+// ============================================================================
+// PLAN CHANGES (UPGRADE / DOWNGRADE)
+// ============================================================================
+
+/**
+ * Change subscription plan (upgrade or downgrade).
+ *
+ * Upgrades: prorated, take effect immediately via Polar.
+ * Downgrades: take effect at end of current billing period.
+ *
+ * For downgrades, validates current usage against new tier limits.
+ * If usage exceeds new limits, returns warnings and requires `confirm: true`.
+ */
+export const changePlan = async (req: Request, res: Response): Promise<Response> => {
+    try {
+        const orgId = getOrgId(req);
+        const { tier, confirm } = req.body;
+
+        // Validate tier
+        const validTiers = ['starter', 'pro', 'growth', 'scale'];
+        if (!tier || !validTiers.includes(tier)) {
+            return res.status(400).json({ success: false, error: `Invalid tier. Must be one of: ${validTiers.join(', ')}` });
+        }
+
+        // Get org with subscription info
+        const org = await prisma.organization.findUnique({
+            where: { id: orgId },
+            select: {
+                subscription_tier: true,
+                subscription_status: true,
+                polar_subscription_id: true,
+                current_lead_count: true,
+                current_domain_count: true,
+                current_mailbox_count: true,
+            }
+        });
+
+        if (!org) {
+            return res.status(404).json({ success: false, error: 'Organization not found' });
+        }
+
+        // Must have an active subscription to change plan
+        if (org.subscription_status !== 'active') {
+            return res.status(400).json({
+                success: false,
+                error: 'No active subscription. Use checkout to subscribe first.'
+            });
+        }
+
+        // Can't change to same tier
+        if (org.subscription_tier === tier) {
+            return res.status(400).json({ success: false, error: `Already on the ${tier} plan.` });
+        }
+
+        // Determine direction
+        const tierOrder: Record<string, number> = { trial: 0, starter: 1, pro: 2, growth: 3, scale: 4, enterprise: 5 };
+        const currentRank = tierOrder[org.subscription_tier || 'trial'] || 0;
+        const newRank = tierOrder[tier] || 0;
+        const isDowngrade = newRank < currentRank;
+
+        // For downgrades, validate usage against new tier limits
+        if (isDowngrade) {
+            const newLimits = TIER_LIMITS[tier];
+            if (!newLimits) {
+                return res.status(400).json({ success: false, error: `Unknown tier: ${tier}` });
+            }
+
+            const warnings: string[] = [];
+
+            if ((org.current_lead_count || 0) > newLimits.leads) {
+                warnings.push(`You have ${(org.current_lead_count || 0).toLocaleString()} leads but the ${tier} plan allows ${newLimits.leads.toLocaleString()}. Excess leads will become read-only.`);
+            }
+            if ((org.current_domain_count || 0) > newLimits.domains) {
+                warnings.push(`You have ${org.current_domain_count} domains but the ${tier} plan allows ${newLimits.domains}. Excess domains will be paused.`);
+            }
+            if ((org.current_mailbox_count || 0) > newLimits.mailboxes) {
+                warnings.push(`You have ${org.current_mailbox_count} mailboxes but the ${tier} plan allows ${newLimits.mailboxes}. Excess mailboxes will be paused.`);
+            }
+
+            // If there are warnings and user hasn't confirmed, return them
+            if (warnings.length > 0 && !confirm) {
+                return res.json({
+                    success: true,
+                    requiresConfirmation: true,
+                    warnings,
+                    currentTier: org.subscription_tier,
+                    newTier: tier,
+                    direction: 'downgrade',
+                    message: 'Your current usage exceeds the limits of the new plan. Confirm to proceed.'
+                });
+            }
+        }
+
+        // Execute the plan change via Polar
+        const result = await polarClient.changeSubscription(orgId, tier);
+
+        logger.info(`[BILLING] Plan changed for ${orgId}: ${org.subscription_tier} → ${tier}`, {
+            direction: isDowngrade ? 'downgrade' : 'upgrade',
+            effective: result.effective,
+            confirmed: !!confirm
+        });
+
+        return res.json({
+            success: true,
+            previousTier: org.subscription_tier,
+            newTier: tier,
+            direction: isDowngrade ? 'downgrade' : 'upgrade',
+            effective: result.effective,
+            message: isDowngrade
+                ? `Downgrade to ${tier} will take effect at the end of your current billing period.`
+                : `Upgrade to ${tier} is effective immediately. Your next invoice will be prorated.`
+        });
+    } catch (error) {
+        logger.error('[BILLING] Plan change failed', error instanceof Error ? error : new Error(String(error)));
+        return res.status(500).json({ success: false, error: 'Failed to change plan' });
     }
 };
 

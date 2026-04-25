@@ -7,7 +7,7 @@
 
 import { Router } from 'express';
 import * as billingController from '../controllers/billingController';
-import { validateBody, createCheckoutSchema } from '../middleware/validation';
+import { validateBody, createCheckoutSchema, changePlanSchema } from '../middleware/validation';
 
 const router = Router();
 
@@ -32,7 +32,20 @@ router.post('/polar-webhook', billingController.handlePolarWebhook);
  */
 router.get('/subscription', billingController.getSubscriptionStatus);
 
+/**
+ * GET /api/billing/tiers
+ * Full tier catalog with limits, pricing, and metadata.
+ */
+router.get('/tiers', billingController.getTiers);
+
 router.post('/create-checkout', validateBody(createCheckoutSchema), billingController.createCheckout);
+
+/**
+ * POST /api/billing/change-plan
+ * Change subscription plan (upgrade or downgrade).
+ * Requires active subscription. Downgrades may return warnings requiring confirmation.
+ */
+router.post('/change-plan', validateBody(changePlanSchema), billingController.changePlan);
 
 /**
  * POST /api/billing/cancel

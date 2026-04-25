@@ -25,4 +25,8 @@ router.get('/status', assessmentController.getAssessmentStatus);
 // Get live DNS details for a specific domain
 router.get('/domain/:domainId/dns', assessmentController.getDomainDNS);
 
+// Manual re-check that PERSISTS the result. Drives the "Check now" button on
+// the Domains DNS Authentication card. Soft-cooldown at 30s.
+router.post('/domain/:domainId/dns/recheck', assessmentController.recheckDomainDNS);
+
 export default router;

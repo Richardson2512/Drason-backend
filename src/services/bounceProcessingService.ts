@@ -26,6 +26,7 @@ import * as auditLogService from './auditLogService';
 import * as entityStateService from './entityStateService';
 import * as healingService from './healingService';
 import * as monitoringService from './monitoringService';
+import * as webhookBus from './webhookEventBus';
 import {
     RecoveryPhase,
     LeadState,
@@ -37,6 +38,8 @@ const {
     MAILBOX_WARNING_BOUNCES,
     MAILBOX_WARNING_WINDOW,
     MAILBOX_PAUSE_BOUNCES,
+    MAILBOX_PAUSE_BOUNCE_RATE,
+    MAILBOX_PAUSE_BOUNCE_RATE_MIN_SENDS,
 } = MONITORING_THRESHOLDS;
 
 // ============================================================================
@@ -133,6 +136,22 @@ export async function processBounce(params: BounceProcessingParams): Promise<voi
             sent_at: sentAt || null,
             bounced_at: bouncedAt || new Date(),
         },
+    });
+
+    // Outbound webhook fan-out
+    const mailboxRecord = await prisma.mailbox.findUnique({
+        where: { id: mailboxId },
+        select: { email: true },
+    });
+    webhookBus.emitEmailBounced(organizationId, {
+        campaign_id: campaignId || null,
+        mailbox_id: mailboxId,
+        mailbox_email: mailboxRecord?.email || null,
+        recipient_email: recipientEmail || '',
+        lead_id: leadId || null,
+    }, {
+        type: (bounceType === 'soft' || bounceType === 'soft_bounce') ? 'soft' : 'hard',
+        smtp_response: smtpResponse || null,
     });
 
     // ── Step 4: If transient → audit log + return early ──
@@ -286,14 +305,14 @@ export async function processBounce(params: BounceProcessingParams): Promise<voi
         return; // Relapse handler manages state transitions
     }
 
-    // ── Step 9: Percentage threshold (PRIMARY) — 3% after 60+ sends ──
-    if (updatedMailbox.total_sent_count >= 60) {
+    // ── Step 9: Percentage threshold (PRIMARY) — see MAILBOX_PAUSE_BOUNCE_RATE ──
+    if (updatedMailbox.total_sent_count >= MAILBOX_PAUSE_BOUNCE_RATE_MIN_SENDS) {
         const bounceRate = updatedMailbox.hard_bounce_count / updatedMailbox.total_sent_count;
 
-        if (bounceRate >= 0.03 && updatedMailbox.status !== 'paused') {
+        if (bounceRate >= MAILBOX_PAUSE_BOUNCE_RATE && updatedMailbox.status !== 'paused') {
             await monitoringService.pauseMailbox(
                 mailboxId,
-                `Exceeded 3% bounce rate: ${(bounceRate * 100).toFixed(1)}% (${updatedMailbox.hard_bounce_count} bounces in ${updatedMailbox.total_sent_count} sends). Cause: ${classification.failureType}, Provider: ${classification.provider}`,
+                `Exceeded ${(MAILBOX_PAUSE_BOUNCE_RATE * 100).toFixed(0)}% bounce rate: ${(bounceRate * 100).toFixed(1)}% (${updatedMailbox.hard_bounce_count} bounces in ${updatedMailbox.total_sent_count} sends). Cause: ${classification.failureType}, Provider: ${classification.provider}`,
             );
             return;
         }

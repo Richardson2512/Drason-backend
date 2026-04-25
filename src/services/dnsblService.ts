@@ -306,6 +306,59 @@ export async function checkDomainBlacklists(
 }
 
 /**
+ * Check a pre-resolved IP directly. Mirrors checkDomainBlacklists but
+ * skips the DNS resolution step — used by the mailbox-IP blacklist worker
+ * which has the IP already and doesn't need to re-resolve.
+ *
+ * `entityId` is opaque to this function — it goes straight into the result
+ * envelope so the caller can correlate (mailboxId in the IP-worker case,
+ * domainId in the domain-worker case).
+ */
+export async function checkIpBlacklists(
+    ip: string,
+    entityId: string,
+    lists: DnsblList[],
+): Promise<DnsblCheckResult> {
+    console.log(`[DNSBL] Starting IP assessment for ${ip} against ${lists.length} lists`);
+
+    const reversed = reverseIp(ip);
+
+    const results: SingleListResult[] = await Promise.all(
+        lists.map(async (list) => {
+            await semaphore.acquire();
+            try {
+                const { status, responseCode } = await queryDnsbl(reversed, list);
+                return {
+                    listId: list.id,
+                    listName: list.name,
+                    zone: list.zone,
+                    tier: list.tier,
+                    status,
+                    responseCode,
+                };
+            } finally {
+                semaphore.release();
+            }
+        }),
+    );
+
+    const listed = results.filter(r => r.status === 'CONFIRMED');
+    if (listed.length > 0) {
+        console.log(`[DNSBL] ${ip} listed on ${listed.length} blacklist(s): ${listed.map(r => r.listName).join(', ')}`);
+    } else {
+        console.log(`[DNSBL] ${ip} is clean across all ${results.length} lists checked`);
+    }
+
+    return {
+        domainId: entityId,           // reused field name; the caller knows what it represents
+        domainName: ip,
+        results,
+        summary: buildSummary(results),
+        penalty: calculateBlacklistPenalty(results, lists),
+    };
+}
+
+/**
  * Calculate weighted penalty from blacklist check results.
  * Formula: SUM(weight * 3) for CONFIRMED, SUM(ceil(weight/3) * 3) for UNREACHABLE.
  * Capped at -60.

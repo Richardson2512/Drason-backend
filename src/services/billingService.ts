@@ -27,6 +27,7 @@ export interface UsageCounts {
     domains: number;
     mailboxes: number;
     emailsValidated: number;
+    monthlySends: number;
 }
 
 // ============================================================================
@@ -303,7 +304,11 @@ export async function refreshUsageCounts(orgId: string): Promise<UsageCounts> {
         }
     });
 
-    const [leadCount, domainCount, mailboxCount, emailsValidatedCount] = await Promise.all([
+    // Start of current billing month (rolling 30 days)
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const [leadCount, domainCount, mailboxCount, emailsValidatedCount, monthlySendsCount] = await Promise.all([
         prisma.lead.count({
             where: {
                 organization_id: orgId,
@@ -312,7 +317,8 @@ export async function refreshUsageCounts(orgId: string): Promise<UsageCounts> {
         }),
         prisma.domain.count({ where: { organization_id: orgId } }),
         prisma.mailbox.count({ where: { organization_id: orgId } }),
-        prisma.validationAttempt.count({ where: { organization_id: orgId } })
+        prisma.validationAttempt.count({ where: { organization_id: orgId } }),
+        prisma.sendEvent.count({ where: { organization_id: orgId, sent_at: { gte: thirtyDaysAgo } } })
     ]);
 
     // Use a high-water mark approach so usage doesn't drop when data is purged or API keys are removed
@@ -330,7 +336,7 @@ export async function refreshUsageCounts(orgId: string): Promise<UsageCounts> {
         }
     });
 
-    return { leads: maxLeadCount, domains: maxDomainCount, mailboxes: maxMailboxCount, emailsValidated: emailsValidatedCount };
+    return { leads: maxLeadCount, domains: maxDomainCount, mailboxes: maxMailboxCount, emailsValidated: emailsValidatedCount, monthlySends: monthlySendsCount };
 }
 
 /**
@@ -359,16 +365,21 @@ export async function getUsageAndLimits(orgId: string): Promise<{
 
     // ValidationAttempt rows are append-only, so a live count is always accurate
     // (no high-water mark needed — the table never shrinks).
-    const emailsValidated = await prisma.validationAttempt.count({
-        where: { organization_id: orgId }
-    });
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const [emailsValidated, monthlySends] = await Promise.all([
+        prisma.validationAttempt.count({ where: { organization_id: orgId } }),
+        prisma.sendEvent.count({ where: { organization_id: orgId, sent_at: { gte: thirtyDaysAgo } } })
+    ]);
 
     return {
         usage: {
             leads: org.current_lead_count,
             domains: org.current_domain_count,
             mailboxes: org.current_mailbox_count,
-            emailsValidated
+            emailsValidated,
+            monthlySends
         },
         limits,
         tier: org.subscription_tier

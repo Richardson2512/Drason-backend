@@ -32,6 +32,7 @@ import {
 import * as stateTransitionService from './stateTransitionService';
 import * as auditLogService from './auditLogService';
 import { logger } from './observabilityService';
+import * as webhookBus from './webhookEventBus';
 
 // ============================================================================
 // RE-EXPORT STATE TRANSITION FUNCTIONS AS THE CANONICAL API
@@ -92,6 +93,28 @@ export async function transitionMailbox(
             error: result.error,
             previousState: result.previousState,
         });
+        return result;
+    }
+
+    // Outbound webhook fan-out — fire-and-forget. The bus maps state pairs to
+    // the right event type (mailbox.paused / mailbox.healed) and skips when
+    // the transition isn't webhook-worthy on its own.
+    try {
+        const mb = await prisma.mailbox.findUnique({
+            where: { id: mailboxId },
+            select: { id: true, email: true },
+        });
+        if (mb) {
+            webhookBus.emitMailboxStateChange(
+                organizationId,
+                mb,
+                String(result.previousState ?? ''),
+                String(toState),
+                reason,
+            );
+        }
+    } catch (err) {
+        logger.error('[EntityState] webhook bus emit failed (mailbox)', err instanceof Error ? err : new Error(String(err)));
     }
 
     return result;
@@ -122,6 +145,26 @@ export async function transitionDomain(
             error: result.error,
             previousState: result.previousState,
         });
+        return result;
+    }
+
+    // Outbound webhook fan-out for DNSBL / DNS-failure transitions.
+    try {
+        const dom = await prisma.domain.findUnique({
+            where: { id: domainId },
+            select: { id: true, domain: true },
+        });
+        if (dom) {
+            webhookBus.emitDomainStateChange(
+                organizationId,
+                dom,
+                String(result.previousState ?? ''),
+                String(toState),
+                reason,
+            );
+        }
+    } catch (err) {
+        logger.error('[EntityState] webhook bus emit failed (domain)', err instanceof Error ? err : new Error(String(err)));
     }
 
     return result;

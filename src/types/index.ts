@@ -406,6 +406,7 @@ export interface OrgContext {
     organizationId: string;
     userId?: string;
     role?: UserRole;
+    scopes?: string[];
 }
 
 // ============================================================================
@@ -463,9 +464,17 @@ export const MONITORING_THRESHOLDS = {
     MAILBOX_WARNING_BOUNCES: 3,       // 3 bounces → WARNING
     MAILBOX_WARNING_WINDOW: 60,       // within 60 sends (5% rate)
 
-    // PAUSE threshold: Hard stop
+    // PAUSE threshold: Hard stop (absolute bounce count — safety net)
     MAILBOX_PAUSE_BOUNCES: 5,         // 5 bounces → PAUSE
     MAILBOX_PAUSE_WINDOW: 100,        // within 100 sends (5% rate)
+
+    // PAUSE threshold: Percentage-based (primary — fires once total_sent_count ≥ MIN_SENDS)
+    MAILBOX_PAUSE_BOUNCE_RATE: 0.03,        // 3% bounce rate → PAUSE
+    MAILBOX_PAUSE_BOUNCE_RATE_MIN_SENDS: 60, // Only applies once mailbox has sent this many
+    MAILBOX_WARNING_BOUNCE_RATE: 0.02,      // 2% bounce rate → WARNING (used in infrastructure assessment)
+
+    // Rotation: campaigns above this bounce rate are considered toxic — skip rotating into them
+    ROTATION_MAX_CAMPAIGN_BOUNCE_RATE: 0.05, // 5%
 
     // =========================================================================
     // Domain-level thresholds (Ratio-based for scale)
@@ -473,6 +482,13 @@ export const MONITORING_THRESHOLDS = {
     DOMAIN_WARNING_RATIO: 0.3,        // 30% unhealthy → warning
     DOMAIN_PAUSE_RATIO: 0.5,          // 50% unhealthy → pause
     DOMAIN_MINIMUM_MAILBOXES: 3,      // Below this, use absolute (2 unhealthy = pause)
+
+    // =========================================================================
+    // Campaign-level thresholds (Infrastructure-driven)
+    // =========================================================================
+    // Campaigns NEVER pause on bounce rate. They WARN when this fraction of their
+    // mailboxes are in a degraded state (paused/warning/recovering).
+    CAMPAIGN_DEGRADATION_RATIO: 0.5,  // 50% degraded mailboxes → campaign warning
 
     // =========================================================================
     // Risk score thresholds (Separated: Hard vs Soft signals)
@@ -486,6 +502,7 @@ export const MONITORING_THRESHOLDS = {
     SOFT_RISK_HIGH: 75,               // Log high alert, don't block
 
     // Combined (for UI display)
+    RISK_SCORE_MEDIUM: 25,            // Enter medium risk band
     RISK_SCORE_WARNING: 50,           // Enter warning state
     RISK_SCORE_CRITICAL: 75,          // Display critical
 

@@ -175,3 +175,61 @@ export async function clearSyncCancelled(orgId: string, platform: string): Promi
 
 // In-memory fallback for cancel flags when Redis is unavailable
 const inMemoryCancelFlags = new Set<string>();
+
+// In-memory fallback for push retry counters when Redis is unavailable
+const inMemoryPushRetryCounts = new Map<string, number>();
+
+/**
+ * Atomically increment the push retry counter for a lead and return the new count.
+ * Counter auto-expires after 24h so transient per-campaign issues don't permanently
+ * block future retries. Uses Redis when available, in-memory otherwise.
+ */
+export async function incrementPushRetry(leadId: string): Promise<number> {
+    const key = `push:retry:${leadId}`;
+    if (!redisClient || !isConnected) {
+        const current = (inMemoryPushRetryCounts.get(key) || 0) + 1;
+        inMemoryPushRetryCounts.set(key, current);
+        return current;
+    }
+    try {
+        const count = await redisClient.incr(key);
+        // On first increment, set 24h TTL so long-dead leads free the key.
+        if (count === 1) await redisClient.expire(key, 24 * 60 * 60);
+        return count;
+    } catch (err) {
+        logger.warn(`[REDIS] incrementPushRetry fell back to memory for ${leadId}`, { error: (err as Error).message });
+        const current = (inMemoryPushRetryCounts.get(key) || 0) + 1;
+        inMemoryPushRetryCounts.set(key, current);
+        return current;
+    }
+}
+
+/**
+ * Read the current push retry count for a lead without mutating it.
+ */
+export async function getPushRetryCount(leadId: string): Promise<number> {
+    const key = `push:retry:${leadId}`;
+    if (!redisClient || !isConnected) {
+        return inMemoryPushRetryCounts.get(key) || 0;
+    }
+    try {
+        const val = await redisClient.get(key);
+        return val ? parseInt(val, 10) || 0 : 0;
+    } catch {
+        return inMemoryPushRetryCounts.get(key) || 0;
+    }
+}
+
+/**
+ * Reset the push retry counter for a lead — called on successful push.
+ */
+export async function clearPushRetry(leadId: string): Promise<void> {
+    const key = `push:retry:${leadId}`;
+    inMemoryPushRetryCounts.delete(key);
+    if (!redisClient || !isConnected) return;
+    try {
+        await redisClient.del(key);
+    } catch (err) {
+        logger.warn(`[REDIS] clearPushRetry failed for ${leadId}`, { error: (err as Error).message });
+    }
+}

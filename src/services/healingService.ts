@@ -23,10 +23,11 @@ import * as auditLogService from './auditLogService';
 import * as notificationService from './notificationService';
 import * as entityStateService from './entityStateService';
 import { MailboxState, DomainState } from '../types';
-import { getAdapterForMailbox, getAdapterForCampaign } from '../adapters/platformRegistry';
+import { getAdapterForMailbox, getAdapterForCampaign, tryGetAdapterForMailbox } from '../adapters/platformRegistry';
 import { SlackAlertService } from './SlackAlertService';
 import { assessDomainDNS } from './infrastructureAssessmentService';
 import logger from '../utils/logger';
+import * as webhookBus from './webhookEventBus';
 
 // ============================================================================
 // TYPES
@@ -193,6 +194,8 @@ async function checkQuarantineToRestricted(
                 spf_valid: dnsResult.spfValid,
                 dkim_valid: dnsResult.dkimValid,
                 dmarc_policy: dnsResult.dmarcPolicy,
+                mx_records: dnsResult.mxRecords,
+                mx_valid: dnsResult.mxValid,
                 dns_checked_at: new Date(),
             },
         });
@@ -882,39 +885,45 @@ export async function transitionPhase(
             }
 
             // Step 2: Re-add mailbox to production campaigns on external platform
+            let campaigns: Array<{ id: string; external_id: string | null; name: string }> = [];
             try {
-                const adapter = await getAdapterForMailbox(entityId);
-                const mailboxEntity = await prisma.mailbox.findUnique({
-                    where: { id: entityId },
-                    select: { external_email_account_id: true }
-                });
-                // Get all campaigns this mailbox is assigned to in Superkabe
-                const campaigns = await prisma.campaign.findMany({
-                    where: {
-                        mailboxes: {
-                            some: { id: entityId }
-                        }
-                    },
+                const adapter = await tryGetAdapterForMailbox(entityId);
+                campaigns = await prisma.campaign.findMany({
+                    where: { mailboxes: { some: { id: entityId } } },
                     select: { id: true, external_id: true, name: true }
                 });
 
-                // Re-add the mailbox to each campaign on the platform
-                const externalMailboxId = mailboxEntity?.external_email_account_id || entityId;
-                for (const campaign of campaigns) {
-                    const externalCampaignId = campaign.external_id || campaign.id;
-                    await adapter.addMailboxToCampaign(
+                if (!adapter) {
+                    // Sequencer mailbox — native sending, send queue reads mailbox.status
+                    // directly so no re-add call needed. Healing state change alone is sufficient.
+                    logger.info(`[HEALING] Sequencer mailbox ${entityId} graduated — no external platform re-add needed`, {
                         organizationId,
-                        externalCampaignId,
-                        externalMailboxId
-                    );
-                }
+                        entityId,
+                    });
+                } else {
+                    const mailboxEntity = await prisma.mailbox.findUnique({
+                        where: { id: entityId },
+                        select: { external_email_account_id: true }
+                    });
 
-                logger.info(`[HEALING] Re-added mailbox ${entityId} to ${campaigns.length} production campaigns`, {
-                    organizationId,
-                    entityId,
-                    campaignCount: campaigns.length,
-                    platform: adapter.platform
-                });
+                    // Re-add the mailbox to each campaign on the platform
+                    const externalMailboxId = mailboxEntity?.external_email_account_id || entityId;
+                    for (const campaign of campaigns) {
+                        const externalCampaignId = campaign.external_id || campaign.id;
+                        await adapter.addMailboxToCampaign(
+                            organizationId,
+                            externalCampaignId,
+                            externalMailboxId
+                        );
+                    }
+
+                    logger.info(`[HEALING] Re-added mailbox ${entityId} to ${campaigns.length} production campaigns`, {
+                        organizationId,
+                        entityId,
+                        campaignCount: campaigns.length,
+                        platform: adapter.platform
+                    });
+                }
 
                 // ── AUTO-RESTART: Check if any campaigns were waiting for mailbox recovery ──
                 await checkAndRestartWaitingCampaigns(organizationId, campaigns);
@@ -939,7 +948,8 @@ export async function transitionPhase(
 
                 let addedCount = 0;
                 for (const mailbox of mailboxes) {
-                    const adapter = await getAdapterForMailbox(mailbox.id);
+                    const adapter = await tryGetAdapterForMailbox(mailbox.id);
+                    if (!adapter) continue; // Sequencer mailbox — no external re-add needed
                     const externalMailboxId = mailbox.external_email_account_id || mailbox.id;
                     for (const campaign of mailbox.campaigns) {
                         const externalCampaignId = campaign.external_id || campaign.id;
@@ -979,6 +989,30 @@ export async function transitionPhase(
             title: `✅ ${entityType === 'mailbox' ? 'Mailbox' : 'Domain'} Recovered`,
             message: `${entityType === 'mailbox' ? 'Mailbox' : 'Domain'} \`${entityId}\` has completed recovery and is back in full production.`
         }).catch(err => logger.warn('[HEALING] Non-fatal alert error', { error: String(err) }));
+    }
+
+    // Outbound webhook fan-out — only mailbox phase changes carry their own
+    // webhook events (mailbox.entered_quarantine / restricted_send / warm_recovery
+    // / mailbox.healed). Domain phase changes ride domain.* events from
+    // entityStateService instead.
+    if (entityType === 'mailbox') {
+        try {
+            const mb = await prisma.mailbox.findUnique({
+                where: { id: entityId },
+                select: { id: true, email: true },
+            });
+            if (mb) {
+                webhookBus.emitMailboxPhaseChange(
+                    organizationId,
+                    mb,
+                    String(fromPhase),
+                    String(toPhase),
+                    reason,
+                );
+            }
+        } catch (err) {
+            logger.error('[HEALING] webhook bus emit failed (phase)', err instanceof Error ? err : new Error(String(err)));
+        }
     }
 
     return {

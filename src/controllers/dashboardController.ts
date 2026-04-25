@@ -17,6 +17,47 @@ import { logger } from '../services/observabilityService';
 import { cached } from '../utils/responseCache';
 import { getAdapterForMailbox } from '../adapters/platformRegistry';
 
+// ─── Unified campaign helpers ───────────────────────────────────────────────
+//
+// Post-merge Campaign table holds every campaign in the org regardless of
+// source_platform (smartlead / instantly / emailbison / replyio / sequencer).
+// These helpers replace the previous dual-table union pattern — one query per
+// helper now, because Campaign IS the unified table.
+
+/**
+ * IDs of every non-archived / non-deleted campaign for this org. Covers legacy
+ * platform-synced rows AND native sequencer rows in one query (they share the
+ * table). Used to bound lead queries to "real" campaigns.
+ */
+async function getAllActiveCampaignIds(orgId: string): Promise<string[]> {
+    const rows = await prisma.campaign.findMany({
+        where: {
+            organization_id: orgId,
+            status: { notIn: ['deleted', 'DELETED', 'archived', 'ARCHIVED'] },
+        },
+        select: { id: true },
+    });
+    return rows.map((c) => c.id);
+}
+
+/**
+ * For a set of campaign IDs, fetch `{ id, name, status }` for each. Since the
+ * table is unified post-merge, this is a single findMany. IDs not found are
+ * silently dropped — caller's default (e.g. `null` for the UI's "Campaign"
+ * column) takes over.
+ */
+async function buildCampaignNameMap(
+    orgId: string,
+    ids: string[],
+): Promise<Map<string, { id: string; name: string; status: string }>> {
+    if (ids.length === 0) return new Map();
+    const rows = await prisma.campaign.findMany({
+        where: { id: { in: ids }, organization_id: orgId },
+        select: { id: true, name: true, status: true },
+    });
+    return new Map(rows.map((c) => [c.id, c]));
+}
+
 /**
  * Get all leads for the organization with pagination.
  */
@@ -36,14 +77,10 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
         const skip = (page - 1) * limit;
 
         // Only show leads from active campaigns (exclude deleted/archived).
-        // Leads with no campaign (unassigned) are always shown.
-        const activeCampaignIds = await prisma.campaign.findMany({
-            where: {
-                organization_id: orgId,
-                status: { notIn: ['deleted', 'DELETED', 'archived', 'ARCHIVED'] }
-            },
-            select: { id: true }
-        }).then(cs => cs.map(c => c.id));
+        // Unions legacy Campaign + native SendCampaign so sequencer-enrolled leads
+        // aren't silently filtered out. Leads with no campaign (unassigned) are
+        // always shown.
+        const activeCampaignIds = await getAllActiveCampaignIds(orgId);
 
         const where: any = {
             organization_id: orgId,
@@ -163,20 +200,67 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
             prisma.lead.count({ where })
         ]);
 
-        // Fetch campaign names for all assigned campaigns
-        const campaignIds = [...new Set(leads.filter(l => l.assigned_campaign_id).map(l => l.assigned_campaign_id))];
-        const campaigns = await prisma.campaign.findMany({
-            where: { id: { in: campaignIds as string[] }, organization_id: orgId },
-            select: { id: true, name: true, status: true }
-        });
+        // Fetch campaign names for all assigned campaigns. Post-merge the unified
+        // Campaign table resolves both legacy and sequencer rows in one query.
+        const campaignIds = [...new Set(leads.filter(l => l.assigned_campaign_id).map(l => l.assigned_campaign_id as string))];
+        const campaignMap = await buildCampaignNameMap(orgId, campaignIds);
 
-        // Create a map for quick lookup
-        const campaignMap = new Map(campaigns.map(c => [c.id, c]));
+        // Derived display_status: for each lead, surface the richest outbound
+        // lifecycle signal available. A lead whose CampaignLead has already
+        // replied/bounced/unsubscribed/completed should read that way on the
+        // Protection Leads page instead of showing a stale 'held' / 'active'
+        // even though its outbound lifecycle is clearly past that state.
+        //
+        // Rules (most-meaningful wins):
+        //   replied    — any CampaignLead.replied_at set
+        //   bounced    — any BounceEvent or CampaignLead.bounced_at set
+        //   unsubscribed — any CampaignLead.status='unsubscribed'
+        //   completed  — all CampaignLeads have status in {completed, replied, bounced, unsubscribed}
+        //   otherwise  — Lead.status itself (held / active / paused / blocked)
+        //
+        // This is PURELY READ-SIDE. It does not mutate Lead.status (which stays
+        // as the canonical state-machine value for execution-gate decisions).
+        const leadEmails = leads.map((l) => l.email);
+        const leadCampaignRows = leadEmails.length > 0
+            ? await prisma.campaignLead.findMany({
+                where: {
+                    email: { in: leadEmails },
+                    campaign: { organization_id: orgId },
+                },
+                select: {
+                    email: true,
+                    status: true,
+                    replied_at: true,
+                    bounced_at: true,
+                    unsubscribed_at: true,
+                },
+            })
+            : [];
 
-        // Enrich leads with campaign data
+        const campaignLeadsByEmail = new Map<string, typeof leadCampaignRows>();
+        for (const cl of leadCampaignRows) {
+            const bucket = campaignLeadsByEmail.get(cl.email) ?? [];
+            bucket.push(cl);
+            campaignLeadsByEmail.set(cl.email, bucket);
+        }
+
+        function deriveDisplayStatus(lead: { status: string; email: string; bounced: boolean }): string {
+            const rows = campaignLeadsByEmail.get(lead.email) ?? [];
+            if (rows.length === 0) return lead.status;
+
+            if (rows.some((r) => r.replied_at !== null)) return 'replied';
+            if (lead.bounced || rows.some((r) => r.bounced_at !== null)) return 'bounced';
+            if (rows.some((r) => r.status === 'unsubscribed' || r.unsubscribed_at !== null)) return 'unsubscribed';
+            if (rows.every((r) => ['completed', 'replied', 'bounced', 'unsubscribed'].includes(r.status))) return 'completed';
+
+            return lead.status;
+        }
+
+        // Enrich leads with campaign data + derived display status.
         const enrichedLeads = leads.map(lead => ({
             ...lead,
-            campaign: lead.assigned_campaign_id ? campaignMap.get(lead.assigned_campaign_id) : null
+            campaign: lead.assigned_campaign_id ? (campaignMap.get(lead.assigned_campaign_id) ?? null) : null,
+            display_status: deriveDisplayStatus(lead),
         }));
 
         res.json({
@@ -201,14 +285,9 @@ export const getStats = async (req: Request, res: Response, next: NextFunction) 
         const orgId = getOrgId(req);
         const campaignId = req.query.campaignId as string;
 
-        // Exclude leads from deleted/archived campaigns
-        const activeCampaignIds = await prisma.campaign.findMany({
-            where: {
-                organization_id: orgId,
-                status: { notIn: ['deleted', 'DELETED', 'archived', 'ARCHIVED'] }
-            },
-            select: { id: true }
-        }).then(cs => cs.map(c => c.id));
+        // Exclude leads from deleted/archived campaigns — union legacy Campaign
+        // + native SendCampaign so sequencer-enrolled leads are counted.
+        const activeCampaignIds = await getAllActiveCampaignIds(orgId);
 
         const where: any = {
             organization_id: orgId,
@@ -255,10 +334,8 @@ export const getEntityStats = async (req: Request, res: Response, next: NextFunc
     try {
         const orgId = getOrgId(req);
 
-        const activeCampaignIds = await prisma.campaign.findMany({
-            where: { organization_id: orgId, status: { notIn: ['deleted', 'DELETED', 'archived', 'ARCHIVED'] } },
-            select: { id: true }
-        }).then(cs => cs.map(c => c.id));
+        // Union legacy Campaign + native SendCampaign so entity stats count sequencer-enrolled leads.
+        const activeCampaignIds = await getAllActiveCampaignIds(orgId);
 
         const leadWhere = {
             organization_id: orgId,
@@ -851,14 +928,9 @@ export const getLeadHealthStats = async (req: Request, res: Response) => {
     try {
         const orgId = getOrgId(req);
 
-        // Exclude leads from deleted/archived campaigns
-        const activeCampaignIds = await prisma.campaign.findMany({
-            where: {
-                organization_id: orgId,
-                status: { notIn: ['deleted', 'DELETED', 'archived', 'ARCHIVED'] }
-            },
-            select: { id: true }
-        }).then(cs => cs.map(c => c.id));
+        // Exclude leads from deleted/archived campaigns — union legacy + sequencer.
+        const activeCampaignIds = await getAllActiveCampaignIds(orgId);
+
 
         const activeCampaignFilter = {
             OR: [
@@ -1308,16 +1380,12 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
                 take: 50000,
             });
 
-            // Get campaign names
+            // Get campaign names — buildCampaignNameMap unions legacy + sequencer so
+            // report columns correctly resolve both Campaign.id and SendCampaign.id.
             const cIds = [...new Set(leads.filter(l => l.assigned_campaign_id).map(l => l.assigned_campaign_id as string))];
+            const fullCampaignMap = await buildCampaignNameMap(orgId, cIds);
             const campaignMap = new Map<string, string>();
-            if (cIds.length > 0) {
-                const campaigns = await prisma.campaign.findMany({
-                    where: { id: { in: cIds }, organization_id: orgId },
-                    select: { id: true, name: true },
-                });
-                campaigns.forEach(c => campaignMap.set(c.id, c.name));
-            }
+            for (const [id, c] of fullCampaignMap) campaignMap.set(id, c.name);
 
             const columns = [
                 { key: 'email', label: 'Email' },

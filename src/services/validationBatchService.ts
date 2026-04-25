@@ -376,18 +376,25 @@ export async function getBatchResults(
  */
 export async function listBatches(
     organizationId: string,
-    options: { page?: number; limit?: number } = {}
+    options: { page?: number; limit?: number; from?: Date | null; to?: Date | null } = {}
 ) {
-    const { page = 1, limit = 20 } = options;
+    const { page = 1, limit = 20, from, to } = options;
+
+    const where: any = { organization_id: organizationId };
+    if (from || to) {
+        where.created_at = {};
+        if (from) where.created_at.gte = from;
+        if (to) where.created_at.lte = to;
+    }
 
     const [batches, total] = await Promise.all([
         prisma.validationBatch.findMany({
-            where: { organization_id: organizationId },
+            where,
             orderBy: { created_at: 'desc' },
             skip: (page - 1) * limit,
             take: limit,
         }),
-        prisma.validationBatch.count({ where: { organization_id: organizationId } }),
+        prisma.validationBatch.count({ where }),
     ]);
 
     return {
@@ -606,48 +613,98 @@ export async function exportCleanCSV(
 /**
  * Return aggregated validation analytics for an organization.
  */
-export async function getAnalytics(organizationId: string) {
+export async function getAnalytics(
+    organizationId: string,
+    options: { from?: Date | null; to?: Date | null } = {}
+) {
+    const { from, to } = options;
+
+    // Shared filter for all aggregations — batch org + status not pending + optional date range
+    const baseWhere: any = {
+        batch: { organization_id: organizationId },
+        validation_status: { not: 'pending' },
+    };
+    if (from || to) {
+        baseWhere.created_at = {};
+        if (from) baseWhere.created_at.gte = from;
+        if (to) baseWhere.created_at.lte = to;
+    }
+
     // Total validated across all batches
-    const totalValidated = await prisma.validationBatchLead.count({
-        where: { batch: { organization_id: organizationId }, validation_status: { not: 'pending' } }
-    });
+    const totalValidated = await prisma.validationBatchLead.count({ where: baseWhere });
 
     // Counts by status
     const statusCounts = await prisma.validationBatchLead.groupBy({
         by: ['validation_status'],
-        where: { batch: { organization_id: organizationId }, validation_status: { not: 'pending' } },
+        where: baseWhere,
         _count: true,
     });
 
-    // Invalid rate by source
-    const sourceCounts = await prisma.$queryRaw<Array<{ source: string; total: bigint; invalid: bigint }>>`
-        SELECT vb.source,
-               COUNT(*)::bigint as total,
-               COUNT(*) FILTER (WHERE vbl.validation_status = 'invalid')::bigint as invalid
-        FROM "ValidationBatchLead" vbl
-        JOIN "ValidationBatch" vb ON vb.id = vbl.batch_id
-        WHERE vb.organization_id = ${organizationId}
-          AND vbl.validation_status != 'pending'
-        GROUP BY vb.source
-    `;
+    // Invalid rate by source — raw SQL with optional date range.
+    // Newer Prisma client versions reject Date objects in tagged-template form
+    // ("Expected Flat JSON array, got JSON date object"), so we use
+    // $queryRawUnsafe with a positional param array and ::timestamptz casts.
+    // Build the date predicates conditionally so we never have to invent
+    // sentinel dates — passing the JS max date (8640000000000000) overflows
+    // Postgres's timezone range and fails with code 22009.
+    const params: any[] = [organizationId];
+    let dateClause = '';
+    if (from) {
+        params.push(from.toISOString());
+        dateClause += ` AND vbl.created_at >= $${params.length}::timestamptz`;
+    }
+    if (to) {
+        params.push(to.toISOString());
+        dateClause += ` AND vbl.created_at <= $${params.length}::timestamptz`;
+    }
+    const sourceCounts = await prisma.$queryRawUnsafe<Array<{ source: string; total: bigint; invalid: bigint }>>(
+        `SELECT vb.source,
+                COUNT(*)::bigint as total,
+                COUNT(*) FILTER (WHERE vbl.validation_status = 'invalid')::bigint as invalid
+         FROM "ValidationBatchLead" vbl
+         JOIN "ValidationBatch" vb ON vb.id = vbl.batch_id
+         WHERE vb.organization_id = $1
+           AND vbl.validation_status != 'pending'
+           ${dateClause}
+         GROUP BY vb.source`,
+        ...params,
+    );
 
     // Rejection reasons breakdown
+    const rejectionWhere: any = {
+        batch: { organization_id: organizationId },
+        rejection_reason: { not: null },
+    };
+    if (from || to) {
+        rejectionWhere.created_at = {};
+        if (from) rejectionWhere.created_at.gte = from;
+        if (to) rejectionWhere.created_at.lte = to;
+    }
     const rejectionCounts = await prisma.validationBatchLead.groupBy({
         by: ['rejection_reason'],
-        where: { batch: { organization_id: organizationId }, rejection_reason: { not: null } },
+        where: rejectionWhere,
         _count: true,
     });
 
     // ESP distribution
+    const espWhere: any = {
+        batch: { organization_id: organizationId },
+        esp_bucket: { not: null },
+    };
+    if (from || to) {
+        espWhere.created_at = {};
+        if (from) espWhere.created_at.gte = from;
+        if (to) espWhere.created_at.lte = to;
+    }
     const espCounts = await prisma.validationBatchLead.groupBy({
         by: ['esp_bucket'],
-        where: { batch: { organization_id: organizationId }, esp_bucket: { not: null } },
+        where: espWhere,
         _count: true,
     });
 
-    // 30-day trend
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    // Per-day trend within the selected range (defaults to last 30 days if nothing specified)
+    const trendFrom = from || (() => { const d = new Date(); d.setDate(d.getDate() - 30); return d; })();
+    const trendTo = to || new Date();
 
     const trendData = await prisma.$queryRaw<Array<{ date: string; status: string; count: bigint }>>`
         SELECT DATE(vbl.created_at)::text as date,
@@ -656,7 +713,8 @@ export async function getAnalytics(organizationId: string) {
         FROM "ValidationBatchLead" vbl
         JOIN "ValidationBatch" vb ON vb.id = vbl.batch_id
         WHERE vb.organization_id = ${organizationId}
-          AND vbl.created_at >= ${thirtyDaysAgo}
+          AND vbl.created_at >= ${trendFrom}
+          AND vbl.created_at <= ${trendTo}
           AND vbl.validation_status != 'pending'
         GROUP BY DATE(vbl.created_at), vbl.validation_status
         ORDER BY date

@@ -279,7 +279,9 @@ function maskSecret(value: string): string {
  */
 async function purgePlatformData(orgId: string, platform: string) {
     try {
-        // Map settings key prefix to SourcePlatform enum value
+        // Map settings key prefix to SourcePlatform enum value.
+        // NOTE: 'sequencer' is intentionally excluded — sequencer data is managed via
+        // ConnectedAccount deletion in connectedAccountController, not via this purge flow.
         const platformMap: Record<string, SourcePlatform> = {
             smartlead: SourcePlatform.smartlead,
             instantly: SourcePlatform.instantly,
@@ -287,7 +289,7 @@ async function purgePlatformData(orgId: string, platform: string) {
         };
         const platformFilter = platformMap[platform];
         if (!platformFilter) {
-            logger.warn(`[SETTINGS] Unknown platform "${platform}", skipping purge`);
+            logger.warn(`[SETTINGS] Unknown or non-purgeable platform "${platform}", skipping purge`);
             return;
         }
 

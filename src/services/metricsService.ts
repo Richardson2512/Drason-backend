@@ -375,7 +375,7 @@ function calculateVelocity(metrics: AllWindowMetrics): number {
 function getRiskLevel(riskScore: number): RiskAssessment['riskLevel'] {
     if (riskScore >= MONITORING_THRESHOLDS.RISK_SCORE_CRITICAL) return 'critical';
     if (riskScore >= MONITORING_THRESHOLDS.RISK_SCORE_WARNING) return 'high';
-    if (riskScore >= 25) return 'medium';
+    if (riskScore >= MONITORING_THRESHOLDS.RISK_SCORE_MEDIUM) return 'medium';
     return 'low';
 }
 
@@ -409,7 +409,7 @@ function generateRecommendations(
         recommendations.push('Multiple consecutive pauses. Consider extended cooldown or mailbox retirement.');
     }
 
-    if (riskScore < 25) {
+    if (riskScore < MONITORING_THRESHOLDS.RISK_SCORE_MEDIUM) {
         recommendations.push('Mailbox is operating within healthy parameters.');
     }
 

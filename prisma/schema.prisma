@@ -54,10 +54,119 @@ model Organization {
   campaignDailyAnalytics CampaignDailyAnalytics[]
   supportTickets     SupportTicket[]
   validationBatches  ValidationBatch[]
+  connectedAccounts  ConnectedAccount[]
+  // SendCampaign was unified into Campaign. Sequencer campaigns now appear in the
+  // `campaigns` relation above with source_platform='sequencer'.
+  emailThreads       EmailThread[]
+  emailTemplates     EmailTemplate[]
+  emailSignatures    EmailSignature[]
+  sequencerSettings  SequencerSettings?
+  businessProfile    BusinessProfile?
+  webhookEndpoints   WebhookEndpoint[]
+  campaignLeadImports CampaignLeadImport[]
 
   @@index([slug])
   @@index([subscription_status])
   @@index([trial_ends_at])
+}
+
+/// One row per "batch" of leads added to a campaign — one CSV upload, one
+/// Clay ingest, one manual add, one API push. Carries provenance so the
+/// campaign detail page can show "Lead sources" with filenames + counts.
+/// CampaignLead.import_id links each lead back to the batch that created it.
+model CampaignLeadImport {
+  id              String   @id @default(uuid())
+  campaign_id     String
+  organization_id String
+  source          String                              // csv | clay | crm | manual | api
+  source_file     String?                             // filename when source='csv'
+  source_label    String?                             // optional friendly label e.g. "Q3 enrichment table"
+  total_submitted Int      @default(0)                // rows submitted by the caller
+  added_count     Int      @default(0)                // accepted by health gate (active+paused)
+  blocked_count   Int      @default(0)                // RED-blocked
+  duplicate_count Int      @default(0)                // already in this campaign
+  created_by_user_id String?
+  created_at      DateTime @default(now())
+
+  campaign        Campaign       @relation(fields: [campaign_id], references: [id], onDelete: Cascade)
+  organization    Organization   @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  leads           CampaignLead[]
+
+  @@index([campaign_id, created_at])
+  @@index([organization_id])
+}
+
+/// Customer-facing outbound webhook subscriber. Each org can register
+/// multiple endpoints, each filtered to a subset of event types. Internal
+/// endpoints (provider='slack', internal=true) ride the same dispatch
+/// plumbing so retry/log/replay all share one model.
+model WebhookEndpoint {
+  id              String   @id @default(uuid())
+  organization_id String
+  name            String                              // human label e.g. "Zapier production"
+  url             String                              // POST destination
+  secret          String                              // HMAC-SHA256 signing key
+  events          String[]                            // [] = all events; otherwise allowlist
+  active          Boolean  @default(true)
+  internal        Boolean  @default(false)            // true = managed by Superkabe, hidden from customer UI
+  provider        String   @default("generic")        // generic | slack | discord — selects payload transformer
+  failure_count   Int      @default(0)                // consecutive dead-letters; auto-disable threshold lives in code
+  disabled_at     DateTime?                           // set when auto-disabled
+  disabled_reason String?                             // "5 consecutive deliveries dead-lettered"
+  last_delivery_at DateTime?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  deliveries      WebhookDelivery[]
+
+  @@index([organization_id, active])
+  @@index([organization_id, internal])
+}
+
+/// One row per delivery attempt. Used by both the retry worker (status +
+/// next_attempt_at) and the customer-facing delivery log + replay UI.
+model WebhookDelivery {
+  id              String   @id @default(uuid())
+  endpoint_id     String
+  event_type      String                              // e.g. "mailbox.paused"
+  event_id        String                              // ULID — idempotency key receivers can use
+  payload         Json                                // event payload as posted (or to be posted)
+  status          String   @default("pending")       // pending | success | failed | dead_letter
+  attempt_count   Int      @default(0)
+  next_attempt_at DateTime?                           // when the worker should retry (null when terminal)
+  response_code   Int?
+  response_body   String?                             // truncated to 4kb
+  request_headers Json?                               // headers we sent (for debugging in the log UI)
+  duration_ms     Int?
+  delivered_at    DateTime?
+  last_error      String?
+  created_at      DateTime @default(now())
+
+  endpoint        WebhookEndpoint @relation(fields: [endpoint_id], references: [id], onDelete: Cascade)
+
+  @@index([endpoint_id, created_at])
+  @@index([status, next_attempt_at])
+  @@index([event_id])
+}
+
+/// AI-generated business profile extracted from the organization's website.
+/// One per org. Feeds the copy-generation prompts in the sequencer.
+model BusinessProfile {
+  id              String   @id @default(uuid())
+  organization_id String   @unique
+  source_url      String
+  profile_json    Json     // BusinessProfileV1 shape — see aiCopywritingService.ts
+  scraped_chars   Int      @default(0)
+  model_used      String
+  prompt_tokens   Int      @default(0)
+  completion_tokens Int    @default(0)
+  extracted_at    DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id])
 }
 
 model User {
@@ -109,10 +218,22 @@ model ApiKey {
 model Lead {
   id                    String          @id @default(uuid())
   email                 String
+  // Contact fields — populated from manual add, Clay webhook, CSV import, or API v1
+  first_name            String?
+  last_name             String?
+  full_name             String?
+  company               String?
+  website               String?
+  title                 String?
   persona               String
   lead_score            Int
   source                String          @default("clay") // Origin: clay, manual, csv
   source_platform       SourcePlatform? // Platform managing this lead (null = unassigned/legacy)
+  // Direct-dial / outbound channels — populated when available from imports,
+  // CRM sync, or enrichment. Surfaced in the Cold Call List CSV so SDRs can
+  // dial straight from the export. Both nullable; never required.
+  phone                 String?
+  linkedin_url          String?
   status                String          @default("held")
   health_state          String          @default("healthy")
   health_classification String          @default("green") // green, yellow, red
@@ -197,24 +318,48 @@ model Campaign {
   channel         String         @default("email")
   status          String         @default("active")
   source_platform SourcePlatform @default(smartlead)
-  external_id     String?        // Original ID from the platform
+  external_id     String?        // Original ID from the platform (null for native sequencer)
   paused_reason   String?
   paused_at       DateTime?
   paused_by       String?        @default("system")
   bounce_rate     Float          @default(0)
   warning_count   Int            @default(0)
-  total_sent      Int            @default(0)
-  total_bounced   Int            @default(0)
 
-  // Analytics Fields (SOFT SIGNALS - display only, never trigger auto-pause)
-  open_count           Int       @default(0)
-  click_count          Int       @default(0)
-  reply_count          Int       @default(0)
-  unsubscribed_count   Int       @default(0)
+  // Counters — unified for legacy platform-sync AND native sequencer.
+  total_sent         Int @default(0)
+  total_bounced      Int @default(0)
+  open_count         Int @default(0)
+  click_count        Int @default(0)
+  reply_count        Int @default(0)
+  unsubscribed_count Int @default(0)
+  total_leads        Int @default(0) // Was on SendCampaign; 0 for legacy platform-sync (count derived elsewhere)
+
+  // Analytics rate fields (display-only; never trigger auto-pause)
   open_rate            Float     @default(0)
   click_rate           Float     @default(0)
   reply_rate           Float     @default(0)
   analytics_updated_at DateTime?
+
+  // ─── Sequencer-specific fields ──────────────────────────────────────
+  // All nullable: legacy (smartlead/instantly/emailbison/replyio) rows have these unset;
+  // the external platform owns schedule + sequencing + A-B semantics for those.
+  // Native sequencer (source_platform='sequencer') populates these explicitly.
+  tags                String[]  @default([])
+  schedule_timezone   String?
+  schedule_start_time String?  // "HH:MM" 24h local-time string
+  schedule_end_time   String?  // "HH:MM"
+  schedule_days       String[]  @default([]) // ["mon","tue",...]
+  daily_limit         Int?
+  send_gap_minutes    Int?
+  start_date          DateTime?
+  esp_routing         Boolean?
+  stop_on_reply       Boolean?
+  stop_on_bounce      Boolean?
+  track_opens         Boolean?
+  track_clicks        Boolean?
+  include_unsubscribe Boolean?
+  tracking_domain     String?
+  launched_at         DateTime?
 
   organization_id String
   last_synced_at  DateTime @default(now())
@@ -225,6 +370,11 @@ model Campaign {
   mailboxes      Mailbox[]                @relation("CampaignToMailbox")
   routingRules   RoutingRule[]
   dailyAnalytics CampaignDailyAnalytics[]
+  // Sequencer back-relations — populated only for source_platform='sequencer' rows.
+  steps          SequenceStep[]
+  leads          CampaignLead[]
+  accounts       CampaignAccount[]
+  leadImports    CampaignLeadImport[]
 
   @@unique([organization_id, source_platform, external_id])
   @@index([organization_id, status])
@@ -296,6 +446,18 @@ model Mailbox {
   imap_status      Boolean @default(true) // IMAP connection healthy
   connection_error String? // Raw error from platform (e.g. "Failed to refresh Google token: invalid_grant")
 
+  // Mailbox sending-IP DNSBL — only meaningful for SMTP / relay providers
+  // (Zapmail, Scaledmail, MissionInbox, custom SMTP). For Gmail / Microsoft
+  // OAuth mailboxes the sending IP is shared infrastructure managed by the
+  // provider and isn't blacklist-actionable, so we mark sending_ip_source
+  // as 'oauth_shared' and skip the periodic check entirely.
+  sending_ip               String?
+  sending_ip_resolved_at   DateTime?
+  sending_ip_source        String?    // 'smtp_host_dns' | 'oauth_shared' | 'manual' | null
+  ip_blacklist_results     Json?      // { critical_listed, major_listed, minor_listed, total_checked }
+  ip_blacklist_score       Float      @default(0)
+  last_ip_blacklist_check  DateTime?
+
   // Analytics Fields (SOFT SIGNALS - informational only)
   open_count_lifetime  Int     @default(0) // Total opens from emails sent by this mailbox
   click_count_lifetime Int     @default(0) // Total clicks from emails sent by this mailbox
@@ -308,10 +470,14 @@ model Mailbox {
 
   domain_id       String
   organization_id String
+  // For Sequencer-created mailboxes: back-reference to the ConnectedAccount holding OAuth/SMTP credentials.
+  // Null for legacy Smartlead/Instantly/EmailBison synced mailboxes.
+  connected_account_id String?        @unique
   created_at      DateTime        @default(now())
   updated_at      DateTime        @updatedAt
   domain          Domain          @relation(fields: [domain_id], references: [id], onDelete: Cascade)
   organization    Organization    @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  connectedAccount ConnectedAccount? @relation(fields: [connected_account_id], references: [id], onDelete: SetNull)
   metrics         MailboxMetrics?
   campaigns       Campaign[]      @relation("CampaignToMailbox")
 
@@ -319,6 +485,7 @@ model Mailbox {
   @@index([organization_id, source_platform])
   @@index([organization_id, domain_id])
   @@index([domain_id])
+  @@index([connected_account_id])
   @@index([recovery_phase])
 }
 
@@ -346,6 +513,12 @@ model Domain {
   spf_valid                    Boolean? // SPF record check result
   dkim_valid                   Boolean? // DKIM record check result
   dmarc_policy                 String? // DMARC policy: 'none' | 'quarantine' | 'reject'
+  // Sending domain's MX records — captured during the same DNS sweep as
+  // SPF/DKIM/DMARC. Stored as [{ priority, exchange }]. Null until first
+  // assessment; empty array means the domain genuinely has no MX records
+  // (sending will still work but inbound mail to that domain won't).
+  mx_records                   Json?
+  mx_valid                     Boolean? // True when mx_records is non-empty
   blacklist_results            Json? // Summary cache: { critical_listed: N, major_listed: N, minor_listed: N, total_checked: N }
   blacklist_score              Float    @default(0) // Computed weighted blacklist penalty
   last_full_blacklist_check    DateTime? // When all DNSBL lists were last checked
@@ -609,6 +782,7 @@ enum SourcePlatform {
   emailbison
   instantly
   replyio
+  sequencer
 }
 
 model SlackAlertLog {
@@ -797,3 +971,443 @@ model MailboxEspPerformance {
   @@index([organization_id, mailbox_id])
   @@index([mailbox_id, bounce_rate_30d])
 }
+
+// ============================================================================
+// SEQUENCER — Connected Accounts, Campaigns, Sequence Steps, Sending
+// ============================================================================
+
+model ConnectedAccount {
+  id                String    @id @default(uuid())
+  organization_id   String
+  email             String
+  display_name      String?
+  provider          String    // google, microsoft, smtp
+  access_token      String?   // encrypted
+  refresh_token     String?   // encrypted
+  token_expires_at  DateTime?
+  smtp_host         String?
+  smtp_port         Int?
+  smtp_username     String?
+  smtp_password     String?   // encrypted
+  imap_host         String?
+  imap_port         Int?
+  connection_status String    @default("active") // active, error, expired, disconnected
+  last_error        String?
+  daily_send_limit  Int       @default(50)
+  sends_today       Int       @default(0)
+  sends_reset_at    DateTime  @default(now())
+  warmup_complete   Boolean   @default(false)
+  signature_html    String?   // email signature
+
+  // Custom tracking domain (white-label tracking links per mailbox/domain).
+  // Outbound tracking URLs use this hostname instead of superkabe.com when set
+  // and verified. Verification: user creates a CNAME pointing to a Superkabe
+  // edge endpoint; backend probes DNS + 200 response on a known path before
+  // marking verified. Falls back to the default global tracking host on miss.
+  tracking_domain               String?
+  tracking_domain_verified      Boolean   @default(false)
+  tracking_domain_verified_at   DateTime?
+  tracking_domain_last_check_at DateTime?
+  tracking_domain_last_error    String?
+
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
+
+  organization      Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  campaignAccounts  CampaignAccount[]
+  emailThreads      EmailThread[]
+  // 1:1 back-reference to the shadow Mailbox (Protection layer). Created at account creation time.
+  mailbox           Mailbox?
+
+  @@unique([organization_id, email])
+  @@index([organization_id, provider])
+  @@index([organization_id, connection_status])
+}
+
+// SendCampaign has been merged into Campaign (source_platform='sequencer').
+// See the 2026-04-24 sequencer/protection campaigns unification — every sequencer
+// write/read now goes through prisma.campaign.* with an explicit source_platform
+// filter on reads. All SendCampaign rows were copied into Campaign preserving
+// their UUIDs so SequenceStep / CampaignAccount / CampaignLead FKs transitioned
+// in place.
+
+model CampaignAccount {
+  id                String   @id @default(uuid())
+  campaign_id       String
+  account_id        String
+  daily_limit_override Int?  // null = use account default
+
+  // FK re-pointed from SendCampaign → Campaign as part of the sequencer/protection
+  // campaigns-table merge. IDs were preserved when SendCampaign rows were copied
+  // into Campaign with source_platform='sequencer', so existing campaign_id values
+  // satisfy the new constraint unchanged.
+  campaign          Campaign         @relation(fields: [campaign_id], references: [id], onDelete: Cascade)
+  account           ConnectedAccount @relation(fields: [account_id], references: [id], onDelete: Cascade)
+
+  @@unique([campaign_id, account_id])
+}
+
+model SequenceStep {
+  id              String   @id @default(uuid())
+  campaign_id     String
+  step_number     Int
+  delay_days      Int      @default(1) // delay after previous step
+  delay_hours     Int      @default(0)
+  subject         String   @default("")
+  body_html       String   @default("")
+  body_text       String?
+
+  // ── Subsequence branching ──────────────────────────────────────────
+  // Conditions evaluated by the dispatcher when scheduling this step
+  // for a lead. The lead's CampaignLead history (replied_at, opened_at,
+  // clicked_at) is checked against `condition`; if the predicate fails,
+  // the dispatcher routes the lead to `branch_to_step_number` instead
+  // (or skips entirely when null).
+  //
+  // condition values:
+  //   null           — unconditional, default linear flow
+  //   if_no_reply    — only send if lead has not replied
+  //   if_replied     — only send if lead has replied (e.g. thank-you sequence)
+  //   if_opened      — only send if a prior step was opened
+  //   if_not_opened  — only send if no prior step was opened
+  //   if_clicked     — only send if a prior step had a click
+  //   if_not_clicked — only send if no clicks yet
+  //
+  // branch_to_step_number: when condition is FALSE, jump to this step
+  // instead of the default next-step. null = drop out of the sequence.
+  condition                String?
+  branch_to_step_number    Int?
+
+  // FK re-pointed from SendCampaign → Campaign (see note on CampaignAccount).
+  campaign        Campaign      @relation(fields: [campaign_id], references: [id], onDelete: Cascade)
+  variants        StepVariant[]
+
+  @@unique([campaign_id, step_number])
+  @@index([campaign_id])
+}
+
+model StepVariant {
+  id              String   @id @default(uuid())
+  step_id         String
+  variant_label   String   @default("A") // A, B, C
+  subject         String
+  body_html       String
+  body_text       String?
+  weight          Int      @default(50) // percentage weight for split
+  sends           Int      @default(0)
+  opens           Int      @default(0)
+  clicks          Int      @default(0)
+  replies         Int      @default(0)
+
+  step            SequenceStep @relation(fields: [step_id], references: [id], onDelete: Cascade)
+
+  @@index([step_id])
+}
+
+model CampaignLead {
+  id               String    @id @default(uuid())
+  campaign_id      String
+  email            String
+  first_name       String?
+  last_name        String?
+  company          String?
+  title            String?
+  custom_variables Json?     // any extra fields from CSV for {{custom.X}} tokens
+  status           String    @default("active") // active, paused, replied, bounced, unsubscribed, completed
+  current_step     Int       @default(0) // which step we're on (0 = not started)
+  esp_bucket       String?   // gmail, microsoft, yahoo, other
+  validation_status String?  // valid, risky, invalid
+  validation_score Int?
+  last_sent_at     DateTime?
+  next_send_at     DateTime?
+  opened_count     Int       @default(0)
+  clicked_count    Int       @default(0)
+  replied_at       DateTime?
+  bounced_at       DateTime?
+  unsubscribed_at  DateTime?
+  created_at       DateTime  @default(now())
+
+  // Provenance — links the lead back to the batch (CSV / Clay / manual / API)
+  // that brought it into the campaign. Nullable so legacy rows pre-dating this
+  // column stay valid; new rows always get a batch.
+  import_id        String?
+
+  // Sticky mailbox assignment — ALL steps in this lead's sequence go through
+  // this same ConnectedAccount. Pinned on the first dispatch (step 1) and
+  // never rotated thereafter so step 2+ are threaded follow-ups on the same
+  // From: address. Re-assignment ONLY happens if the original mailbox is
+  // permanently disconnected.
+  //
+  // Nullable until first send so legacy + freshly-ingested rows stay valid.
+  // String column (not FK relation) so deleting a mailbox doesn't cascade
+  // through the lead's send history.
+  assigned_account_id String?
+
+  // FK re-pointed from SendCampaign → Campaign (sequencer/protection campaigns merge).
+  campaign         Campaign            @relation(fields: [campaign_id], references: [id], onDelete: Cascade)
+  import           CampaignLeadImport? @relation(fields: [import_id], references: [id], onDelete: SetNull)
+
+  @@unique([campaign_id, email])
+  @@index([campaign_id, status])
+  @@index([campaign_id, next_send_at])
+  @@index([campaign_id, current_step])
+  @@index([import_id])
+  // Used by the dispatcher to look up sticky leads when an account is paused/recovered.
+  @@index([assigned_account_id])
+}
+
+// Per-(campaign, mailbox) daily send counter — enforces a hard quota per
+// campaign-account pair so a mailbox that's split across 3 campaigns can't
+// have one campaign exhaust its full daily limit while the other two starve.
+//
+// Resets at the same boundary as ConnectedAccount.sends_reset_at (per-org
+// midnight). Updated atomically alongside ConnectedAccount.sends_today on
+// every successful send by the BullMQ worker.
+model CampaignAccountUsage {
+  id                 String   @id @default(uuid())
+  campaign_id        String
+  account_id         String
+  sends_today        Int      @default(0)
+  sends_reset_at     DateTime @default(now())
+  updated_at         DateTime @updatedAt
+
+  @@unique([campaign_id, account_id])
+  @@index([account_id])
+}
+
+// ============================================================================
+// TEMPLATES + SEQUENCER SETTINGS
+// ============================================================================
+
+model EmailTemplate {
+  id              String   @id @default(uuid())
+  organization_id String
+  name            String
+  subject         String
+  body_html       String
+  body_text       String?
+  category        String   @default("general") // general, introduction, follow-up, breakup, meeting, referral
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id, category])
+  @@index([organization_id, created_at])
+}
+
+model EmailSignature {
+  id              String   @id @default(uuid())
+  organization_id String
+  name            String
+  html_content    String   // Full HTML with embedded base64 images
+  is_default      Boolean  @default(false)
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id])
+  @@index([organization_id, is_default])
+}
+
+model SequencerSettings {
+  id                     String   @id @default(uuid())
+  organization_id        String   @unique
+  default_daily_limit    Int      @default(50)
+  default_timezone       String   @default("America/New_York")
+  default_start_time     String   @default("09:00")
+  default_end_time       String   @default("17:00")
+  default_active_days    String[] @default(["mon", "tue", "wed", "thu", "fri"])
+  delay_between_emails   Int      @default(1) // minutes
+  global_daily_max       Int      @default(500)
+  tracking_domain        String?
+  default_track_opens    Boolean  @default(true)
+  default_track_clicks   Boolean  @default(true)
+  default_unsubscribe    Boolean  @default(true)
+  auto_pause_on_bounce   Boolean  @default(true)
+  bounce_threshold       Float    @default(3.0) // percentage
+  stop_on_reply_default  Boolean  @default(true)
+  notify_on_reply        Boolean  @default(true)
+  notify_on_bounce       Boolean  @default(true)
+  notify_on_complete     Boolean  @default(true)
+  updated_at             DateTime @updatedAt
+
+  organization           Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+}
+
+// ============================================================================
+// UNIBOX — Unified inbox across all connected accounts
+// ============================================================================
+
+model EmailThread {
+  id                String   @id @default(uuid())
+  organization_id   String
+  account_id        String   // ConnectedAccount that owns this thread
+  contact_email     String   // The external person we're talking to
+  contact_name      String?
+  subject           String
+  campaign_id       String?  // Which campaign this thread originated from
+  campaign_name     String?
+  lead_id           String?  // Link to CampaignLead if applicable
+  status            String   @default("open") // open, replied, closed, archived
+  is_read           Boolean  @default(false)
+  is_starred        Boolean  @default(false)
+  last_message_at   DateTime @default(now())
+  message_count     Int      @default(1)
+  snippet           String?  // Preview of last message (first 120 chars)
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  organization      Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  account           ConnectedAccount @relation(fields: [account_id], references: [id], onDelete: Cascade)
+  messages          EmailMessage[]
+
+  @@index([organization_id, status, last_message_at])
+  @@index([organization_id, is_read])
+  @@index([organization_id, is_starred])
+  @@index([organization_id, account_id])
+  @@index([organization_id, contact_email])
+  @@index([campaign_id])
+}
+
+model EmailMessage {
+  id                String   @id @default(uuid())
+  thread_id         String
+  direction         String   // inbound, outbound
+  from_email        String
+  from_name         String?
+  to_email          String
+  to_name           String?
+  subject           String
+  body_html         String
+  body_text         String?
+  message_id        String?  // SMTP Message-ID header for threading
+  in_reply_to       String?  // In-Reply-To header
+  references        String?  // References header chain
+  has_attachments   Boolean  @default(false)
+  is_read           Boolean  @default(true)
+  sent_at           DateTime @default(now())
+  created_at        DateTime @default(now())
+
+  // Reply Quality classification (rule-based; only set for direction='inbound').
+  // class:      positive | qualified | objection | referral | soft_no | hard_no | angry | auto | unclassified
+  // confidence: high | medium | low
+  // signals:    list of rule names that triggered (audit trail for the classification)
+  quality_class       String?
+  quality_confidence  String?
+  quality_signals     String[]    @default([])
+  quality_classified_at DateTime?
+
+  thread            EmailThread @relation(fields: [thread_id], references: [id], onDelete: Cascade)
+
+  @@index([thread_id, sent_at])
+  @@index([message_id])
+  @@index([direction, quality_class])
+}
+
+// ============================================================================
+// COLD CALL LIST — high-intent prospect surfacing for SDR outreach
+// ============================================================================
+
+/// Per-open event for native sequencer sends. Written by trackingController.trackOpen
+/// when a tracking-pixel hit verifies. Distinct from the aggregate counters on
+/// Lead / CampaignLead / Campaign — those stay as fast-read totals; this table
+/// is the timestamped audit log used by the Cold Call List scoring engine
+/// (recency multipliers, MPP filtering, 1-hour-window bonus, last_open ts).
+///
+/// Sequencer-only by design: imported campaigns (smartlead/instantly/etc.)
+/// do not flow opens through our tracking pixel, so they never write here.
+model EmailOpenEvent {
+  id               String   @id @default(uuid())
+  organization_id  String
+  campaign_id      String
+  campaign_lead_id String
+  lead_id          String?  // Protection-layer Lead, when matched
+  recipient_email  String
+  // Time gap between SendEvent.sent_at and this open. Pre-computed at ingest
+  // so the scoring query can filter MPP/scanner pre-fetches without a join.
+  // Null when no SendEvent could be matched (legacy / out-of-order ingest).
+  ms_since_send    Int?
+  opened_at        DateTime @default(now())
+
+  @@index([organization_id, opened_at])
+  @@index([campaign_id, opened_at])
+  @@index([campaign_lead_id, opened_at])
+  @@index([lead_id, opened_at])
+}
+
+/// Per-click event for native sequencer sends. Written by trackingController.trackClick
+/// after HMAC-token verification. Same role as EmailOpenEvent — timestamped log
+/// for scoring; aggregate totals still live on the existing counter columns.
+model EmailClickEvent {
+  id               String   @id @default(uuid())
+  organization_id  String
+  campaign_id      String
+  campaign_lead_id String
+  lead_id          String?
+  recipient_email  String
+  url              String?  // The destination URL (truncated to 1024 if longer)
+  ms_since_send    Int?
+  clicked_at       DateTime @default(now())
+
+  @@index([organization_id, clicked_at])
+  @@index([campaign_id, clicked_at])
+  @@index([campaign_lead_id, clicked_at])
+  @@index([lead_id, clicked_at])
+}
+
+/// Workspace-scoped configuration for the Custom Cold Call List.
+/// Single row per organization (not per user — agency users on the same
+/// workspace share the same custom rules). Daily System List uses
+/// hard-coded rules instead and intentionally ignores this table.
+model ColdCallListSettings {
+  id                  String   @id @default(uuid())
+  organization_id     String   @unique
+  min_opens           Int      @default(3)
+  time_window_days    Int      @default(7) // 1, 2, 7, 14, 30
+  require_click       Boolean  @default(false)
+  require_no_reply    Boolean  @default(true)
+  // Suppression carries unsubscribe/bounce filtering — locked on in v1.
+  exclude_recent_days Int      @default(7)
+  title_filter        String?  // Comma-separated; substring contains-match, case-insensitive
+  campaign_filter     Json?    // Array<string> of campaign IDs; null = all active
+  max_list_size       Int      @default(200)
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+}
+
+/// One snapshot per (organization, day) — produced by the cron at 06:00
+/// workspace-local time. Persisted regardless of whether anyone downloads,
+/// because the snapshot also drives the 5-day rolling exclusion in subsequent
+/// runs. prospect_ids is ordered by score desc.
+model ColdCallDailySnapshot {
+  id              String   @id @default(uuid())
+  organization_id String
+  snapshot_date   DateTime @db.Date // workspace-local date the list represents
+  prospect_ids    Json     // string[] — CampaignLead IDs, score-desc order
+  prospect_count  Int      @default(0)
+  generated_at    DateTime @default(now())
+  status          String   @default("success") // success | no_campaigns | no_engagement | error
+  error_message   String?
+
+  @@unique([organization_id, snapshot_date])
+  @@index([organization_id, snapshot_date])
+}
+
+/// Snapshot of a Custom List download — created ONLY when the user clicks
+/// Download CSV (not when they click Generate). Drives the user-configured
+/// exclude_recent_days dedup on subsequent runs. Separate from system
+/// snapshots so a prospect can appear on both list types independently.
+model ColdCallCustomSnapshot {
+  id              String   @id @default(uuid())
+  organization_id String
+  user_id         String?  // Null if downloader user record is gone
+  prospect_ids    Json     // string[] — CampaignLead IDs
+  prospect_count  Int      @default(0)
+  rule_snapshot   Json     // Frozen copy of ColdCallListSettings at download time
+  downloaded_at   DateTime @default(now())
+
+  @@index([organization_id, downloaded_at])
+}
+

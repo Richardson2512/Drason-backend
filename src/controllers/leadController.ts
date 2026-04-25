@@ -75,21 +75,42 @@ export const getLeadCampaigns = async (req: Request, res: Response): Promise<voi
             return;
         }
 
-        // Get the assigned campaign from our DB
+        // Get the assigned campaign. Post-merge Campaign table holds both legacy
+        // platform-synced rows and native sequencer rows (source_platform='sequencer'),
+        // so a single findUnique resolves either type.
         const assignedCampaign = lead.assigned_campaign_id
             ? await prisma.campaign.findUnique({
                 where: { id: lead.assigned_campaign_id },
-                select: { id: true, name: true, status: true, source_platform: true }
+                select: { id: true, name: true, status: true, source_platform: true },
             })
             : null;
 
-        // Query all campaigns this lead's email is associated with (platform-agnostic)
-        // This finds campaigns where the lead email appears in bounce events or audit logs
-        const allCampaigns = lead.assigned_campaign_id
-            ? [assignedCampaign].filter(Boolean)
-            : [];
+        // Also surface sequencer campaigns this lead's email is enrolled in via
+        // CampaignLead — authoritative multi-campaign link for the sequencer,
+        // since CampaignLead has no legacy-platform analog (legacy campaigns use
+        // BounceEvent / Lead.assigned_campaign_id instead).
+        const sequencerEnrollments = await prisma.campaignLead.findMany({
+            where: {
+                email: lead.email,
+                campaign: { organization_id: orgId },
+            },
+            select: {
+                campaign_id: true,
+                campaign: { select: { id: true, name: true, status: true, source_platform: true } },
+            },
+            distinct: ['campaign_id'],
+        });
 
-        // Also check bounce events for cross-campaign associations
+        // Assemble the final list of campaigns this lead is associated with.
+        const allCampaigns: Array<{ id: string; name: string; status: string; source_platform: string }> = [];
+        if (assignedCampaign) allCampaigns.push(assignedCampaign);
+        for (const enr of sequencerEnrollments) {
+            if (!enr.campaign) continue;
+            if (allCampaigns.some((c) => c.id === enr.campaign!.id)) continue; // dedupe
+            allCampaigns.push(enr.campaign);
+        }
+
+        // Also check bounce events for cross-campaign associations on legacy platforms.
         const crossCampaignIds = await prisma.bounceEvent.findMany({
             where: {
                 organization_id: orgId,
@@ -108,7 +129,10 @@ export const getLeadCampaigns = async (req: Request, res: Response): Promise<voi
                 },
                 select: { id: true, name: true, status: true, source_platform: true },
             });
-            allCampaigns.push(...additionalCampaigns);
+            for (const ac of additionalCampaigns) {
+                if (allCampaigns.some((c) => c.id === ac.id)) continue;
+                allCampaigns.push(ac);
+            }
         }
 
         res.json({

@@ -148,8 +148,9 @@ export const listBatches = async (req: Request, res: Response): Promise<Response
         const orgId = getOrgId(req);
         const page = parseInt(req.query.page as string) || 1;
         const limit = parseInt(req.query.limit as string) || 20;
+        const { from, to } = parseRangeFromQuery(req);
 
-        const result = await validationBatchService.listBatches(orgId, { page, limit });
+        const result = await validationBatchService.listBatches(orgId, { page, limit, from, to });
         return res.json({ success: true, ...result });
     } catch (error: any) {
         logger.error('[VALIDATION] List batches failed', error instanceof Error ? error : new Error(String(error)));
@@ -173,7 +174,13 @@ export const getBatchDetail = async (req: Request, res: Response): Promise<Respo
         const result = await validationBatchService.getBatchResults(orgId, batchId, {
             page, limit, statusFilter, espFilter, search
         });
-        return res.json({ success: true, ...result });
+        // Nest batch + meta INSIDE data so apiClient's auto-unwrap preserves them.
+        // Previously the spread put them at the top level, where the frontend's
+        // unwrapped response lost them.
+        return res.json({
+            success: true,
+            data: { batch: result.batch, leads: result.data, meta: result.meta },
+        });
     } catch (error: any) {
         logger.error('[VALIDATION] Get batch detail failed', error instanceof Error ? error : new Error(String(error)));
         return res.status(500).json({ success: false, error: 'Failed to get batch detail' });
@@ -242,10 +249,46 @@ export const exportCSV = async (req: Request, res: Response): Promise<Response |
 export const getAnalytics = async (req: Request, res: Response): Promise<Response> => {
     try {
         const orgId = getOrgId(req);
-        const analytics = await validationBatchService.getAnalytics(orgId);
+        const { from, to } = parseRangeFromQuery(req);
+        const analytics = await validationBatchService.getAnalytics(orgId, { from, to });
         return res.json({ success: true, ...analytics });
     } catch (error: any) {
         logger.error('[VALIDATION] Analytics failed', error instanceof Error ? error : new Error(String(error)));
         return res.status(500).json({ success: false, error: 'Failed to get analytics' });
     }
 };
+
+/**
+ * Parse `timeRange` (7d / 30d / 90d / all) and optional `from`/`to` (YYYY-MM-DD)
+ * query params. Explicit from/to wins over timeRange.
+ */
+function parseRangeFromQuery(req: Request): { from: Date | null; to: Date | null } {
+    const fromStr = (req.query.from as string) || '';
+    const toStr = (req.query.to as string) || '';
+    const timeRange = (req.query.timeRange as string) || '';
+
+    const parseYmd = (s: string): Date | null => {
+        if (!s) return null;
+        const d = new Date(s);
+        return isNaN(d.getTime()) ? null : d;
+    };
+
+    const from = parseYmd(fromStr);
+    const to = parseYmd(toStr);
+    if (from || to) {
+        // For `to`, include the entire day
+        const endOfDay = to ? new Date(to.getFullYear(), to.getMonth(), to.getDate(), 23, 59, 59, 999) : null;
+        return { from, to: endOfDay };
+    }
+
+    if (timeRange === '7d') {
+        const f = new Date(); f.setDate(f.getDate() - 7); return { from: f, to: null };
+    }
+    if (timeRange === '30d') {
+        const f = new Date(); f.setDate(f.getDate() - 30); return { from: f, to: null };
+    }
+    if (timeRange === '90d') {
+        const f = new Date(); f.setDate(f.getDate() - 90); return { from: f, to: null };
+    }
+    return { from: null, to: null };
+}

@@ -18,6 +18,7 @@ import * as auditLogService from './auditLogService';
 import * as notificationService from './notificationService';
 import { getAdapterForCampaign } from '../adapters/platformRegistry';
 import { logger } from './observabilityService';
+import { MONITORING_THRESHOLDS } from '../types';
 
 // ============================================================================
 // TYPES
@@ -106,8 +107,8 @@ export async function checkCampaignHealth(
         if (healthyMailboxes.length === 0) {
             // ALL mailboxes are paused/removed — pause campaign
             status = 'paused';
-        } else if (pausedOrRemovedMailboxes.length > campaign.mailboxes.length * 0.5) {
-            // >50% of mailboxes are degraded — warn
+        } else if (pausedOrRemovedMailboxes.length > campaign.mailboxes.length * MONITORING_THRESHOLDS.CAMPAIGN_DEGRADATION_RATIO) {
+            // > CAMPAIGN_DEGRADATION_RATIO of mailboxes are degraded — warn
             status = 'warning';
         }
     }

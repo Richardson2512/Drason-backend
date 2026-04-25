@@ -47,13 +47,15 @@ async function aggregateEspPerformance(): Promise<{ updated: number; orgs: numbe
 
             // Aggregate bounces per mailbox × recipient ESP
             // BounceEvent has email_address — we need to classify its ESP
-            // Since we may not have recipient_esp on BounceEvent, join via domain insight
-            const bounceRows = await prisma.$queryRaw<Array<{
+            // Since we may not have recipient_esp on BounceEvent, join via domain insight.
+            // $queryRawUnsafe + positional args because newer Prisma client versions
+            // reject Date objects in tagged-template form ("Expected Flat JSON array").
+            const bounceRows = await prisma.$queryRawUnsafe<Array<{
                 mailbox_id: string;
                 esp_bucket: string;
                 bounce_count: bigint;
-            }>>`
-                SELECT
+            }>>(
+                `SELECT
                     be.mailbox_id,
                     COALESCE(di.esp_bucket, 'other') as esp_bucket,
                     COUNT(*)::bigint as bounce_count
@@ -61,12 +63,14 @@ async function aggregateEspPerformance(): Promise<{ updated: number; orgs: numbe
                 LEFT JOIN "DomainInsight" di
                     ON di.domain = SPLIT_PART(be.email_address, '@', 2)
                     AND di.organization_id = be.organization_id
-                WHERE be.organization_id = ${orgId}
-                    AND be.created_at >= ${thirtyDaysAgo}
+                WHERE be.organization_id = $1
+                    AND be.created_at >= $2::timestamptz
                     AND be.mailbox_id IS NOT NULL
                     AND be.bounce_type = 'hard_bounce'
-                GROUP BY be.mailbox_id, di.esp_bucket
-            `;
+                GROUP BY be.mailbox_id, di.esp_bucket`,
+                orgId,
+                thirtyDaysAgo.toISOString(),
+            );
 
             // Build a lookup map for bounces: mailbox_id:esp → count
             const bounceMap = new Map<string, number>();

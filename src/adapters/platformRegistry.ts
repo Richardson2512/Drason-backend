@@ -26,6 +26,7 @@ const adapters: Record<SourcePlatform, PlatformAdapter | null> = {
     emailbison: new EmailBisonAdapter(),
     instantly: new InstantlyAdapter(),
     replyio: null,    // Not yet implemented — getAdapter() throws if accessed
+    sequencer: null,  // Native sending — no external platform adapter needed
 };
 
 // ============================================================================
@@ -33,10 +34,28 @@ const adapters: Record<SourcePlatform, PlatformAdapter | null> = {
 // ============================================================================
 
 /**
- * Get adapter by platform name.
- * Throws if the platform adapter is not yet implemented.
+ * Get adapter by platform name — strict variant, throws if unavailable.
+ * Use this only for callers that REQUIRE an external platform (Smartlead/Instantly/EmailBison).
+ * For callers that should gracefully skip sequencer mailboxes, use `tryGetAdapter()` instead.
  */
 export function getAdapter(platform: SourcePlatform): PlatformAdapter {
+    if (platform === 'sequencer') {
+        throw new Error('Sequencer sends natively; no platform adapter available. Use tryGetAdapter() to skip gracefully.');
+    }
+    const adapter = adapters[platform];
+    if (!adapter) {
+        throw new Error(`Platform adapter for "${platform}" is not yet implemented`);
+    }
+    return adapter;
+}
+
+/**
+ * Get adapter by platform, returning null for platforms without an external adapter (sequencer).
+ * Throws for truly not-yet-implemented platforms (replyio).
+ * Use this in Protection services so sequencer mailboxes skip cleanly.
+ */
+export function tryGetAdapter(platform: SourcePlatform): PlatformAdapter | null {
+    if (platform === 'sequencer') return null;
     const adapter = adapters[platform];
     if (!adapter) {
         throw new Error(`Platform adapter for "${platform}" is not yet implemented`);
@@ -62,6 +81,7 @@ export async function getAdapterForCampaign(campaignId: string): Promise<Platfor
 
 /**
  * Get the adapter for a specific mailbox by looking up its source_platform.
+ * STRICT — throws for sequencer. Use tryGetAdapterForMailbox() to skip sequencer.
  */
 export async function getAdapterForMailbox(mailboxId: string): Promise<PlatformAdapter> {
     const mailbox = await prisma.mailbox.findUnique({
@@ -74,6 +94,21 @@ export async function getAdapterForMailbox(mailboxId: string): Promise<PlatformA
     }
 
     return getAdapter(mailbox.source_platform);
+}
+
+/**
+ * Get adapter for mailbox, returning null for sequencer mailboxes.
+ * Use this in Protection services (healingService, infrastructureAssessmentService, etc.)
+ * where sequencer mailboxes should skip the external-platform action.
+ */
+export async function tryGetAdapterForMailbox(mailboxId: string): Promise<PlatformAdapter | null> {
+    const mailbox = await prisma.mailbox.findUnique({
+        where: { id: mailboxId },
+        select: { source_platform: true }
+    });
+
+    if (!mailbox) return null;
+    return tryGetAdapter(mailbox.source_platform);
 }
 
 /**
