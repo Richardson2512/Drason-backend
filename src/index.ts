@@ -91,6 +91,9 @@ import { startWorker as startMetricsWorker, getWorkerStatus as getMetricsWorkerS
 import { startRetentionJob, getRetentionJobStatus } from './services/complianceService';
 import { initEventQueue, getQueueStatus, shutdownEventQueue } from './services/eventQueue';
 import { startLeadHealthWorker, getLeadHealthWorkerStatus } from './services/leadHealthWorker';
+import { schedulePostmasterFetch, stopPostmasterFetch, getPostmasterWorkerStatus } from './workers/postmasterToolsWorker';
+import * as postmasterController from './controllers/postmasterController';
+import * as migrationController from './controllers/migrationFromSmartleadController';
 import { startLeadScoringWorker, stopLeadScoringWorker } from './services/leadScoringWorker';
 import { startTrialWorker, stopTrialWorker } from './services/trialWorker';
 import { scheduleWarmupTracking } from './workers/warmupTrackingWorker';
@@ -278,6 +281,23 @@ app.post('/api/ingest/clay', checkLeadCapacity, asyncHandler(ingestionController
 
 // Monitoring endpoints
 app.post('/api/monitor/event', asyncHandler(monitoringController.triggerEvent));
+
+// Postmaster Tools (Google reputation API) — OAuth + status + reputation read
+app.post('/api/postmaster/connect', asyncHandler(postmasterController.startConnect));
+app.post('/api/postmaster/disconnect', asyncHandler(postmasterController.disconnect));
+app.post('/api/postmaster/fetch-now', asyncHandler(postmasterController.fetchNow));
+app.get('/api/postmaster/status', asyncHandler(postmasterController.getStatus));
+app.get('/api/dashboard/domains/:id/reputation', asyncHandler(postmasterController.getDomainReputation));
+// Public OAuth callback — Google redirects here without our auth context.
+app.get('/oauth/callback/postmaster', asyncHandler(postmasterController.oauthCallback));
+
+// Migration tool (from-Smartlead → native sequencer). Feature-flag gated by
+// MIGRATION_TOOL_ENABLED env var. Routes return 404 when disabled.
+app.get('/api/migration/from-smartlead/feature', asyncHandler(migrationController.featureFlag));
+app.get('/api/migration/from-smartlead/preview', asyncHandler(migrationController.previewMigration));
+app.post('/api/migration/from-smartlead/connect-mailbox', asyncHandler(migrationController.connectMailbox));
+app.post('/api/migration/from-smartlead/finalize-campaign', asyncHandler(migrationController.finalizeCampaign));
+app.post('/api/migration/from-smartlead/finalize-org', asyncHandler(migrationController.finalizeOrg));
 
 // ============================================================================
 // ADMIN ENDPOINTS — DLQ, Replay, System Metrics
@@ -599,6 +619,10 @@ const server = app.listen(PORT, () => {
     startLeadHealthWorker();
     logger.info('Lead health re-evaluation worker started');
 
+    // Start Postmaster Tools daily fetch (03:00 UTC)
+    schedulePostmasterFetch();
+    logger.info('Postmaster Tools worker started (daily fetch at 03:00 UTC)');
+
     // Start lead scoring worker
     startLeadScoringWorker();
     logger.info('Lead scoring worker started (runs every 24h)');
@@ -668,6 +692,9 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
     stopTrialWorker();
     logger.info('Trial worker stopped');
+
+    stopPostmasterFetch();
+    logger.info('Postmaster Tools worker stopped');
 
 
     infrastructureAssessmentService.stopPeriodicAssessment();

@@ -39,6 +39,17 @@ model Organization {
   zapmail_api_key       String?
   zapmail_connected_at  DateTime?
 
+  // Google Postmaster Tools — OAuth refresh token (encrypted) used by the
+  // daily worker to fetch per-domain reputation, spam rate, and authentication
+  // pass rates for every domain the org's connected Google account owns in
+  // Postmaster Tools. Single connection per org.
+  postmaster_access_token   String?
+  postmaster_refresh_token  String?
+  postmaster_token_expires_at DateTime?
+  postmaster_connected_at   DateTime?
+  postmaster_last_fetch_at  DateTime?
+  postmaster_last_error     String?
+
   created_at         DateTime               @default(now())
   updated_at         DateTime               @updatedAt
   apiKeys            ApiKey[]
@@ -69,6 +80,7 @@ model Organization {
   businessProfile    BusinessProfile?
   webhookEndpoints   WebhookEndpoint[]
   campaignLeadImports CampaignLeadImport[]
+  domainReputations  DomainReputation[]
 
   @@index([slug])
   @@index([subscription_status])
@@ -532,11 +544,43 @@ model Domain {
   organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
   mailboxes       Mailbox[]
   dnsblResults    DnsblResult[]
+  reputations     DomainReputation[]
 
   @@unique([organization_id, domain])
   @@index([organization_id, status])
   @@index([organization_id])
   @@index([recovery_phase])
+}
+
+/// Per-domain reputation snapshot from Google Postmaster Tools.
+/// Pulled daily by postmasterToolsWorker — one row per (domain, date).
+/// Drives the Domain Reputation card in the dashboard, alert thresholds
+/// (reputation drop → notify), and auto-pause decisions when spam_rate
+/// crosses 0.3% sustained.
+model DomainReputation {
+  id              String   @id @default(uuid())
+  organization_id String
+  domain_id       String
+  source          String   // "postmaster_tools" | "snds" (future)
+  fetched_at      DateTime
+  date            DateTime @db.Date
+  reputation      String?  // "HIGH" | "MEDIUM" | "LOW" | "BAD"
+  spam_rate       Float?   // 0.0–1.0
+  ip_reputation   String?  // for SNDS rows (future)
+  authentication_dkim_pass_rate Float?
+  authentication_spf_pass_rate  Float?
+  authentication_dmarc_pass_rate Float?
+  encryption_outbound_rate      Float?
+  delivery_errors_jsonb Json?
+  raw_payload     Json
+  created_at      DateTime @default(now())
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  domain       Domain       @relation(fields: [domain_id], references: [id], onDelete: Cascade)
+
+  @@unique([domain_id, source, date])
+  @@index([organization_id, date])
+  @@index([domain_id, date])
 }
 
 model RoutingRule {
