@@ -132,7 +132,7 @@ export const listContacts = async (req: Request, res: Response): Promise<Respons
         // Post-merge Campaign table holds both legacy and sequencer campaigns — filter to sequencer.
         const emails = leads.map((l) => l.email);
         const orgCampaigns = await prisma.campaign.findMany({
-            where: { organization_id: orgId, source_platform: 'sequencer' },
+            where: { organization_id: orgId },
             select: { id: true },
         });
         const campaignIds = orgCampaigns.map((c) => c.id);
@@ -435,7 +435,7 @@ export const deleteContacts = async (req: Request, res: Response): Promise<Respo
         // Cascade: remove all CampaignLead assignments (sequencer-side) that match these emails.
         if (emailsToDelete.length > 0) {
             const orgCampaigns = await prisma.campaign.findMany({
-                where: { organization_id: orgId, source_platform: 'sequencer' },
+                where: { organization_id: orgId },
                 select: { id: true },
             });
             const campaignIds = orgCampaigns.map((c) => c.id);
@@ -835,7 +835,7 @@ export const assignToCampaign = async (req: Request, res: Response): Promise<Res
         }
 
         const campaign = await prisma.campaign.findFirst({
-            where: { id: campaign_id, organization_id: orgId, source_platform: 'sequencer' },
+            where: { id: campaign_id, organization_id: orgId },
             select: { id: true, status: true },
         });
         if (!campaign) {

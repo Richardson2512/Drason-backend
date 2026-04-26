@@ -9,6 +9,7 @@ import * as sequencerSettingsController from '../controllers/sequencerSettingsCo
 import * as sequencerAnalyticsController from '../controllers/sequencerAnalyticsController';
 import * as signatureController from '../controllers/signatureController';
 import * as recipientPreviewController from '../controllers/recipientPreviewController';
+import * as zapmailController from '../controllers/zapmailController';
 
 const router = Router();
 
@@ -59,6 +60,16 @@ router.use('/templates', templateRoutes);
 
 // --- Infrastructure Providers (for bulk mailbox import) ---
 router.get('/infra-providers', infraProvidersController.listInfraProviders);
+
+// --- Zapmail integration (server-orchestrated OAuth via Zapmail Custom OAuth) ---
+const zapmailRoutes = Router();
+zapmailRoutes.get('/status', zapmailController.status);
+zapmailRoutes.post('/connect', zapmailController.connect);
+zapmailRoutes.delete('/connect', zapmailController.disconnect);
+zapmailRoutes.get('/mailboxes', zapmailController.listMailboxes);
+zapmailRoutes.post('/import', zapmailController.importMailboxes);
+zapmailRoutes.get('/import/:exportId', zapmailController.importStatus);
+router.use('/integrations/zapmail', zapmailRoutes);
 
 // --- Contacts ---
 const contactRoutes = Router();

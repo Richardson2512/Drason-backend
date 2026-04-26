@@ -15,12 +15,10 @@ import * as entityStateService from '../services/entityStateService';
 import { MailboxState, DomainState, TriggerType } from '../types';
 import { logger } from '../services/observabilityService';
 import { cached } from '../utils/responseCache';
-import { getAdapterForMailbox } from '../adapters/platformRegistry';
 
 // ─── Unified campaign helpers ───────────────────────────────────────────────
 //
 // Post-merge Campaign table holds every campaign in the org regardless of
-// source_platform (smartlead / instantly / emailbison / replyio / sequencer).
 // These helpers replace the previous dual-table union pattern — one query per
 // helper now, because Campaign IS the unified table.
 
@@ -94,12 +92,6 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
                 }
             ]
         };
-
-        // Platform filter (supports comma-separated multi-select)
-        if (platform && platform !== 'all') {
-            const platforms = platform.split(',').filter(Boolean);
-            where.source_platform = platforms.length === 1 ? platforms[0] : { in: platforms };
-        }
 
         if (status === 'invalid') {
             where.validation_status = 'invalid';
@@ -438,12 +430,6 @@ export const getCampaigns = async (req: Request, res: Response, next: NextFuncti
             where.status = { not: 'deleted' };
         }
 
-        // Platform filter (supports comma-separated multi-select)
-        if (platform && platform !== 'all') {
-            const platforms = platform.split(',').filter(Boolean);
-            where.source_platform = platforms.length === 1 ? platforms[0] : { in: platforms };
-        }
-
         if (search && search.trim()) {
             where.name = {
                 contains: search.trim(),
@@ -554,12 +540,6 @@ export const getDomains = async (req: Request, res: Response, next: NextFunction
         const where: any = {
             organization_id: orgId
         };
-
-        // Platform filter (supports comma-separated multi-select)
-        if (platform && platform !== 'all') {
-            const platforms = platform.split(',').filter(Boolean);
-            where.source_platform = platforms.length === 1 ? platforms[0] : { in: platforms };
-        }
 
         // Search by domain name
         if (search && search.trim()) {
@@ -674,12 +654,6 @@ export const getMailboxes = async (req: Request, res: Response, next: NextFuncti
         const where: any = {
             organization_id: orgId
         };
-
-        // Platform filter (supports comma-separated multi-select)
-        if (platform && platform !== 'all') {
-            const platforms = platform.split(',').filter(Boolean);
-            where.source_platform = platforms.length === 1 ? platforms[0] : { in: platforms };
-        }
 
         // Search by email
         if (search && search.trim()) {
@@ -1118,52 +1092,23 @@ export const resumeMailbox = async (req: Request, res: Response, next: NextFunct
             }
         });
 
-        // ── PLATFORM SYNC: Re-add mailbox to its campaigns on the external platform ──
-        // When paused, the mailbox was removed from campaigns on the platform but the
-        // DB relationship was preserved. Re-add it now.
-        let platformAdded = 0;
-        let platformFailed = 0;
-        try {
-            const adapter = await getAdapterForMailbox(mailboxId);
-            const campaigns = await prisma.campaign.findMany({
-                where: {
-                    organization_id: orgId,
-                    mailboxes: { some: { id: mailboxId } },
-                    status: { notIn: ['deleted', 'DELETED', 'archived', 'ARCHIVED'] },
-                },
-                select: { id: true, external_id: true, name: true },
-            });
+        // Native sending — flipping Mailbox.status back to 'healthy' is enough
+        // for sendQueueService to pick it up on its next 60s tick. The
+        // Mailbox↔Campaign relationship is preserved through the pause so no
+        // re-attach is needed.
+        const campaignCount = await prisma.campaign.count({
+            where: {
+                organization_id: orgId,
+                mailboxes: { some: { id: mailboxId } },
+                status: { notIn: ['deleted', 'DELETED', 'archived', 'ARCHIVED'] },
+            },
+        });
 
-            for (const campaign of campaigns) {
-                try {
-                    await adapter.addMailboxToCampaign(
-                        orgId,
-                        campaign.external_id || campaign.id,
-                        mailbox.external_email_account_id || mailboxId,
-                    );
-                    platformAdded++;
-                } catch (addErr: any) {
-                    platformFailed++;
-                    logger.warn(`[INFRASTRUCTURE] Failed to re-add mailbox ${mailboxId} to campaign ${campaign.name} on platform`, {
-                        error: addErr.message,
-                    });
-                }
-            }
-
-            logger.info(`[INFRASTRUCTURE] Re-added mailbox ${mailboxId} to ${platformAdded} campaigns on platform`, {
-                platformAdded, platformFailed,
-            });
-        } catch (adapterErr: any) {
-            logger.error(`[INFRASTRUCTURE] Failed to get adapter for mailbox ${mailboxId}`, adapterErr);
-        }
-
-        logger.info(`[INFRASTRUCTURE] Mailbox ${mailboxId} manually resumed by user`);
+        logger.info(`[INFRASTRUCTURE] Mailbox ${mailboxId} manually resumed by user — eligible for ${campaignCount} campaign(s)`);
 
         res.json({
             success: true,
-            message: `Mailbox resumed successfully${platformAdded > 0 ? ` and re-added to ${platformAdded} campaign(s) on platform` : ''}`,
-            platformAdded,
-            platformFailed,
+            message: `Mailbox resumed successfully${campaignCount > 0 ? ` — eligible for ${campaignCount} active campaign(s)` : ''}`,
         });
     } catch (error) {
         next(error);
@@ -1225,69 +1170,22 @@ export const resumeDomain = async (req: Request, res: Response, next: NextFuncti
             }
         });
 
-        // ── PLATFORM SYNC: Re-add domain's mailboxes to their campaigns ──
-        // When domain was paused, its mailboxes were removed from campaigns on the platform.
-        // Re-add each healthy mailbox back to its assigned campaigns.
-        let totalAdded = 0;
-        let totalFailed = 0;
-        try {
-            const mailboxes = await prisma.mailbox.findMany({
-                where: {
-                    domain_id: domainId,
-                    organization_id: orgId,
-                    status: { in: ['healthy', 'active'] },
-                },
-                select: { id: true, external_email_account_id: true, email: true },
-            });
+        // Native sending — Mailbox.status='healthy' alone makes mailboxes
+        // eligible for dispatch. The Mailbox↔Campaign relationships were
+        // preserved through the pause, so no re-attach is needed.
+        const healthyMailboxCount = await prisma.mailbox.count({
+            where: {
+                domain_id: domainId,
+                organization_id: orgId,
+                status: { in: ['healthy', 'active'] },
+            },
+        });
 
-            for (const mb of mailboxes) {
-                try {
-                    const adapter = await getAdapterForMailbox(mb.id);
-                    const campaigns = await prisma.campaign.findMany({
-                        where: {
-                            organization_id: orgId,
-                            mailboxes: { some: { id: mb.id } },
-                            status: { notIn: ['deleted', 'DELETED', 'archived', 'ARCHIVED'] },
-                        },
-                        select: { id: true, external_id: true, name: true },
-                    });
-
-                    for (const campaign of campaigns) {
-                        try {
-                            await adapter.addMailboxToCampaign(
-                                orgId,
-                                campaign.external_id || campaign.id,
-                                mb.external_email_account_id || mb.id,
-                            );
-                            totalAdded++;
-                        } catch (addErr: any) {
-                            totalFailed++;
-                            logger.warn(`[INFRASTRUCTURE] Failed to re-add mailbox ${mb.email} to campaign ${campaign.name} on platform`, {
-                                error: addErr.message,
-                            });
-                        }
-                    }
-                } catch (mbErr: any) {
-                    logger.warn(`[INFRASTRUCTURE] Failed to process mailbox ${mb.email} for domain resume`, {
-                        error: mbErr.message,
-                    });
-                }
-            }
-
-            logger.info(`[INFRASTRUCTURE] Domain ${domainId} resume: re-added ${totalAdded} mailbox-campaign links on platform`, {
-                totalAdded, totalFailed, mailboxCount: mailboxes.length,
-            });
-        } catch (adapterErr: any) {
-            logger.error(`[INFRASTRUCTURE] Failed to re-add mailboxes for domain ${domainId}`, adapterErr);
-        }
-
-        logger.info(`[INFRASTRUCTURE] Domain ${domainId} manually resumed by user`);
+        logger.info(`[INFRASTRUCTURE] Domain ${domainId} manually resumed by user — ${healthyMailboxCount} healthy mailbox(es) eligible`);
 
         res.json({
             success: true,
-            message: `Domain resumed successfully${totalAdded > 0 ? ` and re-added ${totalAdded} mailbox-campaign link(s) on platform` : ''}`,
-            platformAdded: totalAdded,
-            platformFailed: totalFailed,
+            message: `Domain resumed successfully${healthyMailboxCount > 0 ? ` — ${healthyMailboxCount} mailbox(es) eligible for dispatch` : ''}`,
         });
     } catch (error) {
         next(error);
@@ -1372,7 +1270,6 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
                 if (orConds.length > 0) where.OR = orConds;
             }
             if (campaignIds.length > 0) where.assigned_campaign_id = { in: campaignIds };
-            if (platforms.length > 0) where.source_platform = { in: platforms };
 
             const leads = await prisma.lead.findMany({
                 where,
@@ -1425,7 +1322,6 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
             };
             if (statuses.length > 0) where.status = { in: statuses };
             if (campaignIds.length > 0) where.id = { in: campaignIds };
-            if (platforms.length > 0) where.source_platform = { in: platforms };
 
             const campaigns = await prisma.campaign.findMany({
                 where,
@@ -1447,7 +1343,6 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
             const columns = [
                 { key: 'name', label: 'Name' },
                 { key: 'status', label: 'Status' },
-                { key: 'source_platform', label: 'Platform' },
                 { key: 'mailbox_count', label: 'Mailbox Count' },
                 { key: 'lead_count', label: 'Lead Count' },
                 { key: 'total_sent', label: 'Total Sent' },
@@ -1486,7 +1381,6 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
             };
             if (statuses.length > 0) where.status = { in: statuses };
             if (domainIds.length > 0) where.domain_id = { in: domainIds };
-            if (platforms.length > 0) where.source_platform = { in: platforms };
 
             const mailboxes = await prisma.mailbox.findMany({
                 where,
@@ -1503,7 +1397,6 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
                 { key: 'status', label: 'Status' },
                 { key: 'recovery_phase', label: 'Recovery Phase' },
                 { key: 'domain_name', label: 'Domain' },
-                { key: 'source_platform', label: 'Platform' },
                 { key: 'resilience_score', label: 'Resilience Score' },
                 { key: 'bounce_rate', label: 'Bounce Rate (%)' },
                 { key: 'total_sent', label: 'Total Sent' },
@@ -1544,7 +1437,6 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
             };
             if (statuses.length > 0) where.status = { in: statuses };
             if (domainIds.length > 0) where.id = { in: domainIds };
-            if (platforms.length > 0) where.source_platform = { in: platforms };
 
             const domains = await prisma.domain.findMany({
                 where,

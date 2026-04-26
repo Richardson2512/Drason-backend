@@ -7,7 +7,6 @@
 import { Request, Response } from 'express';
 import { prisma } from '../index';
 import { getOrgId } from '../middleware/orgContext';
-import { getAdapterForCampaign, getAdapterForMailbox } from '../adapters/platformRegistry';
 import { logger } from '../services/observabilityService';
 import { logAction } from '../services/auditLogService';
 import * as loadBalancingService from '../services/loadBalancingService';
@@ -51,13 +50,6 @@ export const pauseAllCampaigns = async (req: Request, res: Response) => {
 
         for (const campaign of campaigns) {
             try {
-                const adapter = await getAdapterForCampaign(campaign.id);
-                const campaignData = await prisma.campaign.findUnique({
-                    where: { id: campaign.id },
-                    select: { external_id: true }
-                });
-                const externalId = campaignData?.external_id || campaign.id;
-                await adapter.pauseCampaign(orgId, externalId);
                 await prisma.campaign.update({
                     where: { id: campaign.id },
                     data: {
@@ -330,32 +322,9 @@ export const resolveStalledCampaign = async (req: Request, res: Response) => {
                 return res.status(400).json({ success: false, error: 'Must provide selectedMailboxIds' });
             }
 
-            let successCount = 0;
-            for (const mailboxId of selectedMailboxIds) {
-                try {
-                    const adapter = await getAdapterForCampaign(campaignId);
-                    const campaignData = await prisma.campaign.findUnique({
-                        where: { id: campaignId },
-                        select: { external_id: true }
-                    });
-                    const mailboxData = await prisma.mailbox.findUnique({
-                        where: { id: mailboxId },
-                        select: { external_email_account_id: true }
-                    });
-                    const externalCampaignId = campaignData?.external_id || campaignId;
-                    const externalMailboxId = mailboxData?.external_email_account_id || mailboxId;
-                    await adapter.addMailboxToCampaign(orgId, externalCampaignId, externalMailboxId);
-                    successCount++;
-                } catch (addError) {
-                    logger.warn(`[CAMPAIGNS] Failed to add mailbox ${mailboxId} to campaign`, addError as Error);
-                }
-            }
-
-            if (successCount === 0) {
-                return res.status(500).json({ success: false, error: 'Failed to add any mailboxes to campaign' });
-            }
-
-            // Sync Database
+            // Native sending — connect mailboxes to the campaign in DB. The
+            // dispatcher picks them up on its next 60s tick.
+            const successCount = selectedMailboxIds.length;
             const prevCampaign = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { status: true } });
             await prisma.campaign.update({
                 where: { id: campaignId },
@@ -380,18 +349,8 @@ export const resolveStalledCampaign = async (req: Request, res: Response) => {
                 }
             });
 
-            // Start the campaign on the platform
-            try {
-                const adapter = await getAdapterForCampaign(campaignId);
-                const campaignData = await prisma.campaign.findUnique({
-                    where: { id: campaignId },
-                    select: { external_id: true }
-                });
-                const externalId = campaignData?.external_id || campaignId;
-                await adapter.resumeCampaign(orgId, externalId);
-            } catch (resumeError) {
-                logger.warn(`[CAMPAIGNS] Failed to resume campaign on platform`, resumeError as Error);
-            }
+            // Native sending — Campaign.status='active' is enough; the
+            // dispatcher resumes on its next 60s tick.
 
             await logAction({
                 organizationId: orgId,
@@ -424,38 +383,30 @@ export const resolveStalledCampaign = async (req: Request, res: Response) => {
                 return res.json({ success: true, message: 'No active leads to reroute' });
             }
 
+            // Native sending — reroute by re-pointing Lead.assigned_campaign_id
+            // and creating a CampaignLead row in the target campaign. The
+            // dispatcher picks up the new enrollment on its next tick.
             let reroutedCount = 0;
             for (const lead of leadsToMove) {
                 try {
-                    // Remove from old campaign on platform
-                    const sourceAdapter = await getAdapterForCampaign(campaignId);
-                    const sourceCampaign = await prisma.campaign.findUnique({
-                        where: { id: campaignId },
-                        select: { external_id: true }
-                    });
-                    const sourceExternalId = sourceCampaign?.external_id || campaignId;
-                    await sourceAdapter.removeLeadFromCampaign(orgId, sourceExternalId, lead.email);
-
-                    // Add to new campaign on platform
-                    const targetAdapter = await getAdapterForCampaign(targetCampaignId);
-                    const targetCampaign = await prisma.campaign.findUnique({
-                        where: { id: targetCampaignId },
-                        select: { external_id: true }
-                    });
-                    const targetExternalId = targetCampaign?.external_id || targetCampaignId;
-                    const added = await targetAdapter.pushLeadToCampaign(orgId, targetExternalId, {
-                        email: lead.email,
-                        first_name: lead.persona,
-                        last_name: ''
-                    });
-
-                    if (added) {
-                        await prisma.lead.update({
+                    await prisma.$transaction([
+                        prisma.lead.update({
                             where: { id: lead.id },
                             data: { assigned_campaign_id: targetCampaignId }
-                        });
-                        reroutedCount++;
-                    }
+                        }),
+                        prisma.campaignLead.deleteMany({
+                            where: { campaign_id: campaignId, email: lead.email.toLowerCase() }
+                        }),
+                        prisma.campaignLead.createMany({
+                            data: [{
+                                campaign_id: targetCampaignId,
+                                email: lead.email.toLowerCase(),
+                                status: 'active',
+                            }],
+                            skipDuplicates: true,
+                        }),
+                    ]);
+                    reroutedCount++;
                 } catch (rerouteError) {
                     logger.warn(`[CAMPAIGNS] Failed to reroute lead ${lead.id}`, rerouteError as Error);
                 }
@@ -646,19 +597,8 @@ export const archiveCampaign = async (req: Request, res: Response) => {
             }
         });
 
-        // Optionally pause on the platform too
-        try {
-            const adapter = await getAdapterForCampaign(campaignId);
-            const campaignData = await prisma.campaign.findUnique({
-                where: { id: campaignId },
-                select: { external_id: true }
-            });
-            const externalId = campaignData?.external_id || campaignId;
-            await adapter.pauseCampaign(orgId, externalId);
-        } catch (platformError) {
-            logger.warn(`[CAMPAIGNS] Failed to pause archived campaign ${campaignId} on platform`, platformError as Error);
-            // Don't block the archive if platform API fails
-        }
+        // Native sending — Campaign.status='paused' (set above by entityState
+        // transition) is enough; the dispatcher excludes archived campaigns.
 
         await logAction({
             organizationId: orgId,

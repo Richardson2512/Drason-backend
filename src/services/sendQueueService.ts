@@ -355,10 +355,21 @@ async function dispatch(): Promise<void> {
         // native sequencer campaigns; filter by source_platform='sequencer' so we
         // only dispatch through the native send path.
         const activeCampaigns = await prisma.campaign.findMany({
-            where: { status: 'active', source_platform: 'sequencer' },
+            where: { status: 'active' },
             include: {
                 steps: { include: { variants: true }, orderBy: { step_number: 'asc' } },
-                accounts: { include: { account: true } },
+                accounts: {
+                    include: {
+                        account: {
+                            include: {
+                                // 1:1 shadow Mailbox — used to honor warmup_limit
+                                // during 5-phase recovery. Mailbox.warmup_limit > 0
+                                // caps daily sends below the normal account cap.
+                                mailbox: { select: { warmup_limit: true, recovery_phase: true } },
+                            },
+                        },
+                    },
+                },
             },
         });
 
@@ -498,7 +509,17 @@ async function dispatch(): Promise<void> {
                     if (acct.connection_status !== 'active') continue;
                     const resetResult = await resetDailySendsIfNeeded(acct.id, acct.sends_reset_at);
                     const mailboxSendsToday = resetResult === 0 ? 0 : acct.sends_today;
-                    const mailboxRemaining = acct.daily_send_limit - mailboxSendsToday;
+
+                    // Mailbox-wide daily cap — normally ConnectedAccount.daily_send_limit,
+                    // but the 5-phase recovery pipeline lowers it via Mailbox.warmup_limit
+                    // during RESTRICTED_SEND / WARM_RECOVERY phases. The smaller of the
+                    // two takes effect so paused mailboxes don't dispatch at full volume
+                    // mid-recovery.
+                    const recoveryCap = (acct.mailbox?.warmup_limit && acct.mailbox.warmup_limit > 0)
+                        ? acct.mailbox.warmup_limit
+                        : Number.POSITIVE_INFINITY;
+                    const effectiveDailyLimit = Math.min(acct.daily_send_limit, recoveryCap);
+                    const mailboxRemaining = effectiveDailyLimit - mailboxSendsToday;
 
                     const campaignCap = ca.daily_limit_override ?? acct.daily_send_limit;
                     const campaignUsageToday = usageMap.get(acct.id) ?? 0;

@@ -38,7 +38,7 @@ function getOAuthClient() {
     );
 }
 
-export function getGoogleAuthorizationUrl(orgId: string): string {
+export function getGoogleAuthorizationUrl(orgId: string, loginHint?: string): string {
     const oauth2Client = getOAuthClient();
 
     const nonce = crypto.randomBytes(16).toString('hex');
@@ -50,6 +50,10 @@ export function getGoogleAuthorizationUrl(orgId: string): string {
         prompt: 'consent', // Force consent to guarantee refresh token
         scope: SCOPES,
         state,
+        // login_hint pre-selects the right Google account on the consent screen.
+        // Used by Zapmail bulk-import flow so the user just clicks "Allow" instead
+        // of picking the right inbox out of many signed-in Google accounts.
+        ...(loginHint ? { login_hint: loginHint } : {}),
     });
 }
 

@@ -1,8 +1,8 @@
 /**
  * Rate Limiter Utility
  *
- * Implements token bucket rate limiting for external API calls.
- * Specifically designed for Smartlead API (10 requests per 2 seconds).
+ * Token-bucket rate limiter for external API calls (Postmaster Tools, SNDS,
+ * MillionVerifier, etc. as those integrations come online).
  *
  * Features:
  * - Token bucket algorithm for smooth rate limiting
@@ -230,71 +230,5 @@ export class RateLimiter {
             processing: this.processing
         };
     }
-}
-
-/**
- * Smartlead API rate limiter instance.
- * Limit: 10 requests per 2 seconds
- */
-export const smartleadRateLimiter = new RateLimiter({
-    maxRequests: 10,
-    windowMs: 2000,
-    queueLimit: 5000,
-    platform: 'smartlead',
-});
-
-/**
- * EmailBison API rate limiter instance.
- * Limit: 5 requests per 2 seconds (more conservative — newer integration)
- */
-export const emailbisonRateLimiter = new RateLimiter({
-    maxRequests: 5,
-    windowMs: 2000,
-    queueLimit: 3000,
-    platform: 'emailbison',
-});
-
-/**
- * Instantly API rate limiter instance (future).
- * Limit: 10 requests per 2 seconds
- */
-export const instantlyRateLimiter = new RateLimiter({
-    maxRequests: 10,
-    windowMs: 2000,
-    queueLimit: 5000,
-    platform: 'instantly',
-});
-
-/**
- * Reply.io API rate limiter instance (future).
- * Limit: 10 requests per 2 seconds
- */
-export const replyioRateLimiter = new RateLimiter({
-    maxRequests: 10,
-    windowMs: 2000,
-    queueLimit: 5000,
-    platform: 'replyio',
-});
-
-// ============================================================================
-// PLATFORM RATE LIMITER REGISTRY
-// ============================================================================
-
-/**
- * Map of platform names to their rate limiters.
- */
-export const platformRateLimiters: Record<string, RateLimiter> = {
-    smartlead: smartleadRateLimiter,
-    emailbison: emailbisonRateLimiter,
-    instantly: instantlyRateLimiter,
-    replyio: replyioRateLimiter,
-};
-
-/**
- * Get the rate limiter for a given platform.
- * Falls back to Smartlead rate limiter for unknown platforms.
- */
-export function getRateLimiterForPlatform(platform: string): RateLimiter {
-    return platformRateLimiters[platform] || smartleadRateLimiter;
 }
 

@@ -19,7 +19,6 @@
 
 import { prisma } from '../index';
 import { logger } from './observabilityService';
-import { getAdapterForMailbox } from '../adapters/platformRegistry';
 import { SlackAlertService } from './SlackAlertService';
 
 interface MailboxLoad {
@@ -421,31 +420,8 @@ export const applySuggestion = async (
                     }
                 });
 
-                // Fetch mailbox for platform adapter resolution
-                const mailboxAdd = await prisma.mailbox.findUnique({
-                    where: { id: suggestion.mailbox_id },
-                    select: { organization_id: true, external_email_account_id: true }
-                });
-
-                if (mailboxAdd?.external_email_account_id) {
-                    try {
-                        const adapter = await getAdapterForMailbox(suggestion.mailbox_id);
-                        const campaign = await prisma.campaign.findUnique({
-                            where: { id: suggestion.to_campaign_id },
-                            select: { external_id: true }
-                        });
-                        const externalCampaignId = campaign?.external_id || suggestion.to_campaign_id;
-                        await adapter.addMailboxToCampaign(
-                            mailboxAdd.organization_id,
-                            externalCampaignId,
-                            mailboxAdd.external_email_account_id
-                        );
-                    } catch (adapterError: any) {
-                        logger.warn(`[LOAD_BALANCING] Platform API call failed for add`, { error: adapterError.message });
-                    }
-                } else {
-                    logger.warn(`[LOAD_BALANCING] Mailbox ${suggestion.mailbox_id} missing external ID, skipping platform API call`);
-                }
+                // Native sending — DB connect already done above; the
+                // dispatcher picks up the new mailbox on its next 60s tick.
                 SlackAlertService.sendAlert({
                     organizationId,
                     eventType: 'load_balancing_add',
@@ -473,31 +449,8 @@ export const applySuggestion = async (
                         }
                     }
                 });
-                // Fetch mailbox for platform adapter resolution
-                const mailboxRemove = await prisma.mailbox.findUnique({
-                    where: { id: suggestion.mailbox_id },
-                    select: { organization_id: true, external_email_account_id: true }
-                });
-
-                if (mailboxRemove?.external_email_account_id) {
-                    try {
-                        const adapter = await getAdapterForMailbox(suggestion.mailbox_id);
-                        const campaign = await prisma.campaign.findUnique({
-                            where: { id: suggestion.from_campaign_id },
-                            select: { external_id: true }
-                        });
-                        const externalCampaignId = campaign?.external_id || suggestion.from_campaign_id;
-                        await adapter.removeMailboxFromCampaign(
-                            mailboxRemove.organization_id,
-                            externalCampaignId,
-                            mailboxRemove.external_email_account_id
-                        );
-                    } catch (adapterError: any) {
-                        logger.warn(`[LOAD_BALANCING] Platform API call failed for remove`, { error: adapterError.message });
-                    }
-                } else {
-                    logger.warn(`[LOAD_BALANCING] Mailbox ${suggestion.mailbox_id} missing external ID, skipping platform API call`);
-                }
+                // Native sending — DB disconnect already done above; the
+                // dispatcher excludes the mailbox on its next 60s tick.
                 SlackAlertService.sendAlert({
                     organizationId,
                     eventType: 'load_balancing_remove',

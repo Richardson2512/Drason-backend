@@ -59,14 +59,14 @@ export const checkWarmupProgress = async (orgId?: string): Promise<{
             }
         });
 
-        // Phase 2+3: RESTRICTED_SEND and WARM_RECOVERY — check send counts for graduation
+        // Phase 2+3: RESTRICTED_SEND and WARM_RECOVERY — check send counts for graduation.
+        // Native sending: graduation criteria are computed from SendEvent/BounceEvent
+        // counts directly (warmupService.checkGraduationCriteria), no external account
+        // ID lookup needed.
         const warmupMailboxes = await prisma.mailbox.findMany({
             where: {
                 recovery_phase: {
                     in: [RecoveryPhase.RESTRICTED_SEND, RecoveryPhase.WARM_RECOVERY]
-                },
-                external_email_account_id: {
-                    not: null
                 },
                 ...(orgId ? { organization_id: orgId } : {}),
             },
@@ -76,7 +76,6 @@ export const checkWarmupProgress = async (orgId?: string): Promise<{
                 organization_id: true,
                 recovery_phase: true,
                 consecutive_pauses: true,
-                external_email_account_id: true,
                 resilience_score: true
             }
         });
@@ -411,8 +410,7 @@ export const getWarmupStatusSummary = async (
             id: true,
             email: true,
             recovery_phase: true,
-            phase_entered_at: true,
-            external_email_account_id: true
+            phase_entered_at: true
         }
     });
 
@@ -435,8 +433,6 @@ export const getWarmupStatusSummary = async (
                 });
                 continue;
             }
-
-            if (!mailbox.external_email_account_id) continue;
 
             const result = await warmupService.checkGraduationCriteria(mailbox.id);
 

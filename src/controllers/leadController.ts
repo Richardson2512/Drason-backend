@@ -81,7 +81,7 @@ export const getLeadCampaigns = async (req: Request, res: Response): Promise<voi
         const assignedCampaign = lead.assigned_campaign_id
             ? await prisma.campaign.findUnique({
                 where: { id: lead.assigned_campaign_id },
-                select: { id: true, name: true, status: true, source_platform: true },
+                select: { id: true, name: true, status: true },
             })
             : null;
 
@@ -96,13 +96,13 @@ export const getLeadCampaigns = async (req: Request, res: Response): Promise<voi
             },
             select: {
                 campaign_id: true,
-                campaign: { select: { id: true, name: true, status: true, source_platform: true } },
+                campaign: { select: { id: true, name: true, status: true } },
             },
             distinct: ['campaign_id'],
         });
 
         // Assemble the final list of campaigns this lead is associated with.
-        const allCampaigns: Array<{ id: string; name: string; status: string; source_platform: string }> = [];
+        const allCampaigns: Array<{ id: string; name: string; status: string }> = [];
         if (assignedCampaign) allCampaigns.push(assignedCampaign);
         for (const enr of sequencerEnrollments) {
             if (!enr.campaign) continue;
@@ -127,7 +127,7 @@ export const getLeadCampaigns = async (req: Request, res: Response): Promise<voi
                     id: { in: crossCampaignIds.map(b => b.campaign_id!).filter(Boolean) },
                     NOT: { id: lead.assigned_campaign_id || '' },
                 },
-                select: { id: true, name: true, status: true, source_platform: true },
+                select: { id: true, name: true, status: true },
             });
             for (const ac of additionalCampaigns) {
                 if (allCampaigns.some((c) => c.id === ac.id)) continue;

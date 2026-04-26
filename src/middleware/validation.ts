@@ -77,17 +77,16 @@ export const registerSchema = z.object({
 // SCHEMAS — Settings
 // ============================================================================
 
+// Settings key allowlist. Add new native-only settings here as features ship.
+// Keys ending in `_API_KEY` or `_SECRET` are stored encrypted by the controller.
 const ALLOWED_SETTING_KEYS = [
-    'SMARTLEAD_API_KEY',
-    'INSTANTLY_API_KEY',
-    'EMAILBISON_API_KEY',
-    'smartlead_webhook_secret',
-    'emailbison_webhook_secret',
-    'instantly_webhook_secret',
+    'POSTMASTER_TOOLS_REFRESH_TOKEN',  // future: spec 03 §3
+    'FBL_INBOX_PASSWORD',              // future: spec 03 §4
+    'SNDS_ACCESS_KEY',                 // future: spec 03 §5
 ] as const;
 
 export const updateSettingsSchema = z.object(
-    Object.fromEntries(ALLOWED_SETTING_KEYS.map(k => [k, z.string().max(512).optional()]))
+    Object.fromEntries(ALLOWED_SETTING_KEYS.map(k => [k, z.string().max(2048).optional()]))
 ).refine(obj => Object.values(obj).some(v => v !== undefined), { message: 'At least one setting is required' }) as z.ZodType<Partial<Record<(typeof ALLOWED_SETTING_KEYS)[number], string>>>;
 
 export const updateOrganizationSchema = z.object({

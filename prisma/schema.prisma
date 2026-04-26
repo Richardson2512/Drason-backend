@@ -34,6 +34,11 @@ model Organization {
   // Webhook Security
   clay_webhook_secret String? // HMAC secret for Clay webhook validation
 
+  // Zapmail integration — API key (encrypted at rest) used to list mailboxes
+  // for one-click bulk import. Single Zapmail workspace per organization.
+  zapmail_api_key       String?
+  zapmail_connected_at  DateTime?
+
   created_at         DateTime               @default(now())
   updated_at         DateTime               @updatedAt
   apiKeys            ApiKey[]
@@ -228,7 +233,6 @@ model Lead {
   persona               String
   lead_score            Int
   source                String          @default("clay") // Origin: clay, manual, csv
-  source_platform       SourcePlatform? // Platform managing this lead (null = unassigned/legacy)
   // Direct-dial / outbound channels — populated when available from imports,
   // CRM sync, or enrichment. Surfaced in the Cold Call List CSV so SDRs can
   // dial straight from the export. Both nullable; never required.
@@ -271,7 +275,6 @@ model Lead {
   @@index([organization_id, status])
   @@index([organization_id, assigned_campaign_id])
   @@index([organization_id, health_classification])
-  @@index([organization_id, source_platform])
   @@index([organization_id, validation_status])
   @@index([health_classification, health_checked_at]) // For health worker queries
   @@index([status])
@@ -317,8 +320,6 @@ model Campaign {
   name            String
   channel         String         @default("email")
   status          String         @default("active")
-  source_platform SourcePlatform @default(smartlead)
-  external_id     String?        // Original ID from the platform (null for native sequencer)
   paused_reason   String?
   paused_at       DateTime?
   paused_by       String?        @default("system")
@@ -362,7 +363,6 @@ model Campaign {
   launched_at         DateTime?
 
   organization_id String
-  last_synced_at  DateTime @default(now())
   created_at      DateTime @default(now())
   updated_at      DateTime @updatedAt
 
@@ -370,15 +370,12 @@ model Campaign {
   mailboxes      Mailbox[]                @relation("CampaignToMailbox")
   routingRules   RoutingRule[]
   dailyAnalytics CampaignDailyAnalytics[]
-  // Sequencer back-relations — populated only for source_platform='sequencer' rows.
   steps          SequenceStep[]
   leads          CampaignLead[]
   accounts       CampaignAccount[]
   leadImports    CampaignLeadImport[]
 
-  @@unique([organization_id, source_platform, external_id])
   @@index([organization_id, status])
-  @@index([organization_id, source_platform])
   @@index([organization_id])
 }
 
@@ -408,8 +405,6 @@ model Mailbox {
   id                      String         @id
   email                   String
   status                  String         @default("healthy")
-  source_platform         SourcePlatform @default(smartlead)
-  external_email_account_id String?       // External ID from any platform (numeric for Smartlead/EmailBison, email for Instantly)
   recovery_phase          String         @default("healthy") // RecoveryPhase: healthy|paused|quarantine|restricted_send|warm_recovery
   healing_origin          String? // HealingOrigin: rehab|recovery
   phase_entered_at        DateTime? // When the entity entered its current recovery phase
@@ -438,10 +433,7 @@ model Mailbox {
   phase_clean_sends Int @default(0) // Clean sends in current healing phase (separate from clean_sends_since_phase)
   phase_bounces     Int @default(0) // Bounces in current healing phase
 
-  // Legacy Smartlead field — kept for backward compat, use external_email_account_id for new code
-  smartlead_email_account_id Int?
-
-  // Connection Diagnostics (from platform sync)
+  // Connection Diagnostics
   smtp_status      Boolean @default(true) // SMTP connection healthy
   imap_status      Boolean @default(true) // IMAP connection healthy
   connection_error String? // Raw error from platform (e.g. "Failed to refresh Google token: invalid_grant")
@@ -470,8 +462,7 @@ model Mailbox {
 
   domain_id       String
   organization_id String
-  // For Sequencer-created mailboxes: back-reference to the ConnectedAccount holding OAuth/SMTP credentials.
-  // Null for legacy Smartlead/Instantly/EmailBison synced mailboxes.
+  // 1:1 back-reference to the ConnectedAccount holding OAuth/SMTP credentials.
   connected_account_id String?        @unique
   created_at      DateTime        @default(now())
   updated_at      DateTime        @updatedAt
@@ -482,7 +473,6 @@ model Mailbox {
   campaigns       Campaign[]      @relation("CampaignToMailbox")
 
   @@index([organization_id, status])
-  @@index([organization_id, source_platform])
   @@index([organization_id, domain_id])
   @@index([domain_id])
   @@index([connected_account_id])
@@ -493,7 +483,6 @@ model Domain {
   id                           String         @id @default(uuid())
   domain                       String
   status                       String         @default("healthy")
-  source_platform              SourcePlatform @default(smartlead)
   recovery_phase               String         @default("healthy") // RecoveryPhase
   healing_origin               String? // HealingOrigin: rehab|recovery
   phase_entered_at             DateTime? // When entered current recovery phase
@@ -546,7 +535,6 @@ model Domain {
 
   @@unique([organization_id, domain])
   @@index([organization_id, status])
-  @@index([organization_id, source_platform])
   @@index([organization_id])
   @@index([recovery_phase])
 }
@@ -777,13 +765,6 @@ enum SlackAlertsStatus {
   auth_error
 }
 
-enum SourcePlatform {
-  smartlead
-  emailbison
-  instantly
-  replyio
-  sequencer
-}
 
 model SlackAlertLog {
   id              String   @id @default(uuid())

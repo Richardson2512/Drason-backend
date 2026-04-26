@@ -15,14 +15,11 @@ import * as routingService from '../services/routingService';
 import * as auditLogService from '../services/auditLogService';
 import * as eventService from '../services/eventService';
 import * as leadHealthService from '../services/leadHealthService';
-import { getAdapterForCampaign } from '../adapters/platformRegistry';
 import * as leadAssignmentService from '../services/leadAssignmentService';
 import * as entityStateService from '../services/entityStateService';
 import * as emailValidationService from '../services/emailValidationService';
 import { enrollLeadInSequencerCampaign } from '../services/sequencerEnrollmentService';
 import * as redisUtils from '../utils/redis';
-import * as espClassifierService from '../services/espClassifierService';
-import { scoreMailboxesForEsp } from '../services/espMailboxScoringService';
 import { getOrgId } from '../middleware/orgContext';
 import { EventType, LeadState, TriggerType, ValidationStatus } from '../types';
 import { logger } from '../services/observabilityService';
@@ -314,102 +311,47 @@ export async function processLead(
         details: `Routed to campaign ${campaignId} via ${source} (load: ${assignmentResult.currentLoad}/${assignmentResult.capacity}).`
     });
 
-    // === 7. PLATFORM PUSH ===
-    // Branch by campaign source_platform. Sequencer campaigns have no external
-    // adapter — the "push" is creating a CampaignLead row via
-    // enrollLeadInSequencerCampaign. Legacy platform-sync campaigns go through
-    // the adapter as before, with ESP-aware mailbox scoring for Smartlead.
+    // === 7. SEQUENCER ENROLLMENT ===
+    // Native sending — every campaign is a sequencer campaign. We create a
+    // CampaignLead row idempotently; the dispatcher picks it up on its next tick.
+    // ESP-aware mailbox routing happens at dispatch time inside sendQueueService.
     let pushedToPlatform = false;
-    let pushedPlatformLabel = 'unknown'; // Used only for audit/error messages.
     try {
-        const campaign = await prisma.campaign.findUnique({
-            where: { id: campaignId },
-            select: { external_id: true, source_platform: true },
+        const result = await enrollLeadInSequencerCampaign(organizationId, campaignId, {
+            email,
+            first_name,
+            last_name,
+            company,
         });
 
-        let pushSucceeded = false;
-
-        if (campaign?.source_platform === 'sequencer') {
-            pushedPlatformLabel = 'sequencer';
-            const result = await enrollLeadInSequencerCampaign(organizationId, campaignId, {
-                email,
-                first_name,
-                last_name,
-                company,
-            });
-            pushSucceeded = result.success;
-            if (!pushSucceeded) {
-                logger.warn(`[${logTag}] Sequencer enrollment failed for ${email}: ${result.error}`);
-            }
-        } else {
-            const adapter = await getAdapterForCampaign(campaignId);
-            pushedPlatformLabel = adapter.platform;
-            const externalCampaignId = campaign?.external_id || campaignId;
-
-            // ESP-aware mailbox scoring: pick the best mailboxes for this recipient's ESP
-            let espOptions: { assignedEmailAccounts?: string[] } | undefined;
-            if (adapter.platform === 'smartlead') {
-                try {
-                    const domain = email.split('@')[1]?.toLowerCase();
-                    if (domain) {
-                        const espBucket = await espClassifierService.getEspBucket(organizationId, domain);
-                        if (espBucket && espBucket !== 'other') {
-                            const topMailboxes = await scoreMailboxesForEsp(organizationId, campaignId, espBucket);
-                            if (topMailboxes) espOptions = { assignedEmailAccounts: topMailboxes };
-                        }
-                    }
-                } catch (espErr: any) {
-                    // Best-effort — don't block the push if ESP scoring fails
-                    logger.warn(`[${logTag}] ESP scoring failed, using standard routing`, { error: espErr.message });
-                }
-            }
-
-            const pushResult = await adapter.pushLeadToCampaign(
-                organizationId,
-                externalCampaignId,
-                { email, first_name, last_name, company },
-                espOptions
-            );
-            pushSucceeded = !!pushResult?.success;
-        }
-
-        if (pushSucceeded) {
+        if (result.success) {
             await entityStateService.transitionLead(
                 organizationId,
                 createdLead.id,
                 LeadState.ACTIVE,
-                `Pushed to ${pushedPlatformLabel} campaign ${campaignId} via ${source}`,
+                `Enrolled in sequencer campaign ${campaignId} via ${source}`,
                 TriggerType.SYSTEM
             );
-            // Set source_platform so downstream reads know which lane handled this lead.
-            await prisma.lead.update({
-                where: { id: createdLead.id },
-                data: { source_platform: pushedPlatformLabel as any },
-            });
-            // Clear any prior retry counter — fresh start on a new successful push.
             try { await redisUtils.clearPushRetry(createdLead.id); } catch (_) { /* non-critical */ }
             pushedToPlatform = true;
-            logger.info(`[${logTag}] Successfully pushed lead ${email} to ${pushedPlatformLabel} campaign ${campaignId}`);
+            logger.info(`[${logTag}] Successfully enrolled lead ${email} in sequencer campaign ${campaignId}`);
         } else {
-            // Push failed. Instead of rolling back the assignment (which used to orphan
-            // the lead permanently), we keep it HELD with its campaign assignment so the
-            // Lead Processor (processor.ts, runs every 10s) can retry. The retry
-            // counter is bumped here; processor.ts short-circuits once the cap is hit.
+            // Enrollment failed. Keep the lead HELD with its campaign assignment so the
+            // Lead Processor (processor.ts, runs every 10s) can retry.
             const attempts = await redisUtils.incrementPushRetry(createdLead.id).catch(() => 1);
-            logger.warn(`[${logTag}] Failed to push lead ${email} — leaving HELD for retry (attempt ${attempts})`);
+            logger.warn(`[${logTag}] Failed to enroll lead ${email} — leaving HELD for retry (attempt ${attempts}): ${result.error}`);
             await auditLogService.logAction({
                 organizationId,
                 entity: 'lead',
                 entityId: createdLead.id,
                 trigger: 'ingestion',
-                action: 'push_failed',
-                details: `Failed to push to ${pushedPlatformLabel} campaign ${campaignId}. Scheduled for retry via processor (attempt ${attempts}). Source: ${source}.`
+                action: 'enrollment_failed',
+                details: `Failed to enroll in sequencer campaign ${campaignId}. Scheduled for retry via processor (attempt ${attempts}). Source: ${source}.`
             });
         }
-    } catch (pushError: any) {
-        // Thrown error path — same retry-friendly handling as pushSuccess=false.
+    } catch (enrollError: any) {
         const attempts = await redisUtils.incrementPushRetry(createdLead.id).catch(() => 1);
-        logger.error(`[${logTag}] Error pushing lead to campaign — leaving HELD for retry (attempt ${attempts})`, pushError, { campaignId });
+        logger.error(`[${logTag}] Error enrolling lead in campaign — leaving HELD for retry (attempt ${attempts})`, enrollError, { campaignId });
     }
 
     return {

@@ -186,8 +186,7 @@ export const listLeads = async (req: Request, res: Response): Promise<Response> 
                 where,
                 select: {
                     id: true, email: true, persona: true, status: true, lead_score: true,
-                    source: true, source_platform: true,
-                    validation_status: true, validation_score: true,
+                    source: true,                     validation_status: true, validation_score: true,
                     is_catch_all: true, is_disposable: true,
                     emails_sent: true, emails_opened: true, emails_clicked: true, emails_replied: true,
                     last_activity_at: true, created_at: true,
@@ -261,8 +260,7 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
                 organization_id: orgId,
                 name: name.trim(),
                 status: 'draft',
-                source_platform: 'sequencer',
-                channel: 'email',
+                                channel: 'email',
                 schedule_timezone: schedule?.timezone || 'UTC',
                 schedule_start_time: schedule?.start_time || '09:00',
                 schedule_end_time: schedule?.end_time || '17:00',
@@ -366,7 +364,7 @@ export const listCampaigns = async (req: Request, res: Response): Promise<Respon
         // v1 API's sequencer campaigns endpoint — scoped to sequencer rows only.
         // Legacy platform-synced campaigns have their own lookup path.
         const campaigns = await prisma.campaign.findMany({
-            where: { organization_id: orgId, source_platform: 'sequencer' },
+            where: { organization_id: orgId },
             include: {
                 _count: { select: { leads: true, steps: true } }
             },
@@ -401,7 +399,7 @@ export const getCampaign = async (req: Request, res: Response): Promise<Response
 
     try {
         const campaign = await prisma.campaign.findFirst({
-            where: { id: req.params.id as string, organization_id: orgId, source_platform: 'sequencer' },
+            where: { id: req.params.id as string, organization_id: orgId },
             include: {
                 steps: {
                     include: { variants: true },
@@ -472,7 +470,7 @@ export const launchCampaign = async (req: Request, res: Response): Promise<Respo
 
     try {
         const campaign = await prisma.campaign.findFirst({
-            where: { id: req.params.id as string, organization_id: orgId, source_platform: 'sequencer' },
+            where: { id: req.params.id as string, organization_id: orgId },
         });
 
         if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
@@ -547,7 +545,7 @@ export const getCampaignReport = async (req: Request, res: Response): Promise<Re
 
     try {
         const campaign = await prisma.campaign.findFirst({
-            where: { id: req.params.id as string, organization_id: orgId, source_platform: 'sequencer' },
+            where: { id: req.params.id as string, organization_id: orgId },
             select: { id: true, name: true, status: true, created_at: true }
         });
 
@@ -601,7 +599,7 @@ export const getCampaignReplies = async (req: Request, res: Response): Promise<R
 
     try {
         const campaign = await prisma.campaign.findFirst({
-            where: { id: req.params.id as string, organization_id: orgId, source_platform: 'sequencer' },
+            where: { id: req.params.id as string, organization_id: orgId },
             select: { id: true }
         });
 
@@ -761,8 +759,7 @@ export const listMailboxes = async (req: Request, res: Response): Promise<Respon
         const mailboxes = await prisma.mailbox.findMany({
             where: { organization_id: orgId },
             select: {
-                id: true, email: true, status: true, source_platform: true,
-                smtp_status: true, imap_status: true,
+                id: true, email: true, status: true,                 smtp_status: true, imap_status: true,
                 total_sent_count: true, hard_bounce_count: true,
                 warmup_status: true, warmup_reputation: true,
                 recovery_phase: true, resilience_score: true,
@@ -788,8 +785,7 @@ export const listDomains = async (req: Request, res: Response): Promise<Response
         const domains = await prisma.domain.findMany({
             where: { organization_id: orgId },
             select: {
-                id: true, domain: true, status: true, source_platform: true,
-                total_sent_lifetime: true, total_opens: true, total_clicks: true, total_replies: true,
+                id: true, domain: true, status: true,                 total_sent_lifetime: true, total_opens: true, total_clicks: true, total_replies: true,
                 aggregated_bounce_rate_trend: true, warning_count: true,
                 recovery_phase: true, resilience_score: true,
             },

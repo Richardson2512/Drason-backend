@@ -29,7 +29,7 @@ export const listCampaigns = async (req: Request, res: Response): Promise<Respon
         // Sequencer campaigns only — Campaign table post-merge holds both legacy
         // platform-synced AND sequencer campaigns; this endpoint is the sequencer
         // dashboard, so we filter by source_platform='sequencer'.
-        const where: any = { organization_id: orgId, source_platform: 'sequencer' };
+        const where: any = { organization_id: orgId };
         if (status && status !== 'all') where.status = status;
 
         const [campaigns, total] = await Promise.all([
@@ -95,7 +95,7 @@ export const getCampaign = async (req: Request, res: Response): Promise<Response
         const campaignId = String(req.params.id);
 
         const campaign = await prisma.campaign.findFirst({
-            where: { id: campaignId, organization_id: orgId, source_platform: 'sequencer' },
+            where: { id: campaignId, organization_id: orgId },
             include: {
                 steps: {
                     orderBy: { step_number: 'asc' },
@@ -173,7 +173,7 @@ export const listCampaignLeads = async (req: Request, res: Response): Promise<Re
         const search = (req.query.search as string) || undefined;
 
         const campaign = await prisma.campaign.findFirst({
-            where: { id: campaignId, organization_id: orgId, source_platform: 'sequencer' },
+            where: { id: campaignId, organization_id: orgId },
             select: { id: true },
         });
         if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
@@ -255,8 +255,7 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
                     organization_id: orgId,
                     name,
                     status: 'draft',
-                    source_platform: 'sequencer',
-                    channel: 'email',
+                                        channel: 'email',
                     tags: tags || [],
                     // Schedule
                     schedule_timezone: schedule?.timezone || 'UTC',
@@ -522,7 +521,7 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
         let acceptedEmails: string[] = [];
 
         const campaign = await prisma.campaign.findFirst({
-            where: { id: campaignId, organization_id: orgId, source_platform: 'sequencer' },
+            where: { id: campaignId, organization_id: orgId },
         });
 
         if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
@@ -799,7 +798,7 @@ export const deleteCampaign = async (req: Request, res: Response): Promise<Respo
         const campaignId = String(req.params.id);
 
         const campaign = await prisma.campaign.findFirst({
-            where: { id: campaignId, organization_id: orgId, source_platform: 'sequencer' },
+            where: { id: campaignId, organization_id: orgId },
         });
 
         if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
@@ -823,7 +822,7 @@ export const launchCampaign = async (req: Request, res: Response): Promise<Respo
         const campaignId = String(req.params.id);
 
         const campaign = await prisma.campaign.findFirst({
-            where: { id: campaignId, organization_id: orgId, source_platform: 'sequencer' },
+            where: { id: campaignId, organization_id: orgId },
         });
 
         if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
@@ -881,7 +880,7 @@ export const pauseCampaign = async (req: Request, res: Response): Promise<Respon
         const campaignId = String(req.params.id);
 
         const campaign = await prisma.campaign.findFirst({
-            where: { id: campaignId, organization_id: orgId, source_platform: 'sequencer' },
+            where: { id: campaignId, organization_id: orgId },
         });
 
         if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
@@ -911,7 +910,7 @@ export const resumeCampaign = async (req: Request, res: Response): Promise<Respo
         const campaignId = String(req.params.id);
 
         const campaign = await prisma.campaign.findFirst({
-            where: { id: campaignId, organization_id: orgId, source_platform: 'sequencer' },
+            where: { id: campaignId, organization_id: orgId },
         });
 
         if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });

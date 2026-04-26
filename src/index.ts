@@ -57,15 +57,11 @@ import { initRedis, checkRedisHealth, disconnectRedis } from './utils/redis';
 import leadRoutes from './routes/leads';
 import dashboardRoutes from './routes/dashboard';
 import settingsRoutes from './routes/settings';
-import syncRoutes from './routes/sync';
 import authRoutes from './routes/auth';
 import assessmentRoutes from './routes/assessment';
 import healingRoutes from './routes/healing';
 import billingRoutes from './routes/billing';
 import userRoutes from './routes/user';
-import smartleadWebhookRoutes from './routes/smartleadWebhook';
-import emailbisonWebhookRoutes from './routes/emailbisonWebhook';
-import instantlyWebhookRoutes from './routes/instantlyWebhook';
 import findingsRoutes from './routes/findings';
 import analyticsRoutes from './routes/analytics';
 import syncProgressRoutes from './routes/syncProgress';
@@ -97,7 +93,6 @@ import { initEventQueue, getQueueStatus, shutdownEventQueue } from './services/e
 import { startLeadHealthWorker, getLeadHealthWorkerStatus } from './services/leadHealthWorker';
 import { startLeadScoringWorker, stopLeadScoringWorker } from './services/leadScoringWorker';
 import { startTrialWorker, stopTrialWorker } from './services/trialWorker';
-import { startPlatformSyncWorker, stopPlatformSyncWorker, getPlatformSyncWorkerStatus } from './services/platformSyncWorker';
 import { scheduleWarmupTracking } from './workers/warmupTrackingWorker';
 import { scheduleEspPerformanceAggregation } from './workers/espPerformanceWorker';
 import { scheduleSendQueue } from './services/sendQueueService';
@@ -190,7 +185,6 @@ app.get('/health', asyncHandler(async (req: express.Request, res: express.Respon
     const retentionJob = getRetentionJobStatus();
     const eventQueueStatus = await getQueueStatus();
     const leadHealthWorker = getLeadHealthWorkerStatus();
-    const platformSyncWorker = getPlatformSyncWorkerStatus();
 
     const components = {
         database: dbStatus,
@@ -216,15 +210,6 @@ app.get('/health', asyncHandler(async (req: express.Request, res: express.Respon
             status: leadHealthWorker.lastRunAt ? 'active' : 'not_started',
             lastRunAt: leadHealthWorker.lastRunAt,
             lastError: leadHealthWorker.lastError
-        },
-        platformSyncWorker: {
-            status: platformSyncWorker.lastRunAt ? 'active' : 'not_started',
-            lastRunAt: platformSyncWorker.lastRunAt,
-            lastError: platformSyncWorker.lastError,
-            totalSyncs: platformSyncWorker.totalSyncs,
-            totalOrganizationsSynced: platformSyncWorker.totalOrganizationsSynced,
-            lastSyncDurationMs: platformSyncWorker.lastSyncDurationMs,
-            consecutiveFailures: platformSyncWorker.consecutiveFailures
         }
     };
 
@@ -266,15 +251,11 @@ app.use('/slack', slackRoutes);
 app.use('/api/leads', leadRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/settings', settingsRoutes);
-app.use('/api/sync', syncRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/assessment', assessmentRoutes);
 app.use('/api/healing', healingRoutes);
 app.use('/api/billing', billingRoutes);
 app.use('/api/user', userRoutes);
-app.use('/api/monitor', smartleadWebhookRoutes);
-app.use('/api/monitor', emailbisonWebhookRoutes);
-app.use('/api/monitor', instantlyWebhookRoutes);
 app.use('/api/findings', findingsRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/sync-progress', syncProgressRoutes);
@@ -297,7 +278,6 @@ app.post('/api/ingest/clay', checkLeadCapacity, asyncHandler(ingestionController
 
 // Monitoring endpoints
 app.post('/api/monitor/event', asyncHandler(monitoringController.triggerEvent));
-// Note: /api/monitor/smartlead-webhook is handled by smartleadWebhookRoutes (line 187)
 
 // ============================================================================
 // ADMIN ENDPOINTS — DLQ, Replay, System Metrics
@@ -305,7 +285,7 @@ app.post('/api/monitor/event', asyncHandler(monitoringController.triggerEvent));
 
 import { getDeadLetterJobs, retryDeadLetterJob, retryAllDeadLetterJobs } from './services/eventQueue';
 import { replayEvents, getReplaySummary } from './services/replayService';
-import { smartleadBreaker } from './utils/circuitBreaker';
+import { getAllBreakerStatuses } from './utils/circuitBreaker';
 import { requireRole } from './middleware/security';
 import { UserRole } from './types';
 import * as healingService from './services/healingService';
@@ -384,8 +364,8 @@ app.get('/api/dashboard/system-metrics', requireRole(UserRole.ADMIN), asyncHandl
     // Queue status
     const queueStatus = await getQueueStatus();
 
-    // Circuit breaker status
-    const circuitBreakerStatus = smartleadBreaker.getStatus();
+    // Circuit breaker status — Gmail, Microsoft Graph, SMTP send paths
+    const circuitBreakerStatus = getAllBreakerStatuses();
 
     // Lead health worker status
     const leadHealthStatus = getLeadHealthWorkerStatus();
@@ -434,15 +414,18 @@ app.get('/api/dashboard/system-metrics', requireRole(UserRole.ADMIN), asyncHandl
                 completed: queueStatus.completedCount,
                 lastProcessedAt: queueStatus.lastProcessedAt,
             },
-            circuitBreaker: {
-                smartlead: {
-                    state: circuitBreakerStatus.state,
-                    consecutiveFailures: circuitBreakerStatus.consecutiveFailures,
-                    totalFailures: circuitBreakerStatus.totalFailures,
-                    lastFailureAt: circuitBreakerStatus.lastFailureAt,
-                    nextAttemptAt: circuitBreakerStatus.nextAttemptAt,
-                },
-            },
+            circuitBreaker: Object.fromEntries(
+                circuitBreakerStatus.map((s) => [
+                    s.name,
+                    {
+                        state: s.state,
+                        consecutiveFailures: s.consecutiveFailures,
+                        totalFailures: s.totalFailures,
+                        lastFailureAt: s.lastFailureAt,
+                        nextAttemptAt: s.nextAttemptAt,
+                    },
+                ]),
+            ),
             leadHealthWorker: {
                 lastRunAt: leadHealthStatus.lastRunAt,
                 totalReclassified: leadHealthStatus.totalReclassified,
@@ -624,9 +607,6 @@ const server = app.listen(PORT, () => {
     startTrialWorker();
     logger.info('Trial expiration worker started (runs hourly)');
 
-    // Start Platform sync worker for 24/7 infrastructure monitoring
-    startPlatformSyncWorker();
-    logger.info('Platform sync worker started (runs every 20min for real-time monitoring)');
 
     // Start warmup tracking worker for automated recovery
     scheduleWarmupTracking();
@@ -689,8 +669,6 @@ async function gracefulShutdown(signal: string): Promise<void> {
     stopTrialWorker();
     logger.info('Trial worker stopped');
 
-    stopPlatformSyncWorker();
-    logger.info('Platform sync worker stopped');
 
     infrastructureAssessmentService.stopPeriodicAssessment();
     logger.info('Periodic assessment worker stopped');

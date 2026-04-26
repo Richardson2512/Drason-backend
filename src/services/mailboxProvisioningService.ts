@@ -46,8 +46,7 @@ export async function provisionMailboxForConnectedAccount(
         create: {
             domain: domainName,
             organization_id: organizationId,
-            source_platform: 'sequencer',
-            status: 'healthy',
+                        status: 'healthy',
             recovery_phase: 'healthy',
         },
         update: {}, // No-op on existing domain
@@ -92,8 +91,7 @@ export async function provisionMailboxForConnectedAccount(
             id: connectedAccountId,
             email: email.toLowerCase(),
             status: 'healthy',
-            source_platform: 'sequencer',
-            recovery_phase: 'healthy',
+                        recovery_phase: 'healthy',
             domain_id: domain.id,
             organization_id: organizationId,
             connected_account_id: connectedAccountId,

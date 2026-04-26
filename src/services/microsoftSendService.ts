@@ -53,7 +53,7 @@ function getRedirectUri(): string {
     return `${backendUrl}/api/sequencer/accounts/microsoft/callback`;
 }
 
-export async function getMicrosoftAuthorizationUrl(orgId: string): Promise<string> {
+export async function getMicrosoftAuthorizationUrl(orgId: string, loginHint?: string): Promise<string> {
     const app = getMsalApp();
 
     const nonce = crypto.randomBytes(16).toString('hex');
@@ -64,7 +64,11 @@ export async function getMicrosoftAuthorizationUrl(orgId: string): Promise<strin
         scopes: SCOPES,
         redirectUri: getRedirectUri(),
         state,
-        prompt: 'select_account', // Let user pick account if multiple
+        // When a login_hint is supplied (Zapmail bulk-import flow) we skip the
+        // account picker — Azure jumps straight to the "Allow" screen for that
+        // mailbox. Without a hint, fall back to select_account.
+        prompt: loginHint ? 'login' : 'select_account',
+        ...(loginHint ? { loginHint } : {}),
     });
 
     return url;

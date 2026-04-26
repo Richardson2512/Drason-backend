@@ -31,7 +31,8 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 export const googleAuthorize = async (req: Request, res: Response): Promise<void> => {
     try {
         const orgId = getOrgId(req);
-        const url = getGoogleAuthorizationUrl(orgId);
+        const loginHint = typeof req.query.email === 'string' && req.query.email ? req.query.email : undefined;
+        const url = getGoogleAuthorizationUrl(orgId, loginHint);
         res.redirect(url);
     } catch (err: any) {
         logger.error('[OAUTH] Google authorize failed', err);
@@ -118,7 +119,8 @@ export const googleCallback = async (req: Request, res: Response): Promise<void>
 export const microsoftAuthorize = async (req: Request, res: Response): Promise<void> => {
     try {
         const orgId = getOrgId(req);
-        const url = await getMicrosoftAuthorizationUrl(orgId);
+        const loginHint = typeof req.query.email === 'string' && req.query.email ? req.query.email : undefined;
+        const url = await getMicrosoftAuthorizationUrl(orgId, loginHint);
         res.redirect(url);
     } catch (err: any) {
         logger.error('[OAUTH] Microsoft authorize failed', err);

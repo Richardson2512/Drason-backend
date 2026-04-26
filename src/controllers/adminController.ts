@@ -64,23 +64,14 @@ export const getOrganizations = async (req: Request, res: Response, next: NextFu
             orderBy: { created_at: 'desc' }
         });
 
-        // Enrich each org with platform connections and validation stats
+        // Enrich each org with mailbox connection counts + validation stats
         const enriched = await Promise.all(organizations.map(async (org) => {
-            // Platform connections (check which API keys are configured)
-            const settings = await prisma.organizationSetting.findMany({
-                where: { organization_id: org.id, key: { in: ['SMARTLEAD_API_KEY', 'INSTANTLY_API_KEY', 'EMAILBISON_API_KEY'] } },
-                select: { key: true },
-            });
-            const platforms = settings.map(s => s.key.replace('_API_KEY', '').toLowerCase());
-
-            // Also check source_platform on campaigns for actual connected platforms
-            const campaignPlatforms = await prisma.campaign.groupBy({
-                by: ['source_platform'],
+            const connectedAccounts = await prisma.connectedAccount.groupBy({
+                by: ['provider'],
                 where: { organization_id: org.id },
                 _count: true,
             });
 
-            // Validation stats
             const validationCount = await prisma.validationAttempt.count({
                 where: { organization_id: org.id },
             });
@@ -90,9 +81,8 @@ export const getOrganizations = async (req: Request, res: Response, next: NextFu
 
             return {
                 ...org,
-                platforms: [...new Set([...platforms, ...campaignPlatforms.map(cp => cp.source_platform)])],
-                campaignsByPlatform: campaignPlatforms.reduce((acc, cp) => {
-                    acc[cp.source_platform] = cp._count;
+                connectedAccountsByProvider: connectedAccounts.reduce((acc, ca) => {
+                    acc[ca.provider] = ca._count;
                     return acc;
                 }, {} as Record<string, number>),
                 validationStats: {
@@ -105,11 +95,10 @@ export const getOrganizations = async (req: Request, res: Response, next: NextFu
         // Platform-wide aggregates
         const totalValidations = enriched.reduce((s, o) => s + o.validationStats.total, 0);
         const totalMvApiCalls = enriched.reduce((s, o) => s + o.validationStats.apiCalls, 0);
-        const smartleadConnections = enriched.filter(o => o.platforms.includes('smartlead')).length;
-        const instantlyConnections = enriched.filter(o => o.platforms.includes('instantly')).length;
-        const emailbisonConnections = enriched.filter(o => o.platforms.includes('emailbison')).length;
+        const gmailConnections = enriched.reduce((s, o) => s + (o.connectedAccountsByProvider.google || 0), 0);
+        const microsoftConnections = enriched.reduce((s, o) => s + (o.connectedAccountsByProvider.microsoft || 0), 0);
+        const smtpConnections = enriched.reduce((s, o) => s + (o.connectedAccountsByProvider.smtp || 0), 0);
 
-        // API call tracking stats
         const apiCallStats = await getApiCallStats();
 
         logger.info('[SUPER_ADMIN] Listed organizations', {
@@ -124,9 +113,9 @@ export const getOrganizations = async (req: Request, res: Response, next: NextFu
                 platformStats: {
                     totalValidations,
                     totalMvApiCalls,
-                    smartleadConnections,
-                    instantlyConnections,
-                    emailbisonConnections,
+                    gmailConnections,
+                    microsoftConnections,
+                    smtpConnections,
                     apiCalls: apiCallStats,
                 },
             },

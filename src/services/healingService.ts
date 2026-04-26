@@ -23,7 +23,6 @@ import * as auditLogService from './auditLogService';
 import * as notificationService from './notificationService';
 import * as entityStateService from './entityStateService';
 import { MailboxState, DomainState } from '../types';
-import { getAdapterForMailbox, getAdapterForCampaign, tryGetAdapterForMailbox } from '../adapters/platformRegistry';
 import { SlackAlertService } from './SlackAlertService';
 import { assessDomainDNS } from './infrastructureAssessmentService';
 import logger from '../utils/logger';
@@ -884,53 +883,25 @@ export async function transitionPhase(
                 });
             }
 
-            // Step 2: Re-add mailbox to production campaigns on external platform
-            let campaigns: Array<{ id: string; external_id: string | null; name: string }> = [];
+            // Step 2: Native sending — send queue reads Mailbox.status directly,
+            // so a healed mailbox is automatically eligible for dispatch again.
+            // No external platform re-add needed.
+            let campaigns: Array<{ id: string; name: string }> = [];
             try {
-                const adapter = await tryGetAdapterForMailbox(entityId);
                 campaigns = await prisma.campaign.findMany({
                     where: { mailboxes: { some: { id: entityId } } },
-                    select: { id: true, external_id: true, name: true }
+                    select: { id: true, name: true }
                 });
 
-                if (!adapter) {
-                    // Sequencer mailbox — native sending, send queue reads mailbox.status
-                    // directly so no re-add call needed. Healing state change alone is sufficient.
-                    logger.info(`[HEALING] Sequencer mailbox ${entityId} graduated — no external platform re-add needed`, {
-                        organizationId,
-                        entityId,
-                    });
-                } else {
-                    const mailboxEntity = await prisma.mailbox.findUnique({
-                        where: { id: entityId },
-                        select: { external_email_account_id: true }
-                    });
-
-                    // Re-add the mailbox to each campaign on the platform
-                    const externalMailboxId = mailboxEntity?.external_email_account_id || entityId;
-                    for (const campaign of campaigns) {
-                        const externalCampaignId = campaign.external_id || campaign.id;
-                        await adapter.addMailboxToCampaign(
-                            organizationId,
-                            externalCampaignId,
-                            externalMailboxId
-                        );
-                    }
-
-                    logger.info(`[HEALING] Re-added mailbox ${entityId} to ${campaigns.length} production campaigns`, {
-                        organizationId,
-                        entityId,
-                        campaignCount: campaigns.length,
-                        platform: adapter.platform
-                    });
-                }
+                logger.info(`[HEALING] Mailbox ${entityId} graduated to healthy — eligible for dispatch`, {
+                    organizationId,
+                    entityId,
+                });
 
                 // ── AUTO-RESTART: Check if any campaigns were waiting for mailbox recovery ──
                 await checkAndRestartWaitingCampaigns(organizationId, campaigns);
-
-            } catch (platformError: any) {
-                // Platform re-add failure doesn't block the recovery — mailbox is already healthy in Superkabe
-                logger.error(`[HEALING] Failed to re-add mailbox ${entityId} to platform campaigns`, platformError, {
+            } catch (recoveryError: any) {
+                logger.error(`[HEALING] Post-graduation campaign restart check failed for ${entityId}`, recoveryError, {
                     organizationId,
                     entityId
                 });
@@ -939,41 +910,17 @@ export async function transitionPhase(
 
         // ── PLATFORM INTEGRATION: Re-add domain mailboxes when domain recovers ──
         if (entityType === 'domain') {
-            try {
-                // Get all mailboxes for this domain with their campaign assignments
-                const mailboxes = await prisma.mailbox.findMany({
-                    where: { domain_id: entityId, status: 'healthy' },
-                    include: { campaigns: { select: { id: true, external_id: true } } }
-                });
-
-                let addedCount = 0;
-                for (const mailbox of mailboxes) {
-                    const adapter = await tryGetAdapterForMailbox(mailbox.id);
-                    if (!adapter) continue; // Sequencer mailbox — no external re-add needed
-                    const externalMailboxId = mailbox.external_email_account_id || mailbox.id;
-                    for (const campaign of mailbox.campaigns) {
-                        const externalCampaignId = campaign.external_id || campaign.id;
-                        await adapter.addMailboxToCampaign(
-                            organizationId,
-                            externalCampaignId,
-                            externalMailboxId
-                        );
-                        addedCount++;
-                    }
-                }
-
-                logger.info(`[HEALING] Re-added domain ${entityId} mailboxes to platform campaigns`, {
-                    organizationId,
-                    domainId: entityId,
-                    mailboxCount: mailboxes.length,
-                    addedCount
-                });
-            } catch (platformError: any) {
-                logger.error(`[HEALING] Failed to re-add domain ${entityId} mailboxes to platform`, platformError, {
-                    organizationId,
-                    domainId: entityId
-                });
-            }
+            // Native sending — once domain mailboxes flip to 'healthy',
+            // sendQueueService picks them up automatically. No external
+            // platform re-add required.
+            const mailboxCount = await prisma.mailbox.count({
+                where: { domain_id: entityId, status: 'healthy' }
+            });
+            logger.info(`[HEALING] Domain ${entityId} graduated — ${mailboxCount} mailboxes eligible for dispatch`, {
+                organizationId,
+                domainId: entityId,
+                mailboxCount
+            });
         }
     }
 
@@ -1201,30 +1148,9 @@ async function checkAndRestartWaitingCampaigns(
                     healthyMailboxCount: campaignData.mailboxes.length
                 });
 
-                // Resume campaign on external platform
+                // Native sending — resume by flipping Campaign.status. The
+                // sequencer dispatcher reads this on its next 60s tick.
                 try {
-                    const adapter = await getAdapterForCampaign(campaign.id);
-                    const externalCampaignId = campaignData.external_id || campaign.id;
-                    const resumeSuccess = await adapter.resumeCampaign(organizationId, externalCampaignId);
-
-                    if (!resumeSuccess) {
-                        // Platform API call failed - DO NOT update DB
-                        logger.error(`[HEALING-AUTORESTART] Platform API failed to resume campaign ${campaign.id}`, undefined, {
-                            organizationId,
-                            campaignId: campaign.id,
-                            platform: adapter.platform
-                        });
-
-                        await notificationService.createNotification(organizationId, {
-                            type: 'WARNING',
-                            title: 'Auto-Restart Failed',
-                            message: `Failed to auto-restart campaign "${campaignData.name || campaign.id}" on ${adapter.platform}. Campaign remains paused. Please restart manually.`
-                        });
-
-                        continue; // Skip DB update, move to next campaign
-                    }
-
-                    // Smartlead API succeeded - now safe to update DB
                     await prisma.campaign.update({
                         where: { id: campaign.id },
                         data: {

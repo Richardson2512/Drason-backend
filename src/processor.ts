@@ -9,7 +9,6 @@
 
 import { prisma } from './index';
 import * as executionGateService from './services/executionGateService';
-import { getAdapterForCampaign } from './adapters/platformRegistry';
 import * as auditLogService from './services/auditLogService';
 import * as notificationService from './services/notificationService';
 import * as entityStateService from './services/entityStateService';
@@ -124,52 +123,23 @@ const processHeldLeads = async () => {
                     });
                     logger.info(`[PROCESSOR] Lead ${lead.id} ACTIVATED.`);
 
-                    // Push to campaign. Branch by source_platform: sequencer campaigns
-                    // have no external adapter (native sending lives inside this codebase),
-                    // so the "push" is enrolling the lead into a CampaignLead row that
-                    // sendQueueService will then dispatch from. Legacy platform-sync
-                    // campaigns go through the adapter as before.
-                    logger.info(`[PROCESSOR] Pushing Lead ${lead.id} to campaign ${lead.assigned_campaign_id}...`);
+                    // Native sending — enroll the lead in the sequencer campaign.
+                    // sendQueueService dispatches from the resulting CampaignLead row
+                    // on its next 60s tick.
+                    logger.info(`[PROCESSOR] Enrolling Lead ${lead.id} in campaign ${lead.assigned_campaign_id}...`);
                     try {
-                        const campaign = await prisma.campaign.findUnique({
-                            where: { id: lead.assigned_campaign_id },
-                            select: { external_id: true, source_platform: true },
+                        const result = await enrollLeadInSequencerCampaign(orgId, lead.assigned_campaign_id, {
+                            email: lead.email,
+                            first_name: lead.first_name,
+                            last_name: lead.last_name,
+                            company: lead.company,
+                            title: lead.title,
+                            validation_status: lead.validation_status,
+                            validation_score: lead.validation_score,
                         });
-
-                        let pushSucceeded = false;
-
-                        if (campaign?.source_platform === 'sequencer') {
-                            // Native sequencer enrollment — no adapter.
-                            const result = await enrollLeadInSequencerCampaign(orgId, lead.assigned_campaign_id, {
-                                email: lead.email,
-                                first_name: lead.first_name,
-                                last_name: lead.last_name,
-                                company: lead.company,
-                                title: lead.title,
-                                validation_status: lead.validation_status,
-                                validation_score: lead.validation_score,
-                            });
-                            pushSucceeded = result.success;
-                            if (!pushSucceeded) {
-                                logger.warn(`[PROCESSOR] Sequencer enrollment failed for lead ${lead.id}: ${result.error}`);
-                            } else {
-                                // Stamp source_platform so downstream reads know this lead
-                                // flowed through the native sequencer.
-                                await prisma.lead.update({
-                                    where: { id: lead.id },
-                                    data: { source_platform: 'sequencer' },
-                                }).catch(() => { /* non-critical */ });
-                            }
-                        } else {
-                            // Legacy platform-sync path (Smartlead / Instantly / EmailBison / Reply.io).
-                            const adapter = await getAdapterForCampaign(lead.assigned_campaign_id);
-                            const externalCampaignId = campaign?.external_id || lead.assigned_campaign_id;
-                            const pushResult = await adapter.pushLeadToCampaign(
-                                orgId,
-                                externalCampaignId,
-                                { email: lead.email }
-                            );
-                            pushSucceeded = !!pushResult?.success;
+                        const pushSucceeded = result.success;
+                        if (!pushSucceeded) {
+                            logger.warn(`[PROCESSOR] Sequencer enrollment failed for lead ${lead.id}: ${result.error}`);
                         }
 
                         if (pushSucceeded) {

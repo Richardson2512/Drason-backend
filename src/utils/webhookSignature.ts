@@ -1,8 +1,8 @@
 /**
  * Shared HMAC-SHA256 webhook signature validation.
  *
- * Used by all webhook controllers (Smartlead, EmailBison, Instantly) to verify
- * inbound webhook authenticity via a timing-safe HMAC comparison.
+ * Used by inbound webhook handlers (Clay ingestion, Polar billing) to verify
+ * authenticity via a timing-safe HMAC comparison.
  */
 
 import crypto from 'crypto';
@@ -14,8 +14,8 @@ import { logger } from '../services/observabilityService';
  *
  * @param req        - Express request with body and headers
  * @param secret     - The shared HMAC secret (null if not configured)
- * @param headerNames - Platform-specific header names to check for the signature
- *                      (e.g. ['x-smartlead-signature', 'x-webhook-signature'])
+ * @param headerNames - Header names to check for the signature
+ *                      (e.g. ['x-clay-signature', 'x-webhook-signature'])
  * @returns true if the signature is valid, or if no secret is configured in non-production
  */
 export function validateWebhookSignature(

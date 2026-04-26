@@ -230,117 +230,87 @@ export class CircuitBreaker {
     }
 }
 
-/**
- * Circuit breaker for Smartlead API calls.
- * - Opens after 5 consecutive failures
- * - Resets after 60 seconds
- * - Requires 2 successful test calls to close
- * - Ignores 404s (not a service failure — just missing resource)
- */
-export const smartleadBreaker = new CircuitBreaker({
-    name: 'Smartlead API',
-    failureThreshold: 15,
-    resetTimeout: 60_000,      // 60 seconds
-    halfOpenSuccessThreshold: 2,
-    isFailure: (error: Error) => {
-        // 404 = resource not found, not a service failure
-        // 400 = bad request, not a service failure
-        // 429 = rate limited, service is healthy but throttled
-        const message = error.message.toLowerCase();
-        if (message.includes('404') || message.includes('400')) {
-            return false;
-        }
-        // Rate limit errors should NOT trip the circuit breaker
-        const status = (error as any).response?.status;
-        if (status === 429 || message.includes('rate limit') || message.includes('too many requests')) {
-            return false;
-        }
-        return true;
-    },
-});
-
-/**
- * Circuit breaker for EmailBison API calls.
- * More aggressive thresholds since EB is a newer integration.
- */
-export const emailbisonBreaker = new CircuitBreaker({
-    name: 'EmailBison API',
-    failureThreshold: 10,
-    resetTimeout: 45_000,      // 45 seconds
-    halfOpenSuccessThreshold: 2,
-    isFailure: (error: Error) => {
-        const message = error.message.toLowerCase();
-        if (message.includes('404') || message.includes('400')) {
-            return false;
-        }
-        const status = (error as any).response?.status;
-        if (status === 429 || message.includes('rate limit') || message.includes('too many requests')) {
-            return false;
-        }
-        return true;
-    },
-});
-
-/**
- * Circuit breaker for Instantly API calls (future).
- */
-export const instantlyBreaker = new CircuitBreaker({
-    name: 'Instantly API',
-    failureThreshold: 15,
-    resetTimeout: 60_000,
-    halfOpenSuccessThreshold: 2,
-    isFailure: (error: Error) => {
-        const message = error.message.toLowerCase();
-        if (message.includes('404') || message.includes('400')) return false;
-        const status = (error as any).response?.status;
-        if (status === 429 || message.includes('rate limit') || message.includes('too many requests')) return false;
-        return true;
-    },
-});
-
-/**
- * Circuit breaker for Reply.io API calls (future).
- */
-export const replyioBreaker = new CircuitBreaker({
-    name: 'Reply.io API',
-    failureThreshold: 15,
-    resetTimeout: 60_000,
-    halfOpenSuccessThreshold: 2,
-    isFailure: (error: Error) => {
-        const message = error.message.toLowerCase();
-        if (message.includes('404') || message.includes('400')) return false;
-        const status = (error as any).response?.status;
-        if (status === 429 || message.includes('rate limit') || message.includes('too many requests')) return false;
-        return true;
-    },
-});
-
 // ============================================================================
-// PLATFORM BREAKER REGISTRY
+// SEND-PATH BREAKERS
 // ============================================================================
+//
+// Native sending dispatches through Gmail API, Microsoft Graph, and SMTP.
+// Each path gets its own breaker so a transient outage on one provider
+// doesn't trip dispatch for the others.
+//
+// Shared 404/400/429-aware isFailure: those statuses are NOT service-health
+// signals — 404 = recipient not found, 400 = malformed request, 429 = the
+// provider asking us to back off (we honor it via rate limiters, not by
+// tripping the breaker).
 
-/**
- * Map of platform names to their circuit breakers.
- */
-export const platformBreakers: Record<string, CircuitBreaker> = {
-    smartlead: smartleadBreaker,
-    emailbison: emailbisonBreaker,
-    instantly: instantlyBreaker,
-    replyio: replyioBreaker,
+const isProviderServiceFailure = (error: Error): boolean => {
+    const message = error.message.toLowerCase();
+    if (message.includes('404') || message.includes('400')) return false;
+    const status = (error as any).response?.status ?? (error as any).code;
+    if (status === 429 || message.includes('rate limit') || message.includes('too many requests')) return false;
+    return true;
 };
 
 /**
- * Get the circuit breaker for a given platform.
- * Falls back to Smartlead breaker for unknown platforms.
+ * Circuit breaker for Gmail API calls (OAuth-connected mailboxes).
  */
-export function getBreakerForPlatform(platform: string): CircuitBreaker {
-    return platformBreakers[platform] || smartleadBreaker;
+export const gmailBreaker = new CircuitBreaker({
+    name: 'Gmail API',
+    failureThreshold: 15,
+    resetTimeout: 60_000,
+    halfOpenSuccessThreshold: 2,
+    isFailure: isProviderServiceFailure,
+});
+
+/**
+ * Circuit breaker for Microsoft Graph API calls (OAuth-connected mailboxes).
+ */
+export const microsoftBreaker = new CircuitBreaker({
+    name: 'Microsoft Graph API',
+    failureThreshold: 15,
+    resetTimeout: 60_000,
+    halfOpenSuccessThreshold: 2,
+    isFailure: isProviderServiceFailure,
+});
+
+/**
+ * Circuit breaker for SMTP send paths (custom SMTP-credential mailboxes).
+ */
+export const smtpBreaker = new CircuitBreaker({
+    name: 'SMTP',
+    failureThreshold: 10,
+    resetTimeout: 45_000,
+    halfOpenSuccessThreshold: 2,
+    isFailure: isProviderServiceFailure,
+});
+
+// ============================================================================
+// SEND-PATH BREAKER REGISTRY
+// ============================================================================
+
+/**
+ * Map of send-provider names to their circuit breakers.
+ */
+export const sendBreakers: Record<string, CircuitBreaker> = {
+    google: gmailBreaker,
+    gmail: gmailBreaker,
+    microsoft: microsoftBreaker,
+    'microsoft-365': microsoftBreaker,
+    smtp: smtpBreaker,
+};
+
+/**
+ * Get the circuit breaker for a given send provider.
+ * Falls back to the SMTP breaker for unknown providers.
+ */
+export function getBreakerForProvider(provider: string): CircuitBreaker {
+    return sendBreakers[provider.toLowerCase()] || smtpBreaker;
 }
 
 /**
- * Get status of all platform circuit breakers for health monitoring.
+ * Get status of all send-path circuit breakers for health monitoring.
  */
 export function getAllBreakerStatuses(): CircuitBreakerStatus[] {
-    return Object.values(platformBreakers).map(b => b.getStatus());
+    return [gmailBreaker, microsoftBreaker, smtpBreaker].map(b => b.getStatus());
 }
 

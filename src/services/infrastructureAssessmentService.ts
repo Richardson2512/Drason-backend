@@ -25,7 +25,6 @@ import * as rotationService from './rotationService';
 import { SlackAlertService } from './SlackAlertService';
 import * as dnsblService from './dnsblService';
 import { TIER_LIMITS } from './polarClient';
-import { getAdapterForMailbox, tryGetAdapterForMailbox } from '../adapters/platformRegistry';
 import { MailboxState, DomainState, TriggerType, EventType, MONITORING_THRESHOLDS } from '../types';
 import { logger } from './observabilityService';
 
@@ -227,7 +226,6 @@ async function enforceMailboxPause(
         id: string;
         email: string;
         resilience_score: number | null;
-        external_email_account_id: string | null;
     },
     reason: string,
 ): Promise<void> {
@@ -270,63 +268,29 @@ async function enforceMailboxPause(
         message: `Mailbox \`${mailbox.email}\` has been paused during infrastructure assessment.\n*Reason:* ${reason}`,
     }).catch(err => logger.warn('[ASSESSMENT] Non-fatal Slack alert error', { error: String(err) }));
 
-    // ── 4. Platform removal: remove mailbox from all assigned campaigns ──
-    let campaigns: Array<{ id: string; external_id: string | null; name: string }> = [];
+    // Native sending — Mailbox.status='paused' is enforced by sendQueueService
+    // on its next 60s tick. No external platform call needed.
+    const campaigns = await prisma.campaign.findMany({
+        where: { mailboxes: { some: { id: mailbox.id } } },
+        select: { id: true, name: true },
+    });
+
+    // ── Rotation: attempt to rotate in a standby mailbox ──
     try {
-        const adapter = await tryGetAdapterForMailbox(mailbox.id);
-        campaigns = await prisma.campaign.findMany({
-            where: { mailboxes: { some: { id: mailbox.id } } },
-            select: { id: true, external_id: true, name: true },
+        const rotationResult = await rotationService.rotateForPausedMailbox(
+            organizationId,
+            mailbox.id,
+            campaigns,
+        );
+        logger.info(`[ASSESSMENT] Rotation result for paused mailbox ${mailbox.id}`, {
+            organizationId,
+            rotationsSucceeded: rotationResult.rotationsSucceeded,
+            rotationsFailed: rotationResult.rotationsFailed,
+            noStandbyAvailable: rotationResult.noStandbyAvailable,
         });
-
-        if (!adapter) {
-            // Sequencer mailbox — no external platform to remove from; pause is enforced
-            // directly by the send queue which checks mailbox.status before sending.
-            logger.info(`[ASSESSMENT] Sequencer mailbox ${mailbox.id} paused (no external platform action needed)`, {
-                organizationId, mailboxId: mailbox.id,
-            });
-        } else {
-            for (const campaign of campaigns) {
-                try {
-                    await adapter.removeMailboxFromCampaign(
-                        organizationId,
-                        campaign.external_id || campaign.id,
-                        mailbox.external_email_account_id || mailbox.id,
-                    );
-                } catch (removeErr: any) {
-                    logger.warn(`[ASSESSMENT] Failed to remove mailbox ${mailbox.id} from campaign ${campaign.id}`, {
-                        organizationId, error: removeErr.message,
-                    });
-                }
-            }
-
-            logger.info(`[ASSESSMENT] Removed paused mailbox ${mailbox.id} from ${campaigns.length} platform campaigns`, {
-                organizationId, mailboxId: mailbox.id, platform: adapter.platform,
-            });
-        }
-
-        // ── 5. Rotation: attempt to rotate in a standby mailbox ──
-        try {
-            const rotationResult = await rotationService.rotateForPausedMailbox(
-                organizationId,
-                mailbox.id,
-                campaigns,
-            );
-            logger.info(`[ASSESSMENT] Rotation result for paused mailbox ${mailbox.id}`, {
-                organizationId,
-                rotationsSucceeded: rotationResult.rotationsSucceeded,
-                rotationsFailed: rotationResult.rotationsFailed,
-                noStandbyAvailable: rotationResult.noStandbyAvailable,
-            });
-        } catch (rotationError: any) {
-            logger.warn(`[ASSESSMENT] Rotation failed for paused mailbox ${mailbox.id}`, {
-                organizationId, error: rotationError.message,
-            });
-        }
-    } catch (platformError: any) {
-        // Platform enforcement failure must NOT crash the assessment
-        logger.error(`[ASSESSMENT] Failed platform enforcement for mailbox ${mailbox.id}`, platformError, {
-            organizationId, mailboxId: mailbox.id,
+    } catch (rotationError: any) {
+        logger.warn(`[ASSESSMENT] Rotation failed for paused mailbox ${mailbox.id}`, {
+            organizationId, error: rotationError.message,
         });
     }
 }

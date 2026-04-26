@@ -60,14 +60,10 @@ async function runScoringCycle(): Promise<void> {
     logger.info('[LEAD-SCORING-WORKER] Starting scoring cycle');
 
     try {
-        // Get all organizations with Smartlead leads
+        // Score every org that has any leads.
         const organizations = await prisma.organization.findMany({
             where: {
-                leads: {
-                    some: {
-                        source: 'smartlead'
-                    }
-                }
+                leads: { some: {} }
             },
             select: {
                 id: true,

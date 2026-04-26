@@ -9,9 +9,8 @@
  *   2. Custom List       — workspace-configured rules generated on demand,
  *      capped by the user's max_list_size (default 200, range 10–1000).
  *
- * Sequencer-only: opens and clicks live in EmailOpenEvent / EmailClickEvent,
- * which only the native sequencer's tracking pixel + click handler write to.
- * Imported campaigns (smartlead/instantly/etc.) intentionally yield no rows.
+ * Driven by EmailOpenEvent / EmailClickEvent — opens and clicks captured by
+ * the native sequencer's tracking pixel + click handler.
  *
  * Scoring weights live in a single place (computeScore) so both list types
  * stay consistent. The list-generation pipeline is also shared — only the
@@ -190,8 +189,7 @@ export async function generateProspectList(ctx: ScoringContext): Promise<Prospec
     const activeCampaigns = await prisma.campaign.findMany({
         where: {
             organization_id: organizationId,
-            source_platform: 'sequencer',
-            status: 'active',
+                        status: 'active',
             ...(rules.campaignFilter && rules.campaignFilter.length > 0
                 ? { id: { in: rules.campaignFilter } }
                 : {}),
@@ -527,7 +525,7 @@ export async function generateDailySnapshot(organizationId: string): Promise<{
 
     // Pre-flight: any active sequencer campaigns?
     const activeCampaignCount = await prisma.campaign.count({
-        where: { organization_id: organizationId, source_platform: 'sequencer', status: 'active' },
+        where: { organization_id: organizationId, status: 'active' },
     });
     if (activeCampaignCount === 0) {
         await prisma.coldCallDailySnapshot.create({

@@ -2,21 +2,19 @@
  * Rotation Service
  *
  * Automatically rotates a healthy standby mailbox into a campaign when a mailbox
- * is paused and removed. Works across all platforms via the PlatformAdapter interface.
+ * is paused. The send queue picks up the new mailbox on its next 60s tick.
  *
- * Called by monitoringService (generic bounce detection) and smartleadEventParserService
- * (Smartlead webhook bounce handling) after a mailbox is paused and removed from campaigns.
+ * Called by monitoringService and infrastructureAssessmentService after a
+ * mailbox is paused.
  *
  * Selection priority:
- *   1. Same domain + same platform + not in any campaign
- *   2. Same platform + different healthy domain + not in any campaign
- *   3. Same platform + underutilized (< 3 campaigns) + not already in target campaign
+ *   1. Same domain + not in any campaign
+ *   2. Different healthy domain + not in any campaign
+ *   3. Underutilized (< 3 campaigns) + not already in target campaign
  */
 
 import { prisma } from '../index';
-import { SourcePlatform } from '@prisma/client';
 import { logger } from './observabilityService';
-import { getAdapterForCampaign } from '../adapters/platformRegistry';
 import * as auditLogService from './auditLogService';
 import * as notificationService from './notificationService';
 import { MONITORING_THRESHOLDS } from '../types';
@@ -27,7 +25,6 @@ import { MONITORING_THRESHOLDS } from '../types';
 
 interface AffectedCampaign {
     id: string;
-    external_id: string | null;
     name: string | null;
 }
 
@@ -35,7 +32,6 @@ interface StandbyCandidate {
     id: string;
     email: string;
     domain_id: string;
-    external_email_account_id: string | null;
     resilience_score: number;
     tier: 'same_domain' | 'same_platform' | 'underutilized';
 }
@@ -91,13 +87,12 @@ export async function rotateForPausedMailbox(
         return result;
     }
 
-    // Fetch the paused mailbox to get domain and platform info
+    // Fetch the paused mailbox to get domain info
     const pausedMailbox = await prisma.mailbox.findUnique({
         where: { id: pausedMailboxId },
         select: {
             email: true,
-            domain_id: true,
-            source_platform: true
+            domain_id: true
         }
     });
 
@@ -114,7 +109,6 @@ export async function rotateForPausedMailbox(
         pausedMailboxId,
         pausedEmail: pausedMailbox.email,
         domainId: pausedMailbox.domain_id,
-        platform: pausedMailbox.source_platform,
         campaignsAffected: affectedCampaigns.length
     });
 
@@ -144,7 +138,7 @@ export async function rotateForPausedMailbox(
         // Check campaign health — skip unhealthy campaigns
         const campaignData = await prisma.campaign.findUnique({
             where: { id: campaign.id },
-            select: { status: true, bounce_rate: true, source_platform: true }
+            select: { status: true, bounce_rate: true }
         });
 
         if (!campaignData || campaignData.status !== 'active') {
@@ -183,7 +177,6 @@ export async function rotateForPausedMailbox(
             organizationId,
             campaign.id,
             pausedMailbox.domain_id,
-            campaignData.source_platform,
             usedStandbyIds
         );
 
@@ -210,11 +203,9 @@ export async function rotateForPausedMailbox(
         }
 
         // Execute the rotation
-        const externalCampaignId = campaign.external_id || campaign.id;
         const rotationOutcome = await executeRotation(
             organizationId,
             campaign.id,
-            externalCampaignId,
             standby,
             pausedMailboxId,
             pausedMailbox.email,
@@ -264,22 +255,19 @@ export async function rotateForPausedMailbox(
 
 /**
  * Find the best available standby mailbox for a campaign.
- * 3-tier fallback: same domain → same platform → underutilized.
- * Standby must match campaign's source_platform.
+ * 3-tier fallback: same domain → different healthy domain → underutilized.
  */
 async function findBestStandbyMailbox(
     organizationId: string,
     campaignId: string,
     preferredDomainId: string,
-    requiredPlatform: SourcePlatform,
     excludeMailboxIds: string[]
 ): Promise<StandbyCandidate | null> {
-    // Tier 1: Same domain, same platform, not in any campaign
+    // Tier 1: Same domain, not in any campaign
     const tier1 = await prisma.mailbox.findMany({
         where: {
             organization_id: organizationId,
             domain_id: preferredDomainId,
-            source_platform: requiredPlatform,
             status: 'healthy',
             recovery_phase: 'healthy',
             id: { notIn: excludeMailboxIds },
@@ -290,8 +278,7 @@ async function findBestStandbyMailbox(
             id: true,
             email: true,
             domain_id: true,
-            external_email_account_id: true,
-            resilience_score: true
+                        resilience_score: true
         },
         orderBy: { resilience_score: 'desc' }
     });
@@ -302,12 +289,11 @@ async function findBestStandbyMailbox(
         }
     }
 
-    // Tier 2: Same platform, different healthy domain, not in any campaign
+    // Tier 2: Different healthy domain, not in any campaign
     const tier2 = await prisma.mailbox.findMany({
         where: {
             organization_id: organizationId,
             domain_id: { not: preferredDomainId },
-            source_platform: requiredPlatform,
             status: 'healthy',
             recovery_phase: 'healthy',
             id: { notIn: excludeMailboxIds },
@@ -318,8 +304,7 @@ async function findBestStandbyMailbox(
             id: true,
             email: true,
             domain_id: true,
-            external_email_account_id: true,
-            resilience_score: true
+                        resilience_score: true
         },
         orderBy: { resilience_score: 'desc' }
     });
@@ -330,11 +315,10 @@ async function findBestStandbyMailbox(
         }
     }
 
-    // Tier 3: Same platform, underutilized (< 3 campaigns), not already in target campaign
+    // Tier 3: Underutilized (< 3 campaigns), not already in target campaign
     const tier3 = await prisma.mailbox.findMany({
         where: {
             organization_id: organizationId,
-            source_platform: requiredPlatform,
             status: 'healthy',
             recovery_phase: 'healthy',
             id: { notIn: excludeMailboxIds },
@@ -347,8 +331,7 @@ async function findBestStandbyMailbox(
             id: true,
             email: true,
             domain_id: true,
-            external_email_account_id: true,
-            resilience_score: true,
+                        resilience_score: true,
             _count: { select: { campaigns: true } }
         },
         orderBy: { resilience_score: 'desc' }
@@ -397,12 +380,12 @@ async function isDomainSafeForRotation(domainId: string): Promise<boolean> {
 // ============================================================================
 
 /**
- * Perform the actual rotation: platform API call + DB join table update.
+ * Perform the actual rotation: connect standby mailbox to campaign so the
+ * dispatcher picks it up on its next tick.
  */
 async function executeRotation(
     organizationId: string,
     campaignId: string,
-    externalCampaignId: string,
     standby: StandbyCandidate,
     pausedMailboxId: string,
     pausedMailboxEmail: string,
@@ -436,23 +419,9 @@ async function executeRotation(
         };
     }
 
-    // Use external ID if available, otherwise fall back to internal ID
-    const externalMailboxId = standby.external_email_account_id || standby.id;
-
     try {
-        // Step 1: Add to platform via adapter
-        const adapter = await getAdapterForCampaign(campaignId);
-        const added = await adapter.addMailboxToCampaign(
-            organizationId,
-            externalCampaignId,
-            externalMailboxId
-        );
-
-        if (!added) {
-            return { success: false, error: 'Platform API returned false' };
-        }
-
-        // Step 2: Update DB join table immediately
+        // Native sending — connect mailbox to campaign in DB. The dispatcher
+        // picks it up on its next 60s tick. No external platform call needed.
         await prisma.campaign.update({
             where: { id: campaignId },
             data: {

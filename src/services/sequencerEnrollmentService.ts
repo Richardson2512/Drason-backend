@@ -59,19 +59,23 @@ export async function enrollLeadInSequencerCampaign(
     lead: SequencerEnrollmentInput,
 ): Promise<SequencerEnrollmentResult> {
     try {
-        // Guard: the campaign must exist, belong to this org, AND be a sequencer
-        // campaign. If a lead somehow got routed to a non-sequencer campaign id,
-        // we refuse — the caller should fall through to the adapter path.
+        // Guard: campaign must exist and belong to this org. We don't filter
+        // by source_platform here on purpose:
+        //   - During the Phase-A-deployed-but-Phase-B-not-yet window, prod
+        //     campaigns still carry the legacy source_platform='smartlead'
+        //     value. Filtering by 'sequencer' would reject them and break
+        //     ingestion until the schema migration runs.
+        //   - Post-Phase-B (schema migration drops source_platform), all
+        //     campaigns are sequencer by definition — no filter needed.
         const campaign = await prisma.campaign.findFirst({
             where: {
                 id: campaignId,
                 organization_id: organizationId,
-                source_platform: 'sequencer',
             },
             select: { id: true, status: true },
         });
         if (!campaign) {
-            return { success: false, error: 'Sequencer campaign not found or wrong source_platform' };
+            return { success: false, error: 'Campaign not found' };
         }
 
         // createMany + skipDuplicates makes this idempotent. The [campaign_id, email]

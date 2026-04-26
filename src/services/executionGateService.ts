@@ -172,10 +172,13 @@ export const canExecuteLead = async (
         }
     });
 
-    // Filter out mailboxes that have hit their warmup daily send cap.
-    // warmup_limit > 0 means a daily cap is configured; window_sent_count tracks today's sends.
+    // Filter out mailboxes that have hit their warmup/recovery daily send cap.
+    // warmup_limit > 0 means a daily cap is configured (set by warmupService
+    // during 5-phase recovery); window_sent_count tracks today's sends.
+    // Honored unconditionally for native sending — there is no upstream
+    // warmup engine, so the cap IS the throttle.
     const afterWarmupFilter = healthyMailboxes.filter(mb => {
-        if (mb.warmup_status === 'enabled' && mb.warmup_limit > 0) {
+        if (mb.warmup_limit > 0) {
             return mb.window_sent_count < mb.warmup_limit;
         }
         return true;

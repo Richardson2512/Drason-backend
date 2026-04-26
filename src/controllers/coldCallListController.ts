@@ -128,7 +128,7 @@ export const listActiveCampaigns = async (req: Request, res: Response): Promise<
     try {
         const orgId = getOrgId(req);
         const campaigns = await prisma.campaign.findMany({
-            where: { organization_id: orgId, source_platform: 'sequencer', status: 'active' },
+            where: { organization_id: orgId, status: 'active' },
             select: { id: true, name: true },
             orderBy: { created_at: 'desc' },
         });

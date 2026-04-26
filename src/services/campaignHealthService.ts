@@ -16,7 +16,6 @@
 import { prisma } from '../index';
 import * as auditLogService from './auditLogService';
 import * as notificationService from './notificationService';
-import { getAdapterForCampaign } from '../adapters/platformRegistry';
 import { logger } from './observabilityService';
 import { MONITORING_THRESHOLDS } from '../types';
 
@@ -138,7 +137,7 @@ export async function pauseCampaign(
 ): Promise<void> {
     const campaign = await prisma.campaign.findUnique({
         where: { id: campaignId },
-        select: { name: true, external_id: true, status: true }
+        select: { name: true, status: true }
     });
 
     if (!campaign || campaign.status === 'paused') return;
@@ -178,16 +177,8 @@ export async function pauseCampaign(
 
     logger.info(`[CAMPAIGN] Paused campaign ${campaignId}: ${reason}`);
 
-    // ── PLATFORM SYNC: Pause campaign on external platform (Smartlead etc.) ──
-    try {
-        const adapter = await getAdapterForCampaign(campaignId);
-        const externalCampaignId = campaign.external_id || campaignId;
-        await adapter.pauseCampaign(organizationId, externalCampaignId);
-        logger.info(`[CAMPAIGN] Paused campaign ${campaignId} on platform`, { organizationId, platform: adapter.platform });
-    } catch (platformError: any) {
-        // Platform sync failure is non-blocking — campaign is paused locally
-        logger.error(`[CAMPAIGN] Failed to pause campaign ${campaignId} on platform`, platformError, { organizationId });
-    }
+    // Native sending — Campaign.status='paused' is the source of truth for the
+    // sequencer dispatcher.
 
     // Notify user
     try {
@@ -210,7 +201,7 @@ export async function resumeCampaign(
 ): Promise<void> {
     const campaign = await prisma.campaign.findUnique({
         where: { id: campaignId },
-        select: { name: true, external_id: true, status: true }
+        select: { name: true, status: true }
     });
 
     const previousStatus = campaign?.status || 'unknown';
@@ -248,15 +239,8 @@ export async function resumeCampaign(
 
     logger.info(`[CAMPAIGN] Resumed campaign ${campaignId}`);
 
-    // ── PLATFORM SYNC: Resume campaign on external platform ──
-    try {
-        const adapter = await getAdapterForCampaign(campaignId);
-        const externalCampaignId = campaign?.external_id || campaignId;
-        await adapter.resumeCampaign(organizationId, externalCampaignId);
-        logger.info(`[CAMPAIGN] Resumed campaign ${campaignId} on platform`, { organizationId, platform: adapter.platform });
-    } catch (platformError: any) {
-        logger.error(`[CAMPAIGN] Failed to resume campaign ${campaignId} on platform`, platformError, { organizationId });
-    }
+    // Native sending — Campaign.status='active' is the source of truth for the
+    // sequencer dispatcher; the next 60s tick picks it up automatically.
 
     // Notify user
     try {
@@ -358,7 +342,7 @@ export async function recordCampaignBounce(
     });
 
     if (campaign && campaign.total_sent > 0) {
-        // Store as percentage (0-100) — consistent with smartleadEventParserService
+        // Store as percentage (0-100) — consistent with bounceProcessingService
         const bounceRate = (campaign.total_bounced / campaign.total_sent) * 100;
         await prisma.campaign.update({
             where: { id: campaignId },

@@ -19,7 +19,6 @@ import * as eventService from './eventService';
 import { classifyBounce } from './bounceClassifier';
 import * as healingService from './healingService';
 import * as correlationService from './correlationService';
-import { getAdapterForMailbox, getAdapterForDomain, getAdapterForCampaign } from '../adapters/platformRegistry';
 import * as executionGateService from './executionGateService';
 import * as notificationService from './notificationService';
 import { updateDomainLastSent } from './inactivityService';
@@ -507,62 +506,34 @@ export const pauseMailbox = async (mailboxId: string, reason: string): Promise<v
         message: `Mailbox \`${mailbox.email || mailboxId}\` has been auto-paused.\n*Reason:* ${reason}`
     }).catch(err => logger.warn('[MONITOR] Non-fatal alert error', { error: String(err) }));
 
-    // ── PLATFORM INTEGRATION: Remove mailbox from all assigned campaigns ──
+    // Native sending — Mailbox.status is the source of truth for the dispatcher.
+    // Once status flips to 'paused', sendQueueService skips this mailbox on its
+    // next 60s tick. No external platform call needed.
+    const campaigns = await prisma.campaign.findMany({
+        where: {
+            mailboxes: {
+                some: { id: mailboxId }
+            }
+        },
+        select: { id: true, name: true }
+    });
+
+    // ── ROTATION: Attempt to rotate in a standby mailbox for affected campaigns ──
     try {
-        const adapter = await getAdapterForMailbox(mailboxId);
-        const mailboxEntity = await prisma.mailbox.findUnique({
-            where: { id: mailboxId },
-            select: { external_email_account_id: true }
-        });
-        const campaigns = await prisma.campaign.findMany({
-            where: {
-                mailboxes: {
-                    some: { id: mailboxId }
-                }
-            },
-            select: { id: true, external_id: true, name: true }
-        });
-
-        for (const campaign of campaigns) {
-            const externalCampaignId = campaign.external_id || campaign.id;
-            const externalMailboxId = mailboxEntity?.external_email_account_id || mailboxId;
-            await adapter.removeMailboxFromCampaign(
-                orgId,
-                externalCampaignId,
-                externalMailboxId
-            );
-        }
-
-        logger.info(`[MONITOR] Removed mailbox ${mailboxId} from ${campaigns.length} platform campaigns`, {
+        const rotationResult = await rotationService.rotateForPausedMailbox(
+            orgId,
+            mailboxId,
+            campaigns
+        );
+        logger.info(`[MONITOR] Rotation result for paused mailbox ${mailboxId}`, {
             organizationId: orgId,
             mailboxId,
-            campaignCount: campaigns.length,
-            platform: adapter.platform
+            rotationsSucceeded: rotationResult.rotationsSucceeded,
+            rotationsFailed: rotationResult.rotationsFailed,
+            noStandbyAvailable: rotationResult.noStandbyAvailable
         });
-
-        // ── ROTATION: Attempt to rotate in a standby mailbox for affected campaigns ──
-        try {
-            const rotationResult = await rotationService.rotateForPausedMailbox(
-                orgId,
-                mailboxId,
-                campaigns
-            );
-            logger.info(`[MONITOR] Rotation result for paused mailbox ${mailboxId}`, {
-                organizationId: orgId,
-                mailboxId,
-                rotationsSucceeded: rotationResult.rotationsSucceeded,
-                rotationsFailed: rotationResult.rotationsFailed,
-                noStandbyAvailable: rotationResult.noStandbyAvailable
-            });
-        } catch (rotationError: any) {
-            logger.error(`[MONITOR] Rotation failed for paused mailbox ${mailboxId}`, rotationError, {
-                organizationId: orgId,
-                mailboxId
-            });
-        }
-    } catch (platformError: any) {
-        // Platform removal failure doesn't block the pause — mailbox is already paused in Superkabe
-        logger.error(`[MONITOR] Failed to remove mailbox ${mailboxId} from platform campaigns`, platformError, {
+    } catch (rotationError: any) {
+        logger.error(`[MONITOR] Rotation failed for paused mailbox ${mailboxId}`, rotationError, {
             organizationId: orgId,
             mailboxId
         });
@@ -1020,24 +991,8 @@ const pauseDomain = async (domainId: string, reason: string): Promise<void> => {
         }
     }
 
-    // ── PLATFORM INTEGRATION: Remove all domain mailboxes from campaigns ──
-    try {
-        const adapter = await getAdapterForDomain(domainId);
-        const result = await adapter.removeAllDomainMailboxes(orgId, domainId);
-        logger.info(`[MONITOR] Removed domain ${domainId} mailboxes from platform`, {
-            organizationId: orgId,
-            domainId,
-            successCount: result.success,
-            failedCount: result.failed,
-            platform: adapter.platform
-        });
-    } catch (platformError: any) {
-        // Platform removal failure doesn't block the pause — domain is already paused in Superkabe
-        logger.error(`[MONITOR] Failed to remove domain ${domainId} mailboxes from platform`, platformError, {
-            organizationId: orgId,
-            domainId
-        });
-    }
+    // Native sending — Mailbox.recovery_phase='paused' is enough for the
+    // dispatcher to skip these mailboxes. No external platform call needed.
 };
 
 /**

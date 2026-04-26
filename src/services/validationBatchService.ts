@@ -12,8 +12,7 @@ import * as emailValidationService from './emailValidationService';
 import * as espClassifierService from './espClassifierService';
 import * as entityStateService from './entityStateService';
 import * as auditLogService from './auditLogService';
-import { getAdapterForCampaign } from '../adapters/platformRegistry';
-import { scoreMailboxesForEsp } from './espMailboxScoringService';
+import { enrollLeadInSequencerCampaign } from './sequencerEnrollmentService';
 import { TIER_LIMITS } from './polarClient';
 import { LeadState, TriggerType } from '../types';
 import type { ParsedLead } from './csvParserService';
@@ -427,7 +426,7 @@ export async function routeLeads(
     // Verify batch + campaign
     const [batch, campaign] = await Promise.all([
         prisma.validationBatch.findFirst({ where: { id: batchId, organization_id: organizationId } }),
-        prisma.campaign.findUnique({ where: { id: campaignId }, select: { id: true, external_id: true, source_platform: true } }),
+        prisma.campaign.findUnique({ where: { id: campaignId }, select: { id: true } }),
     ]);
     if (!batch) throw new Error('Batch not found');
     if (!campaign) throw new Error('Campaign not found');
@@ -444,9 +443,6 @@ export async function routeLeads(
     let routed = 0;
     let failed = 0;
     const errors: string[] = [];
-
-    const adapter = await getAdapterForCampaign(campaignId);
-    const externalCampaignId = campaign.external_id || campaignId;
 
     for (const batchLead of batchLeads) {
         try {
@@ -487,39 +483,26 @@ export async function routeLeads(
                 }
             });
 
-            // ESP-aware mailbox scoring: pick the best mailboxes for this recipient's ESP
-            let assignedMailboxIds: string[] | undefined;
-            if (batchLead.esp_bucket && adapter.platform === 'smartlead') {
-                const topMailboxes = await scoreMailboxesForEsp(organizationId, campaignId, batchLead.esp_bucket);
-                if (topMailboxes) assignedMailboxIds = topMailboxes;
-            }
+            // Native sequencer enrollment — creates a CampaignLead row idempotently.
+            // ESP-aware routing happens at dispatch time inside sendQueueService,
+            // which scores connected mailboxes by 30-day per-ESP performance.
+            const enroll = await enrollLeadInSequencerCampaign(organizationId, campaignId, {
+                email: batchLead.email,
+                first_name: batchLead.first_name || undefined,
+                last_name: batchLead.last_name || undefined,
+                company: batchLead.company || undefined,
+                validation_status: batchLead.validation_status,
+                validation_score: batchLead.validation_score,
+            });
 
-            // Push to sending platform
-            const pushResult = await adapter.pushLeadToCampaign(
-                organizationId,
-                externalCampaignId,
-                {
-                    email: batchLead.email,
-                    first_name: batchLead.first_name || undefined,
-                    last_name: batchLead.last_name || undefined,
-                    company: batchLead.company || undefined,
-                },
-                // Pass ESP-pinned mailboxes if available (Smartlead adapter supports this)
-                assignedMailboxIds ? { assignedEmailAccounts: assignedMailboxIds } : undefined
-            );
-
-            if (pushResult?.success) {
+            if (enroll.success) {
                 await entityStateService.transitionLead(
                     organizationId,
                     lead.id,
                     LeadState.ACTIVE,
-                    `Pushed to ${adapter.platform} campaign ${campaignId} via validation batch ${batchId}`,
+                    `Enrolled in sequencer campaign ${campaignId} via validation batch ${batchId}`,
                     TriggerType.SYSTEM
                 );
-                await prisma.lead.update({
-                    where: { id: lead.id },
-                    data: { source_platform: adapter.platform },
-                });
 
                 // Update batch lead as routed
                 await prisma.validationBatchLead.update({
@@ -534,7 +517,7 @@ export async function routeLeads(
                     where: { id: lead.id },
                     data: { assigned_campaign_id: null }
                 });
-                errors.push(`${batchLead.email}: push failed`);
+                errors.push(`${batchLead.email}: ${enroll.error || 'enrollment failed'}`);
                 failed++;
             }
         } catch (err: any) {

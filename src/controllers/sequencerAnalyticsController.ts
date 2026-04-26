@@ -50,7 +50,7 @@ export const getOverview = async (req: Request, res: Response): Promise<Response
 
         // Sequencer analytics — scoped to source_platform='sequencer' so legacy
         // platform-synced campaigns don't pollute the sequencer dashboard.
-        const where: any = { organization_id: orgId, source_platform: 'sequencer' };
+        const where: any = { organization_id: orgId };
         if (dateFilter) where.created_at = dateFilter;
 
         const campaigns = await prisma.campaign.findMany({
@@ -118,7 +118,7 @@ export const getCampaignPerformance = async (req: Request, res: Response): Promi
         const orgId = getOrgId(req);
         const dateFilter = getDateFilter(req);
 
-        const where: any = { organization_id: orgId, source_platform: 'sequencer' };
+        const where: any = { organization_id: orgId };
         if (dateFilter) where.created_at = dateFilter;
 
         const campaigns = await prisma.campaign.findMany({

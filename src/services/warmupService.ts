@@ -1,15 +1,61 @@
 /**
  * Warmup Service
  *
- * Manages warmup integration for automated mailbox recovery.
- * Works across all platforms via the PlatformAdapter interface.
+ * Manages warmup-phase tracking for automated mailbox recovery during the
+ * 5-phase healing pipeline. Native sending uses SendEvent and BounceEvent
+ * counts directly — no upstream platform API.
+ *
+ * Volume control: this service writes Mailbox.warmup_limit during recovery.
+ * The dispatcher (sendQueueService) honors warmup_limit > 0 as a per-mailbox
+ * daily cap (smaller of warmup_limit and ConnectedAccount.daily_send_limit
+ * wins). The execution gate (executionGateService) honors the same field
+ * for lead-admission decisions. On graduation, warmup_limit is set back to 0
+ * which restores the normal cap.
+ *
+ * KNOWN GAP — active engagement: in the previous platform-driven flow,
+ * Smartlead/Lemwarm/Instantly's warmup networks sent synthetic engagement
+ * emails (auto-opens, auto-replies, mark-not-spam) that ACTIVELY rebuilt
+ * sender reputation during recovery. With native sending, no such network
+ * exists. The replacement is reading authoritative reputation data from
+ * Google Postmaster Tools, Microsoft SNDS, and ARF feedback loops (see
+ * docs/middleware-removal/03-new-build-specs.md). Until those ship,
+ * recovery is "wait it out under reduced volume" without an active
+ * reputation-rebuild leg. Phase tracking + auto-pause + volume throttling
+ * still work; reputation regeneration is slower than the platform path was.
  */
 
 import { prisma } from '../index';
 import { logger } from './observabilityService';
-import { getAdapterForMailbox } from '../adapters/platformRegistry';
 import * as notificationService from './notificationService';
 import { RecoveryPhase } from '../types';
+
+/**
+ * Native equivalent of the platform's `getMailboxDetails(..)` — counts real
+ * SendEvent and BounceEvent rows for this mailbox. Returns the same shape
+ * the rest of this service expects.
+ */
+async function getMailboxNativeStats(mailboxId: string): Promise<{
+    dailySentCount: number;
+    spamCount: number;
+    warmupSentCount: number;
+    warmupSpamCount: number;
+    warmupReputation: string;
+    warmupEnabled: boolean;
+}> {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const [sent, bounced] = await Promise.all([
+        prisma.sendEvent.count({ where: { mailbox_id: mailboxId, sent_at: { gte: since } } }),
+        prisma.bounceEvent.count({ where: { mailbox_id: mailboxId, bounced_at: { gte: since } } }),
+    ]);
+    return {
+        dailySentCount: sent,
+        spamCount: bounced,
+        warmupSentCount: 0,
+        warmupSpamCount: 0,
+        warmupReputation: '—',
+        warmupEnabled: false,
+    };
+}
 
 /**
  * Warmup configuration for each recovery phase
@@ -59,23 +105,12 @@ export const enableWarmupForRecovery = async (
             where: { id: mailboxId },
             select: {
                 email: true,
-                external_email_account_id: true,
-                consecutive_pauses: true
+                                consecutive_pauses: true
             }
         });
 
         if (!mailbox) {
             throw new Error(`Mailbox ${mailboxId} not found`);
-        }
-
-        const externalAccountId = mailbox.external_email_account_id;
-        if (!externalAccountId) {
-            logger.warn('[WARMUP] Cannot enable warmup - no external email account ID', {
-                organizationId,
-                mailboxId,
-                mailboxEmail: mailbox.email
-            });
-            return { success: false, warmupEnabled: false };
         }
 
         // Get warmup config for this phase
@@ -84,65 +119,32 @@ export const enableWarmupForRecovery = async (
             throw new Error(`Invalid recovery phase for warmup: ${recoveryPhase}`);
         }
 
-        // Fetch baseline stats and check if warmup is already active
-        const adapter = await getAdapterForMailbox(mailboxId);
-        let baselineSends = 0;
-        let baselineSpam = 0;
-        let warmupAlreadyActive = false;
-        try {
-            const stats = await adapter.getMailboxDetails(
-                organizationId,
-                externalAccountId
-            );
-            baselineSends = stats?.dailySentCount || 0;
-            baselineSpam = stats?.spamCount || 0;
-            warmupAlreadyActive = stats?.warmupEnabled === true;
-        } catch (e) {
-            logger.warn('[WARMUP] Could not fetch baseline stats, using 0', { mailboxId });
-        }
+        // Native sending — use real SendEvent / BounceEvent counts as the
+        // baseline. Volume during recovery is controlled by lowering
+        // Mailbox.daily_send_limit; the dispatcher honors that cap.
+        const stats = await getMailboxNativeStats(mailboxId);
+        const baselineSends = stats.dailySentCount;
+        const baselineSpam = stats.spamCount;
 
-        // Only modify warmup settings if warmup is NOT already active.
-        // If warmup is running (e.g. configured by Zapmail or user), don't override their settings.
-        // Just track the existing warmup activity toward graduation.
-        let result: any = { ok: true };
-        if (!warmupAlreadyActive) {
-            logger.info('[WARMUP] Enabling warmup for recovery (was disabled)', {
-                organizationId,
-                mailboxId,
-                mailboxEmail: mailbox.email,
-                recoveryPhase,
-                warmupPerDay: config.total_warmup_per_day,
-                dailyRampup: config.daily_rampup
-            });
+        logger.info('[WARMUP] Entering recovery phase', {
+            organizationId,
+            mailboxId,
+            mailboxEmail: mailbox.email,
+            recoveryPhase,
+            warmupPerDay: config.total_warmup_per_day,
+            dailyRampup: config.daily_rampup
+        });
 
-            result = await adapter.updateWarmupSettings(
-                organizationId,
-                externalAccountId,
-                {
-                    warmup_enabled: true,
-                    total_warmup_per_day: config.total_warmup_per_day,
-                    daily_rampup: config.daily_rampup,
-                    reply_rate_percentage: config.reply_rate_percentage
-                }
-            );
-        } else {
-            logger.info('[WARMUP] Warmup already active — not overriding settings, will track existing warmup toward graduation', {
-                organizationId,
-                mailboxId,
-                mailboxEmail: mailbox.email,
-                recoveryPhase,
-            });
-        }
-
-        // Reset phase tracking counters - using them as baselines for Smartlead lifetime stats
         await prisma.mailbox.update({
             where: { id: mailboxId },
             data: {
                 phase_clean_sends: baselineSends,
                 phase_bounces: baselineSpam,
-                phase_entered_at: new Date()
+                phase_entered_at: new Date(),
+                warmup_limit: config.total_warmup_per_day
             }
         });
+        const result: any = { ok: true };
 
         // Notify user
         const targetSends = mailbox.consecutive_pauses && mailbox.consecutive_pauses > 1
@@ -195,13 +197,11 @@ export const updateWarmupForPhaseTransition = async (
             where: { id: mailboxId },
             select: {
                 email: true,
-                external_email_account_id: true
-            }
+                            }
         });
 
-        const externalAccountId = mailbox?.external_email_account_id;
-        if (!mailbox || !externalAccountId) {
-            logger.warn('[WARMUP] Cannot update warmup - mailbox or email account ID not found', {
+        if (!mailbox) {
+            logger.warn('[WARMUP] Cannot update warmup - mailbox not found', {
                 organizationId,
                 mailboxId
             });
@@ -218,60 +218,27 @@ export const updateWarmupForPhaseTransition = async (
             return { success: false };
         }
 
-        // Fetch baseline stats and check if warmup is already active
-        const adapter = await getAdapterForMailbox(mailboxId);
-        let baselineSends = 0;
-        let baselineSpam = 0;
-        let warmupAlreadyActive = false;
-        try {
-            const stats = await adapter.getMailboxDetails(
-                organizationId,
-                externalAccountId
-            );
-            baselineSends = stats?.dailySentCount || 0;
-            baselineSpam = stats?.spamCount || 0;
-            warmupAlreadyActive = stats?.warmupEnabled === true;
-        } catch (e) {
-            logger.warn('[WARMUP] Could not fetch baseline stats for transition, using 0', { mailboxId });
-        }
+        // Native sending — fresh baseline from SendEvent / BounceEvent counts.
+        const stats = await getMailboxNativeStats(mailboxId);
+        const baselineSends = stats.dailySentCount;
+        const baselineSpam = stats.spamCount;
 
-        // Only modify warmup if not already active — don't override Zapmail/user settings
-        if (!warmupAlreadyActive) {
-            logger.info('[WARMUP] Updating warmup for phase transition (was disabled)', {
-                organizationId,
-                mailboxId,
-                mailboxEmail: mailbox.email,
-                newPhase,
-                newWarmupPerDay: config.total_warmup_per_day,
-                newDailyRampup: config.daily_rampup
-            });
+        logger.info('[WARMUP] Updating warmup for phase transition', {
+            organizationId,
+            mailboxId,
+            mailboxEmail: mailbox.email,
+            newPhase,
+            newWarmupPerDay: config.total_warmup_per_day,
+            newDailyRampup: config.daily_rampup
+        });
 
-            await adapter.updateWarmupSettings(
-                organizationId,
-                externalAccountId,
-                {
-                    warmup_enabled: true,
-                    total_warmup_per_day: config.total_warmup_per_day,
-                    daily_rampup: config.daily_rampup,
-                    reply_rate_percentage: config.reply_rate_percentage
-                }
-            );
-        } else {
-            logger.info('[WARMUP] Warmup already active during phase transition — not overriding settings', {
-                organizationId,
-                mailboxId,
-                mailboxEmail: mailbox.email,
-                newPhase,
-            });
-        }
-
-        // Reset phase tracking with new baselines
         await prisma.mailbox.update({
             where: { id: mailboxId },
             data: {
                 phase_clean_sends: baselineSends,
                 phase_bounces: baselineSpam,
-                phase_entered_at: new Date()
+                phase_entered_at: new Date(),
+                warmup_limit: config.total_warmup_per_day
             }
         });
 
@@ -315,13 +282,11 @@ export const disableWarmup = async (
             where: { id: mailboxId },
             select: {
                 email: true,
-                external_email_account_id: true
-            }
+                            }
         });
 
-        const externalAccountId = mailbox?.external_email_account_id;
-        if (!mailbox || !externalAccountId) {
-            logger.warn('[WARMUP] Cannot disable warmup - mailbox or email account ID not found', {
+        if (!mailbox) {
+            logger.warn('[WARMUP] Cannot disable warmup - mailbox not found', {
                 organizationId,
                 mailboxId
             });
@@ -335,40 +300,22 @@ export const disableWarmup = async (
             keepMaintenance: keepMaintenanceWarmup
         });
 
-        const adapter = await getAdapterForMailbox(mailboxId);
+        // Native sending — graduating to HEALTHY removes the warmup-imposed
+        // volume cap on the Mailbox. The dispatcher then sends at the
+        // ConnectedAccount's daily_send_limit instead of warmup_limit.
+        await prisma.mailbox.update({
+            where: { id: mailboxId },
+            data: {
+                warmup_limit: keepMaintenanceWarmup ? 10 : 0
+            }
+        });
 
-        if (keepMaintenanceWarmup) {
-            // Keep low-volume warmup for ongoing maintenance
-            await adapter.updateWarmupSettings(
-                organizationId,
-                externalAccountId,
-                {
-                    warmup_enabled: true,
-                    total_warmup_per_day: 10,
-                    daily_rampup: 0,
-                    reply_rate_percentage: 30
-                }
-            );
-
-            logger.info('[WARMUP] Switched to maintenance warmup (10/day)', {
-                organizationId,
-                mailboxId
-            });
-        } else {
-            // Fully disable warmup
-            await adapter.updateWarmupSettings(
-                organizationId,
-                externalAccountId,
-                {
-                    warmup_enabled: false
-                }
-            );
-
-            logger.info('[WARMUP] Warmup fully disabled', {
-                organizationId,
-                mailboxId
-            });
-        }
+        logger.info(
+            keepMaintenanceWarmup
+                ? '[WARMUP] Switched to maintenance volume (10/day)'
+                : '[WARMUP] Warmup volume cap lifted',
+            { organizationId, mailboxId }
+        );
 
         return { success: true };
 
@@ -402,41 +349,31 @@ export const checkGraduationCriteria = async (
             phase_bounces: true,
             phase_entered_at: true,
             consecutive_pauses: true,
-            external_email_account_id: true,
-            organization_id: true
+                        organization_id: true
         }
     });
 
-    const externalAccountId = mailbox?.external_email_account_id;
-    if (!mailbox || !externalAccountId) {
+    if (!mailbox) {
         return {
             readyForGraduation: false,
             currentSends: 0,
             targetSends: 0,
             daysInPhase: 0,
-            reason: 'Mailbox or email account ID not found'
+            reason: 'Mailbox not found'
         };
     }
 
-    // Get mailbox details from platform (includes both campaign and warmup stats)
-    const adapter = await getAdapterForMailbox(mailboxId);
-    const stats = await adapter.getMailboxDetails(
-        mailbox.organization_id,
-        externalAccountId
-    );
-
-    // Calculate phase-specific counts using DB fields as baselines
-    // Include BOTH campaign sends and warmup sends toward clean send count
-    // Warmup emails (opens, replies, mark-not-spam) actively rebuild reputation
-    const campaignSent = stats?.dailySentCount || 0;
-    const campaignSpam = stats?.spamCount || 0;
-    const warmupSent = stats?.warmupSentCount || 0;
-    const warmupSpam = stats?.warmupSpamCount || 0;
-    const lifetimeSent = campaignSent + warmupSent;
-    const lifetimeSpam = campaignSpam + warmupSpam;
-    const totalSent = Math.max(0, lifetimeSent - mailbox.phase_clean_sends);
-    const totalSpam = Math.max(0, lifetimeSpam - mailbox.phase_bounces);
-    const warmupReputation = stats?.warmupReputation || '0%';
+    // Native sending — graduation is computed from real SendEvent /
+    // BounceEvent counts since phase_entered_at, comparing against the
+    // baselines stored when the mailbox entered this phase.
+    const phaseStart = mailbox.phase_entered_at || new Date(0);
+    const [phaseSends, phaseBounces] = await Promise.all([
+        prisma.sendEvent.count({ where: { mailbox_id: mailboxId, sent_at: { gte: phaseStart } } }),
+        prisma.bounceEvent.count({ where: { mailbox_id: mailboxId, bounced_at: { gte: phaseStart } } }),
+    ]);
+    const totalSent = phaseSends;
+    const totalSpam = phaseBounces;
+    const warmupReputation = '—';
 
     // Calculate days in current phase
     const daysInPhase = mailbox.phase_entered_at
