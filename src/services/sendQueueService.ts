@@ -302,11 +302,22 @@ async function handleSendFailure(
     _orgId: string,
     campaignId: string,
     recipientEmail: string,
-    errorMsg: string
+    errorMsg: string,
+    smtpCode?: string,
+    smtpResponse?: string,
 ): Promise<void> {
-    const msg = (errorMsg || '').toLowerCase();
-    const isHardBounce = /no such user|user unknown|mailbox.*not found|no mailbox|address rejected|does not exist|invalid recipient|unknown user|mailbox unavailable|550 |551 |553 /i.test(msg);
-    const isSoftBounce = /mailbox full|quota exceeded|over quota|temporarily deferred|try again|temporary failure|rate limit|throttl|too many|421 |450 |451 |452 /i.test(msg);
+    // Prefer SMTP code (RFC 5321 / 3463) when available — it's authoritative.
+    // Synchronous 5xx = hard, 4xx = soft. Only fall back to keyword-matching
+    // when no SMTP code was captured (e.g. provider returned a generic API error).
+    const numericCode = smtpCode ? parseInt(smtpCode.split('.')[0], 10) : NaN;
+    let isHardBounce = numericCode >= 500 && numericCode < 600;
+    let isSoftBounce = numericCode >= 400 && numericCode < 500;
+
+    if (!isHardBounce && !isSoftBounce) {
+        const msg = (errorMsg || '').toLowerCase();
+        isHardBounce = /no such user|user unknown|mailbox.*not found|no mailbox|address rejected|does not exist|invalid recipient|unknown user|mailbox unavailable|550 |551 |553 /i.test(msg);
+        isSoftBounce = /mailbox full|quota exceeded|over quota|temporarily deferred|try again|temporary failure|rate limit|throttl|too many|421 |450 |451 |452 /i.test(msg);
+    }
 
     if (!isHardBounce && !isSoftBounce) {
         // Auth / connection / config error — not a bounce. Log but don't pollute bounce stats.
@@ -319,11 +330,29 @@ async function handleSendFailure(
     }
 
     // Hard bounce → full Protection pipeline (creates BounceEvent, checks threshold,
-    // runs correlation, auto-pauses mailbox/domain if warranted, sends Slack alert)
+    // runs correlation, auto-pauses mailbox/domain if warranted, sends Slack alert).
+    // We also persist the raw SMTP transcript so analytics can show exact reasons.
     if (isHardBounce) {
         try {
             await monitoringService.recordBounce(mailboxId, campaignId, errorMsg, recipientEmail);
-            logger.info(`[${LOG_TAG}] Hard bounce → Protection pipeline: ${recipientEmail}`);
+            // Annotate the just-created BounceEvent with the SMTP transcript.
+            // Find by (mailbox_id, recipient, recently created) — the recordBounce
+            // call writes a row before this update lands.
+            if (smtpCode || smtpResponse) {
+                await prisma.bounceEvent.updateMany({
+                    where: {
+                        mailbox_id: mailboxId,
+                        email_address: recipientEmail,
+                        bounced_at: { gte: new Date(Date.now() - 5_000) },
+                    },
+                    data: {
+                        smtp_code: smtpCode,
+                        smtp_response: smtpResponse,
+                        bounce_source: 'smtp',
+                    },
+                }).catch(() => { /* annotation is best-effort */ });
+            }
+            logger.info(`[${LOG_TAG}] Hard bounce → Protection pipeline: ${recipientEmail} (${smtpCode || 'no-code'})`);
         } catch (err: any) {
             logger.error(`[${LOG_TAG}] recordBounce failed for ${mailboxId}`, err);
         }
@@ -333,7 +362,7 @@ async function handleSendFailure(
             where: { id: mailboxId },
             data: { delivery_failure_count: { increment: 1 } },
         }).catch(() => {});
-        logger.info(`[${LOG_TAG}] Soft bounce: ${recipientEmail} (${errorMsg.slice(0, 80)})`);
+        logger.info(`[${LOG_TAG}] Soft bounce: ${recipientEmail} (${smtpCode || 'no-code'}, ${errorMsg.slice(0, 80)})`);
     }
 }
 
@@ -936,10 +965,14 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
             const result: SendResult = await sendEmail(account, email.leadEmail, email.subject, email.bodyHtml);
 
             if (!result.success) {
-                logger.error(`[${LOG_TAG}] Failed: ${account.email} → ${email.leadEmail}: ${result.error}`);
+                logger.error(`[${LOG_TAG}] Failed: ${account.email} → ${email.leadEmail}: ${result.error} (${result.smtpCode || 'no-code'})`);
                 failedCount++;
-                // Classify bounce type from error and record it
-                await handleSendFailure(mailboxId, orgId, campaignId, email.leadEmail, result.error || 'unknown');
+                // Classify bounce type from SMTP code (preferred) or error text
+                // and record it.
+                await handleSendFailure(
+                    mailboxId, orgId, campaignId, email.leadEmail,
+                    result.error || 'unknown', result.smtpCode, result.smtpResponse,
+                );
                 continue;
             }
 

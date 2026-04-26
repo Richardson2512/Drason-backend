@@ -23,6 +23,8 @@ import { fetchMicrosoftReplies, refreshMicrosoftAccessToken } from '../services/
 import { tryProcessBounce } from '../services/bounceParserService';
 import * as webhookBus from '../services/webhookEventBus';
 import { classifyReply } from '../services/replyClassifierService';
+import { parseDsn, isPermanentBounce } from '../services/dsnParser';
+import * as monitoringService from '../services/monitoringService';
 
 const POLL_INTERVAL_MS = 60_000; // 60 seconds
 const LOG_TAG = 'IMAP-REPLY-WORKER';
@@ -45,6 +47,71 @@ interface IncomingEmail {
     references?: string;
     receivedAt: Date;
     hasAttachments: boolean;
+    /** Raw RFC 5322 source — used by the DSN parser when this message is a
+     *  delivery-status notification. Optional because some IMAP fetches don't
+     *  retain the full source. */
+    raw?: string;
+}
+
+// ─── Helper: Process an async DSN bounce ─────────────────────────────────────
+
+/**
+ * Process an asynchronous RFC 3464 bounce that arrived in the sending
+ * mailbox. Looks up the campaign that sent to this recipient, then runs the
+ * standard Protection-layer bounce pipeline. Idempotent: if a BounceEvent
+ * already exists for this (mailbox, recipient) pair within the last 5 min,
+ * we just annotate it with DSN fields rather than creating a duplicate.
+ */
+async function handleAsyncBounce(
+    accountId: string,
+    organizationId: string,
+    dsn: ReturnType<typeof parseDsn>,
+    email: IncomingEmail,
+): Promise<void> {
+    const recipient = (dsn.originalRecipient || '').trim().toLowerCase();
+    if (!recipient) return;
+
+    // Find the campaign + lead this DSN refers to
+    const lead = await prisma.campaignLead.findFirst({
+        where: {
+            email: recipient,
+            campaign: { organization_id: organizationId },
+        },
+        include: { campaign: true },
+        orderBy: { last_sent_at: 'desc' },
+    });
+
+    const campaignId = lead?.campaign_id || '';
+    const errorMsg = dsn.diagnosticCode || `${dsn.status || ''} ${dsn.action || ''}`.trim();
+    const smtpCode = dsn.status; // RFC 3463 enhanced status, e.g. "5.7.1"
+    const smtpResponse = dsn.diagnosticCode?.slice(0, 1024);
+
+    try {
+        await monitoringService.recordBounce(accountId, campaignId, errorMsg, recipient);
+        await prisma.bounceEvent.updateMany({
+            where: {
+                mailbox_id: accountId,
+                email_address: recipient,
+                bounced_at: { gte: new Date(Date.now() - 5 * 60 * 1000) },
+            },
+            data: {
+                smtp_code: smtpCode,
+                smtp_response: smtpResponse,
+                bounce_source: 'dsn',
+            },
+        }).catch(() => { /* annotation best-effort */ });
+        logger.info(`[${LOG_TAG}] Async DSN bounce processed: ${recipient} (${smtpCode || 'no-status'})`);
+    } catch (err: any) {
+        logger.error(`[${LOG_TAG}] Failed to process async DSN bounce for ${recipient}`, err);
+    }
+
+    // Mark the CampaignLead as bounced so the dispatcher stops sending to it
+    if (lead && !lead.bounced_at) {
+        await prisma.campaignLead.update({
+            where: { id: lead.id },
+            data: { bounced_at: new Date(), status: 'bounced' },
+        }).catch(() => { /* state-update best-effort */ });
+    }
 }
 
 // ─── Helper: Process a single reply ──────────────────────────────────────────
@@ -57,7 +124,23 @@ async function processReply(
     const senderEmail = email.from.toLowerCase();
 
     try {
-        // 0. Top-of-function message dedup: relying on Gmail's `is:unread` to gate
+        // 0a. DSN detection — RFC 3464 delivery-status notifications. When the
+        //     sending mailbox receives an asynchronous bounce, it arrives as a
+        //     multipart/report message we must NOT thread into the Unibox.
+        //     Parse, record a BounceEvent, and skip the reply pipeline.
+        if (email.raw) {
+            const dsn = parseDsn(email.raw);
+            if (dsn.isDsn) {
+                if (isPermanentBounce(dsn) && dsn.originalRecipient) {
+                    await handleAsyncBounce(accountId, organizationId, dsn, email);
+                } else {
+                    logger.info(`[${LOG_TAG}] Non-permanent DSN: action=${dsn.action} status=${dsn.status} recipient=${dsn.originalRecipient}`);
+                }
+                return; // never thread DSNs into the Unibox
+            }
+        }
+
+        // 0b. Top-of-function message dedup: relying on Gmail's `is:unread` to gate
         //    fetches caused replies to be missed once the user opened Gmail. We
         //    now fetch every message in the time window and dedupe by message_id
         //    here, BEFORE any counter increments — so re-fetching is safe.

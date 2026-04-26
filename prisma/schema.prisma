@@ -710,6 +710,11 @@ model BounceEvent {
   sent_at         DateTime? // When the original email was sent
   bounced_at      DateTime  @default(now())
   raw_event_id    String? // Reference to RawEvent if applicable
+  // SMTP transcript capture (synchronous bounces from sendQueueService) and
+  // RFC 3464 DSN parsing (asynchronous bounces from imapReplyWorker).
+  smtp_code       String?  // e.g. "550", "5.7.1"
+  smtp_response   String?  @db.Text  // full server message, ≤1024 chars
+  bounce_source   String?  // "smtp" (sync), "dsn" (async), null = legacy
   created_at      DateTime  @default(now())
 
   @@index([organization_id, created_at])

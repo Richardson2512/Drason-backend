@@ -78,7 +78,40 @@ export interface SendResult {
     success: boolean;
     messageId?: string;
     error?: string;
+    /** SMTP transcript capture — populated on every send, success or failure.
+     *  Used by sendQueueService to convert 5xx synchronous bounces into
+     *  BounceEvent rows in real time (no waiting for async DSN). */
+    smtpCode?: string;        // e.g. "550", "5.7.1"
+    smtpResponse?: string;    // full server message, capped at 1024 chars
 }
+
+/** Truncate a server response to fit BounceEvent.smtp_response (1024 chars). */
+function clipResponse(s: unknown): string | undefined {
+    if (s === undefined || s === null) return undefined;
+    const str = typeof s === 'string' ? s : String(s);
+    return str.length > 1024 ? str.slice(0, 1024) : str;
+}
+
+/** Extract SMTP code + response from a nodemailer / Gmail / Microsoft error.
+ *  Each provider exposes the SMTP details on different fields, so we probe
+ *  several locations and stop at the first hit. */
+function extractSmtp(err: any): { smtpCode?: string; smtpResponse?: string } {
+    if (!err || typeof err !== 'object') return {};
+    // nodemailer: error.responseCode (number) + error.response (string)
+    const responseCode = err.responseCode ?? err.code;
+    const response = err.response ?? err.message;
+    // Gmail API: err.errors[0].message often contains SMTP transcript
+    // Microsoft Graph: err.body.error.message contains it
+    const fallback = err.errors?.[0]?.message
+        ?? err.body?.error?.message
+        ?? err.statusText;
+    return {
+        smtpCode: responseCode !== undefined ? String(responseCode) : undefined,
+        smtpResponse: clipResponse(response ?? fallback),
+    };
+}
+
+export { extractSmtp, clipResponse };
 
 // ────────────────────────────────────────────────────────────────────
 // Transporter cache — reuse connections per account to avoid
@@ -291,6 +324,14 @@ export async function sendEmail(
             clearTransporterCache(account.id);
         }
 
-        return { success: false, error: err.message || 'Send failed' };
+        // Capture SMTP transcript so sendQueueService can convert 5xx
+        // synchronous bounces into BounceEvent rows in real time.
+        const smtp = extractSmtp(err);
+        return {
+            success: false,
+            error: err.message || 'Send failed',
+            smtpCode: smtp.smtpCode,
+            smtpResponse: smtp.smtpResponse,
+        };
     }
 }
