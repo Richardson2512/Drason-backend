@@ -14,15 +14,14 @@
  *   - last_ip_blacklist_check within last 5h → skip (cadence guard so two
  *     boots in a row don't burn lookups)
  *
- * Tier respects org subscription:
- *   - tierLimits.dnsblDepth ('critical_only' | 'standard' | 'comprehensive')
- *     drives which lists run, identical to the domain worker.
+ * DNSBL coverage is comprehensive at every tier — protection is a flat
+ * capability, not a metered one.
  */
 
 import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
 import * as dnsbl from '../services/dnsblService';
-import { TIER_LIMITS } from '../services/polarClient';
+import { pauseMailbox } from '../services/monitoringService';
 
 const LOG_TAG = 'MAILBOX_IP_BL';
 const RUN_INTERVAL_MS = 6 * 60 * 60 * 1000;     // 6 hours
@@ -54,24 +53,17 @@ export async function runOnce(): Promise<{ checked: number; listed: number; skip
     logger.info(`[${LOG_TAG}] Starting cycle`);
     const cutoff = new Date(Date.now() - MIN_GAP_BETWEEN_CHECKS_MS);
 
-    // Group by org so we honor each org's tier-specific dnsblDepth without
-    // mixing list configs in one Promise.all batch.
-    const orgs = await prisma.organization.findMany({
-        select: { id: true, subscription_tier: true },
-    });
+    const orgs = await prisma.organization.findMany({ select: { id: true } });
+
+    // Comprehensive list set used for every org. Fetched once per cycle so
+    // a 1000-mailbox sweep doesn't burn 1000 redundant DB reads.
+    const lists = await dnsbl.getListsForRun('comprehensive');
 
     let totalChecked = 0;
     let totalListed = 0;
     let totalSkipped = 0;
 
     for (const org of orgs) {
-        const tier = TIER_LIMITS[org.subscription_tier] || TIER_LIMITS.trial;
-        const depth = tier.dnsblDepth;
-
-        // Lists for this depth. We deliberately fetch once per org and reuse
-        // across all of that org's mailboxes — the list set won't change
-        // mid-cycle, and it dodges 100 redundant DB reads on a 100-mailbox org.
-        const lists = await dnsbl.getListsForRun(depth);
 
         const mailboxes = await prisma.mailbox.findMany({
             where: {
@@ -83,13 +75,13 @@ export async function runOnce(): Promise<{ checked: number; listed: number; skip
                     { last_ip_blacklist_check: { lt: cutoff } },
                 ],
             },
-            select: { id: true, email: true, sending_ip: true },
+            select: { id: true, email: true, sending_ip: true, status: true },
             take: 500, // safety bound per org per cycle
         });
 
         if (mailboxes.length === 0) continue;
 
-        logger.info(`[${LOG_TAG}] org=${org.id} processing ${mailboxes.length} mailboxes (depth=${depth}, ${lists.length} lists)`);
+        logger.info(`[${LOG_TAG}] org=${org.id} processing ${mailboxes.length} mailboxes (${lists.length} lists)`);
 
         // Sequential per org. The semaphore inside dnsblService caps parallel
         // DNS queries already; running mailboxes in parallel here would just
@@ -127,6 +119,35 @@ export async function runOnce(): Promise<{ checked: number; listed: number; skip
                 totalChecked++;
                 if (ipBlacklistResults.critical_listed > 0 || ipBlacklistResults.major_listed > 0) {
                     totalListed++;
+                }
+
+                // ── AUTO-PAUSE on confirmed sending-IP blacklisting ─────────
+                // Mirror the dnsblService.isBlockingBlacklisted policy:
+                //   • Any CONFIRMED critical-tier listing  → pause immediately
+                //   • Two or more CONFIRMED major-tier listings → pause
+                // monitoringService.pauseMailbox respects OBSERVE/SUGGEST/ENFORCE
+                // system modes, runs the correlation pre-check, transitions via
+                // entityStateService (sets cooldown_until → metricsWorker enters
+                // QUARANTINE on expiry), and fires the Slack alert. Calling it
+                // here keeps every pause path going through the same canonical
+                // function; we never mutate Mailbox.status directly.
+                // Idempotency: don't re-pause an already-paused mailbox. The
+                // state machine would reject the transition anyway, but
+                // pauseMailbox runs correlation queries + Slack alert before
+                // hitting the rejection — wasted DB work + duplicate notifs.
+                const policy = dnsbl.isBlockingBlacklisted(result.results, lists);
+                if (policy.shouldPause && mb.status !== 'paused') {
+                    try {
+                        await pauseMailbox(
+                            mb.id,
+                            `IP blacklist: ${policy.reason}`,
+                        );
+                    } catch (pauseErr) {
+                        logger.error(
+                            `[${LOG_TAG}] auto-pause failed for ${mb.id}`,
+                            pauseErr instanceof Error ? pauseErr : new Error(String(pauseErr)),
+                        );
+                    }
                 }
             } catch (err) {
                 logger.warn(`[${LOG_TAG}] mailbox ${mb.id} check failed`, { error: (err as Error)?.message });

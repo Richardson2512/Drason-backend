@@ -106,12 +106,17 @@ export const handleOAuthCallback = async (req: Request, res: Response) => {
     }
 
     try {
-        // Exchange code for token
+        const backendUrl = process.env.BACKEND_URL || process.env.BASE_URL;
+        const redirectUri = backendUrl ? `${backendUrl}/slack/oauth/callback` : undefined;
+
+        // Exchange code for token. redirect_uri must match the one sent at
+        // install initiation, otherwise Slack returns `bad_redirect_uri`.
         const tokenResponse = await axios.post('https://slack.com/api/oauth.v2.access', null, {
             params: {
                 client_id: process.env.SLACK_CLIENT_ID,
                 client_secret: process.env.SLACK_CLIENT_SECRET,
-                code
+                code,
+                ...(redirectUri ? { redirect_uri: redirectUri } : {})
             }
         });
 
@@ -359,18 +364,55 @@ export const saveSlackChannel = async (req: Request, res: Response) => {
 
         const token = decryptToken(integration.bot_token_encrypted);
 
-        // Immediate Validation against Slack
-        // We verify the bot can actually post to this channel before saving it.
-        const testRes = await axios.post('https://slack.com/api/chat.postMessage', {
+        const postTestMessage = () => axios.post('https://slack.com/api/chat.postMessage', {
             channel: channel_id,
             text: "✅ Superkabe alerts successfully configured for this channel."
         }, {
             headers: { Authorization: `Bearer ${token}` }
         });
 
+        // Verify the bot can actually post to this channel before saving it.
+        let testRes = await postTestMessage();
+
+        // not_in_channel: bot has channels:read but isn't a member yet.
+        // Auto-join public channels via conversations.join (requires channels:join scope).
+        // Private channels can't be joined — bot must be invited manually.
+        if (!testRes.data.ok && testRes.data.error === 'not_in_channel') {
+            const joinRes = await axios.post('https://slack.com/api/conversations.join', null, {
+                headers: { Authorization: `Bearer ${token}` },
+                params: { channel: channel_id }
+            });
+
+            if (joinRes.data.ok) {
+                testRes = await postTestMessage();
+            } else {
+                logger.warn(`[Slack] conversations.join failed for Org ${orgId}: ${joinRes.data.error}`);
+
+                const channelName = (joinRes.data.channel?.name) ? `#${joinRes.data.channel.name}` : 'the selected channel';
+                let friendly: string;
+
+                if (joinRes.data.error === 'method_not_supported_for_channel_type' || joinRes.data.error === 'is_private') {
+                    friendly = `${channelName} is a private channel. Open the channel in Slack and run /invite @superkabe-bot, then save again.`;
+                } else if (joinRes.data.error === 'missing_scope') {
+                    friendly = `Superkabe is missing the channels:join scope. Add it in your Slack app config and reinstall the integration, or invite the bot manually with /invite @superkabe-bot in the channel.`;
+                } else {
+                    friendly = `Could not join the channel automatically. Open it in Slack and run /invite @superkabe-bot, then save again.`;
+                }
+
+                return res.status(400).json({ success: false, error: friendly });
+            }
+        }
+
         if (!testRes.data.ok) {
             logger.warn(`[Slack] Channel validation failed for Org ${orgId}. Slack error: ${testRes.data.error}`);
-            return res.status(400).json({ success: false, error: testRes.data.error, message: 'Could not post to the selected channel. Ensure the Superkabe bot is invited to it.' });
+
+            const friendly = testRes.data.error === 'channel_not_found'
+                ? 'That channel no longer exists. Refresh the page and pick another.'
+                : testRes.data.error === 'is_archived'
+                    ? 'That channel is archived. Pick a different channel.'
+                    : `Could not post to the selected channel (${testRes.data.error}). Invite @superkabe-bot to it and try again.`;
+
+            return res.status(400).json({ success: false, error: friendly });
         }
 
         // Validation succeeded. Save safely.

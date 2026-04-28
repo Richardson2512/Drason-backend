@@ -3,6 +3,8 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
+import { recordConsent, extractClientIp, extractUserAgent } from '../services/consentService';
+import { TOS_VERSION, PRIVACY_VERSION, TOS_PATH, PRIVACY_PATH } from '../constants/legalDocVersions';
 
 // JWT_SECRET is validated at startup in index.ts — crashes if missing in production.
 // In development, a dev-only fallback is used.
@@ -147,10 +149,40 @@ export const login = async (req: Request, res: Response) => {
 
 export const register = async (req: Request, res: Response) => {
     try {
-        const { name, email, password, organizationName, tier } = req.body;
+        const {
+            name,
+            email,
+            password,
+            organizationName,
+            tier,
+            // Legal-doc consent (required) — frontend submits the version
+            // strings the user actually saw. We compare against the current
+            // server-side versions and reject mismatches so a stale frontend
+            // can't sneak through with an old version.
+            acceptedTosVersion,
+            acceptedPrivacyVersion,
+        } = req.body;
 
         if (!email || !password || !organizationName) {
             return res.status(400).json({ success: false, error: 'Missing required fields' });
+        }
+
+        // Required ToS + Privacy consent. We block signup outright if either
+        // is missing or stale — under GDPR Art. 7(1) we must demonstrate
+        // current-version consent, and we cannot create the account otherwise.
+        if (acceptedTosVersion !== TOS_VERSION) {
+            return res.status(400).json({
+                success: false,
+                error: 'You must accept the current Terms of Service to create an account.',
+                required_tos_version: TOS_VERSION,
+            });
+        }
+        if (acceptedPrivacyVersion !== PRIVACY_VERSION) {
+            return res.status(400).json({
+                success: false,
+                error: 'You must accept the current Privacy Policy to create an account.',
+                required_privacy_version: PRIVACY_VERSION,
+            });
         }
 
         const existingUser = await prisma.user.findUnique({ where: { email } });
@@ -209,6 +241,48 @@ export const register = async (req: Request, res: Response) => {
 
             return { org, user };
         });
+
+        // Record consent grants — two append-only rows, forensically self-contained
+        // via identity snapshots so the audit record survives any later User erasure.
+        const ipAddress = extractClientIp(req);
+        const userAgent = extractUserAgent(req);
+        try {
+            await Promise.all([
+                recordConsent({
+                    consentType: 'tos',
+                    documentVersion: acceptedTosVersion,
+                    channel: 'signup',
+                    userId: result.user.id,
+                    organizationId: result.org.id,
+                    userEmailSnapshot: result.user.email,
+                    userNameSnapshot: result.user.name,
+                    ipAddress,
+                    userAgent,
+                    metadata: { documentPath: TOS_PATH },
+                }),
+                recordConsent({
+                    consentType: 'privacy',
+                    documentVersion: acceptedPrivacyVersion,
+                    channel: 'signup',
+                    userId: result.user.id,
+                    organizationId: result.org.id,
+                    userEmailSnapshot: result.user.email,
+                    userNameSnapshot: result.user.name,
+                    ipAddress,
+                    userAgent,
+                    metadata: { documentPath: PRIVACY_PATH },
+                }),
+            ]);
+        } catch (consentErr) {
+            // Consent capture is non-fatal for the response (the user is already
+            // created in the transaction above), but we MUST log the failure
+            // loudly because a missing audit row is a compliance gap.
+            logger.error(
+                '[REGISTER] Consent recording failed after signup — manual remediation required',
+                consentErr instanceof Error ? consentErr : new Error(String(consentErr)),
+                { userId: result.user.id, orgId: result.org.id },
+            );
+        }
 
         const token = generateToken({ ...result.user, organization_id: result.org.id });
 
@@ -325,4 +399,112 @@ export const refreshToken = async (req: Request, res: Response) => {
 export const logout = async (_req: Request, res: Response) => {
     res.clearCookie('token', { path: '/' });
     res.json({ success: true, data: { message: 'Logged out successfully' } });
+};
+
+/**
+ * Public endpoint — returns the current legal-doc versions so the signup form
+ * can pin them to the submission and the re-acceptance modal can label what
+ * the user is accepting. No authentication required.
+ */
+export const getLegalVersions = async (_req: Request, res: Response): Promise<void> => {
+    res.json({
+        tos: TOS_VERSION,
+        privacy: PRIVACY_VERSION,
+        tos_path: TOS_PATH,
+        privacy_path: PRIVACY_PATH,
+    });
+};
+
+/**
+ * Resolution endpoint for the re-acceptance modal triggered by the
+ * requireFreshConsent middleware. The authenticated user submits the version
+ * strings displayed in the modal; we validate they match current and record
+ * one or two new Consent rows.
+ */
+export const acceptCurrentTerms = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const userId = req.orgContext?.userId;
+        if (!userId) {
+            res.status(401).json({ success: false, error: 'Authentication required' });
+            return;
+        }
+
+        const acceptedTos = req.body?.acceptedTosVersion;
+        const acceptedPrivacy = req.body?.acceptedPrivacyVersion;
+
+        if (acceptedTos && acceptedTos !== TOS_VERSION) {
+            res.status(400).json({
+                success: false,
+                error: 'Submitted ToS version is stale. Please refresh and accept the current version.',
+                required_tos_version: TOS_VERSION,
+            });
+            return;
+        }
+        if (acceptedPrivacy && acceptedPrivacy !== PRIVACY_VERSION) {
+            res.status(400).json({
+                success: false,
+                error: 'Submitted Privacy Policy version is stale. Please refresh and accept the current version.',
+                required_privacy_version: PRIVACY_VERSION,
+            });
+            return;
+        }
+
+        // Identity snapshot for the consent record.
+        const user = await prisma.user.findUnique({
+            where: { id: userId },
+            select: { email: true, name: true, organization_id: true },
+        });
+        if (!user) {
+            res.status(404).json({ success: false, error: 'User not found' });
+            return;
+        }
+
+        const ipAddress = extractClientIp(req);
+        const userAgent = extractUserAgent(req);
+        const recorded: string[] = [];
+
+        if (acceptedTos === TOS_VERSION) {
+            await recordConsent({
+                consentType: 'tos',
+                documentVersion: TOS_VERSION,
+                channel: 'reacceptance_modal',
+                userId,
+                organizationId: user.organization_id,
+                userEmailSnapshot: user.email,
+                userNameSnapshot: user.name,
+                ipAddress,
+                userAgent,
+                metadata: { documentPath: TOS_PATH },
+            });
+            recorded.push('tos');
+        }
+        if (acceptedPrivacy === PRIVACY_VERSION) {
+            await recordConsent({
+                consentType: 'privacy',
+                documentVersion: PRIVACY_VERSION,
+                channel: 'reacceptance_modal',
+                userId,
+                organizationId: user.organization_id,
+                userEmailSnapshot: user.email,
+                userNameSnapshot: user.name,
+                ipAddress,
+                userAgent,
+                metadata: { documentPath: PRIVACY_PATH },
+            });
+            recorded.push('privacy');
+        }
+
+        if (recorded.length === 0) {
+            res.status(400).json({
+                success: false,
+                error: 'Submit acceptedTosVersion and/or acceptedPrivacyVersion matching the current legal versions.',
+            });
+            return;
+        }
+
+        res.json({ success: true, recorded });
+    } catch (err: any) {
+        logger.error('[AUTH] acceptCurrentTerms failed', err);
+        res.status(500).json({ success: false, error: 'Failed to record acceptance' });
+    }
 };

@@ -208,9 +208,12 @@ export const getInvoices = async (req: Request, res: Response): Promise<Response
             return res.json({ success: true, invoices: [] });
         }
 
-        // Tier → price in USD cents
-        const tierPrices: Record<string, number> = {
+        // Fallback prices in cents — only used for legacy SubscriptionEvent
+        // rows written before we started capturing amount_cents from the
+        // Polar payload. New rows always have the real amount.
+        const tierFallbackCents: Record<string, number> = {
             starter: 4900,
+            pro: 4900,
             growth: 19900,
             scale: 34900,
         };
@@ -224,13 +227,23 @@ export const getInvoices = async (req: Request, res: Response): Promise<Response
 
         const invoices = events.map(e => {
             const tier = e.new_tier || org.subscription_tier;
+            const amount = e.amount_cents ?? tierFallbackCents[tier] ?? 0;
+            const currency = (e.currency || 'USD').toLowerCase();
+            // Prefer Polar's hosted invoice — it's the legally-relevant
+            // document with proper tax handling, invoice number, and refund
+            // adjustments. Fall back to our PDFKit-rendered version when
+            // Polar didn't send a URL (legacy rows, non-invoice events like
+            // subscription.created, or webhook payload variants we missed).
+            const url = e.polar_invoice_url || `/api/billing/invoices/${e.id}/pdf`;
             return {
                 id: e.id,
                 date: e.created_at.toISOString(),
-                amount: tierPrices[tier] || 0,
-                currency: 'usd',
+                amount,
+                currency,
+                number: e.polar_invoice_number || null,
                 status: e.event_type === 'invoice.paid' ? 'paid' : 'completed',
-                url: `/api/billing/invoices/${e.id}/pdf`,
+                source: e.polar_invoice_url ? 'polar' : 'self',
+                url,
             };
         });
 
@@ -252,12 +265,17 @@ export const getInvoices = async (req: Request, res: Response): Promise<Response
  */
 export const getTiers = async (_req: Request, res: Response): Promise<Response> => {
     const tierMeta: Record<string, { name: string; price: string; priceValue: number; color: string }> = {
-        trial: { name: 'Free Trial', price: '$0', priceValue: 0, color: '#6B7280' },
-        starter: { name: 'Starter', price: '$19', priceValue: 19, color: '#3B82F6' },
-        pro: { name: 'Pro', price: '$49', priceValue: 49, color: '#6366F1' },
-        growth: { name: 'Growth', price: '$199', priceValue: 199, color: '#8B5CF6' },
-        scale: { name: 'Scale', price: '$349', priceValue: 349, color: '#22C55E' },
-        enterprise: { name: 'Enterprise', price: 'Custom', priceValue: 0, color: '#F59E0B' },
+        trial:      { name: 'Free Trial', price: '$0',     priceValue: 0,   color: '#6B7280' },
+        starter:    { name: 'Starter',    price: '$19',    priceValue: 19,  color: '#3B82F6' },
+        pro:        { name: 'Pro',        price: '$49',    priceValue: 49,  color: '#6366F1' },
+        pro_80k:    { name: 'Pro — 80K',  price: '$59',    priceValue: 59,  color: '#6366F1' },
+        pro_100k:   { name: 'Pro — 100K', price: '$79',    priceValue: 79,  color: '#6366F1' },
+        pro_150k:   { name: 'Pro — 150K', price: '$109',   priceValue: 109, color: '#6366F1' },
+        pro_200k:   { name: 'Pro — 200K', price: '$139',   priceValue: 139, color: '#6366F1' },
+        pro_250k:   { name: 'Pro — 250K', price: '$169',   priceValue: 169, color: '#6366F1' },
+        growth:     { name: 'Growth',     price: '$199',   priceValue: 199, color: '#8B5CF6' },
+        scale:      { name: 'Scale',      price: '$349',   priceValue: 349, color: '#22C55E' },
+        enterprise: { name: 'Enterprise', price: 'Custom', priceValue: 0,   color: '#F59E0B' },
     };
 
     // Replace Infinity with a JSON-safe sentinel (null) for serialization
@@ -270,12 +288,8 @@ export const getTiers = async (_req: Request, res: Response): Promise<Response> 
         priceValue: tierMeta[key]?.priceValue || 0,
         color: tierMeta[key]?.color || '#6B7280',
         limits: {
-            leads: serialize(limits.leads),
-            domains: serialize(limits.domains),
-            mailboxes: serialize(limits.mailboxes),
             validationCredits: serialize(limits.validationCredits),
             monthlySendLimit: serialize(limits.monthlySendLimit),
-            dnsblDepth: limits.dnsblDepth,
         },
     }));
 
@@ -313,9 +327,6 @@ export const changePlan = async (req: Request, res: Response): Promise<Response>
                 subscription_tier: true,
                 subscription_status: true,
                 polar_subscription_id: true,
-                current_lead_count: true,
-                current_domain_count: true,
-                current_mailbox_count: true,
             }
         });
 
@@ -342,38 +353,9 @@ export const changePlan = async (req: Request, res: Response): Promise<Response>
         const newRank = tierOrder[tier] || 0;
         const isDowngrade = newRank < currentRank;
 
-        // For downgrades, validate usage against new tier limits
-        if (isDowngrade) {
-            const newLimits = TIER_LIMITS[tier];
-            if (!newLimits) {
-                return res.status(400).json({ success: false, error: `Unknown tier: ${tier}` });
-            }
-
-            const warnings: string[] = [];
-
-            if ((org.current_lead_count || 0) > newLimits.leads) {
-                warnings.push(`You have ${(org.current_lead_count || 0).toLocaleString()} leads but the ${tier} plan allows ${newLimits.leads.toLocaleString()}. Excess leads will become read-only.`);
-            }
-            if ((org.current_domain_count || 0) > newLimits.domains) {
-                warnings.push(`You have ${org.current_domain_count} domains but the ${tier} plan allows ${newLimits.domains}. Excess domains will be paused.`);
-            }
-            if ((org.current_mailbox_count || 0) > newLimits.mailboxes) {
-                warnings.push(`You have ${org.current_mailbox_count} mailboxes but the ${tier} plan allows ${newLimits.mailboxes}. Excess mailboxes will be paused.`);
-            }
-
-            // If there are warnings and user hasn't confirmed, return them
-            if (warnings.length > 0 && !confirm) {
-                return res.json({
-                    success: true,
-                    requiresConfirmation: true,
-                    warnings,
-                    currentTier: org.subscription_tier,
-                    newTier: tier,
-                    direction: 'downgrade',
-                    message: 'Your current usage exceeds the limits of the new plan. Confirm to proceed.'
-                });
-            }
-        }
+        // Downgrades no longer surface lead/domain/mailbox warnings — those caps
+        // were removed 2026-04-27. Validation credits and monthly sends are
+        // rolling counters that reset, so they don't need a confirm-prompt either.
 
         // Execute the plan change via Polar
         const result = await polarClient.changeSubscription(orgId, tier);
@@ -423,9 +405,15 @@ export const downloadInvoicePdf = async (req: Request, res: Response): Promise<v
         const userId = req.orgContext?.userId;
         const user = userId ? await prisma.user.findUnique({ where: { id: userId }, select: { email: true } }) : null;
 
-        const tierPrices: Record<string, number> = { starter: 4900, growth: 19900, scale: 34900 };
+        // Tier base prices — only used as fallback when we don't have the
+        // real Polar-charged amount on the event row. The Pro plan has
+        // multiple send-volume variants priced differently; for Pro the
+        // fallback is the lowest tier, which is fine for legacy rows that
+        // pre-date amount capture.
+        const tierFallbackCents: Record<string, number> = { starter: 4900, pro: 4900, growth: 19900, scale: 34900 };
         const tier = event.new_tier || org?.subscription_tier || 'starter';
-        const amountCents = tierPrices[tier] || 0;
+        const amountCents = event.amount_cents ?? tierFallbackCents[tier] ?? 0;
+        const currency = event.currency || 'USD';
         const amountDollars = (amountCents / 100).toFixed(2);
         const tierName = tier.charAt(0).toUpperCase() + tier.slice(1);
         const invoiceDate = event.created_at;
@@ -491,7 +479,7 @@ export const downloadInvoicePdf = async (req: Request, res: Response): Promise<v
         doc.moveTo(380, totalTop + 42).lineTo(545, totalTop + 42).strokeColor('#E5E7EB').lineWidth(1).stroke();
 
         doc.fillColor('#111827').fontSize(12).font('Helvetica-Bold').text('TOTAL', 380, totalTop + 52, { width: 80, align: 'right' });
-        doc.text(`$${amountDollars} USD`, 470, totalTop + 52, { width: 70, align: 'right' });
+        doc.text(`$${amountDollars} ${currency}`, 470, totalTop + 52, { width: 70, align: 'right' });
 
         // Payment status
         const statusTop = totalTop + 90;

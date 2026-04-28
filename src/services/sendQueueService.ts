@@ -22,13 +22,15 @@
 
 import { Queue, Worker, Job } from 'bullmq';
 import { prisma } from '../index';
-import { logger } from './observabilityService';
+import { logger, maskEmail } from './observabilityService';
 import { sendEmail, SendResult } from './emailSendAdapters';
+import { buildUnsubscribeUrl } from './trackingService';
 import { TIER_LIMITS } from './polarClient';
 import { getRedisClient } from '../utils/redis';
 import { provisionMailboxForConnectedAccount } from './mailboxProvisioningService';
 import * as healingService from './healingService';
 import * as monitoringService from './monitoringService';
+import { SlackAlertService } from './SlackAlertService';
 import * as webhookBus from './webhookEventBus';
 import { applyTracking } from './trackingService';
 import { resolveSpintax } from '../utils/spintax';
@@ -96,6 +98,9 @@ interface EmailInBatch {
     };
     subject: string;       // already personalized
     bodyHtml: string;      // already personalized
+    /** Pre-computed RFC 8058 unsubscribe URL — passed verbatim into List-Unsubscribe
+     *  headers by the send services. Required by Gmail's bulk-sender policy. */
+    unsubscribeUrl: string;
     stepNumber: number;
     stepId: string;
     variantId: string | null;
@@ -325,7 +330,7 @@ async function handleSendFailure(
             where: { id: mailboxId },
             data: { delivery_failure_count: { increment: 1 }, connection_error: errorMsg.slice(0, 255) },
         }).catch(() => {});
-        logger.warn(`[${LOG_TAG}] Non-bounce send failure for ${recipientEmail}: ${errorMsg.slice(0, 120)}`);
+        logger.warn(`[${LOG_TAG}] Non-bounce send failure for ${maskEmail(recipientEmail)}: ${errorMsg.slice(0, 120)}`);
         return;
     }
 
@@ -352,7 +357,7 @@ async function handleSendFailure(
                     },
                 }).catch(() => { /* annotation is best-effort */ });
             }
-            logger.info(`[${LOG_TAG}] Hard bounce → Protection pipeline: ${recipientEmail} (${smtpCode || 'no-code'})`);
+            logger.info(`[${LOG_TAG}] Hard bounce → Protection pipeline: ${maskEmail(recipientEmail)} (${smtpCode || 'no-code'})`);
         } catch (err: any) {
             logger.error(`[${LOG_TAG}] recordBounce failed for ${mailboxId}`, err);
         }
@@ -362,7 +367,7 @@ async function handleSendFailure(
             where: { id: mailboxId },
             data: { delivery_failure_count: { increment: 1 } },
         }).catch(() => {});
-        logger.info(`[${LOG_TAG}] Soft bounce: ${recipientEmail} (${smtpCode || 'no-code'}, ${errorMsg.slice(0, 80)})`);
+        logger.info(`[${LOG_TAG}] Soft bounce: ${maskEmail(recipientEmail)} (${smtpCode || 'no-code'}, ${errorMsg.slice(0, 80)})`);
     }
 }
 
@@ -379,10 +384,9 @@ async function dispatch(): Promise<void> {
     try {
         const now = new Date();
 
-        // 1. Load all active sequencer campaigns with steps + accounts.
-        // Post-merge Campaign table holds both legacy platform-synced campaigns AND
-        // native sequencer campaigns; filter by source_platform='sequencer' so we
-        // only dispatch through the native send path.
+        // 1. Load all active campaigns with steps + accounts. Campaign table is
+        // unified post-Phase-B (2026-04-26) — every active row dispatches through
+        // the native send path.
         const activeCampaigns = await prisma.campaign.findMany({
             where: { status: 'active' },
             include: {
@@ -392,15 +396,37 @@ async function dispatch(): Promise<void> {
                         account: {
                             include: {
                                 // 1:1 shadow Mailbox — used to honor warmup_limit
-                                // during 5-phase recovery. Mailbox.warmup_limit > 0
-                                // caps daily sends below the normal account cap.
-                                mailbox: { select: { warmup_limit: true, recovery_phase: true } },
+                                // during 5-phase recovery and to defend against a
+                                // partially-cascaded domain pause: if the parent
+                                // domain is paused, every child mailbox MUST stop
+                                // sending even if the per-mailbox cascade hasn't
+                                // landed yet (e.g. partial transaction, eventual
+                                // consistency, or a manual domain.status flip).
+                                mailbox: {
+                                    select: {
+                                        warmup_limit: true,
+                                        recovery_phase: true,
+                                        status: true,
+                                        domain: { select: { status: true } },
+                                    },
+                                },
                             },
                         },
                     },
                 },
             },
         });
+
+        // Pre-fetch each org's mailing_address so the dispatcher can inject it
+        // into every send's footer. CAN-SPAM § 5(a)(5) requires a valid postal
+        // address in every commercial email; the execution gate also blocks
+        // launches without it.
+        const uniqueOrgIds = Array.from(new Set(activeCampaigns.map(c => c.organization_id)));
+        const orgsForMail = await prisma.organization.findMany({
+            where: { id: { in: uniqueOrgIds } },
+            select: { id: true, mailing_address: true },
+        });
+        const mailingAddressByOrg = new Map(orgsForMail.map(o => [o.id, o.mailing_address] as const));
 
         if (activeCampaigns.length === 0) {
             logger.info(`[${LOG_TAG}] No active campaigns`);
@@ -441,6 +467,27 @@ async function dispatch(): Promise<void> {
 
         for (const campaign of activeCampaigns) {
             try {
+                // CAN-SPAM § 5(a)(5) gate — every commercial email must carry a
+                // valid postal address. If the org hasn't configured one, skip
+                // the campaign for this cycle and log a warning. The customer
+                // sees a banner in the dashboard prompting them to configure it.
+                // (Skipped only when include_unsubscribe is on, which is the
+                // default + the only legally-defensible mode.)
+                const includeUnsub = campaign.include_unsubscribe ?? true;
+                const orgMailingAddress = mailingAddressByOrg.get(campaign.organization_id) || null;
+                if (includeUnsub && !orgMailingAddress) {
+                    logger.warn(`[${LOG_TAG}] Skipping campaign ${campaign.id} — mailing_address not configured (CAN-SPAM § 5(a)(5))`);
+                    SlackAlertService.sendAlert({
+                        organizationId: campaign.organization_id,
+                        eventType: 'campaign.send_blocked.postal_address',
+                        entityId: campaign.id,
+                        severity: 'critical',
+                        title: '🚫 Sending blocked: postal address missing',
+                        message: `Campaign *${campaign.name}* cannot send because no postal address is configured. CAN-SPAM § 5(a)(5) requires it. Add it in Settings → Organization Details.`,
+                    }).catch((err) => logger.warn(`[${LOG_TAG}] Slack alert failed (postal_address)`, { error: err?.message }));
+                    continue;
+                }
+
                 // Check org monthly limit
                 const tier = orgTierMap.get(campaign.organization_id) || 'trial';
                 const limits = TIER_LIMITS[tier] || TIER_LIMITS.trial;
@@ -450,11 +497,8 @@ async function dispatch(): Promise<void> {
                 // Check sending window
                 if (!isWithinSendingWindow(campaign)) continue;
 
-                // Check campaign daily limit. Nullable on Campaign post-merge (legacy
-                // platform-synced rows have no daily_limit — we never dispatch those here
-                // because the outer findMany filters source_platform='sequencer', but
-                // TypeScript can't prove that). Fall back to SequencerSettings-style
-                // default of 50 if somehow unset.
+                // Daily limit is nullable for historical reasons. Fall back to a
+                // safe SequencerSettings-style default of 50 if somehow unset.
                 const dailyLimit = campaign.daily_limit ?? 50;
                 const dailySent = campaignDailyMap.get(campaign.id) || 0;
                 if (dailySent >= dailyLimit) continue;
@@ -474,11 +518,48 @@ async function dispatch(): Promise<void> {
                 });
 
                 // Find due leads
-                const dueLeads = await prisma.campaignLead.findMany({
+                const dueLeadsRaw = await prisma.campaignLead.findMany({
                     where: { campaign_id: campaign.id, status: 'active', next_send_at: { lte: now } },
                     take: Math.min(remainingCampaignSends, 500),
                     orderBy: { next_send_at: 'asc' },
                 });
+
+                if (dueLeadsRaw.length === 0) continue;
+
+                // Org-wide suppression check (defense in depth) — required for
+                // CAN-SPAM § 5(a)(4)(A), CASL § 11(3), GDPR Art. 21. The
+                // CampaignLead.status='unsubscribed' cascade catches the click-
+                // unsubscribe path, and the per-row suppression catches anything
+                // else that may have touched Lead.status without cascading
+                // (admin override, hard-bounce automation, future paths).
+                const suppressedEmails = new Set(
+                    (await prisma.lead.findMany({
+                        where: {
+                            organization_id: campaign.organization_id,
+                            email: { in: dueLeadsRaw.map(l => l.email) },
+                            status: { in: ['unsubscribed', 'bounced'] },
+                        },
+                        select: { email: true },
+                    })).map(l => l.email),
+                );
+
+                const dueLeads = dueLeadsRaw.filter(l => !suppressedEmails.has(l.email));
+
+                if (suppressedEmails.size > 0) {
+                    // Cascade the suppression onto the CampaignLead rows so future
+                    // dispatches don't re-fetch+re-filter the same set every cycle.
+                    const suppressedIds = dueLeadsRaw
+                        .filter(l => suppressedEmails.has(l.email))
+                        .map(l => l.id);
+                    await prisma.campaignLead.updateMany({
+                        where: { id: { in: suppressedIds } },
+                        data: { status: 'unsubscribed', next_send_at: null },
+                    });
+                    logger.info('[SEND-QUEUE] Suppressed dispatch — org-wide lead status', {
+                        campaignId: campaign.id,
+                        suppressedCount: suppressedEmails.size,
+                    });
+                }
 
                 if (dueLeads.length === 0) continue;
 
@@ -536,15 +617,42 @@ async function dispatch(): Promise<void> {
                 for (const ca of campaign.accounts) {
                     const acct = ca.account as any;
                     if (acct.connection_status !== 'active') continue;
+
+                    // Defense-in-depth domain pause check. The canonical pause
+                    // path (monitoringService.pauseDomain → cascade) flips every
+                    // child Mailbox.recovery_phase to 'paused', after which
+                    // batchProcessor's pre-send guard (line ~1055) blocks the
+                    // actual send. But if that cascade ever completes
+                    // partially (transaction failure, race, or someone setting
+                    // Domain.status='paused' directly via admin tooling), the
+                    // child mailbox could still be eligible here. Reading the
+                    // domain row alongside the mailbox closes that window:
+                    // the dispatcher refuses to even ASSIGN capacity to a
+                    // mailbox whose parent domain is paused.
+                    if (acct.mailbox?.domain?.status === 'paused') continue;
+                    if (acct.mailbox?.status === 'paused') continue;
+
                     const resetResult = await resetDailySendsIfNeeded(acct.id, acct.sends_reset_at);
                     const mailboxSendsToday = resetResult === 0 ? 0 : acct.sends_today;
 
                     // Mailbox-wide daily cap — normally ConnectedAccount.daily_send_limit,
                     // but the 5-phase recovery pipeline lowers it via Mailbox.warmup_limit
                     // during RESTRICTED_SEND / WARM_RECOVERY phases. The smaller of the
-                    // two takes effect so paused mailboxes don't dispatch at full volume
-                    // mid-recovery.
-                    const recoveryCap = (acct.mailbox?.warmup_limit && acct.mailbox.warmup_limit > 0)
+                    // two takes effect so recovering mailboxes don't dispatch at full
+                    // volume mid-pipeline.
+                    //
+                    // Defense-in-depth: only honor warmup_limit while the mailbox is
+                    // actually in a recovery phase. A fully graduated mailbox should
+                    // never be capped by stale warmup data; if its phase is HEALTHY
+                    // (or null/legacy), warmup_limit is ignored and the dispatcher
+                    // sends at the configured ConnectedAccount.daily_send_limit.
+                    const recoveryPhase = acct.mailbox?.recovery_phase;
+                    const inRecovery =
+                        recoveryPhase === 'quarantine' ||
+                        recoveryPhase === 'restricted_send' ||
+                        recoveryPhase === 'warm_recovery' ||
+                        recoveryPhase === 'paused';
+                    const recoveryCap = (inRecovery && acct.mailbox?.warmup_limit && acct.mailbox.warmup_limit > 0)
                         ? acct.mailbox.warmup_limit
                         : Number.POSITIVE_INFINITY;
                     const effectiveDailyLimit = Math.min(acct.daily_send_limit, recoveryCap);
@@ -570,7 +678,17 @@ async function dispatch(): Promise<void> {
                     }
                 }
 
-                if (accounts.length === 0) continue;
+                if (accounts.length === 0) {
+                    SlackAlertService.sendAlert({
+                        organizationId: campaign.organization_id,
+                        eventType: 'campaign.send_blocked.no_mailboxes',
+                        entityId: campaign.id,
+                        severity: 'warning',
+                        title: '🚫 Sending paused: no healthy mailboxes',
+                        message: `Campaign *${campaign.name}* has leads ready to send but every connected mailbox is paused, recovering, or out of daily capacity. Check mailbox health in Settings → Mailboxes.`,
+                    }).catch((err) => logger.warn(`[${LOG_TAG}] Slack alert failed (no_mailboxes)`, { error: err?.message }));
+                    continue;
+                }
 
                 // ── LOAD ESP PERFORMANCE (only if esp_routing is enabled) ──
                 const useEspRouting = campaign.esp_routing ?? true;
@@ -787,13 +905,22 @@ async function dispatch(): Promise<void> {
                     const effectiveTrackingDomain = (bestAccount.tracking_domain && bestAccount.tracking_domain_verified)
                         ? bestAccount.tracking_domain
                         : campaign.tracking_domain;
+                    const orgMailingAddress = mailingAddressByOrg.get(campaign.organization_id) || null;
                     const bodyHtml = applyTracking(personalizedBody, {
                         leadId: lead.id,
                         trackOpens: campaign.track_opens ?? true,
                         trackClicks: campaign.track_clicks ?? true,
                         includeUnsubscribe: campaign.include_unsubscribe ?? true,
                         trackingDomain: effectiveTrackingDomain,
+                        euComplianceMode: campaign.eu_compliance_mode ?? false,
+                        mailingAddress: orgMailingAddress,
                     });
+                    // RFC 8058 one-click unsubscribe URL — populates List-Unsubscribe
+                    // headers in the send services. Always computed when
+                    // include_unsubscribe is on (default true).
+                    const unsubscribeUrl = (campaign.include_unsubscribe ?? true)
+                        ? buildUnsubscribeUrl(lead.id, effectiveTrackingDomain)
+                        : '';
 
                     // Schedule the next dispatch at delivered_step + 1. The branching
                     // engine will re-evaluate conditions when this lead becomes due
@@ -816,6 +943,7 @@ async function dispatch(): Promise<void> {
                         },
                         subject,
                         bodyHtml,
+                        unsubscribeUrl,
                         stepNumber: deliveredStepNumber,
                         stepId: step.id,
                         variantId,
@@ -898,6 +1026,15 @@ async function dispatch(): Promise<void> {
                         data: { status: 'completed' },
                     });
                     logger.info(`[${LOG_TAG}] Campaign "${campaign.name}" completed — no more active leads`);
+
+                    SlackAlertService.sendAlert({
+                        organizationId: campaign.organization_id,
+                        eventType: 'campaign.completed',
+                        entityId: campaign.id,
+                        severity: 'info',
+                        title: '✅ Campaign completed',
+                        message: `*${campaign.name}* finished — every lead has been worked through the full sequence. Reply count: ${campaign.reply_count ?? 0}.`,
+                    }).catch((err) => logger.warn(`[${LOG_TAG}] Slack alert failed (campaign.completed)`, { error: err?.message }));
                 }
             } catch (err: any) {
                 logger.error(`[${LOG_TAG}] Error dispatching campaign ${campaign.id}`, err);
@@ -962,7 +1099,9 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
         }
 
         try {
-            const result: SendResult = await sendEmail(account, email.leadEmail, email.subject, email.bodyHtml);
+            const result: SendResult = await sendEmail(account, email.leadEmail, email.subject, email.bodyHtml, {
+                unsubscribeUrl: email.unsubscribeUrl || null,
+            });
 
             if (!result.success) {
                 logger.error(`[${LOG_TAG}] Failed: ${account.email} → ${email.leadEmail}: ${result.error} (${result.smtpCode || 'no-code'})`);
@@ -1134,7 +1273,7 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
 
             sentCount++;
 
-            logger.info(`[${LOG_TAG}] Sent step ${email.stepNumber} ��� ${email.leadEmail} via ${account.email}`, {
+            logger.info(`[${LOG_TAG}] Sent step ${email.stepNumber} → ${maskEmail(email.leadEmail)} via ${account.email}`, {
                 campaignId,
                 batch: `${i + 1}/${emails.length}`,
                 isLastStep: email.isLastStep,

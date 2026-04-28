@@ -13,15 +13,17 @@ import { prisma } from '../index';
 // TYPES
 // ============================================================================
 
+/**
+ * Tier-based caps. Only two real meters: monthly send volume and email-validation
+ * credits. Everything else (leads, domains, mailboxes, DNSBL depth, webhook count)
+ * is unlimited at every paid tier — the protection layer is a flat capability,
+ * not a metered one. This keeps the pricing message simple ("send N/mo, validate
+ * N/mo, everything else unlimited") and avoids charging for protection on a
+ * per-entity basis.
+ */
 export interface TierLimits {
-    leads: number;
-    domains: number;
-    mailboxes: number;
     validationCredits: number;
     monthlySendLimit: number;
-    dnsblDepth: 'critical_only' | 'standard' | 'comprehensive';
-    /** Max customer-facing webhook endpoints (internal Slack-shim endpoints don't count). */
-    webhookEndpointsMax: number;
 }
 
 export interface CheckoutSession {
@@ -36,12 +38,10 @@ export interface CheckoutSession {
 // ────────────────────────────────────────────────────────────────────
 // Pro tier — volume dropdown
 // ────────────────────────────────────────────────────────────────────
-// Pro keeps its infra profile (10k leads, 20 domains, 75 mailboxes) across
-// every volume. Only monthly sends and validation credits scale. Each
-// variant maps to a distinct Polar product so checkout can be routed
-// correctly once the product IDs are filled in.
-// Keep this array in sync with the frontend dropdown in
-// frontend/src/app/pricing/page.tsx (PricingCard `sendsDropdown` prop).
+// Each variant maps to a distinct Polar product so checkout can be routed
+// correctly once the product IDs are filled in. Keep this array in sync with
+// the frontend dropdown in frontend/src/app/pricing/page.tsx
+// (PricingCard `sendsDropdown` prop).
 
 interface ProSendTier {
     key: string;          // tier key written to Organization.subscription_tier
@@ -59,35 +59,24 @@ export const PRO_SEND_TIERS: ProSendTier[] = [
     { key: 'pro_250k', sends: 250000, credits: 50000, price: 169 },
 ];
 
-// Pro keeps its infra profile (10k leads, 20 domains, 75 mailboxes) across
-// every volume variant. Only monthly sends + validation credits scale.
-const PRO_BASE = {
-    leads: 10000,
-    domains: 20,
-    mailboxes: 75,
-    dnsblDepth: 'critical_only' as const,
-};
-
 const PRO_TIER_LIMITS: Record<string, TierLimits> = Object.fromEntries(
     PRO_SEND_TIERS.map(t => [
         t.key,
         {
-            ...PRO_BASE,
             validationCredits: t.credits,
             monthlySendLimit: t.sends,
-            webhookEndpointsMax: 3,
         },
     ])
 );
 
 export const TIER_LIMITS: Record<string, TierLimits> = {
-    trial:      { leads: 10000, domains: 20, mailboxes: 75, validationCredits: 10000, monthlySendLimit: 60000, dnsblDepth: 'critical_only', webhookEndpointsMax: 1 },
-    starter:    { leads: 3000, domains: 7, mailboxes: 25, validationCredits: 3000, monthlySendLimit: 20000, dnsblDepth: 'critical_only', webhookEndpointsMax: 1 },
+    trial:      { validationCredits: 10000,    monthlySendLimit: 60000 },
+    starter:    { validationCredits: 3000,     monthlySendLimit: 20000 },
     // Pro family — default 60k anchor + 5 dropdown variants (80k/100k/150k/200k/250k).
     ...PRO_TIER_LIMITS,
-    growth:     { leads: 50000, domains: 75, mailboxes: 350, validationCredits: 50000, monthlySendLimit: 300000, dnsblDepth: 'standard', webhookEndpointsMax: 10 },
-    scale:      { leads: 100000, domains: 150, mailboxes: 700, validationCredits: 100000, monthlySendLimit: 600000, dnsblDepth: 'comprehensive', webhookEndpointsMax: 25 },
-    enterprise: { leads: Infinity, domains: Infinity, mailboxes: Infinity, validationCredits: Infinity, monthlySendLimit: Infinity, dnsblDepth: 'comprehensive', webhookEndpointsMax: Infinity }
+    growth:     { validationCredits: 50000,    monthlySendLimit: 300000 },
+    scale:      { validationCredits: 100000,   monthlySendLimit: 600000 },
+    enterprise: { validationCredits: Infinity, monthlySendLimit: Infinity },
 };
 
 /**

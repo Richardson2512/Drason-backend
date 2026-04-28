@@ -115,6 +115,28 @@ class StructuredLogger {
 
 export const logger = new StructuredLogger();
 
+/**
+ * Mask a recipient email for INFO/WARN-level operational logs. Keeps the
+ * first 2 characters of the local part + the full domain so logs stay useful
+ * for cross-referencing without surfacing full PII at default verbosity.
+ *
+ * ERROR-level diagnostics may use the unmasked email when the operator needs
+ * to track a specific message; INFO/WARN should prefer this helper.
+ *
+ *   "alice@example.com"  → "al***@example.com"
+ *   "ab@example.com"     → "ab***@example.com"
+ *   "a@example.com"      → "a***@example.com"
+ */
+export function maskEmail(email: string | null | undefined): string {
+    if (!email) return '';
+    const at = email.indexOf('@');
+    if (at <= 0) return email;
+    const local = email.slice(0, at);
+    const domain = email.slice(at);
+    const visible = local.slice(0, Math.min(2, local.length));
+    return `${visible}***${domain}`;
+}
+
 // ============================================================================
 // CIRCUIT BREAKER
 // ============================================================================

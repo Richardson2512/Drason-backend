@@ -64,7 +64,6 @@ import billingRoutes from './routes/billing';
 import userRoutes from './routes/user';
 import findingsRoutes from './routes/findings';
 import analyticsRoutes from './routes/analytics';
-import syncProgressRoutes from './routes/syncProgress';
 import validationRoutes from './routes/validation';
 import uniboxRoutes from './routes/unibox';
 import sequencerRoutes from './routes/sequencer';
@@ -79,7 +78,8 @@ import v1Routes from './routes/v1';
 import aiRoutes from './routes/ai';
 import webhookRoutes from './routes/webhooks';
 
-import { checkLeadCapacity, checkSubscriptionStatus } from './middleware/featureGate';
+import { checkSubscriptionStatus } from './middleware/featureGate';
+import { requireFreshConsent } from './middleware/requireFreshConsent';
 
 // Import controllers
 import * as monitoringController from './controllers/monitoringController';
@@ -92,11 +92,17 @@ import { startRetentionJob, getRetentionJobStatus } from './services/complianceS
 import { initEventQueue, getQueueStatus, shutdownEventQueue } from './services/eventQueue';
 import { startLeadHealthWorker, getLeadHealthWorkerStatus } from './services/leadHealthWorker';
 import { schedulePostmasterFetch, stopPostmasterFetch, getPostmasterWorkerStatus } from './workers/postmasterToolsWorker';
+import { scheduleImportKeyTtlSweep, stopImportKeyTtlSweep } from './workers/importKeyTtlWorker';
+import { scheduleAccountDeletionWorker, stopAccountDeletionWorker } from './workers/accountDeletionWorker';
 import * as postmasterController from './controllers/postmasterController';
 import * as migrationController from './controllers/migrationFromSmartleadController';
+import * as migrationInstantlyController from './controllers/migrationFromInstantlyController';
+import * as consentController from './controllers/consentController';
+import * as dataRightsController from './controllers/dataRightsController';
 import { startLeadScoringWorker, stopLeadScoringWorker } from './services/leadScoringWorker';
 import { startTrialWorker, stopTrialWorker } from './services/trialWorker';
 import { scheduleWarmupTracking } from './workers/warmupTrackingWorker';
+import { scheduleSequencerSpikeWorker, stopSequencerSpikeWorker } from './workers/sequencerSpikeWorker';
 import { scheduleEspPerformanceAggregation } from './workers/espPerformanceWorker';
 import { scheduleSendQueue } from './services/sendQueueService';
 import { scheduleImapPolling } from './workers/imapReplyWorker';
@@ -244,8 +250,17 @@ app.use('/api', (req, res, next) => {
     if (req.path === '/sequencer/accounts/google/callback' || req.path === '/sequencer/accounts/microsoft/callback') return next();
     // Allow only GET /user/me so the dashboard shell can render — block all other user routes
     if (req.path === '/user/me' && req.method === 'GET') return next();
+    // Anonymous-friendly consent endpoint (cookie banner). Other /consent/* paths
+    // are authenticated and DO go through subscription gating.
+    if (req.path === '/consent/cookies') return next();
     checkSubscriptionStatus(req, res, next);
 });
+
+// Consent freshness gate — runs after subscription check, before routes.
+// Returns 412 with a structured payload when the user hasn't accepted the
+// current ToS or Privacy version. Frontend interceptor renders a blocking
+// re-acceptance modal that calls /api/auth/accept-current-terms to resolve.
+app.use('/api', requireFreshConsent);
 
 // Slack Routes (Bypass /api and typical auth)
 app.use('/slack', slackRoutes);
@@ -261,7 +276,6 @@ app.use('/api/billing', billingRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/findings', findingsRoutes);
 app.use('/api/analytics', analyticsRoutes);
-app.use('/api/sync-progress', syncProgressRoutes);
 app.use('/api/infrastructure', infrastructureRoutes);
 app.use('/api/slack', apiSlackRoutes);
 app.use('/api/admin', adminRoutes);
@@ -276,8 +290,8 @@ app.use('/api/webhooks', webhookRoutes);
 app.use('/t', trackingRoutes); // public, no auth — tracking pixels + click redirects + unsubscribe
 
 // Ingestion endpoints
-app.post('/api/ingest', checkLeadCapacity, asyncHandler(ingestionController.ingestLead));
-app.post('/api/ingest/clay', checkLeadCapacity, asyncHandler(ingestionController.ingestClayWebhook));
+app.post('/api/ingest', asyncHandler(ingestionController.ingestLead));
+app.post('/api/ingest/clay', asyncHandler(ingestionController.ingestClayWebhook));
 
 // Monitoring endpoints
 app.post('/api/monitor/event', asyncHandler(monitoringController.triggerEvent));
@@ -291,13 +305,36 @@ app.get('/api/dashboard/domains/:id/reputation', asyncHandler(postmasterControll
 // Public OAuth callback — Google redirects here without our auth context.
 app.get('/oauth/callback/postmaster', asyncHandler(postmasterController.oauthCallback));
 
-// Migration tool (from-Smartlead → native sequencer). Feature-flag gated by
+// Migration tool (one-time import from Smartlead). Feature-flag gated by
 // MIGRATION_TOOL_ENABLED env var. Routes return 404 when disabled.
-app.get('/api/migration/from-smartlead/feature', asyncHandler(migrationController.featureFlag));
-app.get('/api/migration/from-smartlead/preview', asyncHandler(migrationController.previewMigration));
-app.post('/api/migration/from-smartlead/connect-mailbox', asyncHandler(migrationController.connectMailbox));
-app.post('/api/migration/from-smartlead/finalize-campaign', asyncHandler(migrationController.finalizeCampaign));
-app.post('/api/migration/from-smartlead/finalize-org', asyncHandler(migrationController.finalizeOrg));
+app.get('/api/migration/from-smartlead/feature',      asyncHandler(migrationController.featureFlag));
+app.get('/api/migration/from-smartlead/key-status',   asyncHandler(migrationController.keyStatus));
+app.post('/api/migration/from-smartlead/validate-key', asyncHandler(migrationController.validateKey));
+app.post('/api/migration/from-smartlead/store-key',    asyncHandler(migrationController.storeKey));
+app.post('/api/migration/from-smartlead/discard-key',  asyncHandler(migrationController.discardKey));
+app.post('/api/migration/from-smartlead/preview',      asyncHandler(migrationController.preview));
+app.post('/api/migration/from-smartlead/start',        asyncHandler(migrationController.start));
+app.get('/api/migration/from-smartlead/status',       asyncHandler(migrationController.status));
+
+app.get('/api/migration/from-instantly/feature',      asyncHandler(migrationInstantlyController.featureFlag));
+app.get('/api/migration/from-instantly/key-status',   asyncHandler(migrationInstantlyController.keyStatus));
+app.post('/api/migration/from-instantly/validate-key', asyncHandler(migrationInstantlyController.validateKey));
+app.post('/api/migration/from-instantly/store-key',    asyncHandler(migrationInstantlyController.storeKey));
+app.post('/api/migration/from-instantly/discard-key',  asyncHandler(migrationInstantlyController.discardKey));
+app.post('/api/migration/from-instantly/preview',      asyncHandler(migrationInstantlyController.preview));
+app.post('/api/migration/from-instantly/start',        asyncHandler(migrationInstantlyController.start));
+app.get('/api/migration/from-instantly/status',       asyncHandler(migrationInstantlyController.status));
+
+// Consent endpoints — cookies (anonymous-friendly), DSAR audit, withdrawal.
+app.post('/api/consent/cookies',  asyncHandler(consentController.recordCookieConsent));
+app.get('/api/consent/mine',      asyncHandler(consentController.listMyConsents));
+app.post('/api/consent/withdraw', asyncHandler(consentController.withdrawMyConsent));
+
+// Data Subject Access Request (GDPR / CCPA / DPDP / PDPA) endpoints.
+app.get('/api/account/my-data',           asyncHandler(dataRightsController.exportMyData));
+app.post('/api/account/delete-request',   asyncHandler(dataRightsController.requestAccountDeletion));
+app.get('/api/account/delete-request',    asyncHandler(dataRightsController.getDeletionStatus));
+app.post('/api/account/cancel-deletion',  asyncHandler(dataRightsController.cancelAccountDeletion));
 
 // ============================================================================
 // ADMIN ENDPOINTS — DLQ, Replay, System Metrics
@@ -493,6 +530,8 @@ app.get('/api/organization', asyncHandler(async (req, res) => {
             name: true,
             slug: true,
             system_mode: true,
+            mailing_address: true,
+            mailing_address_updated_at: true,
             created_at: true
         }
     });
@@ -507,11 +546,30 @@ app.patch('/api/organization', asyncHandler(async (req, res) => {
         return res.status(401).json({ error: 'Organization context required' });
     }
 
-    const { name, system_mode } = req.body;
+    const { name, system_mode, mailing_address } = req.body;
 
     // Validate system_mode if provided
     if (system_mode && !['observe', 'suggest', 'enforce'].includes(system_mode)) {
         return res.status(400).json({ success: false, error: 'Invalid system_mode. Must be: observe, suggest, or enforce' });
+    }
+
+    // Validate mailing_address — CAN-SPAM § 5(a)(5) requires a valid postal
+    // address. Minimum sanity check: not empty + has at least one comma or
+    // newline (street + city/country). Real-world addresses are too varied to
+    // strictly validate; we just rule out obvious garbage like single tokens.
+    if (mailing_address !== undefined) {
+        if (typeof mailing_address !== 'string' || mailing_address.trim().length < 10) {
+            return res.status(400).json({
+                success: false,
+                error: 'mailing_address must be a complete postal address (street, city, country). CAN-SPAM § 5(a)(5) requires it on every commercial email.',
+            });
+        }
+        if (!/,|\n/.test(mailing_address)) {
+            return res.status(400).json({
+                success: false,
+                error: 'mailing_address looks incomplete — please include street, city, and country separated by commas or line breaks.',
+            });
+        }
     }
 
     // Check if transitioning to enforce mode
@@ -528,7 +586,11 @@ app.patch('/api/organization', asyncHandler(async (req, res) => {
         where: { id: orgId },
         data: {
             ...(name && { name }),
-            ...(system_mode && { system_mode })
+            ...(system_mode && { system_mode }),
+            ...(mailing_address !== undefined && {
+                mailing_address: mailing_address.trim(),
+                mailing_address_updated_at: new Date(),
+            }),
         }
     });
 
@@ -623,6 +685,15 @@ const server = app.listen(PORT, () => {
     schedulePostmasterFetch();
     logger.info('Postmaster Tools worker started (daily fetch at 03:00 UTC)');
 
+    // Start import-key TTL sweep (every 15 min) — wipes expired one-time-import keys
+    scheduleImportKeyTtlSweep();
+    logger.info('Import-key TTL worker started (sweep every 15m)');
+
+    // Start DSAR account-deletion worker — executes deletion requests after
+    // the 30-day grace period. Required for GDPR Art. 17 compliance.
+    scheduleAccountDeletionWorker();
+    logger.info('Account deletion worker started (sweep every 6h)');
+
     // Start lead scoring worker
     startLeadScoringWorker();
     logger.info('Lead scoring worker started (runs every 24h)');
@@ -635,6 +706,10 @@ const server = app.listen(PORT, () => {
     // Start warmup tracking worker for automated recovery
     scheduleWarmupTracking();
     logger.info('Warmup tracking worker started (runs every 4h for auto-graduation)');
+
+    // Start sequencer spike detector (campaign-level bounce + unsubscribe)
+    scheduleSequencerSpikeWorker();
+    logger.info('Sequencer spike detector started (hourly bounce + unsubscribe rate scans)');
 
     // Start ESP performance aggregation worker
     scheduleEspPerformanceAggregation();
@@ -695,6 +770,15 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
     stopPostmasterFetch();
     logger.info('Postmaster Tools worker stopped');
+
+    stopImportKeyTtlSweep();
+    logger.info('Import-key TTL worker stopped');
+
+    stopAccountDeletionWorker();
+    logger.info('Account deletion worker stopped');
+
+    stopSequencerSpikeWorker();
+    logger.info('Sequencer spike detector stopped');
 
 
     infrastructureAssessmentService.stopPeriodicAssessment();

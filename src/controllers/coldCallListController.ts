@@ -26,6 +26,7 @@ import {
     workspaceLocalDate,
     getWorkspaceTimezone,
     generateDailySnapshot,
+    buildCustomRotationExclusion,
 } from '../services/coldCallListService';
 
 // ─── Settings ────────────────────────────────────────────────────────────────
@@ -44,6 +45,10 @@ function settingsToRules(s: {
         minOpens: s.min_opens,
         timeWindowDays: s.time_window_days,
         requireClick: s.require_click,
+        // Custom list keeps the spec-aligned default: a click alone does NOT
+        // qualify a candidate unless the operator explicitly sets requireClick.
+        // The system-list path uses SYSTEM_LIST_RULES which sets this to true.
+        clickAloneQualifies: false,
         requireNoReply: s.require_no_reply,
         excludeRecentDays: s.exclude_recent_days,
         titleFilter: s.title_filter,
@@ -185,26 +190,12 @@ export const downloadSystemListCsv = async (req: Request, res: Response): Promis
 
 // ─── Custom list ─────────────────────────────────────────────────────────────
 
-async function buildCustomExclusionSet(orgId: string, excludeRecentDays: number): Promise<Set<string>> {
-    if (excludeRecentDays <= 0) return new Set();
-    const since = new Date(Date.now() - excludeRecentDays * 86_400_000);
-    const recent = await prisma.coldCallCustomSnapshot.findMany({
-        where: { organization_id: orgId, downloaded_at: { gte: since } },
-        select: { prospect_ids: true },
-    });
-    const set = new Set<string>();
-    for (const r of recent) {
-        if (Array.isArray(r.prospect_ids)) for (const id of r.prospect_ids as string[]) set.add(id);
-    }
-    return set;
-}
-
 export const generateCustomList = async (req: Request, res: Response): Promise<Response> => {
     try {
         const orgId = getOrgId(req);
         const settings = await loadOrCreateSettings(orgId);
         const rules = settingsToRules(settings);
-        const exclude = await buildCustomExclusionSet(orgId, rules.excludeRecentDays);
+        const exclude = await buildCustomRotationExclusion(orgId, rules.excludeRecentDays);
         const prospects = await generateProspectList({ organizationId: orgId, rules, excludeCampaignLeadIds: exclude });
         return res.json({ success: true, prospects, generated_at: new Date().toISOString() });
     } catch (err) {
@@ -218,7 +209,7 @@ export const downloadCustomListCsv = async (req: Request, res: Response): Promis
         const orgId = getOrgId(req);
         const settings = await loadOrCreateSettings(orgId);
         const rules = settingsToRules(settings);
-        const exclude = await buildCustomExclusionSet(orgId, rules.excludeRecentDays);
+        const exclude = await buildCustomRotationExclusion(orgId, rules.excludeRecentDays);
         const prospects = await generateProspectList({ organizationId: orgId, rules, excludeCampaignLeadIds: exclude });
 
         // Persist a custom snapshot so subsequent runs can dedup the user's

@@ -27,7 +27,6 @@ import { logger } from '../services/observabilityService';
 import { encrypt, decrypt } from '../utils/encryption';
 import { getSequencerSettings } from '../services/sequencerSettingsService';
 import { provisionMailboxForConnectedAccount } from '../services/mailboxProvisioningService';
-import { TIER_LIMITS } from '../services/polarClient';
 import {
     validateZapmailKey,
     listAllMailboxes,
@@ -202,16 +201,7 @@ export const importMailboxes = async (req: Request, res: Response): Promise<Resp
         const { mailboxes: remoteMailboxes } = await listAllMailboxes(apiKey);
         const remoteByEmail = new Map<string, ZapmailMailbox>(remoteMailboxes.map((m) => [m.email, m]));
 
-        // Tier limit
-        const org = await prisma.organization.findUnique({
-            where: { id: orgId },
-            select: { subscription_tier: true },
-        });
-        const tierLimits = TIER_LIMITS[org?.subscription_tier || 'trial'] || TIER_LIMITS.trial;
-        const currentCount = await prisma.connectedAccount.count({ where: { organization_id: orgId } });
-        const cap = tierLimits.mailboxes === Infinity ? Infinity : tierLimits.mailboxes;
-        let remaining = cap === Infinity ? Infinity : Math.max(0, cap - currentCount);
-
+        // Mailbox count is unmetered — no per-row tier-cap check.
         const orgSettings = await getSequencerSettings(orgId);
         const defaultDailyLimit = orgSettings.default_daily_limit;
 
@@ -226,10 +216,6 @@ export const importMailboxes = async (req: Request, res: Response): Promise<Resp
             const remote = remoteByEmail.get(email);
             if (!remote) {
                 results.push({ email, status: 'failed', error_code: 'not_in_zapmail', error_message: 'Mailbox not found in your Zapmail account' });
-                continue;
-            }
-            if (remaining <= 0) {
-                results.push({ email, status: 'failed', error_code: 'tier_limit', error_message: `Mailbox limit reached on ${org?.subscription_tier || 'trial'} plan` });
                 continue;
             }
 
@@ -267,7 +253,6 @@ export const importMailboxes = async (req: Request, res: Response): Promise<Resp
                 else queuedMicrosoft.push({ mailbox: remote, entry });
 
                 results.push({ email, status: 'queued', accountId: account.id, provider: remote.provider });
-                if (remaining !== Infinity) remaining--;
             } catch (err: unknown) {
                 const e = err as { code?: string; message?: string };
                 if (e?.code === 'P2002') {

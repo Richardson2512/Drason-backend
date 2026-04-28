@@ -13,6 +13,7 @@ import { logger } from '../services/observabilityService';
 import { encrypt } from '../utils/encryption';
 import { getSequencerSettings } from '../services/sequencerSettingsService';
 import { provisionMailboxForConnectedAccount } from '../services/mailboxProvisioningService';
+import { recordConsentFromRequest } from '../services/consentService';
 import {
     getGoogleAuthorizationUrl,
     parseGoogleState,
@@ -106,6 +107,35 @@ export const googleCallback = async (req: Request, res: Response): Promise<void>
             displayName: name,
         }).catch((e) => logger.error('[OAUTH] Google provisioning failed', e));
 
+        // Record OAuth consent — captures scope + identity for the audit trail.
+        try {
+            const orgFirstUser = await prisma.user.findFirst({
+                where: { organization_id: parsed.orgId },
+                orderBy: { created_at: 'asc' },
+                select: { id: true, email: true, name: true },
+            });
+            await recordConsentFromRequest(req, {
+                consentType: 'oauth_gmail',
+                documentVersion: 'https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.modify',
+                channel: 'oauth_callback',
+                userId: orgFirstUser?.id || null,
+                organizationId: parsed.orgId,
+                userEmailSnapshot: orgFirstUser?.email || null,
+                userNameSnapshot: orgFirstUser?.name || null,
+                metadata: {
+                    provider: 'google_gmail',
+                    connected_email: email,
+                    account_id: accountId,
+                },
+            });
+        } catch (consentErr) {
+            logger.error(
+                '[OAUTH] Google consent record failed — manual remediation required',
+                consentErr instanceof Error ? consentErr : new Error(String(consentErr)),
+                { orgId: parsed.orgId, email },
+            );
+        }
+
         logger.info(`[OAUTH] Google account connected: ${email}`, { orgId: parsed.orgId });
         res.redirect(`${FRONTEND_URL}/dashboard/sequencer/accounts?connected=google&email=${encodeURIComponent(email)}`);
     } catch (err: any) {
@@ -191,6 +221,35 @@ export const microsoftCallback = async (req: Request, res: Response): Promise<vo
             email,
             displayName: name,
         }).catch((e) => logger.error('[OAUTH] Microsoft provisioning failed', e));
+
+        // Record OAuth consent for audit.
+        try {
+            const orgFirstUser = await prisma.user.findFirst({
+                where: { organization_id: parsed.orgId },
+                orderBy: { created_at: 'asc' },
+                select: { id: true, email: true, name: true },
+            });
+            await recordConsentFromRequest(req, {
+                consentType: 'oauth_microsoft',
+                documentVersion: 'Mail.Send Mail.ReadWrite offline_access',
+                channel: 'oauth_callback',
+                userId: orgFirstUser?.id || null,
+                organizationId: parsed.orgId,
+                userEmailSnapshot: orgFirstUser?.email || null,
+                userNameSnapshot: orgFirstUser?.name || null,
+                metadata: {
+                    provider: 'microsoft_365',
+                    connected_email: email,
+                    account_id: accountId,
+                },
+            });
+        } catch (consentErr) {
+            logger.error(
+                '[OAUTH] Microsoft consent record failed — manual remediation required',
+                consentErr instanceof Error ? consentErr : new Error(String(consentErr)),
+                { orgId: parsed.orgId, email },
+            );
+        }
 
         logger.info(`[OAUTH] Microsoft account connected: ${email}`, { orgId: parsed.orgId });
         res.redirect(`${FRONTEND_URL}/dashboard/sequencer/accounts?connected=microsoft&email=${encodeURIComponent(email)}`);

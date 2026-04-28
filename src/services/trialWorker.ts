@@ -12,6 +12,7 @@ import { prisma } from '../index';
 import { logger } from './observabilityService';
 import * as notificationService from './notificationService';
 import * as auditLogService from './auditLogService';
+import { SlackAlertService } from './SlackAlertService';
 
 // ============================================================================
 // CONSTANTS
@@ -150,6 +151,15 @@ async function sendExpirationWarnings(warningThreshold: Date): Promise<void> {
             ]);
 
             logger.info(`[TRIAL-WORKER] Sent warning to ${org.name} (${org.id})`);
+
+            SlackAlertService.sendAlert({
+                organizationId: org.id,
+                eventType: 'trial.expiring_soon',
+                entityId: org.id,
+                severity: 'warning',
+                title: '⏳ Trial expiring soon',
+                message: `Your Superkabe trial ends in *${daysRemaining} day${daysRemaining !== 1 ? 's' : ''}*. Upgrade now to keep sending without interruption.`,
+            }).catch((err) => logger.warn('[TRIAL-WORKER] Slack alert failed (expiring_soon)', { error: err?.message }));
         } catch (error) {
             logger.error(`[TRIAL-WORKER] Failed to send warning to ${org.id}`, error instanceof Error ? error : new Error(String(error)));
         }
@@ -210,6 +220,15 @@ async function expireTrials(now: Date): Promise<void> {
             ]);
 
             logger.info(`[TRIAL-WORKER] Expired trial for ${org.name} (${org.id})`);
+
+            SlackAlertService.sendAlert({
+                organizationId: org.id,
+                eventType: 'trial.expired',
+                entityId: org.id,
+                severity: 'critical',
+                title: '🛑 Trial expired',
+                message: `Your Superkabe trial has ended. Sending and validation are paused. Upgrade to resume.`,
+            }).catch((err) => logger.warn('[TRIAL-WORKER] Slack alert failed (expired)', { error: err?.message }));
         } catch (error) {
             logger.error(`[TRIAL-WORKER] Failed to expire trial for ${org.id}`, error instanceof Error ? error : new Error(String(error)));
         }

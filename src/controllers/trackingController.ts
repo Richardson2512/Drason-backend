@@ -321,29 +321,74 @@ export const processUnsubscribe = async (req: Request, res: Response): Promise<R
 
         const trackingId = payload.lid;
 
-        const lead = await prisma.campaignLead.findUnique({
+        const campaignLead = await prisma.campaignLead.findUnique({
             where: { id: trackingId },
-            select: { id: true, campaign_id: true, status: true },
+            select: {
+                id: true,
+                campaign_id: true,
+                email: true,
+                status: true,
+                campaign: { select: { organization_id: true } },
+            },
         });
 
-        if (!lead) return res.status(404).send('<html><body><h1>Link expired</h1></body></html>');
+        if (!campaignLead) return res.status(404).send('<html><body><h1>Link expired</h1></body></html>');
 
-        if (lead.status !== 'unsubscribed') {
-            await prisma.campaignLead.update({
-                where: { id: trackingId },
-                data: { status: 'unsubscribed', unsubscribed_at: new Date() },
-            });
+        const orgId = campaignLead.campaign.organization_id;
+        const recipientEmail = campaignLead.email.toLowerCase();
+        const now = new Date();
 
-            await prisma.campaign.update({
-                where: { id: lead.campaign_id },
-                data: { unsubscribed_count: { increment: 1 } },
-            });
+        // Org-wide suppression — required by CAN-SPAM § 5(a)(4)(A), CASL § 11(3),
+        // and GDPR Art. 21. Once a recipient unsubscribes, we must NEVER send to
+        // them again from any campaign in this org. Three layers in one transaction:
+        //
+        //   1. Lead row (org-scoped identity) — sets status + timestamp + reason.
+        //      Future enrollments check this and refuse to add the lead.
+        //   2. CampaignLead rows for ALL of this lead's campaigns in the org — every
+        //      active membership becomes 'unsubscribed' so the dispatcher won't send.
+        //   3. Increment unsubscribed_count on the campaign that surfaced the link.
+        try {
+            await prisma.$transaction([
+                // Layer 1 — org-wide Lead suppression (idempotent: updateMany handles
+                // the case where the Lead row doesn't exist for sequencer-only contacts)
+                prisma.lead.updateMany({
+                    where: { organization_id: orgId, email: recipientEmail },
+                    data: {
+                        status: 'unsubscribed',
+                        unsubscribed_at: now,
+                        unsubscribed_reason: 'recipient_request',
+                    },
+                }),
+                // Layer 2 — every CampaignLead for this email across the org
+                prisma.campaignLead.updateMany({
+                    where: {
+                        email: recipientEmail,
+                        campaign: { organization_id: orgId },
+                        status: { not: 'unsubscribed' },
+                    },
+                    data: { status: 'unsubscribed', unsubscribed_at: now },
+                }),
+                // Layer 3 — analytics counter on the originating campaign
+                prisma.campaign.update({
+                    where: { id: campaignLead.campaign_id },
+                    data: { unsubscribed_count: { increment: 1 } },
+                }),
+            ]);
+        } catch (txErr) {
+            logger.error(
+                '[TRACKING] Org-wide unsubscribe transaction failed',
+                txErr instanceof Error ? txErr : new Error(String(txErr)),
+                { orgId, recipientEmail },
+            );
+            // Fall through — even if the cascade fails, return success to the
+            // recipient (we'll have to remediate via a sweep job rather than
+            // tell the recipient their click didn't work).
         }
 
         return res.send(`
             <html><body style="font-family:sans-serif;text-align:center;padding:60px;">
                 <h1>Unsubscribed</h1>
-                <p>You have been successfully unsubscribed. You will no longer receive emails from this campaign.</p>
+                <p>You have been successfully unsubscribed. You will no longer receive any emails from this sender.</p>
             </body></html>
         `);
     } catch (error: unknown) {

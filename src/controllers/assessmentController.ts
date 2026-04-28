@@ -21,16 +21,10 @@ export const getReport = async (req: Request, res: Response): Promise<void> => {
         const orgId = getOrgId(req);
         const report = await assessmentService.getLatestReport(orgId);
 
-        if (!report) {
-            res.status(404).json({
-                success: false,
-                error: 'No infrastructure assessment report found',
-                hint: 'Run a Smartlead sync to trigger the initial assessment, or trigger a manual assessment via POST /api/assessment/run'
-            });
-            return;
-        }
-
-        res.json({ success: true, data: report });
+        // No report yet is an empty state, not an error — return 200 with
+        // null data so the frontend can render an "assessment hasn't run
+        // yet" empty card instead of a "Failed to load" toast.
+        res.json({ success: true, data: report || null });
     } catch (e: any) {
         logger.error('Failed to fetch assessment report', e);
         res.status(500).json({ success: false, error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
@@ -59,26 +53,58 @@ export const getReports = async (req: Request, res: Response): Promise<void> => 
  * Used after DNS fixes to verify recovery — DNS-based recovery requires
  * manual re-assessment trigger, no auto-resume.
  */
+// A run is considered stale (likely crashed) after this many ms — the start
+// endpoint will accept a fresh trigger past this threshold even if
+// assessment_running is still true.
+const STALE_RUN_MS = 10 * 60 * 1000;
+
 export const runAssessment = async (req: Request, res: Response): Promise<void> => {
     try {
         const orgId = getOrgId(req);
 
-        logger.info('Manual infrastructure re-assessment triggered', { orgId });
+        // Reject duplicate starts. Frontend polls /status to discover
+        // completion — there's no value in queueing a second run while one
+        // is in flight, and the DNSBL probes are expensive.
+        const org = await prisma.organization.findUnique({
+            where: { id: orgId },
+            select: { assessment_running: true, assessment_started_at: true },
+        });
+        const startedMs = org?.assessment_started_at ? Date.now() - org.assessment_started_at.getTime() : Infinity;
+        const isStale = startedMs > STALE_RUN_MS;
+        if (org?.assessment_running && !isStale) {
+            res.status(409).json({
+                success: false,
+                error: 'Assessment is already running',
+                startedAt: org.assessment_started_at,
+            });
+            return;
+        }
 
-        const result = await assessmentService.assessInfrastructure(orgId, 'manual_reassessment');
+        logger.info('Manual infrastructure re-assessment triggered', { orgId, recoveredFromStale: isStale });
 
-        res.json({
+        // Fire and forget. The service writes its own start/success/fail
+        // state to the Organization row; the frontend polls /status.
+        // We deliberately do NOT await — POST returns 202 immediately.
+        assessmentService
+            .assessInfrastructure(orgId, 'manual_reassessment')
+            .catch((err) => {
+                // Errors are already persisted to assessment_last_error by
+                // the service's catch block; this handler is a safety net
+                // for unhandled rejections so they don't crash the worker.
+                logger.error('Background assessment failed', err instanceof Error ? err : new Error(String(err)));
+            });
+
+        res.status(202).json({
             success: true,
-            message: 'Infrastructure re-assessment completed',
-            result
+            status: 'started',
+            message: 'Infrastructure assessment started — poll /api/assessment/status for completion',
         });
     } catch (e: any) {
-        logger.error('Manual assessment failed', e);
+        logger.error('Failed to start assessment', e);
         res.status(500).json({
             success: false,
-            error: 'Assessment failed',
+            error: 'Failed to start assessment',
             message: e.message,
-            hint: 'The execution gate may remain locked. Check logs and retry.'
         });
     }
 };
@@ -92,16 +118,52 @@ export const getAssessmentStatus = async (req: Request, res: Response): Promise<
         const orgId = getOrgId(req);
         const org = await prisma.organization.findUnique({
             where: { id: orgId },
-            select: { assessment_completed: true, _count: { select: { domains: true } } }
+            select: {
+                assessment_running: true,
+                assessment_started_at: true,
+                assessment_finished_at: true,
+                assessment_last_error: true,
+                _count: { select: { domains: true, infraReports: true } },
+            },
         });
 
-        // No domains means nothing to assess — never show "in progress"
-        const hasDomains = (org?._count?.domains ?? 0) > 0;
-        const inProgress = hasDomains && org ? !org.assessment_completed : false;
+        if (!org) {
+            res.status(404).json({ success: false, error: 'Organization not found' });
+            return;
+        }
+
+        const hasReport = org._count.infraReports > 0;
+        const hasDomains = org._count.domains > 0;
+
+        // Stale-lock recovery: if the running flag is set but it's been
+        // longer than STALE_RUN_MS, treat as crashed and report idle.
+        const startedMs = org.assessment_started_at ? Date.now() - org.assessment_started_at.getTime() : Infinity;
+        const isStale = startedMs > STALE_RUN_MS;
+        const running = Boolean(org.assessment_running) && !isStale && hasDomains;
+
+        // Status semantics:
+        //   running   → a run is in flight
+        //   failed    → last attempt errored (last_error set, not running)
+        //   completed → at least one report exists, no error
+        //   idle      → nothing has ever run, or no domains to assess
+        let status: 'running' | 'completed' | 'failed' | 'idle';
+        if (running) status = 'running';
+        else if (org.assessment_last_error) status = 'failed';
+        else if (hasReport) status = 'completed';
+        else status = 'idle';
 
         res.json({
             success: true,
-            data: { inProgress }
+            data: {
+                status,
+                startedAt: org.assessment_started_at,
+                finishedAt: org.assessment_finished_at,
+                lastError: org.assessment_last_error,
+                hasReport,
+                // Legacy field — kept for any caller still reading it, but
+                // status above is the durable signal.
+                inProgress: running,
+            },
         });
     } catch (e: any) {
         logger.error('Failed to check assessment status', e);

@@ -19,7 +19,9 @@ import { validateLeadEmail } from '../services/emailValidationService';
 import * as espClassifierService from '../services/espClassifierService';
 import { TIER_LIMITS } from '../services/polarClient';
 import * as entityStateService from '../services/entityStateService';
+import { SlackAlertService } from '../services/SlackAlertService';
 import { LeadState, TriggerType } from '../types';
+import { eraseLeadPII } from '../services/piiErasureService';
 
 /**
  * Parse a comma-separated query-string value into a deduped, trimmed array.
@@ -397,6 +399,21 @@ export const bulkCreateContacts = async (req: Request, res: Response): Promise<R
 
         logger.info('[CONTACTS] Bulk import complete', { orgId, total: contacts.length, created, updated, duplicates, rejected });
 
+        SlackAlertService.sendAlert({
+            organizationId: orgId,
+            eventType: 'import.csv_completed',
+            entityId: `bulk_${Date.now()}`,
+            severity: 'info',
+            title: '📥 CSV import completed',
+            message: [
+                `Imported ${contacts.length} contacts from CSV:`,
+                `• *${created}* new leads`,
+                `• *${updated}* updated`,
+                `• *${duplicates}* duplicates`,
+                rejected ? `• *${rejected}* rejected (health gate or invalid)` : null,
+            ].filter(Boolean).join('\n'),
+        }).catch((err) => logger.warn('[CONTACTS] Slack alert failed', { error: err?.message }));
+
         return res.json({
             success: true,
             total: contacts.length,
@@ -415,6 +432,11 @@ export const bulkCreateContacts = async (req: Request, res: Response): Promise<R
 /**
  * POST /api/sequencer/contacts/delete
  * Bulk delete contacts by IDs.
+ *
+ * Uses the PII erasure service so all child-table PII (CampaignLead,
+ * BounceEvent.email_address, SendEvent.recipient_email, ValidationAttempt,
+ * EmailMessage from/to/body) is scrubbed in place. Required for GDPR Art. 17,
+ * DPDP § 12, and CCPA right-to-delete.
  */
 export const deleteContacts = async (req: Request, res: Response): Promise<Response> => {
     try {
@@ -425,33 +447,24 @@ export const deleteContacts = async (req: Request, res: Response): Promise<Respo
             return res.status(400).json({ success: false, error: 'ids array is required' });
         }
 
-        // Find the Lead records being deleted to cascade-remove CampaignLead assignments
+        // Look up emails for the IDs so we can run the erasure service per-recipient.
         const leadsToDelete = await prisma.lead.findMany({
             where: { id: { in: ids }, organization_id: orgId },
             select: { email: true },
         });
-        const emailsToDelete = leadsToDelete.map((l) => l.email);
 
-        // Cascade: remove all CampaignLead assignments (sequencer-side) that match these emails.
-        if (emailsToDelete.length > 0) {
-            const orgCampaigns = await prisma.campaign.findMany({
-                where: { organization_id: orgId },
-                select: { id: true },
-            });
-            const campaignIds = orgCampaigns.map((c) => c.id);
-            await prisma.campaignLead.deleteMany({
-                where: { email: { in: emailsToDelete }, campaign_id: { in: campaignIds } },
-            });
+        let erasedCount = 0;
+        for (const row of leadsToDelete) {
+            // Skip already-erased rows (tombstone email prefix).
+            if (row.email.startsWith('erased-')) continue;
+            const r = await eraseLeadPII(orgId, row.email);
+            if (r.leadFound) erasedCount++;
         }
 
-        const result = await prisma.lead.deleteMany({
-            where: { id: { in: ids }, organization_id: orgId },
-        });
-
-        return res.json({ success: true, message: `Deleted ${result.count} contacts` });
+        return res.json({ success: true, message: `Erased ${erasedCount} contacts (PII scrubbed across all related tables)` });
     } catch (error: any) {
-        logger.error('[CONTACTS] Failed to delete contacts', error instanceof Error ? error : new Error(String(error)));
-        return res.status(500).json({ success: false, error: 'Failed to delete contacts' });
+        logger.error('[CONTACTS] Failed to erase contacts', error instanceof Error ? error : new Error(String(error)));
+        return res.status(500).json({ success: false, error: 'Failed to erase contacts' });
     }
 };
 

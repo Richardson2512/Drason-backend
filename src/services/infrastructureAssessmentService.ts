@@ -24,7 +24,6 @@ import * as eventService from './eventService';
 import * as rotationService from './rotationService';
 import { SlackAlertService } from './SlackAlertService';
 import * as dnsblService from './dnsblService';
-import { TIER_LIMITS } from './polarClient';
 import { MailboxState, DomainState, TriggerType, EventType, MONITORING_THRESHOLDS } from '../types';
 import { logger } from './observabilityService';
 
@@ -467,10 +466,15 @@ export async function assessInfrastructure(
 ): Promise<AssessmentResult> {
     logger.info('Infrastructure assessment started', { organizationId, reportType });
 
-    // ── Step 1: Lock the gate ──
+    // ── Step 1: Lock the gate + flip async state to "running" ──
     await prisma.organization.update({
         where: { id: organizationId },
-        data: { assessment_completed: false },
+        data: {
+            assessment_completed: false,
+            assessment_running: true,
+            assessment_started_at: new Date(),
+            assessment_last_error: null,
+        },
     });
 
     const findings: Finding[] = [];
@@ -485,13 +489,8 @@ export async function assessInfrastructure(
 
         const domainSummary = { total: domains.length, healthy: 0, warning: 0, paused: 0 };
 
-        // Determine DNSBL check depth from organization's subscription tier
-        const org = await prisma.organization.findUnique({ where: { id: organizationId } });
-        const tierLimits = TIER_LIMITS[org?.subscription_tier || 'trial'] || TIER_LIMITS.trial;
-        const dnsblDepth = tierLimits.dnsblDepth || 'critical_only';
-
-        // Pre-fetch DNSBL lists once for the entire run (avoids N queries)
-        const dnsblLists = await dnsblService.getListsForRun(dnsblDepth);
+        // DNSBL coverage is comprehensive for every org regardless of tier.
+        const dnsblLists = await dnsblService.getListsForRun('comprehensive');
         dnsblService.clearIpCache(); // Fresh cache for each assessment run
 
         // Assess all domains — batch in groups of 10 to avoid overwhelming DNS resolvers
@@ -1069,15 +1068,28 @@ export async function assessInfrastructure(
             campaigns: campaignSummary,
         });
 
-        // ── Step 9: Unlock the gate ──
+        // ── Step 9: Unlock the gate + mark run finished successfully ──
         await prisma.organization.update({
             where: { id: organizationId },
-            data: { assessment_completed: true },
+            data: {
+                assessment_completed: true,
+                assessment_running: false,
+                assessment_finished_at: new Date(),
+                assessment_last_error: null,
+            },
         });
 
         // ── Step 10: Notify user of assessment results ──
         try {
+            // Title and type align: a "Complete ✅" notification framed as
+            // ERROR (red) is confusing — the run *did* succeed, the findings
+            // it surfaced are what's red. Pick a title that matches the
+            // urgency the icon implies.
             const notifType = criticalCount > 0 ? 'ERROR' as const : warningCount > 0 ? 'WARNING' as const : 'SUCCESS' as const;
+            const notifTitle =
+                notifType === 'ERROR' ? 'Critical infrastructure issues found' :
+                notifType === 'WARNING' ? 'Infrastructure warnings detected' :
+                'Infrastructure looks healthy';
             const statusSummary = [
                 criticalCount > 0 ? `${criticalCount} critical` : null,
                 warningCount > 0 ? `${warningCount} warning` : null,
@@ -1085,7 +1097,7 @@ export async function assessInfrastructure(
 
             await notificationService.createNotification(organizationId, {
                 type: notifType,
-                title: 'Infrastructure Assessment Complete',
+                title: notifTitle,
                 message: `Your infrastructure scored ${overallScore}/100. ${statusSummary ? `Found: ${statusSummary} issue(s).` : 'No issues found.'} View the full report on the Infrastructure page.`,
             });
         } catch (notifError) {
@@ -1117,10 +1129,16 @@ export async function assessInfrastructure(
             logger.warn('Failed to create assessment failure notification', { organizationId });
         }
 
-        // Unlock the gate on failure so the user isn't permanently stuck
+        // Unlock the gate on failure so the user isn't permanently stuck.
+        // Capture last_error so the status endpoint can surface it.
         await prisma.organization.update({
             where: { id: organizationId },
-            data: { assessment_completed: true },
+            data: {
+                assessment_completed: true,
+                assessment_running: false,
+                assessment_finished_at: new Date(),
+                assessment_last_error: error?.message?.slice(0, 1000) || 'Assessment failed',
+            },
         });
 
         throw error;

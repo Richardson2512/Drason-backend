@@ -13,6 +13,7 @@ import { logger } from '../services/observabilityService';
 import { classifyLeadHealth } from '../services/leadHealthService';
 import * as entityStateService from '../services/entityStateService';
 import * as webhookBus from '../services/webhookEventBus';
+import { SlackAlertService } from '../services/SlackAlertService';
 import { LeadState, TriggerType } from '../types';
 
 /**
@@ -26,9 +27,8 @@ export const listCampaigns = async (req: Request, res: Response): Promise<Respon
         const limit = parseInt(req.query.limit as string) || 25;
         const status = (req.query.status as string) || undefined;
 
-        // Sequencer campaigns only — Campaign table post-merge holds both legacy
-        // platform-synced AND sequencer campaigns; this endpoint is the sequencer
-        // dashboard, so we filter by source_platform='sequencer'.
+        // List all of the org's campaigns. Campaign table is unified post-Phase-B
+        // (2026-04-26) — every row is a native sequencer campaign.
         const where: any = { organization_id: orgId };
         if (status && status !== 'all') where.status = status;
 
@@ -245,10 +245,9 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
         let acceptedEmails: string[] = [];
 
         const campaign = await prisma.$transaction(async (tx) => {
-            // 1. Create the campaign. Campaign.id has no DB default (legacy sync writes
-            //    the external platform's ID verbatim), so the sequencer generates its
-            //    own UUID here. source_platform='sequencer' distinguishes native rows
-            //    from legacy platform-synced rows in the same table.
+            // 1. Create the campaign. Campaign.id has no DB default (the column was
+            //    String @id without @default for historical reasons), so we generate
+            //    a UUID here.
             const camp = await tx.campaign.create({
                 data: {
                     id: crypto.randomUUID(),
@@ -273,6 +272,7 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
                     track_clicks: settings?.track_clicks ?? settings?.trackClicks ?? true,
                     include_unsubscribe: settings?.include_unsubscribe ?? settings?.includeUnsubscribe ?? true,
                     tracking_domain: settings?.tracking_domain ?? settings?.trackingDomain ?? null,
+                    eu_compliance_mode: settings?.eu_compliance_mode ?? settings?.euComplianceMode ?? false,
                 },
             });
 
@@ -862,6 +862,15 @@ export const launchCampaign = async (req: Request, res: Response): Promise<Respo
             leads: seeded.count,
             steps: stepCount,
         });
+
+        SlackAlertService.sendAlert({
+            organizationId: orgId,
+            eventType: 'campaign.activated',
+            entityId: updated.id,
+            severity: 'info',
+            title: '🚀 Campaign activated',
+            message: `Campaign *${updated.name}* is now sending. ${seeded.count} lead${seeded.count !== 1 ? 's' : ''} seeded across ${stepCount} step${stepCount !== 1 ? 's' : ''}.`,
+        }).catch((err) => logger.warn('[CAMPAIGNS2] Slack alert failed (campaign.activated)', { error: err?.message }));
 
         return res.json({ success: true, data: updated });
     } catch (error: any) {

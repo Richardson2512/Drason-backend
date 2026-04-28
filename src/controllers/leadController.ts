@@ -37,12 +37,8 @@ export const ingestLead = async (req: Request, res: Response): Promise<void> => 
             company: req.body.company,
         });
 
-        // 3. Increment usage count for billing/capacity tracking
-        await prisma.organization.update({
-            where: { id: orgId },
-            data: { current_lead_count: { increment: 1 } }
-        });
-
+        // No per-tier lead cap — pricing meters monthly send volume + validation
+        // credits, not lead count. (Counter column dropped 2026-04-27.)
         res.status(201).json({ success: true, data: result });
     } catch (error) {
         logger.error('Error ingesting lead:', error as Error);
@@ -75,9 +71,8 @@ export const getLeadCampaigns = async (req: Request, res: Response): Promise<voi
             return;
         }
 
-        // Get the assigned campaign. Post-merge Campaign table holds both legacy
-        // platform-synced rows and native sequencer rows (source_platform='sequencer'),
-        // so a single findUnique resolves either type.
+        // Get the assigned campaign. Campaign table is unified post-Phase-B
+        // (2026-04-26) — all rows are native sequencer campaigns.
         const assignedCampaign = lead.assigned_campaign_id
             ? await prisma.campaign.findUnique({
                 where: { id: lead.assigned_campaign_id },

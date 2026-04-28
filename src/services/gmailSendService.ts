@@ -131,7 +131,14 @@ export async function sendEmailViaGmailApi(
     to: string,
     subject: string,
     bodyHtml: string,
-    options?: { inReplyTo?: string | null; references?: string | null }
+    options?: {
+        inReplyTo?: string | null;
+        references?: string | null;
+        /** RFC 2369 + RFC 8058 unsubscribe URL — populates List-Unsubscribe headers
+         *  required by Gmail's bulk-sender requirements (Feb 2024) and Yahoo's
+         *  parallel rules. Pass null to omit headers (e.g., transactional mail). */
+        unsubscribeUrl?: string | null;
+    }
 ): Promise<{ messageId: string }> {
     const oauth2Client = new google.auth.OAuth2();
     oauth2Client.setCredentials({ access_token: accessToken });
@@ -150,6 +157,14 @@ export async function sendEmailViaGmailApi(
     ];
     if (options?.inReplyTo) headerLines.push(`In-Reply-To: ${options.inReplyTo}`);
     if (options?.references) headerLines.push(`References: ${options.references}`);
+
+    // RFC 2369 + RFC 8058 one-click unsubscribe. List-Unsubscribe wraps the URL
+    // in angle brackets per RFC; List-Unsubscribe-Post signals one-click support.
+    if (options?.unsubscribeUrl) {
+        headerLines.push(`List-Unsubscribe: <${options.unsubscribeUrl}>`);
+        headerLines.push('List-Unsubscribe-Post: List-Unsubscribe=One-Click');
+    }
+
     headerLines.push('MIME-Version: 1.0', 'Content-Type: text/html; charset=utf-8');
 
     const mime = [...headerLines, '', bodyHtml].join('\r\n');

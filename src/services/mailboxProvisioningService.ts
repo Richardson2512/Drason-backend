@@ -10,8 +10,7 @@
  * Key behaviors:
  * - Domain record is unique per (organization_id, domain). Reused if exists.
  * - Mailbox.id mirrors ConnectedAccount.id for stable cross-referencing
- *   (no auto-UUID because legacy sync systems set Mailbox.id from external IDs).
- * - source_platform = 'sequencer' distinguishes these from synced mailboxes.
+ *   (Mailbox.id has no DB default for historical reasons).
  */
 
 import { prisma } from '../index';

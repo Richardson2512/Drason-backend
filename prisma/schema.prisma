@@ -8,12 +8,20 @@ datasource db {
 }
 
 model Organization {
-  id                      String  @id @default(uuid())
+  id                      String    @id @default(uuid())
   name                    String
-  slug                    String  @unique
-  system_mode             String  @default("observe")
-  assessment_completed    Boolean @default(true)
-  transition_acknowledged Boolean @default(false) // Phase 0→1: operator must acknowledge low-score assessments
+  slug                    String    @unique
+  system_mode             String    @default("observe")
+  assessment_completed    Boolean   @default(true)
+  // Assessment async state. assessment_completed remains the "gate" flag (set
+  // to true on success or failure so the user isn't stuck). These columns
+  // describe the in-progress run so the UI can poll instead of holding open
+  // a 30-90s POST request through the bounce-checker.
+  assessment_running      Boolean   @default(false)
+  assessment_started_at   DateTime?
+  assessment_finished_at  DateTime?
+  assessment_last_error   String?
+  transition_acknowledged Boolean   @default(false) // Phase 0→1: operator must acknowledge low-score assessments
 
   // Subscription Management
   subscription_tier       String    @default("trial")
@@ -25,10 +33,14 @@ model Organization {
   subscription_started_at DateTime?
   next_billing_date       DateTime?
 
-  // Usage Tracking for Feature Gates
-  current_lead_count    Int       @default(0)
-  current_domain_count  Int       @default(0)
-  current_mailbox_count Int       @default(0)
+  // Usage tracking — only the metered counters are kept on the org row.
+  // Validation credits and monthly sends are derived live from
+  // ValidationAttempt + SendEvent counts in billingService; this column just
+  // marks the last refresh time so the dashboard can show a stale-data hint
+  // if the worker hasn't touched it in a while.
+  // (Lead/domain/mailbox counters were dropped 2026-04-27 — protection is
+  // unmetered, every connected entity gets the full state-machine + DNSBL +
+  // healing pipeline regardless of tier.)
   usage_last_updated_at DateTime?
 
   // Webhook Security
@@ -36,51 +48,70 @@ model Organization {
 
   // Zapmail integration — API key (encrypted at rest) used to list mailboxes
   // for one-click bulk import. Single Zapmail workspace per organization.
-  zapmail_api_key       String?
-  zapmail_connected_at  DateTime?
+  zapmail_api_key      String?
+  zapmail_connected_at DateTime?
 
   // Google Postmaster Tools — OAuth refresh token (encrypted) used by the
   // daily worker to fetch per-domain reputation, spam rate, and authentication
   // pass rates for every domain the org's connected Google account owns in
   // Postmaster Tools. Single connection per org.
-  postmaster_access_token   String?
-  postmaster_refresh_token  String?
+  postmaster_access_token     String?
+  postmaster_refresh_token    String?
   postmaster_token_expires_at DateTime?
-  postmaster_connected_at   DateTime?
-  postmaster_last_fetch_at  DateTime?
-  postmaster_last_error     String?
+  postmaster_connected_at     DateTime?
+  postmaster_last_fetch_at    DateTime?
+  postmaster_last_error       String?
 
-  created_at         DateTime               @default(now())
-  updated_at         DateTime               @updatedAt
-  apiKeys            ApiKey[]
-  auditLogs          AuditLog[]
-  campaigns          Campaign[]
-  domains            Domain[]
-  leads              Lead[]
-  mailboxes          Mailbox[]
-  systemSettings     OrganizationSetting[]
-  rawEvents          RawEvent[]
-  routingRules       RoutingRule[]
-  stateTransitions   StateTransition[]
-  users              User[]
-  notifications      Notification[]
-  infraReports       InfrastructureReport[]
-  subscriptionEvents SubscriptionEvent[]
-  slackIntegration   SlackIntegration?
+  // CAN-SPAM § 5(a)(5) requires every commercial email to carry the sender's
+  // valid physical postal address. This is the single source of truth — the
+  // dispatcher injects it into every send's unsubscribe footer, and the
+  // execution gate blocks sends if it's null. Updated via Settings UI; an
+  // org cannot launch an active campaign until this is configured.
+  mailing_address            String?
+  mailing_address_updated_at DateTime?
+
+  // One-time import from competing platforms (Smartlead, Instantly, EmailBison).
+  // We hold the customer-supplied admin API key encrypted at rest, only as long
+  // as needed to run the import. The key is auto-discarded by importKeyTtlWorker
+  // 24h after import completion (or 72h after paste, whichever comes first).
+  // The customer can also click "Discard now" in the UI for an immediate wipe.
+  import_source_platform      String? // 'smartlead' | 'instantly' | 'emailbison'
+  import_source_key_encrypted String? // AES-256-GCM via utils/encryption.ts
+  import_key_expires_at       DateTime? // Hard ceiling — sweep nulls all three when past
+
+  created_at             DateTime                 @default(now())
+  updated_at             DateTime                 @updatedAt
+  apiKeys                ApiKey[]
+  auditLogs              AuditLog[]
+  campaigns              Campaign[]
+  domains                Domain[]
+  leads                  Lead[]
+  mailboxes              Mailbox[]
+  systemSettings         OrganizationSetting[]
+  rawEvents              RawEvent[]
+  routingRules           RoutingRule[]
+  stateTransitions       StateTransition[]
+  users                  User[]
+  notifications          Notification[]
+  infraReports           InfrastructureReport[]
+  subscriptionEvents     SubscriptionEvent[]
+  slackIntegration       SlackIntegration?
   campaignDailyAnalytics CampaignDailyAnalytics[]
-  supportTickets     SupportTicket[]
-  validationBatches  ValidationBatch[]
-  connectedAccounts  ConnectedAccount[]
+  supportTickets         SupportTicket[]
+  validationBatches      ValidationBatch[]
+  connectedAccounts      ConnectedAccount[]
   // SendCampaign was unified into Campaign. Sequencer campaigns now appear in the
   // `campaigns` relation above with source_platform='sequencer'.
-  emailThreads       EmailThread[]
-  emailTemplates     EmailTemplate[]
-  emailSignatures    EmailSignature[]
-  sequencerSettings  SequencerSettings?
-  businessProfile    BusinessProfile?
-  webhookEndpoints   WebhookEndpoint[]
-  campaignLeadImports CampaignLeadImport[]
-  domainReputations  DomainReputation[]
+  emailThreads           EmailThread[]
+  emailTemplates         EmailTemplate[]
+  emailSignatures        EmailSignature[]
+  sequencerSettings      SequencerSettings?
+  businessProfile        BusinessProfile?
+  webhookEndpoints       WebhookEndpoint[]
+  campaignLeadImports    CampaignLeadImport[]
+  domainReputations      DomainReputation[]
+  importJobs             ImportJob[]
+  consents               Consent[]
 
   @@index([slug])
   @@index([subscription_status])
@@ -92,22 +123,22 @@ model Organization {
 /// campaign detail page can show "Lead sources" with filenames + counts.
 /// CampaignLead.import_id links each lead back to the batch that created it.
 model CampaignLeadImport {
-  id              String   @id @default(uuid())
-  campaign_id     String
-  organization_id String
-  source          String                              // csv | clay | crm | manual | api
-  source_file     String?                             // filename when source='csv'
-  source_label    String?                             // optional friendly label e.g. "Q3 enrichment table"
-  total_submitted Int      @default(0)                // rows submitted by the caller
-  added_count     Int      @default(0)                // accepted by health gate (active+paused)
-  blocked_count   Int      @default(0)                // RED-blocked
-  duplicate_count Int      @default(0)                // already in this campaign
+  id                 String   @id @default(uuid())
+  campaign_id        String
+  organization_id    String
+  source             String // csv | clay | crm | manual | api
+  source_file        String? // filename when source='csv'
+  source_label       String? // optional friendly label e.g. "Q3 enrichment table"
+  total_submitted    Int      @default(0) // rows submitted by the caller
+  added_count        Int      @default(0) // accepted by health gate (active+paused)
+  blocked_count      Int      @default(0) // RED-blocked
+  duplicate_count    Int      @default(0) // already in this campaign
   created_by_user_id String?
-  created_at      DateTime @default(now())
+  created_at         DateTime @default(now())
 
-  campaign        Campaign       @relation(fields: [campaign_id], references: [id], onDelete: Cascade)
-  organization    Organization   @relation(fields: [organization_id], references: [id], onDelete: Cascade)
-  leads           CampaignLead[]
+  campaign     Campaign       @relation(fields: [campaign_id], references: [id], onDelete: Cascade)
+  organization Organization   @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  leads        CampaignLead[]
 
   @@index([campaign_id, created_at])
   @@index([organization_id])
@@ -118,24 +149,24 @@ model CampaignLeadImport {
 /// endpoints (provider='slack', internal=true) ride the same dispatch
 /// plumbing so retry/log/replay all share one model.
 model WebhookEndpoint {
-  id              String   @id @default(uuid())
-  organization_id String
-  name            String                              // human label e.g. "Zapier production"
-  url             String                              // POST destination
-  secret          String                              // HMAC-SHA256 signing key
-  events          String[]                            // [] = all events; otherwise allowlist
-  active          Boolean  @default(true)
-  internal        Boolean  @default(false)            // true = managed by Superkabe, hidden from customer UI
-  provider        String   @default("generic")        // generic | slack | discord — selects payload transformer
-  failure_count   Int      @default(0)                // consecutive dead-letters; auto-disable threshold lives in code
-  disabled_at     DateTime?                           // set when auto-disabled
-  disabled_reason String?                             // "5 consecutive deliveries dead-lettered"
+  id               String    @id @default(uuid())
+  organization_id  String
+  name             String // human label e.g. "Zapier production"
+  url              String // POST destination
+  secret           String // HMAC-SHA256 signing key
+  events           String[] // [] = all events; otherwise allowlist
+  active           Boolean   @default(true)
+  internal         Boolean   @default(false) // true = managed by Superkabe, hidden from customer UI
+  provider         String    @default("generic") // generic | slack | discord — selects payload transformer
+  failure_count    Int       @default(0) // consecutive dead-letters; auto-disable threshold lives in code
+  disabled_at      DateTime? // set when auto-disabled
+  disabled_reason  String? // "5 consecutive deliveries dead-lettered"
   last_delivery_at DateTime?
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  created_at       DateTime  @default(now())
+  updated_at       DateTime  @updatedAt
 
-  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
-  deliveries      WebhookDelivery[]
+  organization Organization      @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  deliveries   WebhookDelivery[]
 
   @@index([organization_id, active])
   @@index([organization_id, internal])
@@ -144,23 +175,23 @@ model WebhookEndpoint {
 /// One row per delivery attempt. Used by both the retry worker (status +
 /// next_attempt_at) and the customer-facing delivery log + replay UI.
 model WebhookDelivery {
-  id              String   @id @default(uuid())
+  id              String    @id @default(uuid())
   endpoint_id     String
-  event_type      String                              // e.g. "mailbox.paused"
-  event_id        String                              // ULID — idempotency key receivers can use
-  payload         Json                                // event payload as posted (or to be posted)
-  status          String   @default("pending")       // pending | success | failed | dead_letter
-  attempt_count   Int      @default(0)
-  next_attempt_at DateTime?                           // when the worker should retry (null when terminal)
+  event_type      String // e.g. "mailbox.paused"
+  event_id        String // ULID — idempotency key receivers can use
+  payload         Json // event payload as posted (or to be posted)
+  status          String    @default("pending") // pending | success | failed | dead_letter
+  attempt_count   Int       @default(0)
+  next_attempt_at DateTime? // when the worker should retry (null when terminal)
   response_code   Int?
-  response_body   String?                             // truncated to 4kb
-  request_headers Json?                               // headers we sent (for debugging in the log UI)
+  response_body   String? // truncated to 4kb
+  request_headers Json? // headers we sent (for debugging in the log UI)
   duration_ms     Int?
   delivered_at    DateTime?
   last_error      String?
-  created_at      DateTime @default(now())
+  created_at      DateTime  @default(now())
 
-  endpoint        WebhookEndpoint @relation(fields: [endpoint_id], references: [id], onDelete: Cascade)
+  endpoint WebhookEndpoint @relation(fields: [endpoint_id], references: [id], onDelete: Cascade)
 
   @@index([endpoint_id, created_at])
   @@index([status, next_attempt_at])
@@ -170,29 +201,29 @@ model WebhookDelivery {
 /// AI-generated business profile extracted from the organization's website.
 /// One per org. Feeds the copy-generation prompts in the sequencer.
 model BusinessProfile {
-  id              String   @id @default(uuid())
-  organization_id String   @unique
-  source_url      String
-  profile_json    Json     // BusinessProfileV1 shape — see aiCopywritingService.ts
-  scraped_chars   Int      @default(0)
-  model_used      String
-  prompt_tokens   Int      @default(0)
-  completion_tokens Int    @default(0)
-  extracted_at    DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  id                String   @id @default(uuid())
+  organization_id   String   @unique
+  source_url        String
+  profile_json      Json // BusinessProfileV1 shape — see aiCopywritingService.ts
+  scraped_chars     Int      @default(0)
+  model_used        String
+  prompt_tokens     Int      @default(0)
+  completion_tokens Int      @default(0)
+  extracted_at      DateTime @default(now())
+  updated_at        DateTime @updatedAt
 
-  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
 
   @@index([organization_id])
 }
 
 model User {
-  id              String    @id @default(uuid())
-  email           String    @unique
-  password_hash   String? // Made optional for OAuth-only users
-  name            String?
-  role            String    @default("viewer")
-  organization_id String
+  id                  String    @id @default(uuid())
+  email               String    @unique
+  password_hash       String? // Made optional for OAuth-only users
+  name                String?
+  role                String    @default("viewer")
+  organization_id     String
   last_login_at       DateTime?
   password_changed_at DateTime? // Used to invalidate JWTs issued before password change
   failed_login_count  Int       @default(0) // Per-account brute force tracking
@@ -207,8 +238,9 @@ model User {
   google_token_expires_at DateTime? // Token expiry timestamp
   avatar_url              String? // Google profile picture URL
 
-  organization       Organization       @relation(fields: [organization_id], references: [id], onDelete: Cascade)
-  slackIntegrations  SlackIntegration[] // Integrations installed by this user
+  organization      Organization       @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  slackIntegrations SlackIntegration[] // Integrations installed by this user
+  consents          Consent[] // GDPR/DPDP/PDPA consent audit trail
 
   @@index([organization_id])
   @@index([email])
@@ -233,7 +265,7 @@ model ApiKey {
 }
 
 model Lead {
-  id                    String          @id @default(uuid())
+  id                    String    @id @default(uuid())
   email                 String
   // Contact fields — populated from manual add, Clay webhook, CSV import, or API v1
   first_name            String?
@@ -244,39 +276,51 @@ model Lead {
   title                 String?
   persona               String
   lead_score            Int
-  source                String          @default("clay") // Origin: clay, manual, csv
+  source                String    @default("clay") // Origin: clay, manual, csv
   // Direct-dial / outbound channels — populated when available from imports,
   // CRM sync, or enrichment. Surfaced in the Cold Call List CSV so SDRs can
   // dial straight from the export. Both nullable; never required.
   phone                 String?
   linkedin_url          String?
-  status                String          @default("held")
-  health_state          String          @default("healthy")
-  health_classification String          @default("green") // green, yellow, red
-  health_score_calc     Float           @default(100) // 0-100 calculated health score
+  status                String    @default("held")
+  health_state          String    @default("healthy")
+  health_classification String    @default("green") // green, yellow, red
+  health_score_calc     Float     @default(100) // 0-100 calculated health score
   health_checks         Json? // { disposable, catchAll, roleEmail, domainAge }
   health_checked_at     DateTime? // Last health re-evaluation timestamp
   assigned_campaign_id  String?
   organization_id       String
-  bounced               Boolean         @default(false) // Has this lead bounced
+  bounced               Boolean   @default(false) // Has this lead bounced
+  // Org-wide suppression tracking required for CAN-SPAM § 5(a)(4)(A), CASL § 11(3),
+  // and GDPR Art. 21. Once set, the dispatcher and enrollment service refuse to
+  // ever send to or re-add this address — across ALL campaigns in this org.
+  unsubscribed_at       DateTime?
+  unsubscribed_reason   String? // 'recipient_request' | 'hard_bounce' | 'spam_complaint' | 'manual'
+  // Hard-bounce suppression. Set automatically by monitoringService.recordBounce
+  // on every hard bounce so we never retry a known-bad address.
+  bounced_at            DateTime?
 
   // Activity Tracking (from platform webhooks)
-  emails_sent      Int       @default(0) // Total emails sent to this lead
-  emails_opened    Int       @default(0) // Total opens
-  emails_clicked   Int       @default(0) // Total link clicks
-  emails_replied   Int       @default(0) // Total replies
-  last_activity_at DateTime? // Last engagement timestamp
-  lead_category    String?   // Smartlead category: interested, not_interested, do_not_contact, etc.
-  cross_campaign_count Int   @default(0) // Number of campaigns this lead is enrolled in across Smartlead
+  emails_sent          Int       @default(0) // Total emails sent to this lead
+  emails_opened        Int       @default(0) // Total opens
+  emails_clicked       Int       @default(0) // Total link clicks
+  emails_replied       Int       @default(0) // Total replies
+  last_activity_at     DateTime? // Last engagement timestamp
+  lead_category        String? // Smartlead category: interested, not_interested, do_not_contact, etc.
+  cross_campaign_count Int       @default(0) // Number of campaigns this lead is enrolled in across Smartlead
 
   // Email Validation Layer (written ONLY by emailValidationService)
   // NULL = never validated (existing leads), values set only for newly ingested leads
-  validation_status    String?                         // valid, risky, invalid, unknown (null = not validated)
-  validation_score     Int?                            // 0-100 (null = not validated)
-  validation_source    String?                         // internal, millionverifier
-  validated_at         DateTime?
-  is_catch_all         Boolean?                        // null = not checked
-  is_disposable        Boolean?                        // null = not checked
+  validation_status String? // valid, risky, invalid, unknown (null = not validated)
+  validation_score  Int? // 0-100 (null = not validated)
+  validation_source String? // internal, millionverifier
+  validated_at      DateTime?
+  is_catch_all      Boolean? // null = not checked
+  is_disposable     Boolean? // null = not checked
+
+  // One-time-import provenance — set when this lead was created by the Smartlead
+  // import flow. Used to upsert idempotently on retry. Safe to drop 30d post-import.
+  import_external_id String?
 
   created_at   DateTime     @default(now())
   updated_at   DateTime     @updatedAt
@@ -284,6 +328,7 @@ model Lead {
   organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
 
   @@unique([organization_id, email])
+  @@unique([organization_id, import_external_id])
   @@index([organization_id, status])
   @@index([organization_id, assigned_campaign_id])
   @@index([organization_id, health_classification])
@@ -297,10 +342,10 @@ model ValidationAttempt {
   id              String   @id @default(uuid())
   lead_id         String
   organization_id String
-  source          String   // internal, millionverifier
-  result_status   String   // valid, risky, invalid, unknown, error
-  result_score    Int      // 0-100
-  result_details  Json?    // { syntax_ok, mx_found, is_disposable, is_catch_all, api_response }
+  source          String // internal, millionverifier
+  result_status   String // valid, risky, invalid, unknown, error
+  result_score    Int // 0-100
+  result_details  Json? // { syntax_ok, mx_found, is_disposable, is_catch_all, api_response }
   error_message   String?
   duration_ms     Int?
   created_at      DateTime @default(now())
@@ -316,8 +361,8 @@ model DomainInsight {
   has_mx          Boolean  @default(false)
   is_catch_all    Boolean  @default(false)
   is_disposable   Boolean  @default(false)
-  esp_bucket      String?  // gmail, microsoft, yahoo, other (cached ESP classification)
-  mx_records      Json?    // [{ priority, exchange }]
+  esp_bucket      String? // gmail, microsoft, yahoo, other (cached ESP classification)
+  mx_records      Json? // [{ priority, exchange }]
   checked_at      DateTime @default(now())
   created_at      DateTime @default(now())
   updated_at      DateTime @updatedAt
@@ -328,15 +373,15 @@ model DomainInsight {
 }
 
 model Campaign {
-  id              String         @id
-  name            String
-  channel         String         @default("email")
-  status          String         @default("active")
-  paused_reason   String?
-  paused_at       DateTime?
-  paused_by       String?        @default("system")
-  bounce_rate     Float          @default(0)
-  warning_count   Int            @default(0)
+  id            String    @id
+  name          String
+  channel       String    @default("email")
+  status        String    @default("active")
+  paused_reason String?
+  paused_at     DateTime?
+  paused_by     String?   @default("system")
+  bounce_rate   Float     @default(0)
+  warning_count Int       @default(0)
 
   // Counters — unified for legacy platform-sync AND native sequencer.
   total_sent         Int @default(0)
@@ -359,8 +404,8 @@ model Campaign {
   // Native sequencer (source_platform='sequencer') populates these explicitly.
   tags                String[]  @default([])
   schedule_timezone   String?
-  schedule_start_time String?  // "HH:MM" 24h local-time string
-  schedule_end_time   String?  // "HH:MM"
+  schedule_start_time String? // "HH:MM" 24h local-time string
+  schedule_end_time   String? // "HH:MM"
   schedule_days       String[]  @default([]) // ["mon","tue",...]
   daily_limit         Int?
   send_gap_minutes    Int?
@@ -372,11 +417,20 @@ model Campaign {
   track_clicks        Boolean?
   include_unsubscribe Boolean?
   tracking_domain     String?
+  // EU compliance mode — when true, applyTracking suppresses the open pixel
+  // and adds an explicit tracking-disclosure line to the footer to align with
+  // ePrivacy Directive Art. 5(3) for recipients in jurisdictions with strict
+  // tracking-consent rules. Default false; customer opts in per campaign.
+  eu_compliance_mode  Boolean?  @default(false)
   launched_at         DateTime?
 
   organization_id String
   created_at      DateTime @default(now())
   updated_at      DateTime @updatedAt
+
+  // One-time-import provenance (Smartlead campaign id, etc.). Drives idempotent
+  // upserts on retry. Safe to drop 30d post-import.
+  import_external_id String?
 
   organization   Organization             @relation(fields: [organization_id], references: [id], onDelete: Cascade)
   mailboxes      Mailbox[]                @relation("CampaignToMailbox")
@@ -387,23 +441,24 @@ model Campaign {
   accounts       CampaignAccount[]
   leadImports    CampaignLeadImport[]
 
+  @@unique([organization_id, import_external_id])
   @@index([organization_id, status])
   @@index([organization_id])
 }
 
 model CampaignDailyAnalytics {
-  id               String   @id @default(uuid())
-  campaign_id      String
-  organization_id  String
-  date             DateTime @db.Date
-  sent_count       Int      @default(0)
-  open_count       Int      @default(0)
-  click_count      Int      @default(0)
-  reply_count      Int      @default(0)
-  bounce_count     Int      @default(0)
-  unsubscribe_count Int     @default(0)
-  created_at       DateTime @default(now())
-  updated_at       DateTime @updatedAt
+  id                String   @id @default(uuid())
+  campaign_id       String
+  organization_id   String
+  date              DateTime @db.Date
+  sent_count        Int      @default(0)
+  open_count        Int      @default(0)
+  click_count       Int      @default(0)
+  reply_count       Int      @default(0)
+  bounce_count      Int      @default(0)
+  unsubscribe_count Int      @default(0)
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
 
   campaign     Campaign     @relation(fields: [campaign_id], references: [id], onDelete: Cascade)
   organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
@@ -414,30 +469,30 @@ model CampaignDailyAnalytics {
 }
 
 model Mailbox {
-  id                      String         @id
+  id                      String    @id
   email                   String
-  status                  String         @default("healthy")
-  recovery_phase          String         @default("healthy") // RecoveryPhase: healthy|paused|quarantine|restricted_send|warm_recovery
+  status                  String    @default("healthy")
+  recovery_phase          String    @default("healthy") // RecoveryPhase: healthy|paused|quarantine|restricted_send|warm_recovery
   healing_origin          String? // HealingOrigin: rehab|recovery
   phase_entered_at        DateTime? // When the entity entered its current recovery phase
-  clean_sends_since_phase Int            @default(0) // Clean sends (0 hard bounces) since entering current phase
-  resilience_score        Int            @default(50) // 0-100, drives healing speed multipliers
-  relapse_count           Int            @default(0) // Total relapses for escalating penalties
-  trend_state             String         @default("stable") // TrendState: stable|degrading|accelerating|oscillating|recovering
+  clean_sends_since_phase Int       @default(0) // Clean sends (0 hard bounces) since entering current phase
+  resilience_score        Int       @default(50) // 0-100, drives healing speed multipliers
+  relapse_count           Int       @default(0) // Total relapses for escalating penalties
+  trend_state             String    @default("stable") // TrendState: stable|degrading|accelerating|oscillating|recovering
   provider_restrictions   Json? // Per-provider restrictions: { gmail: { restricted: true, bounce_rate: 0.15 } }
-  hard_bounce_count       Int            @default(0)
-  delivery_failure_count  Int            @default(0)
-  total_sent_count        Int            @default(0)
-  window_sent_count       Int            @default(0)
-  window_bounce_count     Int            @default(0)
-  window_start_at         DateTime       @default(now())
+  hard_bounce_count       Int       @default(0)
+  delivery_failure_count  Int       @default(0)
+  total_sent_count        Int       @default(0)
+  window_sent_count       Int       @default(0)
+  window_bounce_count     Int       @default(0)
+  window_start_at         DateTime  @default(now())
   paused_reason           String?
   paused_at               DateTime?
-  paused_by               String?        @default("system")
+  paused_by               String?   @default("system")
   last_pause_at           DateTime?
   cooldown_until          DateTime?
-  consecutive_pauses      Int            @default(0)
-  last_activity_at        DateTime       @default(now())
+  consecutive_pauses      Int       @default(0)
+  last_activity_at        DateTime  @default(now())
   initial_bounce_rate     Float? // Historical bounce rate at import
   initial_assessment_at   DateTime? // When initial assessment was performed
 
@@ -455,12 +510,12 @@ model Mailbox {
   // OAuth mailboxes the sending IP is shared infrastructure managed by the
   // provider and isn't blacklist-actionable, so we mark sending_ip_source
   // as 'oauth_shared' and skip the periodic check entirely.
-  sending_ip               String?
-  sending_ip_resolved_at   DateTime?
-  sending_ip_source        String?    // 'smtp_host_dns' | 'oauth_shared' | 'manual' | null
-  ip_blacklist_results     Json?      // { critical_listed, major_listed, minor_listed, total_checked }
-  ip_blacklist_score       Float      @default(0)
-  last_ip_blacklist_check  DateTime?
+  sending_ip              String?
+  sending_ip_resolved_at  DateTime?
+  sending_ip_source       String? // 'smtp_host_dns' | 'oauth_shared' | 'manual' | null
+  ip_blacklist_results    Json? // { critical_listed, major_listed, minor_listed, total_checked }
+  ip_blacklist_score      Float     @default(0)
+  last_ip_blacklist_check DateTime?
 
   // Analytics Fields (SOFT SIGNALS - informational only)
   open_count_lifetime  Int     @default(0) // Total opens from emails sent by this mailbox
@@ -472,18 +527,29 @@ model Mailbox {
   warmup_status        String? // Platform warmup enabled status
   warmup_limit         Int     @default(0) // Daily warmup limit (total_warmup_per_day)
 
-  domain_id       String
-  organization_id String
-  // 1:1 back-reference to the ConnectedAccount holding OAuth/SMTP credentials.
-  connected_account_id String?        @unique
-  created_at      DateTime        @default(now())
-  updated_at      DateTime        @updatedAt
-  domain          Domain          @relation(fields: [domain_id], references: [id], onDelete: Cascade)
-  organization    Organization    @relation(fields: [organization_id], references: [id], onDelete: Cascade)
-  connectedAccount ConnectedAccount? @relation(fields: [connected_account_id], references: [id], onDelete: SetNull)
-  metrics         MailboxMetrics?
-  campaigns       Campaign[]      @relation("CampaignToMailbox")
+  // One-time-import provenance (Smartlead email-account id, etc.). Drives idempotent
+  // upserts on retry. Safe to drop 30d post-import.
+  import_external_id String?
 
+  // Day-1 health snapshot from the source platform (Option C protection seeding).
+  // Read by the state machine as a fallback signal when local SendEvent history
+  // is thin (<48h or <100 events). Shape: { sent_7d, spam_7d, replied_7d,
+  // warmup_reputation, warmup_blocked, blocked_reason, imported_at }.
+  import_baseline Json?
+
+  domain_id            String
+  organization_id      String
+  // 1:1 back-reference to the ConnectedAccount holding OAuth/SMTP credentials.
+  connected_account_id String?           @unique
+  created_at           DateTime          @default(now())
+  updated_at           DateTime          @updatedAt
+  domain               Domain            @relation(fields: [domain_id], references: [id], onDelete: Cascade)
+  organization         Organization      @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  connectedAccount     ConnectedAccount? @relation(fields: [connected_account_id], references: [id], onDelete: SetNull)
+  metrics              MailboxMetrics?
+  campaigns            Campaign[]        @relation("CampaignToMailbox")
+
+  @@unique([organization_id, import_external_id])
   @@index([organization_id, status])
   @@index([organization_id, domain_id])
   @@index([domain_id])
@@ -492,25 +558,25 @@ model Mailbox {
 }
 
 model Domain {
-  id                           String         @id @default(uuid())
+  id                           String    @id @default(uuid())
   domain                       String
-  status                       String         @default("healthy")
-  recovery_phase               String         @default("healthy") // RecoveryPhase
+  status                       String    @default("healthy")
+  recovery_phase               String    @default("healthy") // RecoveryPhase
   healing_origin               String? // HealingOrigin: rehab|recovery
   phase_entered_at             DateTime? // When entered current recovery phase
-  clean_sends_since_phase      Int            @default(0) // Clean sends since entering current phase
-  resilience_score             Int            @default(50) // 0-100, drives healing speed multipliers
-  relapse_count                Int            @default(0) // Total relapses
-  trend_state                  String         @default("stable") // TrendState
+  clean_sends_since_phase      Int       @default(0) // Clean sends since entering current phase
+  resilience_score             Int       @default(50) // 0-100, drives healing speed multipliers
+  relapse_count                Int       @default(0) // Total relapses
+  trend_state                  String    @default("stable") // TrendState
   provider_restrictions        Json? // Per-provider restriction state
-  warning_count                Int            @default(0)
-  aggregated_bounce_rate_trend Float          @default(0.0)
+  warning_count                Int       @default(0)
+  aggregated_bounce_rate_trend Float     @default(0.0)
   paused_reason                String?
   paused_at                    DateTime?
   last_pause_at                DateTime?
-  paused_by                    String?        @default("system")
+  paused_by                    String?   @default("system")
   cooldown_until               DateTime?
-  consecutive_pauses           Int            @default(0)
+  consecutive_pauses           Int       @default(0)
   spf_valid                    Boolean? // SPF record check result
   dkim_valid                   Boolean? // DKIM record check result
   dmarc_policy                 String? // DMARC policy: 'none' | 'quarantine' | 'reject'
@@ -521,13 +587,13 @@ model Domain {
   mx_records                   Json?
   mx_valid                     Boolean? // True when mx_records is non-empty
   blacklist_results            Json? // Summary cache: { critical_listed: N, major_listed: N, minor_listed: N, total_checked: N }
-  blacklist_score              Float    @default(0) // Computed weighted blacklist penalty
+  blacklist_score              Float     @default(0) // Computed weighted blacklist penalty
   last_full_blacklist_check    DateTime? // When all DNSBL lists were last checked
   dns_checked_at               DateTime? // When DNS was last checked
   initial_assessment_score     Float? // REPORT-ONLY. Never use in execution gate logic.
 
   // Inactivity tracking
-  last_sent_at                 DateTime? // Last time any mailbox under this domain sent an email
+  last_sent_at DateTime? // Last time any mailbox under this domain sent an email
 
   // Domain-Level Analytics (SOFT SIGNALS - aggregated from all mailboxes)
   total_sent_lifetime Int   @default(0) // Total emails sent across all mailboxes in this domain
@@ -539,9 +605,9 @@ model Domain {
   bounce_rate         Float @default(0) // Domain-wide bounce rate (total_bounces / total_sent_lifetime * 100)
 
   organization_id String
-  created_at      DateTime     @default(now())
-  updated_at      DateTime     @updatedAt
-  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  created_at      DateTime           @default(now())
+  updated_at      DateTime           @updatedAt
+  organization    Organization       @relation(fields: [organization_id], references: [id], onDelete: Cascade)
   mailboxes       Mailbox[]
   dnsblResults    DnsblResult[]
   reputations     DomainReputation[]
@@ -558,22 +624,22 @@ model Domain {
 /// (reputation drop → notify), and auto-pause decisions when spam_rate
 /// crosses 0.3% sustained.
 model DomainReputation {
-  id              String   @id @default(uuid())
-  organization_id String
-  domain_id       String
-  source          String   // "postmaster_tools" | "snds" (future)
-  fetched_at      DateTime
-  date            DateTime @db.Date
-  reputation      String?  // "HIGH" | "MEDIUM" | "LOW" | "BAD"
-  spam_rate       Float?   // 0.0–1.0
-  ip_reputation   String?  // for SNDS rows (future)
-  authentication_dkim_pass_rate Float?
-  authentication_spf_pass_rate  Float?
+  id                             String   @id @default(uuid())
+  organization_id                String
+  domain_id                      String
+  source                         String // "postmaster_tools" | "snds" (future)
+  fetched_at                     DateTime
+  date                           DateTime @db.Date
+  reputation                     String? // "HIGH" | "MEDIUM" | "LOW" | "BAD"
+  spam_rate                      Float? // 0.0–1.0
+  ip_reputation                  String? // for SNDS rows (future)
+  authentication_dkim_pass_rate  Float?
+  authentication_spf_pass_rate   Float?
   authentication_dmarc_pass_rate Float?
-  encryption_outbound_rate      Float?
-  delivery_errors_jsonb Json?
-  raw_payload     Json
-  created_at      DateTime @default(now())
+  encryption_outbound_rate       Float?
+  delivery_errors_jsonb          Json?
+  raw_payload                    Json
+  created_at                     DateTime @default(now())
 
   organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
   domain       Domain       @relation(fields: [domain_id], references: [id], onDelete: Cascade)
@@ -679,6 +745,115 @@ model AuditLog {
   @@index([correlation_id])
 }
 
+/// One row per import attempt from a competing platform (Smartlead, Instantly,
+/// EmailBison). Holds progress and audit trail so the customer can retry a
+/// failed import within the key TTL window without re-pasting their admin key.
+/// Rows are retained after the key is wiped — useful for support diagnostics.
+///
+/// status lifecycle:
+///   pending       -> import queued, key freshly stored
+///   running       -> currently fetching from source platform
+///   paused_source -> source-side campaigns paused, ready to ingest
+///   complete      -> all data written, mailbox handoff stage
+///   failed        -> aborted; error field populated
+///   cancelled     -> user-cancelled mid-run
+model ImportJob {
+  id                      String       @id @default(uuid())
+  organization_id         String
+  platform                String // 'smartlead' | 'instantly' | 'emailbison'
+  status                  String       @default("pending")
+  // Migration strategy chosen at preview time:
+  //   conservative — only never-contacted leads. Mid-sequence leads finish on
+  //                  the source platform. Threading is preserved.
+  //   aggressive   — restart all eligible leads at step 1 in Superkabe.
+  //                  Recipients may receive step 1 again from a new mailbox.
+  mode                    String       @default("conservative")
+  // Aggressive-mode only: when true, also import leads whose last contact was
+  // within the recent-contact threshold (14d). Default false — recent contacts
+  // are most likely to remember and react badly to a duplicate first-touch.
+  include_recent_contacts Boolean      @default(false)
+  started_at              DateTime?
+  completed_at            DateTime?
+  stats                   Json         @default("{}") // {campaignsFound, leadsImported, leadsSkippedRecent, leadsSkippedOptedOut, ...}
+  error                   String?
+  created_at              DateTime     @default(now())
+  updated_at              DateTime     @updatedAt
+  organization            Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id, status])
+  @@index([organization_id, created_at])
+}
+
+/// Consent audit trail — append-only record of every consent grant or
+/// withdrawal across the platform. Required for GDPR Art. 7(1) (controller
+/// must demonstrate consent), DPDP § 6 (notice + consent recordkeeping), and
+/// the PDPA Consent Obligation. Every row is forensically self-contained so
+/// even after a User row is deleted (right of erasure), the consent record
+/// remains intelligible via the snapshot fields.
+///
+/// consent_type values:
+///   tos                 — Terms of Service acceptance
+///   privacy             — Privacy Policy acceptance
+///   marketing           — Opt-in to product/marketing emails
+///   cookies_analytics   — Analytics cookie opt-in (ePrivacy)
+///   cookies_functional  — Functional cookie opt-in
+///   oauth_gmail         — Gmail OAuth scope acceptance
+///   oauth_microsoft     — Microsoft 365 OAuth scope acceptance
+///   oauth_postmaster    — Google Postmaster Tools OAuth scope acceptance
+///   import_key          — Authorization to act on behalf of customer with imported API key
+///   dpa                 — Data Processing Addendum acceptance
+///
+/// channel values:
+///   signup              — checkbox at signup
+///   reacceptance_modal  — re-prompted after version bump
+///   cookie_banner       — anonymous or post-login banner
+///   oauth_callback      — captured automatically on OAuth success
+///   wizard_step         — explicit acknowledgment in a wizard
+///   api                 — programmatic acceptance via authenticated API
+model Consent {
+  id              String  @id @default(uuid())
+  organization_id String?
+  user_id         String?
+
+  // Identity snapshot — preserved even if the User row is later erased so the
+  // consent record stays a valid audit artifact. Email + name are captured at
+  // the moment of consent.
+  user_email_snapshot String?
+  user_name_snapshot  String?
+
+  // What was consented to
+  consent_type     String
+  document_version String // e.g., '2026-04-28' for ToS/Privacy; OAuth scope string; etc.
+  document_hash    String? // SHA-256 of document text where applicable (optional)
+
+  // When + how
+  accepted_at DateTime @default(now())
+  channel     String
+
+  // Forensics
+  ip_address String?
+  user_agent String?
+
+  // Withdrawal — populated if the user later revokes a revocable consent
+  // (marketing, cookies_*, oauth_*, import_key). Original row is preserved;
+  // a withdrawal does NOT delete the row.
+  withdrawn_at     DateTime?
+  withdrawn_reason String?
+
+  // Free-form: OAuth scopes list, cookie categories array, document URL, etc.
+  metadata Json?
+
+  created_at DateTime @default(now())
+
+  organization Organization? @relation(fields: [organization_id], references: [id], onDelete: SetNull)
+  user         User?         @relation(fields: [user_id], references: [id], onDelete: SetNull)
+
+  @@index([user_id, consent_type])
+  @@index([organization_id, consent_type])
+  @@index([consent_type, accepted_at])
+  @@index([accepted_at])
+}
+
 model OrganizationSetting {
   id              String       @id @default(uuid())
   key             String
@@ -695,9 +870,9 @@ model OrganizationSetting {
 model ApiCallLog {
   id              String   @id @default(uuid())
   organization_id String
-  platform        String   // smartlead, instantly, emailbison, millionverifier
-  endpoint        String   // e.g. GET /campaigns, POST /campaigns/{id}/status
-  status_code     Int?     // HTTP status code (null if network error)
+  platform        String // smartlead, instantly, emailbison, millionverifier
+  endpoint        String // e.g. GET /campaigns, POST /campaigns/{id}/status
+  status_code     Int? // HTTP status code (null if network error)
   duration_ms     Int?
   error           String?
   created_at      DateTime @default(now())
@@ -756,9 +931,9 @@ model BounceEvent {
   raw_event_id    String? // Reference to RawEvent if applicable
   // SMTP transcript capture (synchronous bounces from sendQueueService) and
   // RFC 3464 DSN parsing (asynchronous bounces from imapReplyWorker).
-  smtp_code       String?  // e.g. "550", "5.7.1"
-  smtp_response   String?  @db.Text  // full server message, ≤1024 chars
-  bounce_source   String?  // "smtp" (sync), "dsn" (async), null = legacy
+  smtp_code       String? // e.g. "550", "5.7.1"
+  smtp_response   String?   @db.Text // full server message, ≤1024 chars
+  bounce_source   String? // "smtp" (sync), "dsn" (async), null = legacy
   created_at      DateTime  @default(now())
 
   @@index([organization_id, created_at])
@@ -769,15 +944,27 @@ model BounceEvent {
 }
 
 model SubscriptionEvent {
-  id              String       @id @default(uuid())
-  organization_id String
-  event_type      String // subscription.created, subscription.updated, subscription.canceled, invoice.paid, invoice.payment_failed
-  polar_event_id  String?      @unique
-  previous_tier   String?
-  new_tier        String?
-  payload         Json? // Full webhook payload for audit purposes
-  created_at      DateTime     @default(now())
-  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  id                   String       @id @default(uuid())
+  organization_id      String
+  event_type           String // subscription.created, subscription.updated, subscription.canceled, invoice.paid, invoice.payment_failed
+  polar_event_id       String?      @unique
+  previous_tier        String?
+  new_tier             String?
+  // Amount actually charged on this event (Polar-supplied). Lets the invoice
+  // PDF render the real number for any tier — including Pro send-volume
+  // variants — without a static price map drifting out of sync.
+  amount_cents         Int?
+  currency             String?      @default("USD")
+  // Polar's hosted invoice — the legally relevant document. When present,
+  // the customer's invoice list deep-links to this URL instead of our
+  // PDFKit-rendered fallback. polar_invoice_number is what shows on Polar's
+  // page; we surface it in the UI so the customer can match against bank
+  // records / accountant exports.
+  polar_invoice_url    String?
+  polar_invoice_number String?
+  payload              Json? // Full webhook payload for audit purposes
+  created_at           DateTime     @default(now())
+  organization         Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
 
   @@index([organization_id, created_at])
   @@index([event_type])
@@ -785,9 +972,9 @@ model SubscriptionEvent {
 }
 
 model SlackIntegration {
-  id                   String       @id @default(uuid())
-  organization_id      String       @unique
-  slack_team_id        String       @unique
+  id                   String @id @default(uuid())
+  organization_id      String @unique
+  slack_team_id        String @unique
   bot_token_encrypted  String
   installed_by_user_id String
 
@@ -797,11 +984,11 @@ model SlackIntegration {
   alerts_last_error_at      DateTime?
   alerts_last_error_message String?
 
-  created_at           DateTime     @default(now())
-  updated_at           DateTime     @updatedAt
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
-  organization         Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
-  installed_by_user    User         @relation(fields: [installed_by_user_id], references: [id])
+  organization      Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  installed_by_user User         @relation(fields: [installed_by_user_id], references: [id])
 
   @@index([organization_id])
   @@index([slack_team_id])
@@ -813,7 +1000,6 @@ enum SlackAlertsStatus {
   channel_not_found
   auth_error
 }
-
 
 model SlackAlertLog {
   id              String   @id @default(uuid())
@@ -845,18 +1031,18 @@ model SupportTicket {
 }
 
 model PendingRegistration {
-  id                     String    @id @default(uuid())
-  token                  String    @unique            // Opaque one-time-use token sent to client
-  google_id              String                       // Google user ID (sub claim)
-  email                  String                       // Google email
-  name                   String?                      // Google display name
-  avatar_url             String?                      // Google profile picture
-  google_access_token    String                       // Encrypted access token (server-side only)
-  google_refresh_token   String?                      // Encrypted refresh token (server-side only)
-  google_token_expires_at DateTime?                   // Token expiry timestamp
-  selected_plan          String?                      // Plan selected on pricing page (starter/growth/scale)
-  expires_at             DateTime                     // Hard expiry — 10 minutes from creation
-  created_at             DateTime  @default(now())
+  id                      String    @id @default(uuid())
+  token                   String    @unique // Opaque one-time-use token sent to client
+  google_id               String // Google user ID (sub claim)
+  email                   String // Google email
+  name                    String? // Google display name
+  avatar_url              String? // Google profile picture
+  google_access_token     String // Encrypted access token (server-side only)
+  google_refresh_token    String? // Encrypted refresh token (server-side only)
+  google_token_expires_at DateTime? // Token expiry timestamp
+  selected_plan           String? // Plan selected on pricing page (starter/growth/scale)
+  expires_at              DateTime // Hard expiry — 10 minutes from creation
+  created_at              DateTime  @default(now())
 
   @@index([token])
   @@index([expires_at])
@@ -865,20 +1051,20 @@ model PendingRegistration {
 // ─── DNSBL Monitoring ─────────────────────────────────────────────────────────
 
 model DnsblList {
-  id              String   @id @default(uuid())
-  name            String   @unique          // e.g. "spamhaus_zen"
-  zone            String                     // e.g. "zen.spamhaus.org"
-  tier            String                     // "critical" | "major" | "minor"
-  category        String   @default("general") // "spam" | "exploit" | "policy" | "general"
-  weight          Int      @default(1)       // scoring weight multiplier
-  enabled         Boolean  @default(true)
-  requires_auth   Boolean  @default(false)   // needs API key (e.g. Spamhaus DQS)
-  auth_config_key String?                    // env var name for API key
-  rotation_group  Int      @default(0)       // 0-6 for weekly rotation of minor lists
-  delisting_url   String?                    // URL for delisting requests
+  id              String        @id @default(uuid())
+  name            String        @unique // e.g. "spamhaus_zen"
+  zone            String // e.g. "zen.spamhaus.org"
+  tier            String // "critical" | "major" | "minor"
+  category        String        @default("general") // "spam" | "exploit" | "policy" | "general"
+  weight          Int           @default(1) // scoring weight multiplier
+  enabled         Boolean       @default(true)
+  requires_auth   Boolean       @default(false) // needs API key (e.g. Spamhaus DQS)
+  auth_config_key String? // env var name for API key
+  rotation_group  Int           @default(0) // 0-6 for weekly rotation of minor lists
+  delisting_url   String? // URL for delisting requests
   notes           String?
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  created_at      DateTime      @default(now())
+  updated_at      DateTime      @updatedAt
   results         DnsblResult[]
 
   @@index([tier])
@@ -889,8 +1075,8 @@ model DnsblResult {
   id            String   @id @default(uuid())
   domain_id     String
   dnsbl_list_id String
-  status        String   // "CONFIRMED" | "NOT_LISTED" | "UNREACHABLE" | "SKIPPED"
-  response_code String?  // A-record returned (e.g. "127.0.0.2")
+  status        String // "CONFIRMED" | "NOT_LISTED" | "UNREACHABLE" | "SKIPPED"
+  response_code String? // A-record returned (e.g. "127.0.0.2")
   checked_at    DateTime @default(now())
 
   domain    Domain    @relation(fields: [domain_id], references: [id], onDelete: Cascade)
@@ -908,7 +1094,7 @@ model DnsblResult {
 model ValidationBatch {
   id                 String    @id @default(uuid())
   organization_id    String
-  source             String    // csv, clay, hubspot, salesforce, api
+  source             String // csv, clay, hubspot, salesforce, api
   status             String    @default("processing") // processing, completed, failed
   file_name          String?
   total_count        Int       @default(0)
@@ -921,8 +1107,8 @@ model ValidationBatch {
   created_at         DateTime  @default(now())
   completed_at       DateTime?
 
-  organization       Organization          @relation(fields: [organization_id], references: [id], onDelete: Cascade)
-  leads              ValidationBatchLead[]
+  organization Organization          @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  leads        ValidationBatchLead[]
 
   @@index([organization_id, created_at])
   @@index([organization_id, status])
@@ -939,16 +1125,16 @@ model ValidationBatchLead {
   lead_score            Int?
   validation_status     String    @default("pending") // pending, valid, risky, invalid, duplicate
   validation_score      Int?
-  rejection_reason      String?   // disposable, no_mx, syntax, role_based, catch_all, smtp_fail, api_invalid
+  rejection_reason      String? // disposable, no_mx, syntax, role_based, catch_all, smtp_fail, api_invalid
   is_disposable         Boolean?
   is_catch_all          Boolean?
-  esp_bucket            String?   // gmail, microsoft, yahoo, other
+  esp_bucket            String? // gmail, microsoft, yahoo, other
   routed_to_campaign_id String?
   routed_at             DateTime?
   error_message         String?
   created_at            DateTime  @default(now())
 
-  batch                 ValidationBatch @relation(fields: [batch_id], references: [id], onDelete: Cascade)
+  batch ValidationBatch @relation(fields: [batch_id], references: [id], onDelete: Cascade)
 
   @@index([batch_id, validation_status])
   @@index([batch_id, esp_bucket])
@@ -964,7 +1150,7 @@ model SendEvent {
   mailbox_id      String
   campaign_id     String?
   recipient_email String
-  recipient_esp   String?  // gmail, microsoft, yahoo, other (classified on capture)
+  recipient_esp   String? // gmail, microsoft, yahoo, other (classified on capture)
   sent_at         DateTime @default(now())
 
   @@index([organization_id, sent_at])
@@ -978,7 +1164,7 @@ model ReplyEvent {
   mailbox_id      String
   campaign_id     String?
   recipient_email String
-  recipient_esp   String?  // gmail, microsoft, yahoo, other
+  recipient_esp   String? // gmail, microsoft, yahoo, other
   replied_at      DateTime @default(now())
 
   @@index([organization_id, replied_at])
@@ -987,15 +1173,15 @@ model ReplyEvent {
 }
 
 model MailboxEspPerformance {
-  id              String   @id @default(uuid())
-  organization_id String
-  mailbox_id      String
-  esp_bucket      String   // gmail, microsoft, yahoo, other
-  send_count_30d  Int      @default(0)
-  bounce_count_30d Int     @default(0)
-  reply_count_30d Int      @default(0)
-  bounce_rate_30d Float    @default(0) // bounce_count / send_count (0.0 - 1.0)
-  last_updated_at DateTime @default(now())
+  id               String   @id @default(uuid())
+  organization_id  String
+  mailbox_id       String
+  esp_bucket       String // gmail, microsoft, yahoo, other
+  send_count_30d   Int      @default(0)
+  bounce_count_30d Int      @default(0)
+  reply_count_30d  Int      @default(0)
+  bounce_rate_30d  Float    @default(0) // bounce_count / send_count (0.0 - 1.0)
+  last_updated_at  DateTime @default(now())
 
   @@unique([mailbox_id, esp_bucket])
   @@index([organization_id, mailbox_id])
@@ -1011,14 +1197,14 @@ model ConnectedAccount {
   organization_id   String
   email             String
   display_name      String?
-  provider          String    // google, microsoft, smtp
-  access_token      String?   // encrypted
-  refresh_token     String?   // encrypted
+  provider          String // google, microsoft, smtp
+  access_token      String? // encrypted
+  refresh_token     String? // encrypted
   token_expires_at  DateTime?
   smtp_host         String?
   smtp_port         Int?
   smtp_username     String?
-  smtp_password     String?   // encrypted
+  smtp_password     String? // encrypted
   imap_host         String?
   imap_port         Int?
   connection_status String    @default("active") // active, error, expired, disconnected
@@ -1027,7 +1213,7 @@ model ConnectedAccount {
   sends_today       Int       @default(0)
   sends_reset_at    DateTime  @default(now())
   warmup_complete   Boolean   @default(false)
-  signature_html    String?   // email signature
+  signature_html    String? // email signature
 
   // Custom tracking domain (white-label tracking links per mailbox/domain).
   // Outbound tracking URLs use this hostname instead of superkabe.com when set
@@ -1040,14 +1226,14 @@ model ConnectedAccount {
   tracking_domain_last_check_at DateTime?
   tracking_domain_last_error    String?
 
-  created_at        DateTime  @default(now())
-  updated_at        DateTime  @updatedAt
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
-  organization      Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
-  campaignAccounts  CampaignAccount[]
-  emailThreads      EmailThread[]
+  organization     Organization      @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  campaignAccounts CampaignAccount[]
+  emailThreads     EmailThread[]
   // 1:1 back-reference to the shadow Mailbox (Protection layer). Created at account creation time.
-  mailbox           Mailbox?
+  mailbox          Mailbox?
 
   @@unique([organization_id, email])
   @@index([organization_id, provider])
@@ -1062,30 +1248,30 @@ model ConnectedAccount {
 // in place.
 
 model CampaignAccount {
-  id                String   @id @default(uuid())
-  campaign_id       String
-  account_id        String
-  daily_limit_override Int?  // null = use account default
+  id                   String @id @default(uuid())
+  campaign_id          String
+  account_id           String
+  daily_limit_override Int? // null = use account default
 
   // FK re-pointed from SendCampaign → Campaign as part of the sequencer/protection
   // campaigns-table merge. IDs were preserved when SendCampaign rows were copied
   // into Campaign with source_platform='sequencer', so existing campaign_id values
   // satisfy the new constraint unchanged.
-  campaign          Campaign         @relation(fields: [campaign_id], references: [id], onDelete: Cascade)
-  account           ConnectedAccount @relation(fields: [account_id], references: [id], onDelete: Cascade)
+  campaign Campaign         @relation(fields: [campaign_id], references: [id], onDelete: Cascade)
+  account  ConnectedAccount @relation(fields: [account_id], references: [id], onDelete: Cascade)
 
   @@unique([campaign_id, account_id])
 }
 
 model SequenceStep {
-  id              String   @id @default(uuid())
-  campaign_id     String
-  step_number     Int
-  delay_days      Int      @default(1) // delay after previous step
-  delay_hours     Int      @default(0)
-  subject         String   @default("")
-  body_html       String   @default("")
-  body_text       String?
+  id          String  @id @default(uuid())
+  campaign_id String
+  step_number Int
+  delay_days  Int     @default(1) // delay after previous step
+  delay_hours Int     @default(0)
+  subject     String  @default("")
+  body_html   String  @default("")
+  body_text   String?
 
   // ── Subsequence branching ──────────────────────────────────────────
   // Conditions evaluated by the dispatcher when scheduling this step
@@ -1105,62 +1291,70 @@ model SequenceStep {
   //
   // branch_to_step_number: when condition is FALSE, jump to this step
   // instead of the default next-step. null = drop out of the sequence.
-  condition                String?
-  branch_to_step_number    Int?
+  condition             String?
+  branch_to_step_number Int?
+
+  // One-time-import provenance (Smartlead sequence step id, etc.).
+  import_external_id String?
 
   // FK re-pointed from SendCampaign → Campaign (see note on CampaignAccount).
-  campaign        Campaign      @relation(fields: [campaign_id], references: [id], onDelete: Cascade)
-  variants        StepVariant[]
+  campaign Campaign      @relation(fields: [campaign_id], references: [id], onDelete: Cascade)
+  variants StepVariant[]
 
   @@unique([campaign_id, step_number])
+  @@unique([campaign_id, import_external_id])
   @@index([campaign_id])
 }
 
 model StepVariant {
-  id              String   @id @default(uuid())
-  step_id         String
-  variant_label   String   @default("A") // A, B, C
-  subject         String
-  body_html       String
-  body_text       String?
-  weight          Int      @default(50) // percentage weight for split
-  sends           Int      @default(0)
-  opens           Int      @default(0)
-  clicks          Int      @default(0)
-  replies         Int      @default(0)
+  id            String  @id @default(uuid())
+  step_id       String
+  variant_label String  @default("A") // A, B, C
+  subject       String
+  body_html     String
+  body_text     String?
+  weight        Int     @default(50) // percentage weight for split
+  sends         Int     @default(0)
+  opens         Int     @default(0)
+  clicks        Int     @default(0)
+  replies       Int     @default(0)
 
-  step            SequenceStep @relation(fields: [step_id], references: [id], onDelete: Cascade)
+  // One-time-import provenance (Smartlead sequence_variant id, etc.).
+  import_external_id String?
 
+  step SequenceStep @relation(fields: [step_id], references: [id], onDelete: Cascade)
+
+  @@unique([step_id, import_external_id])
   @@index([step_id])
 }
 
 model CampaignLead {
-  id               String    @id @default(uuid())
-  campaign_id      String
-  email            String
-  first_name       String?
-  last_name        String?
-  company          String?
-  title            String?
-  custom_variables Json?     // any extra fields from CSV for {{custom.X}} tokens
-  status           String    @default("active") // active, paused, replied, bounced, unsubscribed, completed
-  current_step     Int       @default(0) // which step we're on (0 = not started)
-  esp_bucket       String?   // gmail, microsoft, yahoo, other
-  validation_status String?  // valid, risky, invalid
-  validation_score Int?
-  last_sent_at     DateTime?
-  next_send_at     DateTime?
-  opened_count     Int       @default(0)
-  clicked_count    Int       @default(0)
-  replied_at       DateTime?
-  bounced_at       DateTime?
-  unsubscribed_at  DateTime?
-  created_at       DateTime  @default(now())
+  id                String    @id @default(uuid())
+  campaign_id       String
+  email             String
+  first_name        String?
+  last_name         String?
+  company           String?
+  title             String?
+  custom_variables  Json? // any extra fields from CSV for {{custom.X}} tokens
+  status            String    @default("active") // active, paused, replied, bounced, unsubscribed, completed
+  current_step      Int       @default(0) // which step we're on (0 = not started)
+  esp_bucket        String? // gmail, microsoft, yahoo, other
+  validation_status String? // valid, risky, invalid
+  validation_score  Int?
+  last_sent_at      DateTime?
+  next_send_at      DateTime?
+  opened_count      Int       @default(0)
+  clicked_count     Int       @default(0)
+  replied_at        DateTime?
+  bounced_at        DateTime?
+  unsubscribed_at   DateTime?
+  created_at        DateTime  @default(now())
 
   // Provenance — links the lead back to the batch (CSV / Clay / manual / API)
   // that brought it into the campaign. Nullable so legacy rows pre-dating this
   // column stay valid; new rows always get a batch.
-  import_id        String?
+  import_id String?
 
   // Sticky mailbox assignment — ALL steps in this lead's sequence go through
   // this same ConnectedAccount. Pinned on the first dispatch (step 1) and
@@ -1173,11 +1367,15 @@ model CampaignLead {
   // through the lead's send history.
   assigned_account_id String?
 
+  // One-time-import provenance (Smartlead lead id within campaign, etc.).
+  import_external_id String?
+
   // FK re-pointed from SendCampaign → Campaign (sequencer/protection campaigns merge).
-  campaign         Campaign            @relation(fields: [campaign_id], references: [id], onDelete: Cascade)
-  import           CampaignLeadImport? @relation(fields: [import_id], references: [id], onDelete: SetNull)
+  campaign Campaign            @relation(fields: [campaign_id], references: [id], onDelete: Cascade)
+  import   CampaignLeadImport? @relation(fields: [import_id], references: [id], onDelete: SetNull)
 
   @@unique([campaign_id, email])
+  @@unique([campaign_id, import_external_id])
   @@index([campaign_id, status])
   @@index([campaign_id, next_send_at])
   @@index([campaign_id, current_step])
@@ -1194,12 +1392,12 @@ model CampaignLead {
 // midnight). Updated atomically alongside ConnectedAccount.sends_today on
 // every successful send by the BullMQ worker.
 model CampaignAccountUsage {
-  id                 String   @id @default(uuid())
-  campaign_id        String
-  account_id         String
-  sends_today        Int      @default(0)
-  sends_reset_at     DateTime @default(now())
-  updated_at         DateTime @updatedAt
+  id             String   @id @default(uuid())
+  campaign_id    String
+  account_id     String
+  sends_today    Int      @default(0)
+  sends_reset_at DateTime @default(now())
+  updated_at     DateTime @updatedAt
 
   @@unique([campaign_id, account_id])
   @@index([account_id])
@@ -1220,7 +1418,7 @@ model EmailTemplate {
   created_at      DateTime @default(now())
   updated_at      DateTime @updatedAt
 
-  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
 
   @@index([organization_id, category])
   @@index([organization_id, created_at])
@@ -1230,40 +1428,40 @@ model EmailSignature {
   id              String   @id @default(uuid())
   organization_id String
   name            String
-  html_content    String   // Full HTML with embedded base64 images
+  html_content    String // Full HTML with embedded base64 images
   is_default      Boolean  @default(false)
   created_at      DateTime @default(now())
   updated_at      DateTime @updatedAt
 
-  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
 
   @@index([organization_id])
   @@index([organization_id, is_default])
 }
 
 model SequencerSettings {
-  id                     String   @id @default(uuid())
-  organization_id        String   @unique
-  default_daily_limit    Int      @default(50)
-  default_timezone       String   @default("America/New_York")
-  default_start_time     String   @default("09:00")
-  default_end_time       String   @default("17:00")
-  default_active_days    String[] @default(["mon", "tue", "wed", "thu", "fri"])
-  delay_between_emails   Int      @default(1) // minutes
-  global_daily_max       Int      @default(500)
-  tracking_domain        String?
-  default_track_opens    Boolean  @default(true)
-  default_track_clicks   Boolean  @default(true)
-  default_unsubscribe    Boolean  @default(true)
-  auto_pause_on_bounce   Boolean  @default(true)
-  bounce_threshold       Float    @default(3.0) // percentage
-  stop_on_reply_default  Boolean  @default(true)
-  notify_on_reply        Boolean  @default(true)
-  notify_on_bounce       Boolean  @default(true)
-  notify_on_complete     Boolean  @default(true)
-  updated_at             DateTime @updatedAt
+  id                    String   @id @default(uuid())
+  organization_id       String   @unique
+  default_daily_limit   Int      @default(50)
+  default_timezone      String   @default("America/New_York")
+  default_start_time    String   @default("09:00")
+  default_end_time      String   @default("17:00")
+  default_active_days   String[] @default(["mon", "tue", "wed", "thu", "fri"])
+  delay_between_emails  Int      @default(1) // minutes
+  global_daily_max      Int      @default(500)
+  tracking_domain       String?
+  default_track_opens   Boolean  @default(true)
+  default_track_clicks  Boolean  @default(true)
+  default_unsubscribe   Boolean  @default(true)
+  auto_pause_on_bounce  Boolean  @default(true)
+  bounce_threshold      Float    @default(3.0) // percentage
+  stop_on_reply_default Boolean  @default(true)
+  notify_on_reply       Boolean  @default(true)
+  notify_on_bounce      Boolean  @default(true)
+  notify_on_complete    Boolean  @default(true)
+  updated_at            DateTime @updatedAt
 
-  organization           Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
 }
 
 // ============================================================================
@@ -1271,27 +1469,27 @@ model SequencerSettings {
 // ============================================================================
 
 model EmailThread {
-  id                String   @id @default(uuid())
-  organization_id   String
-  account_id        String   // ConnectedAccount that owns this thread
-  contact_email     String   // The external person we're talking to
-  contact_name      String?
-  subject           String
-  campaign_id       String?  // Which campaign this thread originated from
-  campaign_name     String?
-  lead_id           String?  // Link to CampaignLead if applicable
-  status            String   @default("open") // open, replied, closed, archived
-  is_read           Boolean  @default(false)
-  is_starred        Boolean  @default(false)
-  last_message_at   DateTime @default(now())
-  message_count     Int      @default(1)
-  snippet           String?  // Preview of last message (first 120 chars)
-  created_at        DateTime @default(now())
-  updated_at        DateTime @updatedAt
+  id              String   @id @default(uuid())
+  organization_id String
+  account_id      String // ConnectedAccount that owns this thread
+  contact_email   String // The external person we're talking to
+  contact_name    String?
+  subject         String
+  campaign_id     String? // Which campaign this thread originated from
+  campaign_name   String?
+  lead_id         String? // Link to CampaignLead if applicable
+  status          String   @default("open") // open, replied, closed, archived
+  is_read         Boolean  @default(false)
+  is_starred      Boolean  @default(false)
+  last_message_at DateTime @default(now())
+  message_count   Int      @default(1)
+  snippet         String? // Preview of last message (first 120 chars)
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
 
-  organization      Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
-  account           ConnectedAccount @relation(fields: [account_id], references: [id], onDelete: Cascade)
-  messages          EmailMessage[]
+  organization Organization     @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  account      ConnectedAccount @relation(fields: [account_id], references: [id], onDelete: Cascade)
+  messages     EmailMessage[]
 
   @@index([organization_id, status, last_message_at])
   @@index([organization_id, is_read])
@@ -1302,34 +1500,34 @@ model EmailThread {
 }
 
 model EmailMessage {
-  id                String   @id @default(uuid())
-  thread_id         String
-  direction         String   // inbound, outbound
-  from_email        String
-  from_name         String?
-  to_email          String
-  to_name           String?
-  subject           String
-  body_html         String
-  body_text         String?
-  message_id        String?  // SMTP Message-ID header for threading
-  in_reply_to       String?  // In-Reply-To header
-  references        String?  // References header chain
-  has_attachments   Boolean  @default(false)
-  is_read           Boolean  @default(true)
-  sent_at           DateTime @default(now())
-  created_at        DateTime @default(now())
+  id              String   @id @default(uuid())
+  thread_id       String
+  direction       String // inbound, outbound
+  from_email      String
+  from_name       String?
+  to_email        String
+  to_name         String?
+  subject         String
+  body_html       String
+  body_text       String?
+  message_id      String? // SMTP Message-ID header for threading
+  in_reply_to     String? // In-Reply-To header
+  references      String? // References header chain
+  has_attachments Boolean  @default(false)
+  is_read         Boolean  @default(true)
+  sent_at         DateTime @default(now())
+  created_at      DateTime @default(now())
 
   // Reply Quality classification (rule-based; only set for direction='inbound').
   // class:      positive | qualified | objection | referral | soft_no | hard_no | angry | auto | unclassified
   // confidence: high | medium | low
   // signals:    list of rule names that triggered (audit trail for the classification)
-  quality_class       String?
-  quality_confidence  String?
-  quality_signals     String[]    @default([])
+  quality_class         String?
+  quality_confidence    String?
+  quality_signals       String[]  @default([])
   quality_classified_at DateTime?
 
-  thread            EmailThread @relation(fields: [thread_id], references: [id], onDelete: Cascade)
+  thread EmailThread @relation(fields: [thread_id], references: [id], onDelete: Cascade)
 
   @@index([thread_id, sent_at])
   @@index([message_id])
@@ -1353,7 +1551,7 @@ model EmailOpenEvent {
   organization_id  String
   campaign_id      String
   campaign_lead_id String
-  lead_id          String?  // Protection-layer Lead, when matched
+  lead_id          String? // Protection-layer Lead, when matched
   recipient_email  String
   // Time gap between SendEvent.sent_at and this open. Pre-computed at ingest
   // so the scoring query can filter MPP/scanner pre-fetches without a join.
@@ -1377,7 +1575,7 @@ model EmailClickEvent {
   campaign_lead_id String
   lead_id          String?
   recipient_email  String
-  url              String?  // The destination URL (truncated to 1024 if longer)
+  url              String? // The destination URL (truncated to 1024 if longer)
   ms_since_send    Int?
   clicked_at       DateTime @default(now())
 
@@ -1400,8 +1598,8 @@ model ColdCallListSettings {
   require_no_reply    Boolean  @default(true)
   // Suppression carries unsubscribe/bounce filtering — locked on in v1.
   exclude_recent_days Int      @default(7)
-  title_filter        String?  // Comma-separated; substring contains-match, case-insensitive
-  campaign_filter     Json?    // Array<string> of campaign IDs; null = all active
+  title_filter        String? // Comma-separated; substring contains-match, case-insensitive
+  campaign_filter     Json? // Array<string> of campaign IDs; null = all active
   max_list_size       Int      @default(200)
   created_at          DateTime @default(now())
   updated_at          DateTime @updatedAt
@@ -1415,7 +1613,7 @@ model ColdCallDailySnapshot {
   id              String   @id @default(uuid())
   organization_id String
   snapshot_date   DateTime @db.Date // workspace-local date the list represents
-  prospect_ids    Json     // string[] — CampaignLead IDs, score-desc order
+  prospect_ids    Json // string[] — CampaignLead IDs, score-desc order
   prospect_count  Int      @default(0)
   generated_at    DateTime @default(now())
   status          String   @default("success") // success | no_campaigns | no_engagement | error
@@ -1432,12 +1630,11 @@ model ColdCallDailySnapshot {
 model ColdCallCustomSnapshot {
   id              String   @id @default(uuid())
   organization_id String
-  user_id         String?  // Null if downloader user record is gone
-  prospect_ids    Json     // string[] — CampaignLead IDs
+  user_id         String? // Null if downloader user record is gone
+  prospect_ids    Json // string[] — CampaignLead IDs
   prospect_count  Int      @default(0)
-  rule_snapshot   Json     // Frozen copy of ColdCallListSettings at download time
+  rule_snapshot   Json // Frozen copy of ColdCallListSettings at download time
   downloaded_at   DateTime @default(now())
 
   @@index([organization_id, downloaded_at])
 }
-

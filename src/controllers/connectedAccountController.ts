@@ -124,21 +124,7 @@ export const createAccount = async (req: Request, res: Response): Promise<Respon
             return res.status(400).json({ success: false, error: 'email and provider are required' });
         }
 
-        // Check mailbox limit per tier
-        const org = await prisma.organization.findUnique({
-            where: { id: orgId },
-            select: { subscription_tier: true },
-        });
-        const { TIER_LIMITS } = await import('../services/polarClient');
-        const tierLimits = TIER_LIMITS[org?.subscription_tier || 'trial'] || TIER_LIMITS.trial;
-        const currentCount = await prisma.connectedAccount.count({ where: { organization_id: orgId } });
-        if (currentCount >= tierLimits.mailboxes && tierLimits.mailboxes !== Infinity) {
-            return res.status(403).json({
-                success: false,
-                error: `Mailbox limit reached (${tierLimits.mailboxes} on ${org?.subscription_tier} plan). Upgrade to connect more.`,
-            });
-        }
-
+        // Mailbox count is unmetered — connect as many as you like at any tier.
         // Use the org's Sequencer default if no explicit value provided
         const orgSettings = await getSequencerSettings(orgId);
         const effectiveDailyLimit = dailySendLimit || orgSettings.default_daily_limit;
@@ -265,17 +251,7 @@ export const bulkCreateAccounts = async (req: Request, res: Response): Promise<R
             return res.status(413).json({ success: false, error: `Too many rows. Max ${MAX_BULK_ROWS} per request.` });
         }
 
-        // Tier limit enforcement — compute remaining capacity once at the top.
-        const org = await prisma.organization.findUnique({
-            where: { id: orgId },
-            select: { subscription_tier: true },
-        });
-        const { TIER_LIMITS } = await import('../services/polarClient');
-        const tierLimits = TIER_LIMITS[org?.subscription_tier || 'trial'] || TIER_LIMITS.trial;
-        const currentCount = await prisma.connectedAccount.count({ where: { organization_id: orgId } });
-        const cap = tierLimits.mailboxes === Infinity ? Infinity : tierLimits.mailboxes;
-        let remaining = cap === Infinity ? Infinity : Math.max(0, cap - currentCount);
-
+        // Mailbox count is unmetered — no per-row tier-cap check.
         const orgSettings = await getSequencerSettings(orgId);
         const defaultDailyLimit = orgSettings.default_daily_limit;
 
@@ -309,11 +285,6 @@ export const bulkCreateAccounts = async (req: Request, res: Response): Promise<R
                     continue;
                 }
             }
-            if (remaining <= 0) {
-                results.push({ row: i + 1, email, status: 'failed', error_code: 'tier_limit', error_message: `Mailbox limit reached on ${org?.subscription_tier || 'trial'} plan. Upgrade to add more.` });
-                continue;
-            }
-
             const data: Record<string, unknown> = {
                 organization_id: orgId,
                 email,
@@ -356,7 +327,6 @@ export const bulkCreateAccounts = async (req: Request, res: Response): Promise<R
                     requires_oauth: provider === 'google' || provider === 'microsoft',
                 });
                 createdCount++;
-                if (remaining !== Infinity) remaining--;
             } catch (err: unknown) {
                 const e = err as { code?: string; message?: string };
                 if (e?.code === 'P2002') {

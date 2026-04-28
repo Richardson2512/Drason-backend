@@ -13,6 +13,7 @@ import { Request, Response } from 'express';
 import { getOrgId } from '../middleware/orgContext';
 import { logger } from '../services/observabilityService';
 import { prisma } from '../index';
+import { recordConsentFromRequest } from '../services/consentService';
 import {
     buildAuthorizeUrl,
     completeAuthorization,
@@ -49,6 +50,37 @@ export const oauthCallback = async (req: Request, res: Response) => {
 
     try {
         await completeAuthorization(state, code);
+
+        // Record OAuth consent — required for GDPR Art. 7(1) auditability.
+        // We capture the moment Google's consent UI was completed, with the
+        // exact scope string the user authorized.
+        try {
+            const orgFirstUser = await prisma.user.findFirst({
+                where: { organization_id: state },
+                orderBy: { created_at: 'asc' },
+                select: { id: true, email: true, name: true },
+            });
+            await recordConsentFromRequest(req, {
+                consentType: 'oauth_postmaster',
+                documentVersion: 'https://www.googleapis.com/auth/postmaster.readonly',
+                channel: 'oauth_callback',
+                userId: orgFirstUser?.id || null,
+                organizationId: state,
+                userEmailSnapshot: orgFirstUser?.email || null,
+                userNameSnapshot: orgFirstUser?.name || null,
+                metadata: {
+                    provider: 'google_postmaster',
+                    scope: 'https://www.googleapis.com/auth/postmaster.readonly',
+                },
+            });
+        } catch (consentErr) {
+            logger.error(
+                '[POSTMASTER] OAuth consent record failed — manual remediation required',
+                consentErr instanceof Error ? consentErr : new Error(String(consentErr)),
+                { orgId: state },
+            );
+        }
+
         res.redirect(`${frontendBase}/dashboard/settings?postmaster=connected`);
     } catch (err: any) {
         logger.error('[POSTMASTER] OAuth callback failed', err);

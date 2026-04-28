@@ -187,6 +187,13 @@ export async function refreshMicrosoftAccessToken(refreshToken: string): Promise
 
 /**
  * Send an email via Microsoft Graph (POST /me/sendMail).
+ *
+ * Header-injection caveat: Microsoft Graph's `internetMessageHeaders` property
+ * historically restricted non-`X-` headers. Recent tenants accept standard
+ * headers like List-Unsubscribe; older / strict-mode tenants reject the
+ * request entirely. We attempt the standard headers first; on header-rejection
+ * we retry without them and surface a warning so the customer can switch to
+ * SMTP submission if they're hitting Gmail's bulk-sender requirements.
  */
 export async function sendEmailViaGraph(
     accessToken: string,
@@ -194,7 +201,13 @@ export async function sendEmailViaGraph(
     to: string,
     subject: string,
     bodyHtml: string,
-    options?: { inReplyTo?: string | null; references?: string | null }
+    options?: {
+        inReplyTo?: string | null;
+        references?: string | null;
+        /** RFC 2369 + RFC 8058 unsubscribe URL — populates List-Unsubscribe headers
+         *  required by Gmail's bulk-sender requirements (Feb 2024). */
+        unsubscribeUrl?: string | null;
+    }
 ): Promise<{ messageId: string }> {
     const messageId = `<${crypto.randomUUID()}@superkabe.com>`;
 
@@ -203,29 +216,60 @@ export async function sendEmailViaGraph(
     const internetMessageHeaders: Array<{ name: string; value: string }> = [];
     if (options?.inReplyTo) internetMessageHeaders.push({ name: 'In-Reply-To', value: options.inReplyTo });
     if (options?.references) internetMessageHeaders.push({ name: 'References', value: options.references });
+    if (options?.unsubscribeUrl) {
+        internetMessageHeaders.push({ name: 'List-Unsubscribe', value: `<${options.unsubscribeUrl}>` });
+        internetMessageHeaders.push({ name: 'List-Unsubscribe-Post', value: 'List-Unsubscribe=One-Click' });
+    }
 
-    const res = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
-        method: 'POST',
-        headers: {
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
+    const buildBody = (headers: Array<{ name: string; value: string }>) => JSON.stringify({
+        message: {
+            subject,
+            body: { contentType: 'HTML', content: bodyHtml },
+            toRecipients: [{ emailAddress: { address: to } }],
+            internetMessageId: messageId,
+            ...(headers.length > 0 ? { internetMessageHeaders: headers } : {}),
         },
-        body: JSON.stringify({
-            message: {
-                subject,
-                body: {
-                    contentType: 'HTML',
-                    content: bodyHtml,
-                },
-                toRecipients: [{ emailAddress: { address: to } }],
-                internetMessageId: messageId,
-                ...(internetMessageHeaders.length > 0 ? { internetMessageHeaders } : {}),
-            },
-            saveToSentItems: true,
-        }),
+        saveToSentItems: true,
     });
 
-    if (!res.ok) {
+    const doSend = (body: string) => fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body,
+    });
+
+    let res = await doSend(buildBody(internetMessageHeaders));
+
+    // Some Microsoft tenants reject internetMessageHeaders for non-X- prefixed
+    // names. Detect that specific failure and retry without List-Unsubscribe so
+    // the email still goes out (the body footer's unsubscribe link still works).
+    // Surface a logger.warn so the operator knows compliance headers are missing
+    // for that tenant — the right fix is to switch that mailbox to SMTP submission.
+    if (!res.ok && options?.unsubscribeUrl) {
+        const errText = await res.text().catch(() => '');
+        const looksLikeHeaderRejection =
+            res.status === 400 &&
+            /internetMessageHeaders|invalidProperty|x-/i.test(errText);
+        if (looksLikeHeaderRejection) {
+            const fallbackHeaders = internetMessageHeaders.filter(
+                h => h.name !== 'List-Unsubscribe' && h.name !== 'List-Unsubscribe-Post',
+            );
+            res = await doSend(buildBody(fallbackHeaders));
+            if (res.ok) {
+                // We have a way to log here; emailSendAdapters logs success on return.
+                // Throw a marker we surface via wrapper if tenant-strict mode persists.
+                console.warn(
+                    `[MS-GRAPH] Tenant rejected List-Unsubscribe header — sent without compliance headers. ` +
+                    `Switch this mailbox to SMTP submission for full Gmail bulk-sender compliance.`,
+                );
+            } else {
+                const fallbackErr = await res.text().catch(() => 'Unknown error');
+                throw new Error(`Graph sendMail failed (${res.status}): ${fallbackErr}`);
+            }
+        } else {
+            throw new Error(`Graph sendMail failed (${res.status}): ${errText}`);
+        }
+    } else if (!res.ok) {
         const errText = await res.text().catch(() => 'Unknown error');
         throw new Error(`Graph sendMail failed (${res.status}): ${errText}`);
     }

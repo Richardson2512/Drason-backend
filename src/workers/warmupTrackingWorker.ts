@@ -11,6 +11,7 @@ import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
 import * as warmupService from '../services/warmupService';
 import * as healingService from '../services/healingService';
+import { SlackAlertService } from '../services/SlackAlertService';
 import { RecoveryPhase } from '../types';
 
 /**
@@ -158,6 +159,17 @@ export const checkWarmupProgress = async (orgId?: string): Promise<{
                     );
 
                     graduated++;
+
+                    if (nextPhase === RecoveryPhase.HEALTHY) {
+                        SlackAlertService.sendAlert({
+                            organizationId: mailbox.organization_id,
+                            eventType: 'mailbox.warmup_graduated',
+                            entityId: mailbox.id,
+                            severity: 'info',
+                            title: '🎓 Mailbox graduated from warmup',
+                            message: `Mailbox \`${mailbox.email}\` has completed warmup and is now sending at full daily capacity.`,
+                        }).catch((err) => logger.warn('[WARMUP-WORKER] Slack alert failed', { error: err?.message }));
+                    }
                 }
 
             } catch (mailboxError: any) {

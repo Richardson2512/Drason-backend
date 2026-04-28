@@ -57,6 +57,42 @@ const {
 } = MONITORING_THRESHOLDS;
 
 /**
+ * Tighten pause threshold for freshly-imported mailboxes whose source-platform
+ * baseline indicates poor health. Returns the standard threshold once the
+ * mailbox has accumulated enough native send history (>=100 sends) regardless
+ * of baseline.
+ *
+ * Gated by USE_IMPORT_BASELINE env var (default off). When the flag is off,
+ * this always returns the standard MAILBOX_PAUSE_BOUNCES.
+ *
+ * Tightening rules (cold-start window only, window_sent_count < 100):
+ *   - Source warmup blocked          → pause at 2 bounces
+ *   - >5% spam rate over last 7d     → pause at 3 bounces
+ *   - Standard / no concern          → pause at MAILBOX_PAUSE_BOUNCES (5)
+ */
+function computeBaselineAwarePauseThreshold(mailbox: {
+    window_sent_count: number;
+    import_baseline: unknown;
+}): number {
+    if (process.env.USE_IMPORT_BASELINE !== 'true') return MAILBOX_PAUSE_BOUNCES;
+    if (mailbox.window_sent_count >= 100) return MAILBOX_PAUSE_BOUNCES;
+
+    const baseline = mailbox.import_baseline as
+        | { sent_7d?: number | null; spam_7d?: number | null; warmup_blocked?: boolean }
+        | null;
+    if (!baseline) return MAILBOX_PAUSE_BOUNCES;
+
+    if (baseline.warmup_blocked) return 2;
+
+    if (baseline.sent_7d && baseline.sent_7d > 0 && baseline.spam_7d != null) {
+        const spamRate = baseline.spam_7d / baseline.sent_7d;
+        if (spamRate > 0.05) return 3;
+    }
+
+    return MAILBOX_PAUSE_BOUNCES;
+}
+
+/**
  * Get organization ID from a mailbox.
  */
 async function getMailboxOrgId(mailboxId: string): Promise<string | null> {
@@ -187,13 +223,52 @@ export const recordBounce = async (
         return; // Relapse handler manages state transitions
     }
 
+    // ── Hard-bounce auto-suppression ──
+    // CAN-SPAM and CASL require senders not to retry knowingly-undeliverable
+    // addresses. Mark the org-wide Lead row (if one exists for this email) as
+    // bounced so the dispatcher's suppression check + the enrollment guard
+    // refuse all future sends to this address across every campaign in the org.
+    // Cascade also flips every active CampaignLead in the org so in-flight
+    // sequences stop immediately.
+    if (classification.degradesHealth && recipientEmail) {
+        const normalizedEmail = recipientEmail.toLowerCase();
+        try {
+            await prisma.$transaction([
+                prisma.lead.updateMany({
+                    where: { organization_id: orgId, email: normalizedEmail, status: { not: 'bounced' } },
+                    data: {
+                        status: 'bounced',
+                        bounced: true,
+                        bounced_at: new Date(),
+                        unsubscribed_reason: 'hard_bounce',
+                    },
+                }),
+                prisma.campaignLead.updateMany({
+                    where: {
+                        email: normalizedEmail,
+                        campaign: { organization_id: orgId },
+                        status: { in: ['active', 'paused'] },
+                    },
+                    data: { status: 'bounced', bounced_at: new Date(), next_send_at: null },
+                }),
+            ]);
+        } catch (suppressErr) {
+            logger.warn('[MONITOR] Hard-bounce suppression cascade failed', { error: String(suppressErr), orgId, email: normalizedEmail });
+        }
+    }
+
     // ── Standard threshold logic for healthy/warning mailboxes ──
-    // PAUSE CHECK: 5 bounces within window
-    if (newBounceCount >= MAILBOX_PAUSE_BOUNCES) {
+    // PAUSE CHECK: 5 bounces within window — but TIGHTEN for freshly-imported,
+    // baseline-shaky mailboxes during their cold-start window. The execution
+    // gate's warmup_limit cap already throttles initial volume; this gives the
+    // state machine an early-pause path so a shaky import doesn't hit the
+    // standard 5-bounce ceiling before we react.
+    const effectivePauseThreshold = computeBaselineAwarePauseThreshold(updatedMailbox);
+    if (newBounceCount >= effectivePauseThreshold) {
         if (updatedMailbox.status !== 'paused') {
             await pauseMailbox(
                 mailboxId,
-                `Exceeded ${MAILBOX_PAUSE_BOUNCES} bounces (${newBounceCount}/${sentCount}${sentCount > 0 ? `, ${((newBounceCount / sentCount) * 100).toFixed(1)}%` : ''}). Cause: ${classification.failureType}, Provider: ${classification.provider}`
+                `Exceeded ${effectivePauseThreshold} bounces (${newBounceCount}/${sentCount}${sentCount > 0 ? `, ${((newBounceCount / sentCount) * 100).toFixed(1)}%` : ''}). Cause: ${classification.failureType}, Provider: ${classification.provider}`
             );
         }
     }

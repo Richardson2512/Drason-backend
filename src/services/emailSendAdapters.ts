@@ -176,6 +176,10 @@ export function clearTransporterCache(accountId: string): void {
 export interface SendOptions {
     inReplyTo?: string | null;
     references?: string | null;
+    /** RFC 2369 + RFC 8058 unsubscribe URL — populates List-Unsubscribe headers
+     *  required by Gmail's bulk-sender requirements (Feb 2024) and Yahoo's
+     *  parallel rules. Null/undefined = no headers (transactional mail). */
+    unsubscribeUrl?: string | null;
 }
 
 export async function sendViaSMTP(
@@ -206,6 +210,14 @@ export async function sendViaSMTP(
         ...(options?.references ? { references: options.references } : {}),
         headers: {
             'X-Mailer': 'Superkabe/1.0',
+            // RFC 2369 + RFC 8058 one-click unsubscribe headers — Gmail/Yahoo
+            // bulk-sender compliance.
+            ...(options?.unsubscribeUrl
+                ? {
+                    'List-Unsubscribe': `<${options.unsubscribeUrl}>`,
+                    'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+                }
+                : {}),
         },
     });
 

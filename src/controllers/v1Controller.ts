@@ -13,6 +13,7 @@ import { getOrgId } from '../middleware/orgContext';
 import { TIER_LIMITS } from '../services/polarClient';
 import { classifyLeadHealth } from '../services/leadHealthService';
 import * as webhookBus from '../services/webhookEventBus';
+import { SlackAlertService } from '../services/SlackAlertService';
 
 // ────────────────────────────────────────────────────────────────────
 // Scope check helper
@@ -96,6 +97,20 @@ export const bulkImportLeads = async (req: Request, res: Response): Promise<Resp
         const errors = results.filter(r => r.status === 'error' || r.status === 'rejected').length;
 
         logger.info(`[API_V1] Bulk lead import for ${orgId}: ${created} created, ${duplicates} dupes, ${errors} errors`);
+
+        SlackAlertService.sendAlert({
+            organizationId: orgId,
+            eventType: 'import.api_completed',
+            entityId: `apibulk_${Date.now()}`,
+            severity: 'info',
+            title: '📥 API bulk import completed',
+            message: [
+                `Imported ${leads.length} leads via API:`,
+                `• *${created}* new leads`,
+                `• *${duplicates}* duplicates`,
+                errors ? `• *${errors}* errors` : null,
+            ].filter(Boolean).join('\n'),
+        }).catch((err) => logger.warn('[API_V1] Slack alert failed', { error: err?.message }));
 
         return res.json({
             success: true,
@@ -817,13 +832,24 @@ export const getAccount = async (req: Request, res: Response): Promise<Response>
             select: {
                 id: true, name: true, slug: true,
                 subscription_tier: true, subscription_status: true,
-                current_lead_count: true, current_domain_count: true, current_mailbox_count: true,
             }
         });
 
         if (!org) return res.status(404).json({ success: false, error: 'Organization not found' });
 
         const limits = TIER_LIMITS[org.subscription_tier] || TIER_LIMITS.trial;
+
+        // Live usage — only sends + validation credits are metered today.
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        const [emailsValidated, monthlySends] = await Promise.all([
+            prisma.validationAttempt.count({
+                where: { organization_id: orgId, created_at: { gte: thirtyDaysAgo } },
+            }),
+            prisma.sendEvent.count({
+                where: { organization_id: orgId, sent_at: { gte: thirtyDaysAgo } },
+            }),
+        ]);
 
         return res.json({
             success: true,
@@ -834,14 +860,10 @@ export const getAccount = async (req: Request, res: Response): Promise<Response>
                 tier: org.subscription_tier,
                 status: org.subscription_status,
                 usage: {
-                    leads: org.current_lead_count,
-                    domains: org.current_domain_count,
-                    mailboxes: org.current_mailbox_count,
+                    monthly_sends: monthlySends,
+                    validation_credits: emailsValidated,
                 },
                 limits: {
-                    leads: limits.leads,
-                    domains: limits.domains,
-                    mailboxes: limits.mailboxes,
                     monthly_sends: limits.monthlySendLimit,
                     validation_credits: limits.validationCredits,
                 },

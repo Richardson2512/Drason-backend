@@ -48,7 +48,30 @@ const RETENTION_POLICIES: RetentionPolicy[] = [
         entityType: 'MailboxMetrics',
         retentionDays: 90,
         description: 'Metrics retained for 90 days'
-    }
+    },
+    // PII-bearing tables. We don't keep recipient personal data longer than
+    // necessary — Privacy Policy commits to "as long as needed to provide the
+    // service" and the per-table caps below align with that.
+    {
+        entityType: 'BounceEvent',
+        retentionDays: 365,
+        description: 'Bounce events retained for 1 year (operational + diagnostic balance)',
+    },
+    {
+        entityType: 'SendEvent',
+        retentionDays: 90,
+        description: 'Send events retained for 90 days (analytics tail-off horizon)',
+    },
+    {
+        entityType: 'ValidationAttempt',
+        retentionDays: 30,
+        description: 'Email validation attempts retained for 30 days (matches result cache TTL)',
+    },
+    {
+        entityType: 'EmailMessage',
+        retentionDays: 730,
+        description: 'Reply thread messages retained for 2 years; customer can delete sooner via UI',
+    },
 ];
 
 /**
@@ -112,6 +135,62 @@ export async function applyRetentionPolicies(
                 case 'MailboxMetrics':
                     // Metrics are overwritten, not deleted
                     count = 0;
+                    break;
+
+                case 'BounceEvent':
+                    count = await prisma.bounceEvent.count({
+                        where: { organization_id: organizationId, bounced_at: { lt: cutoffDate } },
+                    });
+                    if (!dryRun && count > 0) {
+                        await prisma.bounceEvent.deleteMany({
+                            where: { organization_id: organizationId, bounced_at: { lt: cutoffDate } },
+                        });
+                        deleted = true;
+                    }
+                    break;
+
+                case 'SendEvent':
+                    count = await prisma.sendEvent.count({
+                        where: { organization_id: organizationId, sent_at: { lt: cutoffDate } },
+                    });
+                    if (!dryRun && count > 0) {
+                        await prisma.sendEvent.deleteMany({
+                            where: { organization_id: organizationId, sent_at: { lt: cutoffDate } },
+                        });
+                        deleted = true;
+                    }
+                    break;
+
+                case 'ValidationAttempt':
+                    count = await prisma.validationAttempt.count({
+                        where: { organization_id: organizationId, created_at: { lt: cutoffDate } },
+                    });
+                    if (!dryRun && count > 0) {
+                        await prisma.validationAttempt.deleteMany({
+                            where: { organization_id: organizationId, created_at: { lt: cutoffDate } },
+                        });
+                        deleted = true;
+                    }
+                    break;
+
+                case 'EmailMessage':
+                    // EmailMessage rows have no organization_id directly; they're scoped
+                    // through `thread.organization_id`. Filter via the thread relation.
+                    count = await prisma.emailMessage.count({
+                        where: {
+                            thread: { organization_id: organizationId },
+                            created_at: { lt: cutoffDate },
+                        },
+                    });
+                    if (!dryRun && count > 0) {
+                        await prisma.emailMessage.deleteMany({
+                            where: {
+                                thread: { organization_id: organizationId },
+                                created_at: { lt: cutoffDate },
+                            },
+                        });
+                        deleted = true;
+                    }
                     break;
             }
 

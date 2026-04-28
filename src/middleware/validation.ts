@@ -70,7 +70,13 @@ export const registerSchema = z.object({
     email: z.string().email('Invalid email format'),
     password: z.string().min(8, 'Password must be at least 8 characters').max(128, 'Password must be at most 128 characters'),
     name: z.string().min(1, 'Name is required'),
-    organizationName: z.string().min(1, 'Organization name is required')
+    organizationName: z.string().min(1, 'Organization name is required'),
+    // Required legal-doc consent — controller compares versions against the
+    // current TOS_VERSION / PRIVACY_VERSION constants and 400s on mismatch.
+    acceptedTosVersion: z.string().min(1, 'Acceptance of the current Terms of Service is required'),
+    acceptedPrivacyVersion: z.string().min(1, 'Acceptance of the current Privacy Policy is required'),
+    // Optional fields kept for backward compatibility
+    tier: z.string().optional(),
 });
 
 // ============================================================================

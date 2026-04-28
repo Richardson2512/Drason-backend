@@ -31,7 +31,6 @@ import {
     type WebhookEventType,
 } from '../services/webhookService';
 import { generateEndpointSecret } from '../utils/webhookOutboundSigning';
-import { TIER_LIMITS } from '../services/polarClient';
 
 // ────────────────────────────────────────────────────────────────────
 // Validation helpers
@@ -111,18 +110,13 @@ export const listEndpoints = async (req: Request, res: Response): Promise<Respon
             where: { organization_id: orgId, internal: false },
             orderBy: { created_at: 'desc' },
         });
-        const org = await prisma.organization.findUnique({
-            where: { id: orgId },
-            select: { subscription_tier: true },
-        });
-        const limits = TIER_LIMITS[org?.subscription_tier || 'trial'] || TIER_LIMITS.trial;
         return res.json({
             success: true,
             data: {
                 endpoints: endpoints.map(e => publicShape(e)),
                 limits: {
                     used: endpoints.length,
-                    max: Number.isFinite(limits.webhookEndpointsMax) ? limits.webhookEndpointsMax : null,
+                    max: null,    // unmetered — every tier gets unlimited webhook endpoints
                 },
             },
         });
@@ -151,28 +145,14 @@ export const createEndpoint = async (req: Request, res: Response): Promise<Respo
     if (!providerV.ok) return res.status(400).json({ success: false, error: providerV.error });
 
     try {
-        // Tier gate — count only customer-visible endpoints.
+        // Subscription-status gate only — endpoint count is unmetered.
         const org = await prisma.organization.findUnique({
             where: { id: orgId },
-            select: { subscription_tier: true, subscription_status: true },
+            select: { subscription_status: true },
         });
         if (!org) return res.status(404).json({ success: false, error: 'Organization not found' });
         if (['expired', 'past_due', 'canceled'].includes(org.subscription_status)) {
             return res.status(403).json({ success: false, error: 'Subscription required', upgrade_required: true });
-        }
-        const limits = TIER_LIMITS[org.subscription_tier] || TIER_LIMITS.trial;
-        const currentCount = await prisma.webhookEndpoint.count({
-            where: { organization_id: orgId, internal: false },
-        });
-        if (currentCount >= limits.webhookEndpointsMax) {
-            return res.status(403).json({
-                success: false,
-                error: `Webhook endpoint limit reached (${limits.webhookEndpointsMax} on ${org.subscription_tier}). Upgrade to add more.`,
-                current: currentCount,
-                limit: limits.webhookEndpointsMax,
-                tier: org.subscription_tier,
-                upgrade_required: true,
-            });
         }
 
         const endpoint = await prisma.webhookEndpoint.create({

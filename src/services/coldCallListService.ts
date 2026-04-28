@@ -25,7 +25,20 @@ import { logger } from './observabilityService';
 export interface ListRules {
     minOpens: number;
     timeWindowDays: number;
+    /**
+     * When true, a candidate must have BOTH (opens ≥ minOpens) AND (clicks ≥ 1)
+     * to qualify. Strict mode — used when the operator wants only clear
+     * commercial-intent prospects.
+     */
     requireClick: boolean;
+    /**
+     * When true and requireClick is false, a single click alone qualifies a
+     * candidate even if they haven't crossed the open threshold yet. This is
+     * the system-list semantics ("opens ≥ minOpens OR ≥1 click in window").
+     * For the custom list it defaults to false so a workspace that picks
+     * `requireClick=false` gets pure opens-threshold gating, not the OR.
+     */
+    clickAloneQualifies: boolean;
     requireNoReply: boolean;
     excludeRecentDays: number;
     titleFilter: string | null;
@@ -34,9 +47,10 @@ export interface ListRules {
 }
 
 export const SYSTEM_LIST_RULES: ListRules = {
-    minOpens: 3,
+    minOpens: 2,
     timeWindowDays: 7,
-    requireClick: false, // OR-logic: a click alone qualifies (handled in scoring)
+    requireClick: false,
+    clickAloneQualifies: true,   // 2 opens in 7d OR ≥1 click in 14d qualifies
     requireNoReply: true,
     excludeRecentDays: 5,
     titleFilter: null,
@@ -45,9 +59,10 @@ export const SYSTEM_LIST_RULES: ListRules = {
 };
 
 export const DEFAULT_CUSTOM_RULES: ListRules = {
-    minOpens: 3,
+    minOpens: 2,
     timeWindowDays: 7,
     requireClick: false,
+    clickAloneQualifies: false,  // Strict opens-threshold gating; click-alone is opt-in
     requireNoReply: true,
     excludeRecentDays: 7,
     titleFilter: null,
@@ -93,33 +108,37 @@ interface ClickSignal {
  * Per-prospect engagement score. Inputs are pre-filtered open + click events
  * within the rules' time window. Cap final score at 100.
  *
- * Weights (per spec):
- *   - Each open: +1, capped at 5 points total to prevent MPP/scanner inflation
- *   - Each unique click: +5 (no cap — clicks are high-intent)
- *   - 1-hour window with multiple opens: +2 bonus (suggests human re-reading)
- *   - Recency multiplier: ≤24h → 1.5x, ≤48h → 1.25x, beyond → 1x
- *   - MPP/scanner: opens within 30s of send → 0.25x weight
- *   - Dedup: opens within a 5s window from same prospect → keep first only
+ * Weights:
+ *   - Each open: +1, capped at 5 points total (prevents MPP/scanner inflation)
+ *   - Each unique click: +5, capped at 25 points total (5 effective clicks)
+ *   - 1-hour window with multiple opens: +2 bonus (human re-reading)
+ *   - Recency multiplier: ≤24h → 1.5×, ≤48h → 1.25×, beyond → 1×
+ *   - MPP/scanner discount: opens within 30s of send → 0.25× weight
+ *   - Dedup (both axes): events within a 5s window from same prospect → keep first
+ *
+ * Click cap rationale: link-preview crawlers (Slack/Outlook Safe Links) often
+ * re-fetch the same URL across multiple devices/IPs in quick succession; without
+ * a cap one prospect's score could dwarf the rest of the list and give SDRs a
+ * false-positive "10× clicker" they should call first.
  */
 export function computeScore(opens: OpenSignal[], clicks: ClickSignal[]): number {
     if (opens.length === 0 && clicks.length === 0) return 0;
 
-    const sorted = [...opens].sort((a, b) => a.opened_at.getTime() - b.opened_at.getTime());
+    const now = Date.now();
 
-    // 1) Dedup opens within 5s windows (scanner re-fetches).
-    const deduped: OpenSignal[] = [];
-    for (const ev of sorted) {
-        const last = deduped[deduped.length - 1];
+    // ── Opens ──────────────────────────────────────────────────────────────
+    const sortedOpens = [...opens].sort((a, b) => a.opened_at.getTime() - b.opened_at.getTime());
+
+    const dedupedOpens: OpenSignal[] = [];
+    for (const ev of sortedOpens) {
+        const last = dedupedOpens[dedupedOpens.length - 1];
         if (!last || ev.opened_at.getTime() - last.opened_at.getTime() > 5_000) {
-            deduped.push(ev);
+            dedupedOpens.push(ev);
         }
     }
 
-    // 2) Per-event open contribution (with MPP weight + recency multiplier),
-    //    then cap the *open* contribution at 5 points BEFORE click adds.
-    const now = Date.now();
     let openContribution = 0;
-    for (const ev of deduped) {
+    for (const ev of dedupedOpens) {
         const ageMs = now - ev.opened_at.getTime();
         const recencyMult = ageMs <= 86_400_000 ? 1.5 : ageMs <= 172_800_000 ? 1.25 : 1;
         const mppWeight = ev.ms_since_send !== null && ev.ms_since_send <= 30_000 ? 0.25 : 1;
@@ -127,22 +146,34 @@ export function computeScore(opens: OpenSignal[], clicks: ClickSignal[]): number
     }
     openContribution = Math.min(openContribution, 5);
 
-    // 3) 1-hour-window bonus: any pair of opens within the same hour.
+    // 1-hour-window bonus: any pair of (deduped) opens within the same hour.
     let hourBonus = 0;
-    for (let i = 1; i < deduped.length; i++) {
-        if (deduped[i].opened_at.getTime() - deduped[i - 1].opened_at.getTime() <= 3_600_000) {
+    for (let i = 1; i < dedupedOpens.length; i++) {
+        if (dedupedOpens[i].opened_at.getTime() - dedupedOpens[i - 1].opened_at.getTime() <= 3_600_000) {
             hourBonus = 2;
             break;
         }
     }
 
-    // 4) Click contribution: +5 each, with recency multiplier.
+    // ── Clicks ─────────────────────────────────────────────────────────────
+    // Same 5s dedup as opens — kills link-preview re-fetches that would
+    // otherwise flood the score on a single human click.
+    const sortedClicks = [...clicks].sort((a, b) => a.clicked_at.getTime() - b.clicked_at.getTime());
+    const dedupedClicks: ClickSignal[] = [];
+    for (const ev of sortedClicks) {
+        const last = dedupedClicks[dedupedClicks.length - 1];
+        if (!last || ev.clicked_at.getTime() - last.clicked_at.getTime() > 5_000) {
+            dedupedClicks.push(ev);
+        }
+    }
+
     let clickContribution = 0;
-    for (const c of clicks) {
+    for (const c of dedupedClicks) {
         const ageMs = now - c.clicked_at.getTime();
         const recencyMult = ageMs <= 86_400_000 ? 1.5 : ageMs <= 172_800_000 ? 1.25 : 1;
         clickContribution += 5 * recencyMult;
     }
+    clickContribution = Math.min(clickContribution, 25);
 
     return Math.round(Math.min(100, openContribution + hourBonus + clickContribution));
 }
@@ -299,24 +330,30 @@ export async function generateProspectList(ctx: ScoringContext): Promise<Prospec
         const oList = opensByLead.get(row.campaign_lead_id) ?? [];
         const cList = clicksByLead.get(row.campaign_lead_id) ?? [];
 
-        // Open / click qualification. Spec semantics:
-        //   System list: ≥ minOpens opens in N days OR ≥1 click in 14 days.
-        //   Custom list: ≥ minOpens opens AND (requireClick ? ≥1 click : true).
-        // We collapse to: count distinct opens in window (pre-MPP-filter for
-        // qualification — MPP is a *scoring* discount, not a hard cut), and
-        // require_click is the only binary toggle.
+        // Qualification — three distinct modes driven by explicit ListRules
+        // flags so system + custom can never accidentally diverge:
+        //
+        //   requireClick=true                → opens ≥ minOpens AND clicks ≥ 1
+        //   requireClick=false,
+        //     clickAloneQualifies=true       → opens ≥ minOpens OR  clicks ≥ 1   (system-list)
+        //   requireClick=false,
+        //     clickAloneQualifies=false      → opens ≥ minOpens                  (strict custom)
+        //
+        // Open count is pre-MPP-filter — MPP is a *scoring* discount, not a
+        // qualification cut, so a prospect who opened 5× via Apple Mail still
+        // qualifies; their score will simply be lower than a non-MPP opener.
         const opensInWindow = oList.length;
         const clicksInWindow = cList.length;
         const passesOpenThreshold = opensInWindow >= rules.minOpens;
-        const passesClickGate = rules.requireClick ? clicksInWindow >= 1 : true;
 
-        // System list semantics: requireClick=false BUT a single click alone
-        // qualifies even when opens < minOpens. Express as: require BOTH
-        // (opens-threshold) AND (click-gate) — except for the "1 click in 14d"
-        // OR-fallback when neither gate is required.
-        const passesQualification = rules.requireClick
-            ? passesOpenThreshold && passesClickGate
-            : passesOpenThreshold || clicksInWindow >= 1;
+        let passesQualification: boolean;
+        if (rules.requireClick) {
+            passesQualification = passesOpenThreshold && clicksInWindow >= 1;
+        } else if (rules.clickAloneQualifies) {
+            passesQualification = passesOpenThreshold || clicksInWindow >= 1;
+        } else {
+            passesQualification = passesOpenThreshold;
+        }
 
         if (!passesQualification) continue;
 
@@ -440,6 +477,110 @@ function describeReason(
     return `Opened ${opens} time${opens === 1 ? '' : 's'} — last open ${ageStr} ago`;
 }
 
+// ─── Rotation exclusion (with hot-prospect override) ────────────────────────
+
+/**
+ * Build a rotation exclusion set with a "hot prospect" override.
+ *
+ * Plain rotation says: "if a prospect was on a list within the last N days,
+ * skip them today." That's good for cold prospects we don't want to hammer.
+ * But for prospects who took a NEW high-intent action (a click) AFTER their
+ * last appearance, the SDR almost certainly wants to see them again — they
+ * just signaled fresh intent.
+ *
+ * Algorithm:
+ *   1. Walk recent snapshots, track the most recent inclusion time per
+ *      prospect (`lastIncludedAt`).
+ *   2. Pull all click events for those prospects since the earliest inclusion.
+ *   3. If a prospect has any click strictly AFTER their last inclusion time,
+ *      release them from the exclusion set.
+ *
+ * Opens are intentionally NOT a release signal — they're trivially trippable
+ * by MPP/scanners and re-pitching on re-opens alone would dilute SDR focus.
+ */
+async function buildRotationExclusion(
+    organizationId: string,
+    snapshots: { prospect_ids: unknown; generated_at?: Date | null; downloaded_at?: Date | null }[],
+): Promise<Set<string>> {
+    if (snapshots.length === 0) return new Set();
+
+    const lastIncludedAt = new Map<string, number>();
+    for (const s of snapshots) {
+        const ts = (s.generated_at ?? s.downloaded_at);
+        if (!ts) continue;
+        const tsMs = ts.getTime();
+        if (!Array.isArray(s.prospect_ids)) continue;
+        for (const id of s.prospect_ids as string[]) {
+            const prev = lastIncludedAt.get(id);
+            if (prev === undefined || tsMs > prev) lastIncludedAt.set(id, tsMs);
+        }
+    }
+
+    if (lastIncludedAt.size === 0) return new Set();
+
+    // Bound the click query at the EARLIEST inclusion time so we only fetch
+    // clicks that could possibly be "after" some prospect's inclusion.
+    let earliest = Number.POSITIVE_INFINITY;
+    for (const ts of lastIncludedAt.values()) if (ts < earliest) earliest = ts;
+
+    const clicks = await prisma.emailClickEvent.findMany({
+        where: {
+            organization_id: organizationId,
+            campaign_lead_id: { in: Array.from(lastIncludedAt.keys()) },
+            clicked_at: { gte: new Date(earliest) },
+        },
+        select: { campaign_lead_id: true, clicked_at: true },
+    });
+
+    const released = new Set<string>();
+    for (const c of clicks) {
+        const since = lastIncludedAt.get(c.campaign_lead_id);
+        if (since !== undefined && c.clicked_at.getTime() > since) {
+            released.add(c.campaign_lead_id);
+        }
+    }
+
+    const excluded = new Set<string>();
+    for (const id of lastIncludedAt.keys()) {
+        if (!released.has(id)) excluded.add(id);
+    }
+    return excluded;
+}
+
+/**
+ * Public exports of the rotation builder for the controller's custom-list
+ * path. Both system + custom funnel through `buildRotationExclusion()` so
+ * hot-prospect override stays consistent across list types.
+ */
+export async function buildSystemRotationExclusion(
+    organizationId: string,
+    todayLocal: Date,
+): Promise<Set<string>> {
+    const recentSince = new Date(todayLocal);
+    recentSince.setUTCDate(recentSince.getUTCDate() - SYSTEM_LIST_RULES.excludeRecentDays);
+    const snapshots = await prisma.coldCallDailySnapshot.findMany({
+        where: {
+            organization_id: organizationId,
+            snapshot_date: { gte: recentSince, lt: todayLocal },
+        },
+        select: { prospect_ids: true, generated_at: true },
+    });
+    return buildRotationExclusion(organizationId, snapshots);
+}
+
+export async function buildCustomRotationExclusion(
+    organizationId: string,
+    excludeRecentDays: number,
+): Promise<Set<string>> {
+    if (excludeRecentDays <= 0) return new Set();
+    const since = new Date(Date.now() - excludeRecentDays * 86_400_000);
+    const snapshots = await prisma.coldCallCustomSnapshot.findMany({
+        where: { organization_id: organizationId, downloaded_at: { gte: since } },
+        select: { prospect_ids: true, downloaded_at: true },
+    });
+    return buildRotationExclusion(organizationId, snapshots);
+}
+
 // ─── Snapshot helpers ────────────────────────────────────────────────────────
 
 /**
@@ -511,17 +652,10 @@ export async function generateDailySnapshot(organizationId: string): Promise<{
     });
     if (existing) return { skipped: true, status: existing.status as 'success' | 'no_campaigns' | 'no_engagement' | 'error', prospectCount: existing.prospect_count };
 
-    // Build exclusion set: any prospect on this org's last 5 days of system snapshots.
-    const recentSince = new Date(todayLocal);
-    recentSince.setUTCDate(recentSince.getUTCDate() - SYSTEM_LIST_RULES.excludeRecentDays);
-    const recentSnapshots = await prisma.coldCallDailySnapshot.findMany({
-        where: { organization_id: organizationId, snapshot_date: { gte: recentSince, lt: todayLocal } },
-        select: { prospect_ids: true },
-    });
-    const excluded = new Set<string>();
-    for (const s of recentSnapshots) {
-        if (Array.isArray(s.prospect_ids)) for (const id of s.prospect_ids as string[]) excluded.add(id);
-    }
+    // Rotation exclusion (with hot-prospect override) — any prospect on this
+    // org's last N days of snapshots is excluded UNLESS they took a fresh
+    // high-intent action (click) after their most recent inclusion.
+    const excluded = await buildSystemRotationExclusion(organizationId, todayLocal);
 
     // Pre-flight: any active sequencer campaigns?
     const activeCampaignCount = await prisma.campaign.count({
@@ -634,16 +768,18 @@ async function materializeFromIds(organizationId: string, ids: string[]): Promis
     const campaignIds = Array.from(new Set(orderedLeads.map((cl) => cl.campaign_id)));
     const cappedEmails = Array.from(new Set(orderedLeads.map((cl) => cl.email)));
 
-    // Recompute scores from current event log so the displayed score reflects
-    // the data we have today (not a frozen score). This stays consistent
-    // whether the user views at 06:01 or 23:59 the same day.
-    const since = new Date(Date.now() - 30 * 86_400_000); // 30d catchall
+    // Recompute scores using the SAME window the snapshot used at generation
+    // so a prospect's hydrated score doesn't drift higher than their rank-
+    // time score (e.g. an old open that wouldn't have counted at snapshot
+    // time shouldn't suddenly bump them on view).
+    const opensSince = new Date(Date.now() - SYSTEM_LIST_RULES.timeWindowDays * 86_400_000);
+    const clicksSince = new Date(Date.now() - Math.max(SYSTEM_LIST_RULES.timeWindowDays, 14) * 86_400_000);
     const [opens, clicks] = await Promise.all([
         prisma.emailOpenEvent.findMany({
             where: {
                 organization_id: organizationId,
                 campaign_lead_id: { in: ids },
-                opened_at: { gte: since },
+                opened_at: { gte: opensSince },
             },
             select: { campaign_lead_id: true, opened_at: true, ms_since_send: true },
         }),
@@ -651,7 +787,7 @@ async function materializeFromIds(organizationId: string, ids: string[]): Promis
             where: {
                 organization_id: organizationId,
                 campaign_lead_id: { in: ids },
-                clicked_at: { gte: since },
+                clicked_at: { gte: clicksSince },
             },
             select: { campaign_lead_id: true, clicked_at: true },
         }),

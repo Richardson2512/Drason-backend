@@ -1,12 +1,9 @@
 /**
  * Sequencer Enrollment Service
  *
- * The sequencer-lane equivalent of `adapter.pushLeadToCampaign()`. When a
- * Protection-layer Lead has been routed to a Campaign whose source_platform is
- * 'sequencer', there's no external adapter to call — the "push" is simply the
- * creation of a CampaignLead row. Once that row exists, the send queue
- * dispatcher (sendQueueService) will pick it up on its next cycle and handle
- * the actual sends.
+ * The "push" of a routed Lead onto a Campaign is just a CampaignLead row
+ * insert; the send queue dispatcher (sendQueueService) picks it up on its
+ * next cycle and runs the sends.
  *
  * This service is called from:
  *   - ingestionController.processLead — when an ingested/Clay-webhook lead has
@@ -59,14 +56,7 @@ export async function enrollLeadInSequencerCampaign(
     lead: SequencerEnrollmentInput,
 ): Promise<SequencerEnrollmentResult> {
     try {
-        // Guard: campaign must exist and belong to this org. We don't filter
-        // by source_platform here on purpose:
-        //   - During the Phase-A-deployed-but-Phase-B-not-yet window, prod
-        //     campaigns still carry the legacy source_platform='smartlead'
-        //     value. Filtering by 'sequencer' would reject them and break
-        //     ingestion until the schema migration runs.
-        //   - Post-Phase-B (schema migration drops source_platform), all
-        //     campaigns are sequencer by definition — no filter needed.
+        // Guard: campaign must exist and belong to this org.
         const campaign = await prisma.campaign.findFirst({
             where: {
                 id: campaignId,
@@ -78,12 +68,36 @@ export async function enrollLeadInSequencerCampaign(
             return { success: false, error: 'Campaign not found' };
         }
 
+        const normalizedEmail = lead.email.toLowerCase().trim();
+
+        // Org-wide suppression guard — refuse to enroll any lead whose org-scoped
+        // Lead row carries an opt-out or hard-bounce marker. This is required by
+        // CAN-SPAM § 5(a)(4)(A), CASL § 11(3), and GDPR Art. 21: once a recipient
+        // objects (or has been classified as undeliverable), no further sends.
+        const suppression = await prisma.lead.findUnique({
+            where: { organization_id_email: { organization_id: organizationId, email: normalizedEmail } },
+            select: { status: true, unsubscribed_reason: true },
+        });
+        if (suppression && (suppression.status === 'unsubscribed' || suppression.status === 'bounced')) {
+            logger.info('[SEQUENCER_ENROLL] Refused — org-wide suppression', {
+                organizationId,
+                campaignId,
+                email: normalizedEmail,
+                leadStatus: suppression.status,
+                reason: suppression.unsubscribed_reason,
+            });
+            return {
+                success: false,
+                error: `Recipient is suppressed at the organization level (${suppression.status}). Cannot enroll in any campaign.`,
+            };
+        }
+
         // createMany + skipDuplicates makes this idempotent. The [campaign_id, email]
         // unique constraint guarantees a single CampaignLead per (campaign, contact).
         const result = await prisma.campaignLead.createMany({
             data: [{
                 campaign_id: campaignId,
-                email: lead.email.toLowerCase().trim(),
+                email: normalizedEmail,
                 first_name: lead.first_name ?? null,
                 last_name: lead.last_name ?? null,
                 company: lead.company ?? null,

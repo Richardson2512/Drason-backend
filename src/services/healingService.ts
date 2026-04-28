@@ -863,18 +863,24 @@ export async function transitionPhase(
 
         // ── DISABLE WARMUP & RE-ADD TO PRODUCTION CAMPAIGNS ──
         if (entityType === 'mailbox') {
-            // Step 1: Disable warmup (or keep maintenance warmup)
+            // Step 1: Fully clear the warmup volume cap. The dispatcher takes
+            //   min(daily_send_limit, warmup_limit) when warmup_limit > 0, so a
+            //   non-zero "maintenance" value (the previous 10/day default) caps
+            //   a fully-graduated mailbox at 10 sends per day forever — exactly
+            //   the bug the integration audit caught. Pass `false` so
+            //   warmup_limit is nulled and the dispatcher uses the
+            //   ConnectedAccount.daily_send_limit cleanly.
             try {
                 const warmupService = require('./warmupService');
                 await warmupService.disableWarmup(
                     organizationId,
                     entityId,
-                    true  // Keep maintenance warmup (10/day) for ongoing health
+                    false,
                 );
 
-                logger.info('[HEALING-WARMUP] Switched to maintenance warmup', {
+                logger.info('[HEALING-WARMUP] Warmup cap lifted on graduation', {
                     organizationId,
-                    mailboxId: entityId
+                    mailboxId: entityId,
                 });
             } catch (warmupError: any) {
                 logger.error('[HEALING-WARMUP] Failed to disable warmup', warmupError, {

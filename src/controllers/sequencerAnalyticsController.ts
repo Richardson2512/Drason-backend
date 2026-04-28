@@ -48,8 +48,9 @@ export const getOverview = async (req: Request, res: Response): Promise<Response
         const orgId = getOrgId(req);
         const dateFilter = getDateFilter(req);
 
-        // Sequencer analytics — scoped to source_platform='sequencer' so legacy
-        // platform-synced campaigns don't pollute the sequencer dashboard.
+        // Aggregate across all of the org's campaigns. Since Phase-B (2026-04-26)
+        // dropped source_platform, the Campaign table is fully unified — every
+        // row is a native sequencer campaign by definition.
         const where: any = { organization_id: orgId };
         if (dateFilter) where.created_at = dateFilter;
 

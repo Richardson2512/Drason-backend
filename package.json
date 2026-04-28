@@ -4,6 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "prebuild": "rm -rf dist",
     "build": "prisma generate && tsc",
     "start": "node dist/index.js",
     "dev": "nodemon src/index.ts",
@@ -54,8 +55,10 @@
     "@types/pdfkit": "^0.17.5",
     "jest": "^30.2.0",
     "nodemon": "^3.1.11",
+    "pm2": "^6.0.14",
     "ts-jest": "^29.4.6",
     "ts-node": "^10.9.2",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }
 }

@@ -25,6 +25,7 @@ import * as webhookBus from '../services/webhookEventBus';
 import { classifyReply } from '../services/replyClassifierService';
 import { parseDsn, isPermanentBounce } from '../services/dsnParser';
 import * as monitoringService from '../services/monitoringService';
+import { SlackAlertService } from '../services/SlackAlertService';
 
 const POLL_INTERVAL_MS = 60_000; // 60 seconds
 const LOG_TAG = 'IMAP-REPLY-WORKER';
@@ -177,6 +178,8 @@ async function processReply(
         }
 
         for (const lead of matchingLeads) {
+            const wasFirstReply = !lead.replied_at;
+
             // 2. Update lead: replied, stop sequence (idempotent — safe to re-run).
             //    `replied_at` is set ONCE on the first reply (gated by `lead.replied_at ||`)
             //    so it represents the first-reply timestamp; counter increments below
@@ -247,6 +250,27 @@ async function processReply(
                 leadId: lead.id,
                 campaignId: lead.campaign_id,
             });
+
+            const campaignName = lead.campaign.name;
+            SlackAlertService.sendAlert({
+                organizationId,
+                eventType: 'reply.received',
+                entityId: lead.id,
+                severity: 'info',
+                title: '💬 Reply received',
+                message: `Reply from \`${senderEmail}\` on campaign *${campaignName}*.`,
+            }).catch((err) => logger.warn(`[${LOG_TAG}] Slack alert failed (reply.received)`, { error: err?.message }));
+
+            if (wasFirstReply) {
+                SlackAlertService.sendAlert({
+                    organizationId,
+                    eventType: 'campaign.first_reply',
+                    entityId: lead.campaign_id,
+                    severity: 'info',
+                    title: '🎉 First reply on campaign',
+                    message: `*${campaignName}* received its first reply — from \`${senderEmail}\`.`,
+                }).catch((err) => logger.warn(`[${LOG_TAG}] Slack alert failed (campaign.first_reply)`, { error: err?.message }));
+            }
         }
     } catch (err: any) {
         logger.error(`[${LOG_TAG}] Error processing reply from ${senderEmail}`, err);

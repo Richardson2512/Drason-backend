@@ -7,7 +7,6 @@
 
 import { prisma } from '../index';
 import { logger } from './observabilityService';
-import { syncProgressService } from './syncProgressService';
 import * as emailValidationService from './emailValidationService';
 import * as espClassifierService from './espClassifierService';
 import * as entityStateService from './entityStateService';
@@ -273,15 +272,6 @@ export async function processBatch(organizationId: string, batchId: string): Pro
                 data: { valid_count: validCount, invalid_count: invalidCount, risky_count: riskyCount, duplicate_count: duplicateCount }
             });
 
-            // Emit SSE progress
-            syncProgressService.emitProgress(batchId, 'validation' as any, 'in_progress', {
-                current: processedCount,
-                total: batchLeads.length,
-                validCount,
-                invalidCount,
-                riskyCount,
-                duplicateCount,
-            });
         }
 
         // Mark batch as completed
@@ -297,10 +287,6 @@ export async function processBatch(organizationId: string, batchId: string): Pro
             }
         });
 
-        syncProgressService.emitProgress(batchId, 'validation' as any, 'completed', {
-            validCount, invalidCount, riskyCount, duplicateCount
-        });
-
         logger.info(`[${logTag}] Batch completed`, {
             batchId, validCount, invalidCount, riskyCount, duplicateCount
         });
@@ -310,9 +296,6 @@ export async function processBatch(organizationId: string, batchId: string): Pro
         await prisma.validationBatch.update({
             where: { id: batchId },
             data: { status: 'failed' }
-        });
-        syncProgressService.emitProgress(batchId, 'validation' as any, 'failed', {
-            error: err.message
         });
     }
 }

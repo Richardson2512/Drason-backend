@@ -10,6 +10,7 @@ import { logger } from './observabilityService';
 import * as notificationService from './notificationService';
 import * as auditLogService from './auditLogService';
 import { TIER_LIMITS } from './polarClient';
+import { SlackAlertService } from './SlackAlertService';
 
 // ============================================================================
 // TYPES
@@ -23,11 +24,8 @@ export interface WebhookEvent {
 }
 
 export interface UsageCounts {
-    leads: number;
-    domains: number;
-    mailboxes: number;
-    emailsValidated: number;
-    monthlySends: number;
+    emailsValidated: number;     // current billing period
+    monthlySends: number;        // rolling 30-day count of SendEvent rows
 }
 
 // ============================================================================
@@ -39,6 +37,36 @@ export interface UsageCounts {
  * Implements idempotency using polar_event_id.
  */
 export async function processWebhook(event: WebhookEvent): Promise<void> {
+    // Pull the amount Polar charged (cents) and currency. Polar's invoice
+    // events have used a few field names across versions; accept the common
+    // ones and pick the first non-null match. amount_paid/total → already in
+    // cents; amount in dollars (rare) is ignored to avoid unit mistakes.
+    const d = event.data || {};
+    const amountCents: number | null =
+        typeof d.amount_paid === 'number' ? d.amount_paid :
+        typeof d.amount_total === 'number' ? d.amount_total :
+        typeof d.total === 'number' ? d.total :
+        typeof d.amount === 'number' && d.amount >= 100 ? d.amount : // heuristic: cents not dollars
+        null;
+    const currency: string | null =
+        typeof d.currency === 'string' ? d.currency.toUpperCase() :
+        typeof d.currency_code === 'string' ? d.currency_code.toUpperCase() :
+        null;
+
+    // Polar's hosted invoice link — the legally-relevant document. Polar uses
+    // a few field names across versions; accept the common ones. Falls back
+    // to the rendered PDF in our app if none are present.
+    const polarInvoiceUrl: string | null =
+        typeof d.hosted_invoice_url === 'string' ? d.hosted_invoice_url :
+        typeof d.invoice_url === 'string' ? d.invoice_url :
+        typeof d.invoice_pdf === 'string' ? d.invoice_pdf :
+        typeof d.pdf_url === 'string' ? d.pdf_url :
+        null;
+    const polarInvoiceNumber: string | null =
+        typeof d.invoice_number === 'string' ? d.invoice_number :
+        typeof d.number === 'string' ? d.number :
+        null;
+
     // Idempotency check + record in a single transaction to prevent race conditions
     try {
         await prisma.subscriptionEvent.create({
@@ -47,6 +75,10 @@ export async function processWebhook(event: WebhookEvent): Promise<void> {
                 event_type: event.type,
                 polar_event_id: event.id,
                 new_tier: event.data?.metadata?.tier || null,
+                amount_cents: amountCents,
+                currency: currency || 'USD',
+                polar_invoice_url: polarInvoiceUrl,
+                polar_invoice_number: polarInvoiceNumber,
                 payload: event.data
             }
         });
@@ -219,6 +251,15 @@ async function handleSubscriptionCanceled(event: WebhookEvent): Promise<void> {
     });
 
     logger.info('[BILLING] Subscription canceled', { orgId, subscriptionId });
+
+    SlackAlertService.sendAlert({
+        organizationId: orgId,
+        eventType: 'billing.subscription_canceled',
+        entityId: subscriptionId,
+        severity: 'warning',
+        title: '🛑 Subscription canceled',
+        message: `Your Superkabe subscription has been canceled. Access continues until the end of your billing period.`,
+    }).catch((err) => logger.warn('[BILLING] Slack alert failed (subscription_canceled)', { error: err?.message }));
 }
 
 /**
@@ -284,6 +325,15 @@ async function handlePaymentFailed(event: WebhookEvent): Promise<void> {
     });
 
     logger.warn('[BILLING] Payment failed', { orgId, subscriptionId: subscription_id });
+
+    SlackAlertService.sendAlert({
+        organizationId: orgId,
+        eventType: 'billing.payment_failed',
+        entityId: subscription_id,
+        severity: 'critical',
+        title: '💳 Payment failed',
+        message: `Superkabe could not charge your card. Update your payment method to avoid service interruption — account is now in past-due state.`,
+    }).catch((err) => logger.warn('[BILLING] Slack alert failed (payment_failed)', { error: err?.message }));
 }
 
 // ============================================================================
@@ -291,52 +341,29 @@ async function handlePaymentFailed(event: WebhookEvent): Promise<void> {
 // ============================================================================
 
 /**
- * Refresh usage counts for an organization.
- * Called periodically or after significant changes.
+ * Refresh usage counts for an organization. Two meters today: validation
+ * credits (rolling 30 days) and monthly sends (rolling 30 days). Lead/domain/
+ * mailbox counters were dropped 2026-04-27 — protection is unmetered.
  */
 export async function refreshUsageCounts(orgId: string): Promise<UsageCounts> {
-    const org = await prisma.organization.findUnique({
-        where: { id: orgId },
-        select: {
-            current_lead_count: true,
-            current_domain_count: true,
-            current_mailbox_count: true
-        }
-    });
-
-    // Start of current billing month (rolling 30 days)
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const [leadCount, domainCount, mailboxCount, emailsValidatedCount, monthlySendsCount] = await Promise.all([
-        prisma.lead.count({
-            where: {
-                organization_id: orgId,
-                status: { in: ['held', 'active', 'paused'] }
-            }
+    const [emailsValidated, monthlySends] = await Promise.all([
+        prisma.validationAttempt.count({
+            where: { organization_id: orgId, created_at: { gte: thirtyDaysAgo } },
         }),
-        prisma.domain.count({ where: { organization_id: orgId } }),
-        prisma.mailbox.count({ where: { organization_id: orgId } }),
-        prisma.validationAttempt.count({ where: { organization_id: orgId } }),
-        prisma.sendEvent.count({ where: { organization_id: orgId, sent_at: { gte: thirtyDaysAgo } } })
+        prisma.sendEvent.count({
+            where: { organization_id: orgId, sent_at: { gte: thirtyDaysAgo } },
+        }),
     ]);
-
-    // Use a high-water mark approach so usage doesn't drop when data is purged or API keys are removed
-    const maxLeadCount = Math.max(org?.current_lead_count || 0, leadCount);
-    const maxDomainCount = Math.max(org?.current_domain_count || 0, domainCount);
-    const maxMailboxCount = Math.max(org?.current_mailbox_count || 0, mailboxCount);
 
     await prisma.organization.update({
         where: { id: orgId },
-        data: {
-            current_lead_count: maxLeadCount,
-            current_domain_count: maxDomainCount,
-            current_mailbox_count: maxMailboxCount,
-            usage_last_updated_at: new Date()
-        }
+        data: { usage_last_updated_at: new Date() },
     });
 
-    return { leads: maxLeadCount, domains: maxDomainCount, mailboxes: maxMailboxCount, emailsValidated: emailsValidatedCount, monthlySends: monthlySendsCount };
+    return { emailsValidated, monthlySends };
 }
 
 /**
@@ -349,12 +376,7 @@ export async function getUsageAndLimits(orgId: string): Promise<{
 }> {
     const org = await prisma.organization.findUnique({
         where: { id: orgId },
-        select: {
-            subscription_tier: true,
-            current_lead_count: true,
-            current_domain_count: true,
-            current_mailbox_count: true
-        }
+        select: { subscription_tier: true },
     });
 
     if (!org) {
@@ -362,26 +384,7 @@ export async function getUsageAndLimits(orgId: string): Promise<{
     }
 
     const limits = TIER_LIMITS[org.subscription_tier] || TIER_LIMITS.trial;
+    const usage = await refreshUsageCounts(orgId);
 
-    // ValidationAttempt rows are append-only, so a live count is always accurate
-    // (no high-water mark needed — the table never shrinks).
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-    const [emailsValidated, monthlySends] = await Promise.all([
-        prisma.validationAttempt.count({ where: { organization_id: orgId } }),
-        prisma.sendEvent.count({ where: { organization_id: orgId, sent_at: { gte: thirtyDaysAgo } } })
-    ]);
-
-    return {
-        usage: {
-            leads: org.current_lead_count,
-            domains: org.current_domain_count,
-            mailboxes: org.current_mailbox_count,
-            emailsValidated,
-            monthlySends
-        },
-        limits,
-        tier: org.subscription_tier
-    };
+    return { usage, limits, tier: org.subscription_tier };
 }
