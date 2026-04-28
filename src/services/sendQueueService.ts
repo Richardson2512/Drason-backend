@@ -1099,6 +1099,20 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
         }
 
         try {
+            // ── COMPLIANCE PRE-SEND CHECK (CAN-SPAM §5(a)(3) + RFC 8058) ──
+            // If we requested an unsubscribe URL, the body MUST contain it. If
+            // applyTracking() was bypassed or the template was assembled in a
+            // way that stripped the footer, abort the send rather than ship a
+            // non-compliant message. Better to fail loud here than to be flagged
+            // by a mailbox provider.
+            if (email.unsubscribeUrl && !email.bodyHtml.includes(email.unsubscribeUrl)) {
+                logger.error(`[${LOG_TAG}] COMPLIANCE BLOCK: unsubscribe URL missing from body for ${email.leadEmail}; aborting send`, undefined, {
+                    mailboxId, orgId, campaignId, leadEmail: email.leadEmail,
+                });
+                failedCount++;
+                continue;
+            }
+
             const result: SendResult = await sendEmail(account, email.leadEmail, email.subject, email.bodyHtml, {
                 unsubscribeUrl: email.unsubscribeUrl || null,
             });

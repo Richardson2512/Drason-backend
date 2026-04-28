@@ -17,6 +17,7 @@ import * as auditLogService from './auditLogService';
 import * as healingService from './healingService';
 import * as notificationService from './notificationService';
 import * as inactivityService from './inactivityService';
+import * as recipientDomainStats from './recipientDomainStatsService';
 import { logger } from './observabilityService';
 import {
     SystemMode,
@@ -29,7 +30,11 @@ import {
 const {
     HARD_RISK_CRITICAL,     // Hard signals block (bounce-based)
     SOFT_RISK_HIGH,         // Soft signals just log (velocity-based)
-    RISK_SCORE_CRITICAL     // For display/logging
+    SOFT_RISK_DEFER_THRESHOLD,
+    RISK_SCORE_CRITICAL,    // For display/logging
+    YELLOW_LEAD_MAX_STEP,
+    RECIPIENT_DOMAIN_COMPLAINT_THRESHOLD,
+    RECIPIENT_DOMAIN_THROTTLE_THRESHOLD
 } = MONITORING_THRESHOLDS;
 
 /**
@@ -290,6 +295,96 @@ export const canExecuteLead = async (
     checks.domainHealthy = true;
 
     // =========================================================================
+    // 2.3 LEAD HEALTH GATE — YELLOW differential treatment (M3AAWG BCP §4.2)
+    // YELLOW leads (catch-all, role, risky) are capped at first 2 sequence
+    // steps. Industry guidance: segment risky addresses to limited exposure.
+    // =========================================================================
+    const lead = await prisma.lead.findUnique({
+        where: { id: leadId },
+        select: { id: true, email: true, health_classification: true }
+    });
+
+    if (lead?.health_classification === 'yellow') {
+        // CampaignLead is keyed by (campaign_id, email), not lead_id.
+        const cl = lead.email ? await prisma.campaignLead.findFirst({
+            where: { campaign_id: campaignId, email: lead.email },
+            select: { current_step: true }
+        }) : null;
+        // current_step is the LAST delivered step (0 = nothing sent yet).
+        // Block if we've already sent YELLOW_LEAD_MAX_STEP messages.
+        if (cl && cl.current_step >= YELLOW_LEAD_MAX_STEP) {
+            await auditLogService.logAction({
+                organizationId,
+                entity: 'lead',
+                entityId: leadId,
+                trigger: 'gate_check',
+                action: 'gate_blocked',
+                details: `YELLOW lead exceeded max-step cap (${cl.current_step}/${YELLOW_LEAD_MAX_STEP})`
+            });
+            return {
+                allowed: false,
+                reason: `YELLOW lead has reached max sequence step (${YELLOW_LEAD_MAX_STEP}) — risky addresses are capped to limit reputation exposure`,
+                riskScore: 70,
+                recommendations: ['YELLOW leads should not progress beyond step 2; complete or block this lead'],
+                mode: systemMode,
+                checks,
+                failureType: FailureType.HEALTH_ISSUE,
+                retryable: false,
+                deferrable: false
+            };
+        }
+    }
+
+    // =========================================================================
+    // 2.4 RECIPIENT-DOMAIN COMPLAINT RATE GATE (Google/Yahoo Feb 2024 thresholds)
+    // Computed locally from BounceEvent + SendEvent over 30d window.
+    // ≥0.30% → block enrollment. ≥0.10% → log warning + reduced priority hint.
+    // =========================================================================
+    if (lead?.email) {
+        const recipientDomain = lead.email.split('@')[1]?.toLowerCase();
+        if (recipientDomain) {
+            const stats = await recipientDomainStats.getRecipientDomainComplaintRate(
+                organizationId,
+                recipientDomain
+            );
+            if (stats.sufficientSample) {
+                if (stats.rate >= RECIPIENT_DOMAIN_COMPLAINT_THRESHOLD) {
+                    await auditLogService.logAction({
+                        organizationId,
+                        entity: 'lead',
+                        entityId: leadId,
+                        trigger: 'gate_check',
+                        action: 'gate_blocked',
+                        details: `Recipient domain ${recipientDomain} complaint rate ${(stats.rate * 100).toFixed(3)}% ≥ ${(RECIPIENT_DOMAIN_COMPLAINT_THRESHOLD * 100).toFixed(2)}% (${stats.complaintCount}/${stats.sendCount})`
+                    });
+                    return {
+                        allowed: false,
+                        reason: `Recipient domain ${recipientDomain} has high complaint rate (${(stats.rate * 100).toFixed(3)}%) — sending paused to protect sender reputation`,
+                        riskScore: 90,
+                        recommendations: [
+                            `Pause new sends to ${recipientDomain} until complaint rate drops below ${(RECIPIENT_DOMAIN_THROTTLE_THRESHOLD * 100).toFixed(2)}%`,
+                            'Review recent campaigns and copy for complaint triggers'
+                        ],
+                        mode: systemMode,
+                        checks,
+                        failureType: FailureType.HEALTH_ISSUE,
+                        retryable: false,
+                        deferrable: false
+                    };
+                } else if (stats.rate >= RECIPIENT_DOMAIN_THROTTLE_THRESHOLD) {
+                    recommendations.push(
+                        `⚠️ Recipient domain ${recipientDomain} complaint rate elevated (${(stats.rate * 100).toFixed(3)}%); reduce volume to this domain`
+                    );
+                    logger.info('[GATE] Recipient-domain complaint rate elevated', {
+                        organizationId, recipientDomain, rate: stats.rate,
+                        sendCount: stats.sendCount, complaintCount: stats.complaintCount,
+                    });
+                }
+            }
+        }
+    }
+
+    // =========================================================================
     // 2.5 AGGREGATE THROTTLE CHECK (Domain + Org level)
     // Prevents total volume from exceeding safe limits during recovery
     // =========================================================================
@@ -373,8 +468,34 @@ export const canExecuteLead = async (
         recommendations.push(`⛔ Hard risk score (${avgHardScore.toFixed(1)}) exceeds ${HARD_RISK_CRITICAL}. Bounce rate too high.`);
     }
 
-    // Soft score just logs (velocity-based) - NEVER blocks
-    if (avgSoftScore >= SOFT_RISK_HIGH) {
+    // Soft score: now has two tiers.
+    // - ≥75 (SOFT_RISK_HIGH): log + recommendation only.
+    // - ≥85 (SOFT_RISK_DEFER_THRESHOLD): defer the lead 1h instead of selecting
+    //   a degraded mailbox. Velocity/escalation history is real risk; consistent
+    //   defer at this tier prevents reputation damage from accumulating.
+    if (avgSoftScore >= SOFT_RISK_DEFER_THRESHOLD) {
+        await auditLogService.logAction({
+            organizationId,
+            entity: 'lead',
+            entityId: leadId,
+            trigger: 'gate_check',
+            action: 'gate_deferred',
+            details: `Soft risk score ${avgSoftScore.toFixed(1)} ≥ ${SOFT_RISK_DEFER_THRESHOLD} — deferring lead 1h`
+        });
+        return {
+            allowed: false,
+            reason: `Soft risk elevated (${avgSoftScore.toFixed(1)}); deferring 1h to let velocity/escalation signals settle`,
+            riskScore: avgSoftScore,
+            recommendations: [
+                `Soft risk indicates accumulated velocity/escalation pressure — wait 1h before retry`
+            ],
+            mode: systemMode,
+            checks,
+            failureType: FailureType.SOFT_WARNING,
+            retryable: true,
+            deferrable: true
+        };
+    } else if (avgSoftScore >= SOFT_RISK_HIGH) {
         logger.info(`[GATE] ⚠️ High velocity detected: soft score ${avgSoftScore.toFixed(1)} (not blocking)`);
         recommendations.push(`⚠️ High velocity (${avgSoftScore.toFixed(1)}) detected but not blocking.`);
     }

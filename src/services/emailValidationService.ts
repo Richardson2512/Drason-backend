@@ -30,8 +30,11 @@ const SCORE_NOT_DISPOSABLE = 15;
 const SCORE_NOT_CATCH_ALL = 15;
 const SCORE_SUSPICIOUS_TLD_PENALTY = 20;
 
-// Domain insight cache TTL: 7 days
-const DOMAIN_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+// Domain insight cache TTL: 24 hours.
+// MX records are typically cached 1–4h at DNS level (per RFC 2182 + Office 365
+// guidance, max 6h). Application cache should not materially exceed DNS windows.
+// Reduced from 7d to catch domains that go dark or change catch-all status.
+const DOMAIN_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 // Tier-based API thresholds
 // Starter: no API calls (internal only)
@@ -52,6 +55,11 @@ const TIER_API_THRESHOLDS: Record<string, number | null> = {
 interface DomainCheckResult {
     has_mx: boolean;
     is_catch_all: boolean;
+    /// True only when catch-all status has been verified by an SMTP-probe API
+    /// (MillionVerifier). DNS-only checks cannot determine catch-all reliably,
+    /// so unconfirmed domains carry catch_all_checked=false and do not earn the
+    /// "not catch-all" scoring bonus.
+    catch_all_checked: boolean;
     is_disposable: boolean;
     mx_records: Array<{ priority: number; exchange: string }>;
 }
@@ -73,6 +81,7 @@ async function getDomainInsight(
         return {
             has_mx: cached.has_mx,
             is_catch_all: cached.is_catch_all,
+            catch_all_checked: cached.catch_all_checked,
             is_disposable: cached.is_disposable,
             mx_records: (cached.mx_records as any[]) || [],
         };
@@ -81,7 +90,8 @@ async function getDomainInsight(
     // Perform fresh DNS checks
     const result = await checkDomain(domain);
 
-    // Cache result
+    // Cache result. catch_all_checked stays false here — DNS check cannot
+    // confirm catch-all; only MillionVerifier flips this true (see step 4).
     await prisma.domainInsight.upsert({
         where: { organization_id_domain: { organization_id: organizationId, domain } },
         update: {
@@ -96,6 +106,7 @@ async function getDomainInsight(
             domain,
             has_mx: result.has_mx,
             is_catch_all: result.is_catch_all,
+            catch_all_checked: false,
             is_disposable: result.is_disposable,
             mx_records: result.mx_records as any,
             checked_at: new Date(),
@@ -128,10 +139,10 @@ async function checkDomain(domain: string): Promise<DomainCheckResult> {
 
     // Catch-all detection is heuristic-based via DNS only (no SMTP probing).
     // True catch-all detection requires MillionVerifier API.
-    // For internal checks, we flag domains with certain patterns.
-    const is_catch_all = false; // Conservative: only MillionVerifier can confirm catch-all
+    const is_catch_all = false;
+    const catch_all_checked = false;
 
-    return { has_mx, is_catch_all, is_disposable, mx_records };
+    return { has_mx, is_catch_all, catch_all_checked, is_disposable, mx_records };
 }
 
 // ============================================================================
@@ -196,10 +207,14 @@ export async function validateLeadEmail(
     const domainInsight = await getDomainInsight(organizationId, domain);
 
     // ── Step 3: Calculate internal score ──
+    // Catch-all bonus only when explicitly verified-not-catch-all by MillionVerifier.
+    // For starter/trial tiers (no API), this flag stays false → no false-positive bonus.
     let internalScore = SCORE_BASE;
     if (domainInsight.has_mx) internalScore += SCORE_MX_FOUND;
     if (!domainInsight.is_disposable) internalScore += SCORE_NOT_DISPOSABLE;
-    if (!domainInsight.is_catch_all) internalScore += SCORE_NOT_CATCH_ALL;
+    if (domainInsight.catch_all_checked && !domainInsight.is_catch_all) {
+        internalScore += SCORE_NOT_CATCH_ALL;
+    }
     if (hasSuspiciousTLD(domain)) internalScore -= SCORE_SUSPICIOUS_TLD_PENALTY;
     internalScore = Math.max(0, Math.min(100, internalScore));
 
@@ -269,13 +284,16 @@ export async function validateLeadEmail(
                 },
             };
 
-            // Update domain insight if API revealed catch-all
-            if (mapped.is_catch_all) {
-                await prisma.domainInsight.updateMany({
-                    where: { organization_id: organizationId, domain },
-                    data: { is_catch_all: true },
-                });
-            }
+            // MillionVerifier ran for this domain — record catch-all verification
+            // status either way, so subsequent leads under the same domain in the
+            // cache window can earn (or be denied) the catch-all bonus correctly.
+            await prisma.domainInsight.updateMany({
+                where: { organization_id: organizationId, domain },
+                data: {
+                    is_catch_all: mapped.is_catch_all,
+                    catch_all_checked: true,
+                },
+            });
 
             const durationMs = Date.now() - startMs;
             result.attempt = { source: result.source, result_status: result.status as any, result_score: result.score, result_details: result.details, duration_ms: durationMs };
@@ -346,5 +364,57 @@ async function recordAttempt(
     } catch (err) {
         // Non-fatal — don't let audit recording block validation
         logger.warn('[VALIDATION] Failed to record attempt', { error: String(err) });
+    }
+}
+
+// ============================================================================
+// RE-VALIDATION TRIGGERS (called from bounce / complaint pipelines)
+// ============================================================================
+
+/**
+ * Clear validation state on a Lead after a hard bounce so any future re-ingest
+ * goes through fresh validation. Industry guidance (M3AAWG, ZeroBounce, Validity):
+ * hard bounces invalidate prior validation cache.
+ */
+export async function clearValidationOnHardBounce(
+    organizationId: string,
+    leadId: string
+): Promise<void> {
+    try {
+        await prisma.lead.update({
+            where: { id: leadId },
+            data: {
+                validation_status: null,
+                validation_score: null,
+                validation_source: null,
+                validated_at: null,
+            },
+        });
+    } catch (err) {
+        logger.warn('[VALIDATION] Failed to clear validation on hard bounce', {
+            organizationId, leadId, error: String(err)
+        });
+    }
+}
+
+/**
+ * Mark a Lead's validation as risky after a spam complaint. Doesn't clear —
+ * downgrades the recorded validation to reflect the negative signal.
+ */
+export async function markValidationRiskyOnComplaint(
+    organizationId: string,
+    leadId: string
+): Promise<void> {
+    try {
+        await prisma.lead.update({
+            where: { id: leadId },
+            data: {
+                validation_status: 'risky',
+            },
+        });
+    } catch (err) {
+        logger.warn('[VALIDATION] Failed to mark validation risky on complaint', {
+            organizationId, leadId, error: String(err)
+        });
     }
 }

@@ -27,10 +27,12 @@ import * as entityStateService from './entityStateService';
 import * as healingService from './healingService';
 import * as monitoringService from './monitoringService';
 import * as webhookBus from './webhookEventBus';
+import * as emailValidationService from './emailValidationService';
 import {
     RecoveryPhase,
     LeadState,
     TriggerType,
+    BounceFailureType,
     MONITORING_THRESHOLDS,
 } from '../types';
 
@@ -229,6 +231,19 @@ export async function processBounce(params: BounceProcessingParams): Promise<voi
                     bounced: true,
                 },
             });
+
+            // ── Re-validation trigger (industry: hard bounce invalidates cache) ──
+            // HARD_INVALID/HARD_DOMAIN: clear validation state so any future
+            // re-ingest of the same address goes through fresh validation.
+            // PROVIDER_SPAM_REJECTION: mark validation risky (FBL/complaint signal).
+            if (
+                classification.failureType === BounceFailureType.HARD_INVALID ||
+                classification.failureType === BounceFailureType.HARD_DOMAIN
+            ) {
+                await emailValidationService.clearValidationOnHardBounce(organizationId, leadId);
+            } else if (classification.failureType === BounceFailureType.PROVIDER_SPAM_REJECTION) {
+                await emailValidationService.markValidationRiskyOnComplaint(organizationId, leadId);
+            }
         } catch (leadErr: any) {
             logger.warn('[BOUNCE] Failed to mark lead as bounced (lead may not exist)', {
                 leadId,
