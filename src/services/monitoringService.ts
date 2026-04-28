@@ -35,7 +35,8 @@ import {
     SystemMode,
     TriggerType,
     MONITORING_THRESHOLDS,
-    STATE_TRANSITIONS
+    STATE_TRANSITIONS,
+    BounceFailureType
 } from '../types';
 
 const {
@@ -157,6 +158,44 @@ export const recordBounce = async (
             action: 'transient_bounce',
             details: `${classification.failureType} from ${classification.provider} — not degrading health. Reason: ${classification.rawReason}`
         });
+
+        // ── SOFT-BOUNCE SPIKE: Provider throttling IS a reputation signal ──
+        // Microsoft documents 4xx throttling (RP-001/002/003) as reputation-driven.
+        // A cluster of PROVIDER_THROTTLE soft bounces (>SOFT_BOUNCE_SPIKE_RATE
+        // over the last SOFT_BOUNCE_SPIKE_WINDOW sends) escalates the mailbox
+        // to WARNING — not full pause, since soft bounces self-resolve.
+        if (classification.failureType === BounceFailureType.PROVIDER_THROTTLE
+            && mailbox.status === 'healthy') {
+            try {
+                const window = MONITORING_THRESHOLDS.SOFT_BOUNCE_SPIKE_WINDOW;
+                const recentSends = await prisma.sendEvent.findMany({
+                    where: { mailbox_id: mailboxId },
+                    orderBy: { sent_at: 'desc' },
+                    take: window,
+                    select: { sent_at: true },
+                });
+                if (recentSends.length >= window) {
+                    const oldestSendAt = recentSends[recentSends.length - 1].sent_at;
+                    const recentSoftBounces = await prisma.bounceEvent.count({
+                        where: {
+                            mailbox_id: mailboxId,
+                            bounce_type: 'soft_bounce',
+                            bounced_at: { gte: oldestSendAt },
+                        },
+                    });
+                    const softBounceRate = recentSoftBounces / window;
+                    if (softBounceRate >= MONITORING_THRESHOLDS.SOFT_BOUNCE_SPIKE_RATE) {
+                        await warnMailbox(
+                            mailboxId,
+                            `Soft-bounce spike: ${recentSoftBounces}/${window} (${(softBounceRate * 100).toFixed(0)}%) provider throttle. Reputation signal.`
+                        );
+                    }
+                }
+            } catch (spikeErr) {
+                logger.warn('[MONITOR] Soft-bounce spike check failed', { error: String(spikeErr), mailboxId });
+            }
+        }
+
         return; // Skip threshold checks entirely
     }
 
@@ -551,7 +590,10 @@ export const pauseMailbox = async (mailboxId: string, reason: string): Promise<v
         payload: { reason, correlation: correlation.message }
     });
 
-    // Transition via centralized state machine (handles status, cooldown, consecutive_pauses, audit, state history)
+    // Transition via centralized state machine (handles status, cooldown, consecutive_pauses, audit, state history).
+    // The state-machine call and the operational-field update are bundled in a
+    // transaction so `status='paused'` and `recovery_phase='paused'` cannot drift
+    // if one write fails.
     const transitionResult = await entityStateService.transitionMailbox(
         orgId, mailboxId, MailboxState.PAUSED,
         `[${action.action}] ${reason}. Correlation: ${correlation.message}`,
@@ -559,15 +601,29 @@ export const pauseMailbox = async (mailboxId: string, reason: string): Promise<v
     );
 
     if (transitionResult.success) {
-        // Set operational fields not managed by state machine
-        await prisma.mailbox.update({
-            where: { id: mailboxId },
-            data: {
-                recovery_phase: 'paused',
-                resilience_score: newResilience,
-                clean_sends_since_phase: 0,
-                phase_entered_at: new Date(),
+        // Set operational fields not managed by state machine — bundled with
+        // a status re-check to keep status and recovery_phase atomic.
+        await prisma.$transaction(async (tx) => {
+            const current = await tx.mailbox.findUnique({
+                where: { id: mailboxId },
+                select: { status: true },
+            });
+            if (current?.status !== 'paused') {
+                // State drifted between transitionMailbox returning and this tx
+                // running — abort the recovery_phase write rather than create
+                // a status/recovery_phase mismatch.
+                logger.warn('[MONITOR] Pause aborted in tx — status drifted', { mailboxId });
+                return;
             }
+            await tx.mailbox.update({
+                where: { id: mailboxId },
+                data: {
+                    recovery_phase: 'paused',
+                    resilience_score: newResilience,
+                    clean_sends_since_phase: 0,
+                    phase_entered_at: new Date(),
+                }
+            });
         });
     }
 
@@ -1038,16 +1094,28 @@ const pauseDomain = async (domainId: string, reason: string): Promise<void> => {
     );
 
     if (domainTransition.success) {
-        // Set operational fields not managed by state machine
-        await prisma.domain.update({
-            where: { id: domainId },
-            data: {
-                recovery_phase: 'paused',
-                paused_reason: reason,
-                resilience_score: newResilience,
-                clean_sends_since_phase: 0,
-                phase_entered_at: new Date(),
-            },
+        // Set operational fields not managed by state machine — atomic
+        // recovery_phase write guarded by a status re-check, same pattern
+        // as pauseMailbox.
+        await prisma.$transaction(async (tx) => {
+            const current = await tx.domain.findUnique({
+                where: { id: domainId },
+                select: { status: true },
+            });
+            if (current?.status !== 'paused') {
+                logger.warn('[MONITOR] Domain pause aborted in tx — status drifted', { domainId });
+                return;
+            }
+            await tx.domain.update({
+                where: { id: domainId },
+                data: {
+                    recovery_phase: 'paused',
+                    paused_reason: reason,
+                    resilience_score: newResilience,
+                    clean_sends_since_phase: 0,
+                    phase_entered_at: new Date(),
+                },
+            });
         });
 
         // Cascade pause to healthy/warning mailboxes via state machine
@@ -1058,9 +1126,17 @@ const pauseDomain = async (domainId: string, reason: string): Promise<void> => {
                 `Cascaded from domain pause: ${reason}`, TriggerType.THRESHOLD_BREACH
             );
             if (mbResult.success) {
-                await prisma.mailbox.update({
-                    where: { id: mb.id },
-                    data: { recovery_phase: 'paused' }
+                await prisma.$transaction(async (tx) => {
+                    const cur = await tx.mailbox.findUnique({
+                        where: { id: mb.id },
+                        select: { status: true },
+                    });
+                    if (cur?.status === 'paused') {
+                        await tx.mailbox.update({
+                            where: { id: mb.id },
+                            data: { recovery_phase: 'paused' }
+                        });
+                    }
                 });
             }
         }
