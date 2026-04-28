@@ -74,7 +74,7 @@ export const TIER_LIMITS: Record<string, TierLimits> = {
     starter:    { validationCredits: 3000,     monthlySendLimit: 20000 },
     // Pro family — default 60k anchor + 5 dropdown variants (80k/100k/150k/200k/250k).
     ...PRO_TIER_LIMITS,
-    growth:     { validationCredits: 50000,    monthlySendLimit: 300000 },
+    growth:     { validationCredits: 60000,    monthlySendLimit: 300000 },
     scale:      { validationCredits: 100000,   monthlySendLimit: 600000 },
     enterprise: { validationCredits: Infinity, monthlySendLimit: Infinity },
 };
