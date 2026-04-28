@@ -80,6 +80,7 @@ contactRoutes.post('/bulk', contactController.bulkCreateContacts);
 contactRoutes.post('/delete', contactController.deleteContacts);
 contactRoutes.post('/validate', contactController.validateContacts);
 contactRoutes.post('/validate-preview', contactController.validateLeadsPreview);
+contactRoutes.post('/assign-campaign/preview', contactController.previewAssignToCampaign);
 contactRoutes.post('/assign-campaign', contactController.assignToCampaign);
 contactRoutes.get('/export', contactController.exportContacts);
 router.use('/contacts', contactRoutes);

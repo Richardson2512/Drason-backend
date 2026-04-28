@@ -19,6 +19,7 @@ import { validateLeadEmail } from '../services/emailValidationService';
 import * as espClassifierService from '../services/espClassifierService';
 import { TIER_LIMITS } from '../services/polarClient';
 import * as entityStateService from '../services/entityStateService';
+import * as dualEnrollmentService from '../services/dualEnrollmentService';
 import { SlackAlertService } from '../services/SlackAlertService';
 import { LeadState, TriggerType } from '../types';
 import { eraseLeadPII } from '../services/piiErasureService';
@@ -831,11 +832,18 @@ export const validateLeadsPreview = async (req: Request, res: Response): Promise
 };
 
 /**
- * POST /api/sequencer/contacts/assign-campaign
- * Add a set of leads to an existing SendCampaign. Creates CampaignLead rows
- * (skipping any email already in the campaign) and refreshes total_leads.
+ * POST /api/sequencer/contacts/assign-campaign/preview
+ * Dry-run a campaign assignment: returns the dual-enrollment report so the UI
+ * can show conflicts before commit. Does NOT persist anything.
+ *
+ * Conflict categories:
+ *  - active: lead is currently in another campaign (status active|paused).
+ *    Excluded by default in the commit step (toggle ON).
+ *  - historical: lead has finished sequences in other campaigns with engagement
+ *    (opens/clicks/replies). Surfaced for context, not excluded by default.
+ *  - suppressed: lead is bounced or unsubscribed org-wide. Always excluded.
  */
-export const assignToCampaign = async (req: Request, res: Response): Promise<Response> => {
+export const previewAssignToCampaign = async (req: Request, res: Response): Promise<Response> => {
     try {
         const orgId = getOrgId(req);
         const { ids, campaign_id } = req.body;
@@ -846,6 +854,55 @@ export const assignToCampaign = async (req: Request, res: Response): Promise<Res
         if (!campaign_id || typeof campaign_id !== 'string') {
             return res.status(400).json({ success: false, error: 'campaign_id is required' });
         }
+
+        const campaign = await prisma.campaign.findFirst({
+            where: { id: campaign_id, organization_id: orgId },
+            select: { id: true, name: true, status: true },
+        });
+        if (!campaign) {
+            return res.status(404).json({ success: false, error: 'Campaign not found' });
+        }
+
+        const report = await dualEnrollmentService.checkDualEnrollment(
+            orgId,
+            ids,
+            campaign.id,
+        );
+
+        return res.json({
+            success: true,
+            campaign: { id: campaign.id, name: campaign.name },
+            report,
+        });
+    } catch (error: any) {
+        logger.error('[CONTACTS] Failed to preview campaign assignment', error instanceof Error ? error : new Error(String(error)));
+        return res.status(500).json({ success: false, error: 'Failed to preview campaign assignment' });
+    }
+};
+
+/**
+ * POST /api/sequencer/contacts/assign-campaign
+ * Add a set of leads to an existing SendCampaign. Creates CampaignLead rows
+ * (skipping any email already in the campaign) and refreshes total_leads.
+ *
+ * Optional flag `exclude_dual_enrolled` (default true) excludes leads currently
+ * active/paused in another campaign. Operators can override by setting false.
+ */
+export const assignToCampaign = async (req: Request, res: Response): Promise<Response> => {
+    try {
+        const orgId = getOrgId(req);
+        const { ids, campaign_id, exclude_dual_enrolled } = req.body;
+
+        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+            return res.status(400).json({ success: false, error: 'ids array is required' });
+        }
+        if (!campaign_id || typeof campaign_id !== 'string') {
+            return res.status(400).json({ success: false, error: 'campaign_id is required' });
+        }
+
+        // Default ON — safer for cold-email reputation. Operators can disable
+        // with explicit false (e.g., intentional BDR→AE handoff).
+        const excludeDualEnrolled = exclude_dual_enrolled !== false;
 
         const campaign = await prisma.campaign.findFirst({
             where: { id: campaign_id, organization_id: orgId },
@@ -868,9 +925,23 @@ export const assignToCampaign = async (req: Request, res: Response): Promise<Res
             return res.status(404).json({ success: false, error: 'No matching contacts found' });
         }
 
+        // Re-run dual-enrollment check at commit time (covers race conditions
+        // where another campaign added the same email between preview and submit).
+        const dualReport = await dualEnrollmentService.checkDualEnrollment(
+            orgId, leads.map(l => l.id), campaign.id
+        );
+        const { excludedLeadIds } = dualEnrollmentService.resolveExclusions(
+            dualReport,
+            { excludeActive: excludeDualEnrolled }
+        );
+        const excludedDualEnrolled = excludedLeadIds.size;
+
         // Block RED leads at assignment time — consistent with campaign creation flow
-        const eligible = leads.filter((l) => l.health_classification !== 'red');
-        const blocked = leads.length - eligible.length;
+        const eligible = leads.filter((l) =>
+            l.health_classification !== 'red' &&
+            !excludedLeadIds.has(l.id)
+        );
+        const blocked = leads.filter(l => l.health_classification === 'red').length;
 
         const rows = eligible.map((lead) => ({
             campaign_id: campaign.id,
@@ -938,7 +1009,9 @@ export const assignToCampaign = async (req: Request, res: Response): Promise<Res
         }
 
         logger.info('[CONTACTS] Assigned leads to campaign', {
-            orgId, campaignId: campaign.id, requested: ids.length, created: createdCount, blocked,
+            orgId, campaignId: campaign.id,
+            requested: ids.length, created: createdCount, blocked,
+            excludedDualEnrolled,
         });
 
         return res.json({
@@ -946,6 +1019,7 @@ export const assignToCampaign = async (req: Request, res: Response): Promise<Res
             added: createdCount,
             skipped_duplicates: eligible.length - createdCount,
             blocked_red: blocked,
+            excluded_dual_enrolled: excludedDualEnrolled,
         });
     } catch (error: any) {
         logger.error('[CONTACTS] Failed to assign to campaign', error instanceof Error ? error : new Error(String(error)));
