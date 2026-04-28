@@ -66,20 +66,39 @@ const DISPOSABLE_DOMAINS = new Set([
     'tempinbox.com', 'fakemailgenerator.com', 'emailfake.com', 'crazymailing.com'
 ]);
 
-// Role-based email prefixes that typically have lower engagement
+// Role-based email prefixes that typically have lower engagement.
+// Combines common business roles with the full RFC 2142 mandatory mailbox list.
 const ROLE_EMAIL_PREFIXES = [
+    // Business / customer-facing
     'info', 'admin', 'sales', 'support', 'contact', 'hello', 'help',
     'office', 'team', 'hr', 'careers', 'jobs', 'marketing', 'press',
-    'media', 'news', 'webmaster', 'postmaster', 'abuse', 'noreply',
-    'no-reply', 'donotreply', 'do-not-reply', 'billing', 'accounts',
-    'enquiries', 'inquiries', 'feedback', 'general', 'reception'
+    'media', 'news', 'noreply', 'no-reply', 'donotreply', 'do-not-reply',
+    'billing', 'accounts', 'enquiries', 'inquiries', 'feedback', 'general',
+    'reception',
+    // RFC 2142 §3 — Business mailboxes
+    // (info, marketing, sales, support — already above)
+    // RFC 2142 §4 — Network operations
+    'abuse', 'noc', 'security',
+    // RFC 2142 §5 — Support mailboxes
+    'postmaster', 'hostmaster', 'usenet', 'news', 'webmaster', 'www', 'uucp', 'ftp',
+    // Common system/daemon mailboxes (RFC 2142 + de facto)
+    'mailer-daemon', 'mailerdaemon', 'listserv', 'root', 'daemon', 'nobody',
+    'sysadmin', 'majordomo'
 ];
 
-// Suspicious TLDs often used for spam/fake domains
+// Suspicious TLDs often used for spam/fake domains.
+// Sources:
+// - Spamhaus Domain Reputation Reports (Q4 2024 – Q1 2025): .top, .xin, .loan,
+//   .locker, .icu, .country, .pw remain top-20 highest-threat TLDs.
+// - ICANN/SURBL: .work, .click, .link, .online historically high-abuse.
 const SUSPICIOUS_TLDS = [
-    '.xyz', '.tk', '.ml', '.ga', '.cf', '.gq', '.top', '.buzz',
-    '.club', '.work', '.click', '.link', '.win', '.bid', '.stream',
-    '.download', '.racing', '.loan', '.date', '.faith', '.review'
+    // Free/cheap TLDs (Freenom-era, often abused)
+    '.tk', '.ml', '.ga', '.cf', '.gq', '.pw',
+    // Spamhaus 2024-2025 high-threat
+    '.xyz', '.top', '.xin', '.loan', '.locker', '.icu', '.country',
+    // High-abuse cheap TLDs
+    '.buzz', '.club', '.work', '.click', '.link', '.online', '.win',
+    '.bid', '.stream', '.download', '.racing', '.date', '.faith', '.review'
 ];
 
 // ============================================================================

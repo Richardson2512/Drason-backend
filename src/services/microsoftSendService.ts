@@ -256,11 +256,21 @@ export async function sendEmailViaGraph(
             );
             res = await doSend(buildBody(fallbackHeaders));
             if (res.ok) {
-                // We have a way to log here; emailSendAdapters logs success on return.
-                // Throw a marker we surface via wrapper if tenant-strict mode persists.
-                console.warn(
-                    `[MS-GRAPH] Tenant rejected List-Unsubscribe header — sent without compliance headers. ` +
-                    `Switch this mailbox to SMTP submission for full Gmail bulk-sender compliance.`,
+                // The email shipped without RFC 8058 List-Unsubscribe headers.
+                // Footer link still works (visible body unsubscribe), but Gmail's
+                // one-click button won't render — non-compliant for bulk senders
+                // (>5K msgs/day to Gmail per Feb 2024 requirements). Surface this
+                // at error level so operators see it in alerts, and tag it so
+                // monitoring can fire on accumulation.
+                logger.error(
+                    `[MS-GRAPH] COMPLIANCE: tenant stripped List-Unsubscribe headers — sent without RFC 8058 one-click. Switch mailbox ${accessToken ? '(token present)' : ''} to SMTP submission for Gmail bulk-sender compliance.`,
+                    undefined,
+                    {
+                        compliance_drop: 'list_unsubscribe_headers',
+                        rfc: 'RFC 8058',
+                        bulk_sender_requirement: 'gmail_yahoo_feb_2024',
+                        recommendation: 'switch_to_smtp_submission'
+                    }
                 );
             } else {
                 const fallbackErr = await res.text().catch(() => 'Unknown error');

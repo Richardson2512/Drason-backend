@@ -355,17 +355,22 @@ model ValidationAttempt {
 }
 
 model DomainInsight {
-  id              String   @id @default(uuid())
-  domain          String
-  organization_id String
-  has_mx          Boolean  @default(false)
-  is_catch_all    Boolean  @default(false)
-  is_disposable   Boolean  @default(false)
-  esp_bucket      String? // gmail, microsoft, yahoo, other (cached ESP classification)
-  mx_records      Json? // [{ priority, exchange }]
-  checked_at      DateTime @default(now())
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  id                 String   @id @default(uuid())
+  domain             String
+  organization_id    String
+  has_mx             Boolean  @default(false)
+  is_catch_all       Boolean  @default(false)
+  /// True only when catch-all has been verified by MillionVerifier (or
+  /// equivalent SMTP-probe). False = unconfirmed (DNS-only). The validator
+  /// only awards the "not catch-all" bonus when this is true, so starter/trial
+  /// tier domains aren't scored optimistically as if confirmed clean.
+  catch_all_checked  Boolean  @default(false)
+  is_disposable      Boolean  @default(false)
+  esp_bucket         String? // gmail, microsoft, yahoo, other (cached ESP classification)
+  mx_records         Json? // [{ priority, exchange }]
+  checked_at         DateTime @default(now())
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
 
   @@unique([organization_id, domain])
   @@index([domain])

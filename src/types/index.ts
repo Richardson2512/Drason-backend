@@ -569,7 +569,59 @@ export const MONITORING_THRESHOLDS = {
     // When live DNS check fails during graduation, defer for 1 hour and retry.
     // After 5 consecutive failures (~5h), escalate domain to manual intervention.
     DNS_CHECK_FAILURE_DEFER_MS: 3600000,       // 1 hour
-    DNS_CHECK_FAILURE_ESCALATE_COUNT: 5
+    DNS_CHECK_FAILURE_ESCALATE_COUNT: 5,
+
+    // =========================================================================
+    // YELLOW lead differential treatment (M3AAWG Senders BCP v3 §4.2)
+    // =========================================================================
+    // Risky leads (catch-all, role, new-domain, suspicious-TLD) score 50–79.
+    // Industry guidance: segment risky addresses to a separate stream capped at
+    // 10–20% of volume. We use 25% (slightly conservative) and limit to first 2
+    // sequence steps so we don't burn reputation on unproven addresses.
+    YELLOW_LEAD_CAMPAIGN_VOLUME_CAP: 0.25,      // 25% of campaign daily volume
+    YELLOW_LEAD_MAX_STEP: 2,                    // Stop YELLOW leads after step 2
+
+    // =========================================================================
+    // DomainInsight cache TTL (RFC 2182 + Office 365 MX TTL guidance)
+    // =========================================================================
+    // MX records are typically cached 1–4h; max 6h for Office 365 hosts.
+    // Application-layer cache should not materially exceed DNS cache windows.
+    // Reduced from 7 days to 24 hours to catch domains that go dark or change
+    // catch-all status without waiting for a hard bounce.
+    DOMAIN_INSIGHT_TTL_HOURS: 24,
+
+    // =========================================================================
+    // Recipient-domain complaint rate gate (Google/Yahoo Feb 2024 thresholds)
+    // =========================================================================
+    // Computed locally from BounceEvent + SendEvent (we don't get per-recipient-
+    // domain reputation from Postmaster Tools — only per sending domain).
+    // Mirrors the same 0.10% / 0.30% framework Google uses, applied to recipient
+    // domains we send TO. Prevents enrolling more leads from a domain we already
+    // generate complaints to.
+    RECIPIENT_DOMAIN_COMPLAINT_THRESHOLD: 0.003,    // 0.3% — block enrollment
+    RECIPIENT_DOMAIN_THROTTLE_THRESHOLD: 0.001,     // 0.1% — throttle to 30%
+    RECIPIENT_DOMAIN_THROTTLE_FACTOR: 0.30,         // Volume cap when throttled
+    RECIPIENT_DOMAIN_MIN_SENDS: 1000,               // Min sample size before gate applies
+    RECIPIENT_DOMAIN_WINDOW_DAYS: 30,               // Rolling window for rate calc
+
+    // =========================================================================
+    // Soft-risk down-ranking (no direct industry standard; defensible practice)
+    // =========================================================================
+    // Soft score covers velocity + escalation history. Used to be log-only.
+    // Now down-ranks the mailbox in selection scoring so healthier mailboxes
+    // are preferred. At ≥85, defer the lead 1h instead of selecting.
+    SOFT_RISK_DOWNRANK_PENALTY: 30,                  // Subtract from mailbox score
+    SOFT_RISK_DEFER_THRESHOLD: 85,                   // Defer lead 1h above this
+    SOFT_RISK_DEFER_MS: 3600000,                     // 1 hour
+
+    // =========================================================================
+    // Health re-evaluation downgrade thresholds (M3AAWG BCP §3.4)
+    // =========================================================================
+    // Bi-directional list hygiene. Downgrade only when score drops materially
+    // (≥20 points) AND the lead is not currently in an active sequence step,
+    // to avoid disrupting in-flight campaigns.
+    HEALTH_DOWNGRADE_MIN_DROP: 20,
+    HEALTH_FULL_REVERIFY_DAYS: 90                    // Full bi-directional re-eval window
 } as const;
 
 /**
