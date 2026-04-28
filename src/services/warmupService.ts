@@ -27,7 +27,7 @@
 import { prisma } from '../index';
 import { logger } from './observabilityService';
 import * as notificationService from './notificationService';
-import { RecoveryPhase } from '../types';
+import { RecoveryPhase, GRADUATION_CRITERIA, MONITORING_THRESHOLDS } from '../types';
 
 /**
  * Native equivalent of the platform's `getMailboxDetails(..)` — counts real
@@ -76,11 +76,11 @@ const WARMUP_CONFIG: Record<RecoveryPhase.RESTRICTED_SEND | RecoveryPhase.WARM_R
         targetSendsRepeat: 25            // Repeat offense requirement
     },
     [RecoveryPhase.WARM_RECOVERY]: {
-        total_warmup_per_day: 50,        // Higher volume
+        total_warmup_per_day: 50,        // Higher volume — aligns with SendGrid/AWS SES post-warmup baselines
         daily_rampup: 5,                 // Increase 5 emails/day
         reply_rate_percentage: 40,       // Target 40% engagement
         targetSends: 50,                 // Clean send requirement
-        minDays: 3                       // Minimum 3 days in phase
+        minDays: 7                       // Minimum 7 days in phase — Microsoft reputation lag
     }
 };
 
@@ -349,7 +349,9 @@ export const checkGraduationCriteria = async (
             phase_bounces: true,
             phase_entered_at: true,
             consecutive_pauses: true,
-                        organization_id: true
+            manual_intervention_required: true,
+            domain_id: true,
+            organization_id: true
         }
     });
 
@@ -363,13 +365,24 @@ export const checkGraduationCriteria = async (
         };
     }
 
+    // Manual intervention gate — block graduation when an operator must review
+    if (mailbox.manual_intervention_required) {
+        return {
+            readyForGraduation: false,
+            currentSends: 0,
+            targetSends: 0,
+            daysInPhase: 0,
+            reason: 'Manual intervention required — graduation blocked until operator clears flag'
+        };
+    }
+
     // Native sending — graduation is computed from real SendEvent /
     // BounceEvent counts since phase_entered_at, comparing against the
     // baselines stored when the mailbox entered this phase.
     const phaseStart = mailbox.phase_entered_at || new Date(0);
     const [phaseSends, phaseBounces] = await Promise.all([
         prisma.sendEvent.count({ where: { mailbox_id: mailboxId, sent_at: { gte: phaseStart } } }),
-        prisma.bounceEvent.count({ where: { mailbox_id: mailboxId, bounced_at: { gte: phaseStart } } }),
+        prisma.bounceEvent.count({ where: { mailbox_id: mailboxId, bounced_at: { gte: phaseStart }, bounce_type: 'hard_bounce' } }),
     ]);
     const totalSent = phaseSends;
     const totalSpam = phaseBounces;
@@ -380,42 +393,95 @@ export const checkGraduationCriteria = async (
         ? Math.floor((Date.now() - mailbox.phase_entered_at.getTime()) / (1000 * 60 * 60 * 24))
         : 0;
 
+    const isRepeat = (mailbox.consecutive_pauses || 0) > 1;
+
     // Check graduation criteria based on phase
     if (mailbox.recovery_phase === RecoveryPhase.RESTRICTED_SEND) {
         const config = WARMUP_CONFIG[RecoveryPhase.RESTRICTED_SEND];
-        const targetSends = mailbox.consecutive_pauses && mailbox.consecutive_pauses > 1
+        const targetSends = isRepeat
             ? (config.targetSendsRepeat || 25)
             : (config.targetSends || 15);
 
-        const readyForGraduation = totalSent >= targetSends && totalSpam === 0;
+        // Time floor — prevents same-day burst graduation. Anchored in Spamhaus
+        // 2-4 week guidance + Microsoft reputation-lag patterns.
+        const minDays = isRepeat
+            ? GRADUATION_CRITERIA.restricted_to_warm.repeatMinDays
+            : GRADUATION_CRITERIA.restricted_to_warm.firstOffenseMinDays;
 
-        return {
-            readyForGraduation,
-            currentSends: totalSent,
-            targetSends,
-            daysInPhase,
-            reason: readyForGraduation
-                ? `Met criteria: ${totalSent} sends, 0 spam, ${warmupReputation} reputation`
-                : `Need ${targetSends - totalSent} more sends (0 spam tolerance)`
-        };
-
-    } else if (mailbox.recovery_phase === RecoveryPhase.WARM_RECOVERY) {
-        const config = WARMUP_CONFIG[RecoveryPhase.WARM_RECOVERY];
-        const minDays = config.minDays || 3;
-        const targetSends = config.targetSends || 50;
         const readyForGraduation =
             totalSent >= targetSends &&
             totalSpam === 0 &&
             daysInPhase >= minDays;
 
+        const reasonParts: string[] = [];
+        if (totalSent < targetSends) reasonParts.push(`${targetSends - totalSent} more sends`);
+        if (totalSpam > 0) reasonParts.push('hard bounce — relapse path will fire');
+        if (daysInPhase < minDays) reasonParts.push(`${minDays - daysInPhase} more days`);
+
         return {
             readyForGraduation,
             currentSends: totalSent,
             targetSends,
             daysInPhase,
             reason: readyForGraduation
-                ? `Met criteria: ${totalSent} sends, 0 spam, ${daysInPhase} days, ${warmupReputation} reputation`
-                : `Need: ${Math.max(0, targetSends - totalSent)} more sends, ${Math.max(0, minDays - daysInPhase)} more days`
+                ? `Met criteria: ${totalSent} sends, 0 hard bounces, ${daysInPhase} days, ${warmupReputation} reputation`
+                : `Need: ${reasonParts.join(', ')}`
+        };
+
+    } else if (mailbox.recovery_phase === RecoveryPhase.WARM_RECOVERY) {
+        const targetSends = GRADUATION_CRITERIA.warm_to_healthy.minSends;
+        const minDays = isRepeat
+            ? GRADUATION_CRITERIA.warm_to_healthy.repeatMinDays
+            : GRADUATION_CRITERIA.warm_to_healthy.firstOffenseMinDays;
+
+        // Bounce-rate gate (industry standard: <2%)
+        const bounceRate = totalSent > 0 ? totalSpam / totalSent : 0;
+        const bounceRateOk = bounceRate <= GRADUATION_CRITERIA.warm_to_healthy.maxBounceRate;
+
+        // Complaint-rate gate (Gmail/Yahoo: <0.1% target). Read DomainReputation
+        // (populated by postmasterToolsWorker) for the domain's spam_rate. Only
+        // applies once the domain has accumulated enough lifetime sends to be
+        // statistically meaningful (per COMPLAINT_RATE_MIN_SENDS).
+        let complaintRateOk = true;
+        let complaintRate: number | null = null;
+        if (mailbox.domain_id) {
+            const domain = await prisma.domain.findUnique({
+                where: { id: mailbox.domain_id },
+                select: { total_sent_lifetime: true }
+            });
+            if (domain && domain.total_sent_lifetime >= MONITORING_THRESHOLDS.COMPLAINT_RATE_MIN_SENDS) {
+                const latestRep = await prisma.domainReputation.findFirst({
+                    where: { domain_id: mailbox.domain_id, spam_rate: { not: null } },
+                    orderBy: { date: 'desc' },
+                    select: { spam_rate: true }
+                });
+                if (latestRep?.spam_rate != null) {
+                    complaintRate = latestRep.spam_rate;
+                    complaintRateOk = complaintRate <= GRADUATION_CRITERIA.warm_to_healthy.maxComplaintRate;
+                }
+            }
+        }
+
+        const readyForGraduation =
+            totalSent >= targetSends &&
+            daysInPhase >= minDays &&
+            bounceRateOk &&
+            complaintRateOk;
+
+        const reasonParts: string[] = [];
+        if (totalSent < targetSends) reasonParts.push(`${targetSends - totalSent} more sends`);
+        if (daysInPhase < minDays) reasonParts.push(`${minDays - daysInPhase} more days`);
+        if (!bounceRateOk) reasonParts.push(`bounce rate ${(bounceRate * 100).toFixed(2)}% > 2%`);
+        if (!complaintRateOk && complaintRate != null) reasonParts.push(`complaint rate ${(complaintRate * 100).toFixed(2)}% > 0.1%`);
+
+        return {
+            readyForGraduation,
+            currentSends: totalSent,
+            targetSends,
+            daysInPhase,
+            reason: readyForGraduation
+                ? `Met criteria: ${totalSent} sends, ${(bounceRate * 100).toFixed(2)}% bounce rate, ${daysInPhase} days`
+                : `Need: ${reasonParts.join(', ')}`
         };
     }
 

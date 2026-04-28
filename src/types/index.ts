@@ -115,6 +115,14 @@ export enum RecoveryPhase {
 
 /**
  * Graduation criteria for each phase transition.
+ *
+ * minDays values are anchored in industry recovery-timeline guidance:
+ *   - Spamhaus: 2-4 weeks of low-volume sending after a reputation incident
+ *   - Microsoft sender-reputation recovery: minor 2-4 weeks, moderate 4-8 weeks
+ *   - Practitioner consensus (Mailreach, Lemwarm, AWS SES): graduated ramp, not same-day
+ * The 3d/7d RESTRICTED_SEND floor and 7d/14d WARM_RECOVERY floor sit at the
+ * conservative end of that range — enough to surface delayed bounce signals
+ * without dragging recovery out unnecessarily.
  */
 export const GRADUATION_CRITERIA = {
     paused_to_quarantine: {
@@ -129,11 +137,15 @@ export const GRADUATION_CRITERIA = {
     restricted_to_warm: {
         firstOffenseCleanSends: 15,          // 15 clean sends with 0 hard bounces
         repeatCleanSends: 25,
+        firstOffenseMinDays: 3,              // Time floor — prevents same-day burst graduation
+        repeatMinDays: 7,                    // Repeat offenders held longer at low volume
     },
     warm_to_healthy: {
         minSends: 50,                        // 50 sends minimum
-        minDays: 3,                          // Over at least 3 days
-        maxBounceRate: 0.02,                 // Below 2% bounce rate
+        firstOffenseMinDays: 7,              // Sustained recovery window — Microsoft reputation lag
+        repeatMinDays: 14,                   // Repeat offenders held longer
+        maxBounceRate: 0.02,                 // Below 2% bounce rate (industry standard)
+        maxComplaintRate: 0.001,             // Below 0.1% spam-complaint rate (Gmail/Yahoo target)
     },
     rehabMultipliers: {
         sendMultiplier: 2.0,                 // Rehab entities need 2× clean sends
@@ -521,7 +533,43 @@ export const MONITORING_THRESHOLDS = {
     WINDOW_7D_MS: 604800000,
 
     // Rolling window for bounce calculations (event count, not time)
-    ROLLING_WINDOW_SIZE: 100          // Last 100 sends for bounce rate
+    ROLLING_WINDOW_SIZE: 100,         // Last 100 sends for bounce rate
+
+    // =========================================================================
+    // Spam-complaint thresholds (Gmail/Yahoo Feb 2024 bulk sender enforcement)
+    // =========================================================================
+    // Source: Google's published bulk-sender guidelines and Yahoo Sender Hub.
+    // - >0.10% has measurable negative impact on inbox placement
+    // - >0.30% triggers "ineligible for mitigation" status at Gmail
+    // We treat 0.30% as a relapse trigger and 0.10% as the healthy ceiling.
+    COMPLAINT_RATE_HEALTHY_THRESHOLD: 0.001,   // 0.1% — required for HEALTHY graduation
+    COMPLAINT_RATE_RELAPSE_THRESHOLD: 0.003,   // 0.3% — triggers relapse during recovery
+    COMPLAINT_RATE_MIN_SENDS: 1000,            // Minimum sample size before complaint-rate gate applies
+
+    // =========================================================================
+    // Soft-bounce spike detection (Microsoft RP-001/002/003 throttling signal)
+    // =========================================================================
+    // Soft bounces from PROVIDER_THROTTLE classification are reputation signals
+    // at Microsoft (documented). A spike (>10% over 50 sends) escalates the
+    // mailbox to WARNING — not full pause, since soft bounces self-resolve.
+    SOFT_BOUNCE_SPIKE_RATE: 0.10,
+    SOFT_BOUNCE_SPIKE_WINDOW: 50,
+
+    // =========================================================================
+    // consecutive_pauses decay (no industry standard — defensible practitioner choice)
+    // =========================================================================
+    // After 30 days of clean HEALTHY operation, decrement consecutive_pauses
+    // by 1. Mirrors the inactivity-decay pattern from warmup vendor consensus
+    // (Apollo/Smartlead: 60+ days inactive = restart warmup).
+    CONSECUTIVE_PAUSES_DECAY_DAYS: 30,
+
+    // =========================================================================
+    // DNS check fail-closed (extrapolated from RFC 5321 deferral semantics)
+    // =========================================================================
+    // When live DNS check fails during graduation, defer for 1 hour and retry.
+    // After 5 consecutive failures (~5h), escalate domain to manual intervention.
+    DNS_CHECK_FAILURE_DEFER_MS: 3600000,       // 1 hour
+    DNS_CHECK_FAILURE_ESCALATE_COUNT: 5
 } as const;
 
 /**

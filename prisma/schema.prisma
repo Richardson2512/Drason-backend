@@ -492,9 +492,15 @@ model Mailbox {
   last_pause_at           DateTime?
   cooldown_until          DateTime?
   consecutive_pauses      Int       @default(0)
+  consecutive_pauses_decayed_at DateTime? // Last time consecutive_pauses was decremented by the 30-day decay tick
   last_activity_at        DateTime  @default(now())
   initial_bounce_rate     Float? // Historical bounce rate at import
   initial_assessment_at   DateTime? // When initial assessment was performed
+  // Manual intervention gate — set to true on 3rd+ relapse. Blocks automated
+  // graduation until an operator clears it via POST /api/healing/clear-manual-intervention.
+  manual_intervention_required Boolean   @default(false)
+  manual_intervention_reason   String?
+  manual_intervention_set_at   DateTime?
 
   // Healing Tracking Fields
   phase_clean_sends Int @default(0) // Clean sends in current healing phase (separate from clean_sends_since_phase)
@@ -577,6 +583,17 @@ model Domain {
   paused_by                    String?   @default("system")
   cooldown_until               DateTime?
   consecutive_pauses           Int       @default(0)
+  consecutive_pauses_decayed_at DateTime? // Last time consecutive_pauses was decremented by the 30-day decay tick
+  // Manual intervention gate — set to true on 3rd+ relapse. Blocks automated
+  // graduation until an operator clears it via the healing API.
+  manual_intervention_required Boolean   @default(false)
+  manual_intervention_reason   String?
+  manual_intervention_set_at   DateTime?
+  // DNS check failure tracking — used by healingService.checkQuarantineToRestricted
+  // to fail-closed when DNS service is unavailable. Counter resets on successful check.
+  // After DNS_CHECK_FAILURE_ESCALATE_COUNT failures, the domain is flagged for manual intervention.
+  dns_check_failure_count      Int       @default(0)
+  last_dns_check_attempt_at    DateTime?
   spf_valid                    Boolean? // SPF record check result
   dkim_valid                   Boolean? // DKIM record check result
   dmarc_policy                 String? // DMARC policy: 'none' | 'quarantine' | 'reject'

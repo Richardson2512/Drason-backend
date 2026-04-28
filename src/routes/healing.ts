@@ -19,4 +19,7 @@ router.post('/acknowledge-transition', validateBody(acknowledgeTransitionSchema)
 // Recovery status overview
 router.get('/recovery-status', healingController.getRecoveryStatus);
 
+// Clear manual-intervention flag (operator action — requires explanatory note)
+router.post('/clear-manual-intervention', healingController.clearManualIntervention);
+
 export default router;

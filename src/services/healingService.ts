@@ -18,10 +18,12 @@ import {
     HealingOrigin,
     GRADUATION_CRITERIA,
     TriggerType,
+    MONITORING_THRESHOLDS,
 } from '../types';
 import * as auditLogService from './auditLogService';
 import * as notificationService from './notificationService';
 import * as entityStateService from './entityStateService';
+import * as warmupService from './warmupService';
 import { MailboxState, DomainState } from '../types';
 import { SlackAlertService } from './SlackAlertService';
 import { assessDomainDNS } from './infrastructureAssessmentService';
@@ -173,18 +175,63 @@ async function checkPausedToQuarantine(
 
 /**
  * Quarantine → Restricted Send: DNS/blacklist must pass.
+ *
+ * Manual-intervention gate: blocks graduation when an operator has flagged
+ * the mailbox or its parent domain.
+ *
+ * DNS fail-closed: if the live DNS check throws, the graduation is deferred
+ * (not promoted on cached data). After DNS_CHECK_FAILURE_ESCALATE_COUNT
+ * consecutive failures, the domain is escalated to manual intervention.
  */
 async function checkQuarantineToRestricted(
     mailbox: any
 ): Promise<PhaseTransitionResult | null> {
+    // Manual-intervention gate
+    if (mailbox.manual_intervention_required) {
+        return null;
+    }
+
     // Re-check domain DNS health
     const domain = await prisma.domain.findUnique({
         where: { id: mailbox.domain_id },
     });
     if (!domain) return null;
 
-    // Trigger live DNS check before graduation attempt
-    // Uses critical-only depth (fast check, no need for full 400+ list scan during healing)
+    // Domain-level manual-intervention gate
+    if (domain.manual_intervention_required) {
+        return null;
+    }
+
+    // DNS-failure backoff with jitter: if a recent attempt failed, wait at
+    // least DNS_CHECK_FAILURE_DEFER_MS (± 20% jitter) before retrying.
+    // Jitter is keyed on domain.id so each domain has a stable but distinct
+    // backoff window — prevents the thundering-herd retry pattern when many
+    // domains queue up against the same DNS service.
+    if (domain.dns_check_failure_count > 0 && domain.last_dns_check_attempt_at) {
+        const baseDeferMs = MONITORING_THRESHOLDS.DNS_CHECK_FAILURE_DEFER_MS;
+        // Stable jitter: derive a value in [-0.2, +0.2] from the domain UUID.
+        // hashCode-style: sum char codes, mod into range. Deterministic per domain.
+        let h = 0;
+        for (let i = 0; i < domain.id.length; i++) h = ((h << 5) - h + domain.id.charCodeAt(i)) | 0;
+        const jitterFraction = ((h % 1000) / 1000) * 0.4 - 0.2; // [-0.2, +0.2]
+        const deferMs = Math.floor(baseDeferMs * (1 + jitterFraction));
+        const elapsed = Date.now() - new Date(domain.last_dns_check_attempt_at).getTime();
+        if (elapsed < deferMs) {
+            logger.info('[HEALING] DNS check deferred (recent failure backoff)', {
+                domainId: domain.id,
+                failureCount: domain.dns_check_failure_count,
+                elapsedMs: elapsed,
+                deferMs,
+            });
+            return null;
+        }
+    }
+
+    // Trigger live DNS check before graduation attempt.
+    // FAIL-CLOSED: on exception, increment failure counter and defer; do not
+    // proceed on cached values. After DNS_CHECK_FAILURE_ESCALATE_COUNT
+    // consecutive failures, escalate to manual intervention.
+    let dnsCheckSucceeded = false;
     try {
         const dnsResult = await assessDomainDNS(domain.domain, domain.id);
         await prisma.domain.update({
@@ -196,13 +243,51 @@ async function checkQuarantineToRestricted(
                 mx_records: dnsResult.mxRecords,
                 mx_valid: dnsResult.mxValid,
                 dns_checked_at: new Date(),
+                dns_check_failure_count: 0, // Reset on success
+                last_dns_check_attempt_at: new Date(),
             },
         });
+        dnsCheckSucceeded = true;
     } catch (err: any) {
-        logger.warn(`[HEALING] Live DNS check failed for domain ${domain.domain}, using cached values`, { error: err?.message });
+        const newFailureCount = (domain.dns_check_failure_count || 0) + 1;
+        const escalate = newFailureCount >= MONITORING_THRESHOLDS.DNS_CHECK_FAILURE_ESCALATE_COUNT;
+
+        await prisma.domain.update({
+            where: { id: domain.id },
+            data: {
+                dns_check_failure_count: newFailureCount,
+                last_dns_check_attempt_at: new Date(),
+                ...(escalate && {
+                    manual_intervention_required: true,
+                    manual_intervention_reason: `DNS check failed ${newFailureCount} consecutive times — operator review required`,
+                    manual_intervention_set_at: new Date(),
+                }),
+            },
+        });
+
+        logger.warn('[HEALING] Live DNS check failed — fail-closed (deferring graduation)', {
+            domainId: domain.id,
+            domain: domain.domain,
+            failureCount: newFailureCount,
+            escalated: escalate,
+            error: err?.message,
+        });
+
+        if (escalate) {
+            try {
+                await notificationService.createNotification(mailbox.organization_id, {
+                    type: 'ERROR',
+                    title: 'Domain Escalated — Manual Intervention Required',
+                    message: `Domain ${domain.domain} has had ${newFailureCount} consecutive DNS check failures during graduation. Operator review required to proceed.`,
+                });
+            } catch { /* non-fatal */ }
+        }
+        return null; // Fail-closed: do not promote
     }
 
-    // Re-read domain with fresh data
+    // Re-read domain with fresh data (only when DNS check succeeded)
+    if (!dnsCheckSucceeded) return null;
+
     const freshDomain = await prisma.domain.findUnique({
         where: { id: domain.id },
     });
@@ -230,86 +315,47 @@ async function checkQuarantineToRestricted(
 }
 
 /**
- * Restricted Send → Warm Recovery: N clean sends with 0 hard bounces.
+ * Restricted Send → Warm Recovery.
+ * Delegates to warmupService.checkGraduationCriteria as the single source of
+ * truth for phase-scoped graduation (SendEvent/BounceEvent counts since
+ * phase_entered_at, time-in-phase floor, manual-intervention gate).
+ *
+ * The legacy isRehab/clean_sends_since_phase logic is no longer used here —
+ * warmupService handles those conditions consistently across both phases.
  */
 async function checkRestrictedToWarm(
     mailbox: any,
-    isRehab: boolean
+    _isRehab: boolean
 ): Promise<PhaseTransitionResult | null> {
-    const criteria = GRADUATION_CRITERIA.restricted_to_warm;
-    const requiredCleanSends = mailbox.consecutive_pauses > 1
-        ? criteria.repeatCleanSends
-        : criteria.firstOffenseCleanSends;
+    const criteria = await warmupService.checkGraduationCriteria(mailbox.id);
+    if (!criteria.readyForGraduation) return null;
 
-    // Apply rehab multiplier
-    const adjustedCleanSends = isRehab
-        ? Math.ceil(requiredCleanSends * GRADUATION_CRITERIA.rehabMultipliers.sendMultiplier)
-        : requiredCleanSends;
-
-    // Apply resilience multiplier
-    const healingMultiplier = getHealingMultiplier(mailbox.resilience_score);
-    const finalCleanSends = Math.ceil(adjustedCleanSends * healingMultiplier.sendMultiplier);
-
-    if (mailbox.clean_sends_since_phase < finalCleanSends) {
-        return null; // Not enough clean sends yet
-    }
-
-    const result = await transitionPhase(
+    return transitionPhase(
         'mailbox',
         mailbox.id,
         mailbox.organization_id,
         RecoveryPhase.RESTRICTED_SEND,
         RecoveryPhase.WARM_RECOVERY,
-        `${mailbox.clean_sends_since_phase} clean sends achieved (required: ${finalCleanSends}) — entering warm recovery`,
+        `Graduation criteria met: ${criteria.reason}`,
         mailbox.resilience_score
     );
-    return result;
 }
 
 /**
- * Warm Recovery → Healthy: M sends over K days below threshold.
+ * Warm Recovery → Healthy.
+ * Delegates to warmupService.checkGraduationCriteria. Bounce-rate and
+ * complaint-rate gates are enforced inside warmupService — see
+ * GRADUATION_CRITERIA.warm_to_healthy.
  */
 async function checkWarmToHealthy(
     mailbox: any,
-    isRehab: boolean,
-    now: Date
+    _isRehab: boolean,
+    _now: Date
 ): Promise<PhaseTransitionResult | null> {
-    const criteria = GRADUATION_CRITERIA.warm_to_healthy;
-    const healingMultiplier = getHealingMultiplier(mailbox.resilience_score);
+    const criteria = await warmupService.checkGraduationCriteria(mailbox.id);
+    if (!criteria.readyForGraduation) return null;
 
-    // Calculate adjusted requirements
-    const requiredSends = isRehab
-        ? Math.ceil(criteria.minSends * GRADUATION_CRITERIA.rehabMultipliers.sendMultiplier)
-        : criteria.minSends;
-    const adjustedSends = Math.ceil(requiredSends * healingMultiplier.sendMultiplier);
-
-    const requiredDaysMs = criteria.minDays * 86400000;
-    const adjustedDaysMs = isRehab
-        ? requiredDaysMs * GRADUATION_CRITERIA.rehabMultipliers.timeMultiplier
-        : requiredDaysMs;
-
-    // Check volume
-    if (mailbox.clean_sends_since_phase < adjustedSends) {
-        return null;
-    }
-
-    // Check time in phase
-    if (mailbox.phase_entered_at) {
-        const timeInPhaseMs = now.getTime() - new Date(mailbox.phase_entered_at).getTime();
-        if (timeInPhaseMs < adjustedDaysMs) {
-            return null; // Not enough time in warm recovery
-        }
-    }
-
-    // Check bounce rate during warm recovery
-    const bounceRate = mailbox.total_sent_count > 0
-        ? mailbox.hard_bounce_count / mailbox.total_sent_count
-        : 0;
-    if (bounceRate > criteria.maxBounceRate) {
-        return null; // Bounce rate too high
-    }
-
-    // Graduate to healthy + resilience bonus
+    // Graduate to healthy + resilience bonus + reset offense counters
     const resAdj = adjustResilienceScore(
         mailbox.resilience_score,
         RESILIENCE_ADJUSTMENTS.GRADUATION,
@@ -320,21 +366,22 @@ async function checkWarmToHealthy(
         where: { id: mailbox.id },
         data: {
             resilience_score: resAdj.newScore,
-            healing_origin: null, // Clear healing origin
-            relapse_count: 0,     // Reset on full recovery
+            healing_origin: null,         // Clear healing origin
+            relapse_count: 0,             // Reset on full recovery
+            consecutive_pauses: 0,        // Reset offense counter — fix for healing-pipeline leak
+            consecutive_pauses_decayed_at: null,
         },
     });
 
-    const result = await transitionPhase(
+    return transitionPhase(
         'mailbox',
         mailbox.id,
         mailbox.organization_id,
         RecoveryPhase.WARM_RECOVERY,
         RecoveryPhase.HEALTHY,
-        `Recovery complete — ${mailbox.clean_sends_since_phase} clean sends over ${criteria.minDays}+ days, bounce rate ${(bounceRate * 100).toFixed(1)}%`,
+        `Recovery complete: ${criteria.reason}`,
         resAdj.newScore
     );
-    return result;
 }
 
 // ============================================================================
@@ -374,6 +421,8 @@ export async function handleRelapse(
     let cooldownMs: number;
     const baseCooldown = GRADUATION_CRITERIA.paused_to_quarantine;
 
+    const requiresManualIntervention = relapseCount >= 3;
+
     if (relapseCount >= 3) {
         // Third+ relapse: full pause, longest cooldown, manual intervention required
         targetPhase = RecoveryPhase.PAUSED;
@@ -411,6 +460,11 @@ export async function handleRelapse(
                 clean_sends_since_phase: 0,
                 healing_origin: entity.healing_origin || HealingOrigin.RECOVERY,
                 cooldown_until: new Date(Date.now() + cooldownMs),
+                ...(requiresManualIntervention && {
+                    manual_intervention_required: true,
+                    manual_intervention_reason: `Auto-flagged after ${relapseCount} relapses. Operator review required before further automated graduation.`,
+                    manual_intervention_set_at: new Date(),
+                }),
             }
         });
     } else {
@@ -428,6 +482,11 @@ export async function handleRelapse(
                 clean_sends_since_phase: 0,
                 healing_origin: entity.healing_origin || HealingOrigin.RECOVERY,
                 cooldown_until: new Date(Date.now() + cooldownMs),
+                ...(requiresManualIntervention && {
+                    manual_intervention_required: true,
+                    manual_intervention_reason: `Auto-flagged after ${relapseCount} relapses. Operator review required before further automated graduation.`,
+                    manual_intervention_set_at: new Date(),
+                }),
             }
         });
     }
@@ -684,7 +743,9 @@ export function getPhaseVolumeLimit(
             return Math.floor(5 * (1 / healingMultiplier.sendMultiplier)); // ~5 sends (fewer if fragile)
 
         case RecoveryPhase.WARM_RECOVERY:
-            return Math.floor(25 * (1 / healingMultiplier.sendMultiplier)); // ~25 sends
+            // 50/day aligns with SendGrid post-warmup baseline + AWS SES
+            // 1k/day-per-provider guidance scaled for recovery (single mailbox).
+            return Math.floor(50 * (1 / healingMultiplier.sendMultiplier));
 
         case RecoveryPhase.HEALTHY:
         case RecoveryPhase.WARNING:
@@ -1081,39 +1142,168 @@ export async function getOrgAggregateLimit(organizationId: string): Promise<numb
 }
 
 /**
- * Get today's total sent count for a domain (across all mailboxes).
+ * Decay consecutive_pauses for entities that have been HEALTHY for at least
+ * CONSECUTIVE_PAUSES_DECAY_DAYS. Decrements by 1 per decay window (min 0).
+ *
+ * Called by metricsWorker on a daily tick. The 30-day window is a defensible
+ * practitioner choice — no authoritative source publishes a forgiveness curve
+ * for past offenses, but Apollo/Smartlead's "60+ days inactive = restart
+ * warmup" precedent suggests reputation memory has a multi-week half-life.
  */
-export async function getDomainSentToday(domainId: string): Promise<number> {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+export async function decayConsecutivePauses(): Promise<{ mailboxesDecayed: number; domainsDecayed: number }> {
+    const decayMs = MONITORING_THRESHOLDS.CONSECUTIVE_PAUSES_DECAY_DAYS * 86400000;
+    const cutoff = new Date(Date.now() - decayMs);
 
-    const result = await prisma.mailbox.aggregate({
+    // Mailboxes: must be healthy and either never decayed (use last_pause_at)
+    // or last decayed > CONSECUTIVE_PAUSES_DECAY_DAYS ago. consecutive_pauses must be >0.
+    const mailboxes = await prisma.mailbox.findMany({
         where: {
-            domain_id: domainId,
-            last_activity_at: { gte: today },
+            recovery_phase: RecoveryPhase.HEALTHY,
+            status: 'healthy',
+            consecutive_pauses: { gt: 0 },
+            OR: [
+                { consecutive_pauses_decayed_at: null, last_pause_at: { lte: cutoff } },
+                { consecutive_pauses_decayed_at: { lte: cutoff } },
+            ],
         },
-        _sum: { window_sent_count: true },
+        select: { id: true, consecutive_pauses: true },
     });
 
-    return result._sum.window_sent_count ?? 0;
+    for (const mb of mailboxes) {
+        await prisma.mailbox.update({
+            where: { id: mb.id },
+            data: {
+                consecutive_pauses: Math.max(0, mb.consecutive_pauses - 1),
+                consecutive_pauses_decayed_at: new Date(),
+            },
+        });
+    }
+
+    const domains = await prisma.domain.findMany({
+        where: {
+            recovery_phase: RecoveryPhase.HEALTHY,
+            status: 'healthy',
+            consecutive_pauses: { gt: 0 },
+            OR: [
+                { consecutive_pauses_decayed_at: null, last_pause_at: { lte: cutoff } },
+                { consecutive_pauses_decayed_at: { lte: cutoff } },
+            ],
+        },
+        select: { id: true, consecutive_pauses: true },
+    });
+
+    for (const d of domains) {
+        await prisma.domain.update({
+            where: { id: d.id },
+            data: {
+                consecutive_pauses: Math.max(0, d.consecutive_pauses - 1),
+                consecutive_pauses_decayed_at: new Date(),
+            },
+        });
+    }
+
+    if (mailboxes.length > 0 || domains.length > 0) {
+        logger.info('[HEALING] consecutive_pauses decay tick', {
+            mailboxesDecayed: mailboxes.length,
+            domainsDecayed: domains.length,
+        });
+    }
+
+    return { mailboxesDecayed: mailboxes.length, domainsDecayed: domains.length };
 }
 
 /**
- * Get today's total sent count for an organization (across all mailboxes).
+ * Clear the manual-intervention flag on a mailbox or domain. Only called
+ * from the healingController API endpoint (operator action). Resets the
+ * flag and DNS-failure counter so the entity can re-enter the graduation
+ * pipeline on the next worker tick.
  */
-export async function getOrgSentToday(organizationId: string): Promise<number> {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+export async function clearManualIntervention(
+    organizationId: string,
+    entityType: 'mailbox' | 'domain',
+    entityId: string,
+    operatorNote: string
+): Promise<{ success: boolean; error?: string }> {
+    const entity = entityType === 'mailbox'
+        ? await prisma.mailbox.findUnique({ where: { id: entityId }, select: { id: true, organization_id: true, manual_intervention_required: true } })
+        : await prisma.domain.findUnique({ where: { id: entityId }, select: { id: true, organization_id: true, manual_intervention_required: true } });
 
-    const result = await prisma.mailbox.aggregate({
-        where: {
-            organization_id: organizationId,
-            last_activity_at: { gte: today },
-        },
-        _sum: { window_sent_count: true },
+    if (!entity) return { success: false, error: 'Entity not found' };
+    if (entity.organization_id !== organizationId) return { success: false, error: 'Entity belongs to a different organization' };
+    if (!entity.manual_intervention_required) return { success: false, error: 'Manual intervention flag is not set' };
+
+    if (entityType === 'mailbox') {
+        await prisma.mailbox.update({
+            where: { id: entityId },
+            data: {
+                manual_intervention_required: false,
+                manual_intervention_reason: null,
+                manual_intervention_set_at: null,
+            },
+        });
+    } else {
+        await prisma.domain.update({
+            where: { id: entityId },
+            data: {
+                manual_intervention_required: false,
+                manual_intervention_reason: null,
+                manual_intervention_set_at: null,
+                dns_check_failure_count: 0,
+                last_dns_check_attempt_at: null,
+            },
+        });
+    }
+
+    await auditLogService.logAction({
+        organizationId,
+        entity: entityType,
+        entityId,
+        trigger: 'manual',
+        action: 'manual_intervention_cleared',
+        details: operatorNote,
     });
 
-    return result._sum.window_sent_count ?? 0;
+    logger.info(`[HEALING] Manual intervention cleared for ${entityType} ${entityId}`, { operatorNote });
+    return { success: true };
+}
+
+/**
+ * Get the rolling 24h send count for a domain (across all mailboxes).
+ *
+ * Uses a 24-hour sliding window over SendEvent (not calendar-day, not the
+ * window_sent_count field). The previous calendar-day approach allowed
+ * volume bursts around midnight; window_sent_count is a rolling 100-send
+ * counter that decays via slideWindow and is not a daily figure.
+ *
+ * Aligns with AWS SES "rolling 24-hour period" guidance.
+ */
+export async function getDomainSentToday(domainId: string): Promise<number> {
+    const since = new Date(Date.now() - 86400000); // 24h sliding window
+    const mailboxes = await prisma.mailbox.findMany({
+        where: { domain_id: domainId },
+        select: { id: true },
+    });
+    if (mailboxes.length === 0) return 0;
+    return prisma.sendEvent.count({
+        where: {
+            mailbox_id: { in: mailboxes.map(m => m.id) },
+            sent_at: { gte: since },
+        },
+    });
+}
+
+/**
+ * Get the rolling 24h send count for an organization (across all mailboxes).
+ * See getDomainSentToday for sliding-window rationale.
+ */
+export async function getOrgSentToday(organizationId: string): Promise<number> {
+    const since = new Date(Date.now() - 86400000); // 24h sliding window
+    return prisma.sendEvent.count({
+        where: {
+            organization_id: organizationId,
+            sent_at: { gte: since },
+        },
+    });
 }
 
 /**

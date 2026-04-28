@@ -15,6 +15,7 @@ import { prisma } from '../index';
 import * as metricsService from './metricsService';
 import * as stateTransitionService from './stateTransitionService';
 import * as inactivityService from './inactivityService';
+import * as healingService from './healingService';
 import {
     MailboxState,
     DomainState,
@@ -33,6 +34,8 @@ let isCycleActive = false;
 let workerInterval: NodeJS.Timeout | null = null;
 let lastRunAt: Date | null = null;
 let lastError: string | null = null;
+let lastDecayRunAt: Date | null = null;
+const DECAY_TICK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h between decay ticks
 
 // Worker configuration (configurable via env vars)
 const WORKER_CONFIG = {
@@ -117,6 +120,22 @@ async function runWorkerCycle(): Promise<void> {
 
         for (const org of organizations) {
             await processOrganization(org.id, org.system_mode);
+        }
+
+        // Run consecutive_pauses decay no more than once per 24h. Cheap query
+        // for the common case (nothing to decay) and idempotent if it overlaps
+        // with another tick — the LATEST `consecutive_pauses_decayed_at` filter
+        // prevents double-decrementing the same entity.
+        if (!lastDecayRunAt || Date.now() - lastDecayRunAt.getTime() >= DECAY_TICK_INTERVAL_MS) {
+            try {
+                const result = await healingService.decayConsecutivePauses();
+                lastDecayRunAt = new Date();
+                if (result.mailboxesDecayed > 0 || result.domainsDecayed > 0) {
+                    logger.info('[METRICS] consecutive_pauses decay tick fired', result);
+                }
+            } catch (decayErr) {
+                logger.error('[METRICS] consecutive_pauses decay failed', decayErr as Error);
+            }
         }
 
         const duration = Date.now() - startTime;
