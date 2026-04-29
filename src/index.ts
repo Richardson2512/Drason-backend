@@ -301,14 +301,33 @@ import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { oauthProvider, SUPPORTED_SCOPES } from './mcp/oauthProvider';
 import * as oauthConsentController from './controllers/oauthConsentController';
 
-const PUBLIC_BACKEND_URL = process.env.BACKEND_URL || `http://localhost:${PORT}`;
-app.use(mcpAuthRouter({
-    provider: oauthProvider,
-    issuerUrl: new URL(PUBLIC_BACKEND_URL),
-    resourceServerUrl: new URL(`${PUBLIC_BACKEND_URL}/mcp`),
-    scopesSupported: SUPPORTED_SCOPES,
-    resourceName: 'Superkabe MCP',
-}));
+// BACKEND_URL drives our OAuth issuer + resource URLs. The MCP SDK
+// requires HTTPS in production; we coerce here so a misset http://
+// value (Railway sometimes injects internal http URLs) doesn't crash
+// the whole backend at boot.
+let publicBackendUrl = (process.env.BACKEND_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+if (process.env.NODE_ENV === 'production' && publicBackendUrl.startsWith('http://')) {
+    console.warn('[STARTUP] BACKEND_URL starts with http:// — coercing to https:// for OAuth issuer');
+    publicBackendUrl = publicBackendUrl.replace(/^http:\/\//, 'https://');
+}
+const PUBLIC_BACKEND_URL = publicBackendUrl;
+
+// Mount the MCP OAuth router defensively. If the SDK rejects our
+// configuration, log it loudly and continue booting — the rest of the
+// backend (REST API, dashboard) must come up regardless so existing
+// users aren't blocked by an OAuth-only misconfig.
+try {
+    app.use(mcpAuthRouter({
+        provider: oauthProvider,
+        issuerUrl: new URL(PUBLIC_BACKEND_URL),
+        resourceServerUrl: new URL(`${PUBLIC_BACKEND_URL}/mcp`),
+        scopesSupported: SUPPORTED_SCOPES,
+        resourceName: 'Superkabe MCP',
+    }));
+    console.log(`[STARTUP] MCP OAuth router mounted (issuer=${PUBLIC_BACKEND_URL})`);
+} catch (err) {
+    console.error('[STARTUP] Failed to mount MCP OAuth router — /authorize, /token, /register endpoints disabled', err);
+}
 
 // Consent UI bridge — frontend at /oauth/consent calls these.
 // approveConsent requires login; denyConsent does not.
