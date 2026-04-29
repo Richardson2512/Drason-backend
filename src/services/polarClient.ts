@@ -109,10 +109,10 @@ const PRODUCT_IDS: Record<string, string> = {
     starter: process.env.POLAR_STARTER_PRODUCT_ID || 'dfa51c15-8e20-452d-b51a-476d94b73d21',
     pro: process.env.POLAR_PRO_PRODUCT_ID || PRO_PRODUCT_FALLBACK,
     pro_80k:  process.env.POLAR_PRO_80K_PRODUCT_ID  || '7eda5c17-e9fc-4685-9e86-7a3c8b66fd79',
-    pro_100k: process.env.POLAR_PRO_100K_PRODUCT_ID || PRO_PRODUCT_FALLBACK,
-    pro_150k: process.env.POLAR_PRO_150K_PRODUCT_ID || PRO_PRODUCT_FALLBACK,
-    pro_200k: process.env.POLAR_PRO_200K_PRODUCT_ID || PRO_PRODUCT_FALLBACK,
-    pro_250k: process.env.POLAR_PRO_250K_PRODUCT_ID || PRO_PRODUCT_FALLBACK,
+    pro_100k: process.env.POLAR_PRO_100K_PRODUCT_ID || '85e99d6f-a3cd-4dff-8c06-d28a74347878',
+    pro_150k: process.env.POLAR_PRO_150K_PRODUCT_ID || 'bea564d5-82f9-4e8b-8551-9e38bf698c0f',
+    pro_200k: process.env.POLAR_PRO_200K_PRODUCT_ID || 'f27a02fa-92bf-465f-879d-d6179f14f12c',
+    pro_250k: process.env.POLAR_PRO_250K_PRODUCT_ID || 'd070f69d-f1ae-44d6-893f-e4b460ee16f3',
     growth: process.env.POLAR_GROWTH_PRODUCT_ID || '',
     scale: process.env.POLAR_SCALE_PRODUCT_ID || ''
 };
