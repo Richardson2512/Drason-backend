@@ -370,6 +370,12 @@ app.get('/api/oauth/consent/details', asyncHandler(oauthConsentController.getCon
 app.post('/api/oauth/consent/approve', asyncHandler(oauthConsentController.approveConsent));
 app.post('/api/oauth/consent/deny', asyncHandler(oauthConsentController.denyConsent));
 
+// OAuth connection management — surfaces active grants on the
+// dashboard integrations page and lets users disconnect.
+import * as oauthConnectionsController from './controllers/oauthConnectionsController';
+app.get('/api/oauth/connections', asyncHandler(oauthConnectionsController.listOAuthConnections));
+app.post('/api/oauth/connections/revoke', asyncHandler(oauthConnectionsController.revokeOAuthConnection));
+
 // ── MCP (Model Context Protocol) ────────────────────────────────────
 // Public path /mcp for Claude.ai browser integrations and any remote
 // MCP client. Auth supports OAuth 2.0 (oat_*) tokens and Bearer API
