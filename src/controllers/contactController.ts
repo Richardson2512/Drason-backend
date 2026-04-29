@@ -105,8 +105,17 @@ export const listContacts = async (req: Request, res: Response): Promise<Respons
 
         // Query the main Lead table — source of truth for all contacts.
         // Campaign assignments are counted separately.
-        const leadWhere: any = { organization_id: orgId };
-        if (status) leadWhere.status = status;
+        //
+        // Hard-exclude PII-erased tombstone rows (deleted contacts kept on for
+        // audit / re-import suppression — see piiErasureService). They have
+        // status='erased' and email rewritten to `erased-{uuid}@anonymized.invalid`.
+        // Operators must never see these in the UI; even an explicit
+        // ?status=erased query param is silently ignored.
+        const leadWhere: any = {
+            organization_id: orgId,
+            AND: [{ status: { not: 'erased' } }],
+        };
+        if (status && status !== 'erased') leadWhere.status = status;
         if (validation_status) leadWhere.validation_status = validation_status;
         if (companies.length > 0) leadWhere.company = { in: companies };
         if (titles.length > 0) leadWhere.title = { in: titles };
