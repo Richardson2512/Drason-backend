@@ -101,7 +101,7 @@ export const extractOrgContext = async (
 
         // PUBLIC ROUTES: Skip context check for auth endpoints and webhooks
         // Note: req.path is relative to the mount point ('/api')
-        const publicPaths = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout', '/auth/google', '/auth/onboarding', '/auth/legal-versions', '/ingest/clay', '/billing/polar-webhook', '/sequencer/accounts/google/callback', '/sequencer/accounts/microsoft/callback', '/oauth/callback/postmaster', '/consent/cookies'];
+        const publicPaths = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout', '/auth/google', '/auth/onboarding', '/auth/legal-versions', '/ingest/clay', '/billing/polar-webhook', '/sequencer/accounts/google/callback', '/sequencer/accounts/microsoft/callback', '/oauth/callback/postmaster', '/oauth/consent/details', '/oauth/consent/deny', '/consent/cookies'];
         if (publicPaths.some(path => req.path.startsWith(path))) {
             return next();
         }
@@ -165,6 +165,15 @@ export const extractOrgContext = async (
                         });
                         return;
                     }
+                }
+            } else if (token.startsWith('oat_')) {
+                // OAuth 2.0 access token (issued by /oauth/token)
+                const oat = await validateOAuthAccessToken(token);
+                if (oat) {
+                    organizationId = oat.organizationId;
+                    userId = oat.userId;
+                    authMethod = 'api_key'; // Reuse api_key path — same scope-based authz model
+                    (req as any)._apiKeyScopes = oat.scopes;
                 }
             } else {
                 // Not a valid JWT — try API key
@@ -238,6 +247,33 @@ async function validateApiKey(apiKey: string): Promise<{ organizationId: string;
     return {
         organizationId: key.organization_id,
         scopes: key.scopes
+    };
+}
+
+/**
+ * Validate an OAuth 2.0 access token (issued by /oauth/token). Returns the
+ * org context the token grants, or null if invalid/expired/revoked.
+ */
+async function validateOAuthAccessToken(token: string): Promise<{ organizationId: string; userId: string; scopes: string[] } | null> {
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
+    const row = await prisma.oAuthAccessToken.findUnique({
+        where: { access_token_hash: tokenHash },
+    });
+
+    if (!row) return null;
+    if (row.revoked_at) return null;
+    if (row.expires_at < new Date()) return null;
+
+    prisma.oAuthAccessToken.update({
+        where: { id: row.id },
+        data: { last_used_at: new Date() },
+    }).catch(() => undefined); // fire-and-forget
+
+    return {
+        organizationId: row.organization_id,
+        userId: row.user_id,
+        scopes: (row.scope || '').split(/\s+/).filter(Boolean),
     };
 }
 

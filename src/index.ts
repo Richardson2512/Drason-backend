@@ -292,13 +292,48 @@ app.use('/api/ai', aiRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/t', trackingRoutes); // public, no auth — tracking pixels + click redirects + unsubscribe
 
+// ── MCP OAuth 2.0 / DCR (RFC 7591) ──────────────────────────────────
+// Mounts /.well-known/oauth-authorization-server, /.well-known/oauth-
+// protected-resource, /authorize, /token, /register, /revoke so Claude.ai
+// (and any MCP-spec client) can discover and complete the OAuth flow
+// before calling /mcp.
+import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
+import { oauthProvider, SUPPORTED_SCOPES } from './mcp/oauthProvider';
+import * as oauthConsentController from './controllers/oauthConsentController';
+
+const PUBLIC_BACKEND_URL = process.env.BACKEND_URL || `http://localhost:${PORT}`;
+app.use(mcpAuthRouter({
+    provider: oauthProvider,
+    issuerUrl: new URL(PUBLIC_BACKEND_URL),
+    resourceServerUrl: new URL(`${PUBLIC_BACKEND_URL}/mcp`),
+    scopesSupported: SUPPORTED_SCOPES,
+    resourceName: 'Superkabe MCP',
+}));
+
+// Consent UI bridge — frontend at /oauth/consent calls these.
+// approveConsent requires login; denyConsent does not.
+app.get('/api/oauth/consent/details', asyncHandler(oauthConsentController.getConsentDetails));
+app.post('/api/oauth/consent/approve', asyncHandler(oauthConsentController.approveConsent));
+app.post('/api/oauth/consent/deny', asyncHandler(oauthConsentController.denyConsent));
+
 // ── MCP (Model Context Protocol) ────────────────────────────────────
 // Public path /mcp for Claude.ai browser integrations and any remote
-// MCP client. Auth is the same Bearer API-key flow as /api/v1, applied
-// explicitly here since /mcp lives outside the /api prefix that gets
-// extractOrgContext + checkSubscriptionStatus globally.
+// MCP client. Auth supports OAuth 2.0 (oat_*) tokens and Bearer API
+// keys (sk_*) — both go through extractOrgContext.
 import { handleMcpRequest, handleMcpMethodNotAllowed } from './mcp/transport';
-app.post('/mcp', extractOrgContext, checkSubscriptionStatus, asyncHandler(handleMcpRequest));
+
+// Emit RFC 9728 WWW-Authenticate header on 401 so MCP clients can
+// discover our OAuth metadata. extractOrgContext sets 401 status when
+// auth is missing/invalid; the header set here ships with that response.
+const advertiseResourceMetadata = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    res.setHeader(
+        'WWW-Authenticate',
+        `Bearer resource_metadata="${PUBLIC_BACKEND_URL}/.well-known/oauth-protected-resource/mcp"`
+    );
+    next();
+};
+
+app.post('/mcp', advertiseResourceMetadata, extractOrgContext, checkSubscriptionStatus, asyncHandler(handleMcpRequest));
 app.get('/mcp', handleMcpMethodNotAllowed);
 app.delete('/mcp', handleMcpMethodNotAllowed);
 

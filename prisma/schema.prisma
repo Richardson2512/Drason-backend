@@ -1660,3 +1660,83 @@ model ColdCallCustomSnapshot {
 
   @@index([organization_id, downloaded_at])
 }
+
+/// OAuth 2.0 client registered via Dynamic Client Registration (RFC 7591).
+/// Used by remote MCP clients (Claude.ai, etc.) that connect via the
+/// /oauth/* endpoints. Each client gets its own client_id; secret is
+/// optional (public clients use PKCE only).
+model OAuthClient {
+  id                          String    @id @default(uuid())
+  client_id                   String    @unique
+  client_secret_hash          String? // bcrypt hash; null for public clients
+  client_name                 String
+  redirect_uris               Json // string[]
+  grant_types                 Json // string[] e.g. ["authorization_code", "refresh_token"]
+  response_types              Json // string[] e.g. ["code"]
+  token_endpoint_auth_method  String    @default("none") // "none" (public) | "client_secret_basic" | "client_secret_post"
+  scope                       String? // space-separated default scopes
+  client_uri                  String?
+  logo_uri                    String?
+  software_id                 String?
+  software_version            String?
+  created_at                  DateTime  @default(now())
+  client_id_issued_at         DateTime  @default(now())
+  client_secret_expires_at    DateTime? // null = never
+  revoked_at                  DateTime?
+
+  authorization_codes OAuthAuthorizationCode[]
+  access_tokens       OAuthAccessToken[]
+
+  @@index([client_id])
+}
+
+/// Short-lived (60 second) OAuth authorization code issued after user
+/// consent. Single-use — `used_at` is set when exchanged for tokens to
+/// prevent replay. Stores the PKCE challenge for verification.
+model OAuthAuthorizationCode {
+  id                   String   @id @default(uuid())
+  code_hash            String   @unique // SHA-256 of the actual code
+  client_id            String
+  user_id              String
+  organization_id      String
+  redirect_uri         String
+  scope                String? // space-separated granted scopes
+  code_challenge       String
+  code_challenge_method String   @default("S256")
+  resource             String? // RFC 8707 resource indicator
+  state                String?
+  expires_at           DateTime
+  used_at              DateTime?
+  created_at           DateTime @default(now())
+
+  client OAuthClient @relation(fields: [client_id], references: [client_id], onDelete: Cascade)
+
+  @@index([client_id])
+  @@index([expires_at])
+}
+
+/// OAuth 2.0 access token (and paired refresh token) issued by /oauth/token.
+/// Tokens are stored hashed; only the hash sees the database. The access
+/// token grants the same scopes as a Superkabe API key, scoped to the user's
+/// organization. Refresh tokens are long-lived; access tokens expire in 1h.
+model OAuthAccessToken {
+  id                  String    @id @default(uuid())
+  access_token_hash   String    @unique // SHA-256
+  refresh_token_hash  String?   @unique
+  client_id           String
+  user_id             String
+  organization_id     String
+  scope               String // space-separated
+  resource            String?
+  expires_at          DateTime
+  refresh_expires_at  DateTime?
+  revoked_at          DateTime?
+  created_at          DateTime  @default(now())
+  last_used_at        DateTime?
+
+  client OAuthClient @relation(fields: [client_id], references: [client_id], onDelete: Cascade)
+
+  @@index([client_id])
+  @@index([organization_id])
+  @@index([expires_at])
+}
