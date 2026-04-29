@@ -301,16 +301,51 @@ import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { oauthProvider, SUPPORTED_SCOPES } from './mcp/oauthProvider';
 import * as oauthConsentController from './controllers/oauthConsentController';
 
-// BACKEND_URL drives our OAuth issuer + resource URLs. The MCP SDK
-// requires HTTPS in production; we coerce here so a misset http://
-// value (Railway sometimes injects internal http URLs) doesn't crash
-// the whole backend at boot.
-let publicBackendUrl = (process.env.BACKEND_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
-if (process.env.NODE_ENV === 'production' && publicBackendUrl.startsWith('http://')) {
-    console.warn('[STARTUP] BACKEND_URL starts with http:// — coercing to https:// for OAuth issuer');
-    publicBackendUrl = publicBackendUrl.replace(/^http:\/\//, 'https://');
+// Resolve the OAuth issuer / resource server URL the SDK and the
+// WWW-Authenticate header advertise. This MUST be:
+//   1. A syntactically valid URL (new URL() must not throw)
+//   2. HTTPS in production (the MCP spec mandates it)
+//   3. The public URL clients (claude.ai) actually connect to —
+//      NOT the Railway-internal hostname BACKEND_URL is sometimes
+//      set to, since OAuth metadata must be reachable from the
+//      same origin the client is talking to.
+//
+// Resolution order:
+//   1. MCP_OAUTH_ISSUER if set and valid
+//   2. BACKEND_URL if set, valid, and HTTPS (or schemeless → assume HTTPS)
+//   3. https://api.superkabe.com in production
+//   4. http://localhost:<PORT> in dev
+function resolveOAuthIssuer(): string {
+    const candidates = [process.env.MCP_OAUTH_ISSUER, process.env.BACKEND_URL];
+    const isRailwayInternal = (host: string) =>
+        host.endsWith('.up.railway.app') || host.endsWith('.railway.internal');
+
+    for (const raw of candidates) {
+        if (!raw) continue;
+        const trimmed = raw.trim().replace(/\/$/, '');
+        if (!trimmed) continue;
+        const withScheme = /^https?:\/\//.test(trimmed) ? trimmed : `https://${trimmed}`;
+        try {
+            const u = new URL(withScheme);
+            if (process.env.NODE_ENV === 'production' && isRailwayInternal(u.hostname)) {
+                console.warn(`[STARTUP] OAuth issuer candidate "${raw}" is a Railway-internal hostname — skipping (clients connect via the public domain)`);
+                continue;
+            }
+            if (process.env.NODE_ENV === 'production' && u.protocol !== 'https:') {
+                console.warn(`[STARTUP] OAuth issuer candidate "${raw}" is not HTTPS — coercing`);
+                u.protocol = 'https:';
+            }
+            return u.origin;
+        } catch {
+            console.warn(`[STARTUP] OAuth issuer candidate "${raw}" is not a valid URL — skipping`);
+        }
+    }
+    return process.env.NODE_ENV === 'production'
+        ? 'https://api.superkabe.com'
+        : `http://localhost:${PORT}`;
 }
-const PUBLIC_BACKEND_URL = publicBackendUrl;
+const PUBLIC_BACKEND_URL = resolveOAuthIssuer();
+console.log(`[STARTUP] OAuth issuer resolved to ${PUBLIC_BACKEND_URL}`);
 
 // Mount the MCP OAuth router defensively. If the SDK rejects our
 // configuration, log it loudly and continue booting — the rest of the
