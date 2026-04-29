@@ -21,6 +21,7 @@
   "type": "commonjs",
   "dependencies": {
     "@azure/msal-node": "^5.1.4",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@prisma/client": "^5.22.0",
     "axios": "^1.13.3",
     "bcryptjs": "^3.0.3",

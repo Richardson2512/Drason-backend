@@ -136,7 +136,9 @@ app.use(cors({
             process.env.FRONTEND_URL?.replace('https://www.', 'https://'),
             'https://superkabe.com',
             'https://www.superkabe.com',
-            'https://app.superkabe.com'
+            'https://app.superkabe.com',
+            'https://claude.ai',
+            'https://www.claude.ai'
         ].filter(Boolean);
 
         if (allowedOrigins.includes(origin)) {
@@ -147,7 +149,8 @@ app.use(cors({
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Organization-ID', 'X-API-Key'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Organization-ID', 'X-API-Key', 'Mcp-Session-Id', 'Mcp-Protocol-Version'],
+    exposedHeaders: ['Mcp-Session-Id'],
 }));
 app.use(cookieParser());
 
@@ -288,6 +291,16 @@ app.use('/api/cold-call-list', coldCallListRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/t', trackingRoutes); // public, no auth — tracking pixels + click redirects + unsubscribe
+
+// ── MCP (Model Context Protocol) ────────────────────────────────────
+// Public path /mcp for Claude.ai browser integrations and any remote
+// MCP client. Auth is the same Bearer API-key flow as /api/v1, applied
+// explicitly here since /mcp lives outside the /api prefix that gets
+// extractOrgContext + checkSubscriptionStatus globally.
+import { handleMcpRequest, handleMcpMethodNotAllowed } from './mcp/transport';
+app.post('/mcp', extractOrgContext, checkSubscriptionStatus, asyncHandler(handleMcpRequest));
+app.get('/mcp', handleMcpMethodNotAllowed);
+app.delete('/mcp', handleMcpMethodNotAllowed);
 
 // Ingestion endpoints
 app.post('/api/ingest', asyncHandler(ingestionController.ingestLead));
