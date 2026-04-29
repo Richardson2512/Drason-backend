@@ -1,1 +1,1 @@
-web: npx prisma migrate deploy && npm run start
+web: node scripts/heal-prisma-migrations.cjs && npx prisma migrate deploy && npm run start

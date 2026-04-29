@@ -4,7 +4,7 @@
         "buildCommand": "npm install && npx prisma generate && npm run build"
     },
     "deploy": {
-        "preDeployCommand": "npx prisma migrate deploy",
+        "preDeployCommand": "node scripts/heal-prisma-migrations.cjs && npx prisma migrate deploy",
         "startCommand": "npm run start",
         "healthcheckPath": "/health",
         "healthcheckTimeout": 300,
