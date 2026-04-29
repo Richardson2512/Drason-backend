@@ -113,8 +113,8 @@ const PRODUCT_IDS: Record<string, string> = {
     pro_150k: process.env.POLAR_PRO_150K_PRODUCT_ID || 'bea564d5-82f9-4e8b-8551-9e38bf698c0f',
     pro_200k: process.env.POLAR_PRO_200K_PRODUCT_ID || 'f27a02fa-92bf-465f-879d-d6179f14f12c',
     pro_250k: process.env.POLAR_PRO_250K_PRODUCT_ID || 'd070f69d-f1ae-44d6-893f-e4b460ee16f3',
-    growth: process.env.POLAR_GROWTH_PRODUCT_ID || '',
-    scale: process.env.POLAR_SCALE_PRODUCT_ID || ''
+    growth: process.env.POLAR_GROWTH_PRODUCT_ID || '0690578b-2fe7-4e05-a2e2-a258a90599e9',
+    scale: process.env.POLAR_SCALE_PRODUCT_ID || 'edae6a6e-bfd2-4f24-9092-197021cf984d'
 };
 
 // ============================================================================
