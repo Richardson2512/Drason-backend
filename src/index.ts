@@ -247,7 +247,7 @@ app.use('/api', extractOrgContext);
 
 // Enforce subscription status on all /api routes (except auth, billing, GET user/me, webhooks, OAuth callbacks)
 app.use('/api', (req, res, next) => {
-    const prefixExempt = ['/auth/', '/billing/', '/monitor/', '/ingest/'];
+    const prefixExempt = ['/auth/', '/billing/', '/monitor/', '/ingest/', '/oauth/'];
     if (prefixExempt.some(p => req.path.startsWith(p))) return next();
     // OAuth callbacks from Google/Microsoft don't carry our auth — exempt them
     if (req.path === '/sequencer/accounts/google/callback' || req.path === '/sequencer/accounts/microsoft/callback') return next();
