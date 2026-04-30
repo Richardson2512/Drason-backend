@@ -376,6 +376,14 @@ import * as oauthConnectionsController from './controllers/oauthConnectionsContr
 app.get('/api/oauth/connections', asyncHandler(oauthConnectionsController.listOAuthConnections));
 app.post('/api/oauth/connections/revoke', asyncHandler(oauthConnectionsController.revokeOAuthConnection));
 
+// CRM integrations (Phase 1 — connection list, detail, disconnect).
+// HubSpot OAuth + sync controllers ship in Phase 2 / Phase 3 alongside
+// the per-provider client implementations.
+import * as crmIntegrationsController from './controllers/crmIntegrationsController';
+app.get('/api/integrations/crm/connections', asyncHandler(crmIntegrationsController.listConnections));
+app.get('/api/integrations/crm/connections/:id', asyncHandler(crmIntegrationsController.getConnectionDetail));
+app.post('/api/integrations/crm/connections/:id/disconnect', asyncHandler(crmIntegrationsController.disconnectConnection));
+
 // ── MCP (Model Context Protocol) ────────────────────────────────────
 // Public path /mcp for Claude.ai browser integrations and any remote
 // MCP client. Auth supports OAuth 2.0 (oat_*) tokens and Bearer API
@@ -767,6 +775,11 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
 // Initialize Redis and rate limiters
 initRedis();
 initRateLimiters();
+
+// Register the CRM activity-push subscriber on the in-process webhook event bus.
+// Must run before the HTTP listener binds so no events are dropped during boot.
+import { registerActivityPushSubscriber } from './services/crm/activityPushService';
+registerActivityPushSubscriber();
 
 const server = app.listen(PORT, () => {
     logger.info(`Server started on port ${PORT}`, {

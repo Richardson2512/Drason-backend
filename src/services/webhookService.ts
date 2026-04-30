@@ -123,6 +123,48 @@ interface DeliveryJobData {
 // Public API: dispatch
 // ────────────────────────────────────────────────────────────────────
 
+// ────────────────────────────────────────────────────────────────────
+// In-process subscribers
+// ────────────────────────────────────────────────────────────────────
+//
+// Customer-configured webhook endpoints are fanned out via the DB +
+// BullMQ pipeline below. Some integrations (CRM activity push, future
+// in-process side effects) need the same events synchronously inside
+// the backend — they register here and dispatchEvent calls them in
+// addition to the DB fan-out. Subscribers must never throw; failures
+// are logged and swallowed so customer webhooks aren't blocked.
+
+export type InternalSubscriber = (
+    orgId: string,
+    eventType: WebhookEventType,
+    payload: Record<string, unknown>,
+    eventId: string,
+) => Promise<void> | void;
+
+const internalSubscribers: InternalSubscriber[] = [];
+
+export function onInternalEvent(handler: InternalSubscriber): void {
+    internalSubscribers.push(handler);
+}
+
+async function fanOutInternalSubscribers(
+    orgId: string,
+    eventType: WebhookEventType,
+    payload: Record<string, unknown>,
+    eventId: string,
+): Promise<void> {
+    for (const sub of internalSubscribers) {
+        try {
+            await sub(orgId, eventType, payload, eventId);
+        } catch (err) {
+            logger.error(
+                `[WEBHOOK] internal subscriber failed for ${eventType}`,
+                err instanceof Error ? err : new Error(String(err)),
+            );
+        }
+    }
+}
+
 /**
  * Fan out an event to every matching active endpoint in the org.
  * Idempotent on the (org, eventId) pair — callers can pass eventId to
@@ -142,6 +184,10 @@ export async function dispatchEvent(
     }
 
     const eventId = opts.eventId || crypto.randomUUID();
+
+    // Internal in-process subscribers (CRM activity push, etc.) run
+    // before the DB fan-out so they share the eventId and timestamp.
+    await fanOutInternalSubscribers(orgId, eventType, payload, eventId);
 
     // Find all active, non-disabled endpoints for the org subscribed to this event.
     // Empty `events` array means "subscribe to all".

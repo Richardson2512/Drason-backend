@@ -100,6 +100,7 @@ model Organization {
   supportTickets         SupportTicket[]
   validationBatches      ValidationBatch[]
   connectedAccounts      ConnectedAccount[]
+  crmConnections         CrmConnection[]
   // SendCampaign was unified into Campaign. Sequencer campaigns now appear in the
   // `campaigns` relation above with source_platform='sequencer'.
   emailThreads           EmailThread[]
@@ -1739,4 +1740,164 @@ model OAuthAccessToken {
   @@index([client_id])
   @@index([organization_id])
   @@index([expires_at])
+}
+
+/// CRM connection (HubSpot, Salesforce, future). One per (org, provider).
+/// OAuth tokens are encrypted at rest using the same encryption helper as
+/// ConnectedAccount mailboxes. `instance_url` is set for Salesforce (each
+/// org has a unique base URL); null for HubSpot.
+model CrmConnection {
+  id                     String    @id @default(uuid())
+  organization_id        String
+  provider               String // "hubspot" | "salesforce"
+
+  // OAuth tokens — encrypted at rest
+  access_token           String // encrypted
+  refresh_token          String? // encrypted (Salesforce always returns one; HubSpot too with offline_access)
+  token_expires_at       DateTime?
+  scopes                 String? // space-separated granted OAuth scopes
+
+  // Provider-side identity (so we can show the user which CRM org they connected)
+  external_account_id    String? // HubSpot portal_id, Salesforce organization_id
+  external_account_name  String?
+  instance_url           String? // Salesforce only — every org has a unique base URL
+
+  // Connection state
+  status                 String    @default("active") // active | error | expired | disconnected
+  last_error             String?
+  connected_at           DateTime  @default(now())
+  connected_by_user_id   String?
+  last_sync_at           DateTime?
+  disconnected_at        DateTime?
+
+  created_at             DateTime  @default(now())
+  updated_at             DateTime  @updatedAt
+
+  organization     Organization        @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  fieldMappings    CrmFieldMapping[]
+  syncJobs         CrmSyncJob[]
+  contactLinks     CrmContactLink[]
+  activityPushes   CrmActivityPushItem[]
+
+  @@unique([organization_id, provider]) // one active connection per provider per org
+  @@index([organization_id])
+  @@index([provider])
+  @@index([status])
+}
+
+/// Field-mapping rule between Superkabe lead fields and CRM contact fields.
+/// Direction lets a single connection have separate import vs. export rules
+/// per field if needed; defaults to "import" (CRM → Superkabe).
+model CrmFieldMapping {
+  id                 String   @id @default(uuid())
+  crm_connection_id  String
+
+  superkabe_field    String // "email" | "first_name" | "company" | …
+  crm_field          String // HubSpot internal name or Salesforce field API name
+  direction          String   @default("import") // import | export | bidirectional
+  transform          String? // optional named transform key for value coercion
+
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
+
+  connection CrmConnection @relation(fields: [crm_connection_id], references: [id], onDelete: Cascade)
+
+  @@unique([crm_connection_id, superkabe_field, crm_field, direction])
+  @@index([crm_connection_id])
+}
+
+/// Batch sync job (initial import, incremental import, suppression pull).
+/// Activity pushes use CrmActivityPushItem instead because they're per-event,
+/// not per-batch.
+model CrmSyncJob {
+  id                    String    @id @default(uuid())
+  crm_connection_id     String
+
+  type                  String // initial_import | incremental_import | suppression_pull
+  state                 String    @default("pending") // pending | running | completed | failed | cancelled
+
+  // Source of truth for what to pull (e.g. HubSpot { list_id }, Salesforce { soql } or { list_view_id })
+  source_filter         Json?
+
+  // Counts
+  total_records         Int       @default(0)
+  records_processed     Int       @default(0)
+  records_created       Int       @default(0)
+  records_updated       Int       @default(0)
+  records_skipped       Int       @default(0)
+  records_failed        Int       @default(0)
+
+  // Cursor for incremental — opaque per-provider value (HubSpot offset, Salesforce nextRecordsUrl)
+  cursor                String?
+
+  // Lifecycle
+  started_at            DateTime?
+  finished_at           DateTime?
+  error_message         String?
+  error_count           Int       @default(0)
+  triggered_by_user_id  String?
+
+  created_at            DateTime  @default(now())
+  updated_at            DateTime  @updatedAt
+
+  connection CrmConnection @relation(fields: [crm_connection_id], references: [id], onDelete: Cascade)
+
+  @@index([crm_connection_id])
+  @@index([state])
+  @@index([created_at])
+}
+
+/// Link between a Superkabe Lead and its CRM contact. Created on first import
+/// or first activity push that resolves a CRM contact ID. Used by the activity
+/// push worker to skip the email-lookup round-trip on subsequent events.
+model CrmContactLink {
+  id                 String   @id @default(uuid())
+  crm_connection_id  String
+  superkabe_lead_id  String
+  crm_contact_id     String // ID in HubSpot/Salesforce
+
+  last_pulled_at     DateTime?
+  last_pushed_at     DateTime? // last activity successfully pushed
+
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
+
+  connection CrmConnection @relation(fields: [crm_connection_id], references: [id], onDelete: Cascade)
+
+  @@unique([crm_connection_id, crm_contact_id])
+  @@unique([crm_connection_id, superkabe_lead_id])
+  @@index([crm_connection_id])
+  @@index([superkabe_lead_id])
+}
+
+/// Per-event outbound activity push to the CRM. The webhookEventBus
+/// subscriber writes one row per (active CRM connection, sending event)
+/// pair; per-provider workers consume rows in `pending` state and push
+/// to HubSpot timeline / Salesforce Task. Idempotency is enforced via
+/// the unique tuple so event-bus retries don't double-write.
+model CrmActivityPushItem {
+  id                 String    @id @default(uuid())
+  crm_connection_id  String
+  superkabe_lead_id  String
+  crm_contact_id     String? // resolved by worker if not yet linked
+
+  event_type         String // email.sent | email.opened | email.clicked | email.replied | email.bounced
+  event_payload      Json
+  occurred_at        DateTime
+
+  state              String    @default("pending") // pending | pushed | failed | skipped
+  attempts           Int       @default(0)
+  next_attempt_at    DateTime  @default(now())
+  pushed_at          DateTime?
+  last_error         String?
+
+  created_at         DateTime  @default(now())
+  updated_at         DateTime  @updatedAt
+
+  connection CrmConnection @relation(fields: [crm_connection_id], references: [id], onDelete: Cascade)
+
+  @@unique([crm_connection_id, superkabe_lead_id, event_type, occurred_at])
+  @@index([crm_connection_id, state])
+  @@index([state, next_attempt_at])
+  @@index([superkabe_lead_id])
 }
