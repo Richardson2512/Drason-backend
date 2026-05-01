@@ -247,7 +247,7 @@ app.use('/api', extractOrgContext);
 
 // Enforce subscription status on all /api routes (except auth, billing, GET user/me, webhooks, OAuth callbacks)
 app.use('/api', (req, res, next) => {
-    const prefixExempt = ['/auth/', '/billing/', '/monitor/', '/ingest/', '/oauth/'];
+    const prefixExempt = ['/auth/', '/billing/', '/monitor/', '/ingest/', '/oauth/', '/integrations/hubspot/callback', '/integrations/salesforce/callback', '/integrations/hubspot/webhooks'];
     if (prefixExempt.some(p => req.path.startsWith(p))) return next();
     // OAuth callbacks from Google/Microsoft don't carry our auth — exempt them
     if (req.path === '/sequencer/accounts/google/callback' || req.path === '/sequencer/accounts/microsoft/callback') return next();
@@ -377,12 +377,39 @@ app.get('/api/oauth/connections', asyncHandler(oauthConnectionsController.listOA
 app.post('/api/oauth/connections/revoke', asyncHandler(oauthConnectionsController.revokeOAuthConnection));
 
 // CRM integrations (Phase 1 — connection list, detail, disconnect).
-// HubSpot OAuth + sync controllers ship in Phase 2 / Phase 3 alongside
-// the per-provider client implementations.
 import * as crmIntegrationsController from './controllers/crmIntegrationsController';
 app.get('/api/integrations/crm/connections', asyncHandler(crmIntegrationsController.listConnections));
 app.get('/api/integrations/crm/connections/:id', asyncHandler(crmIntegrationsController.getConnectionDetail));
 app.post('/api/integrations/crm/connections/:id/disconnect', asyncHandler(crmIntegrationsController.disconnectConnection));
+
+// CRM — HubSpot (Phase 2). /authorize requires login; /callback is the
+// public OAuth landing.
+import * as hubspotIntegrationController from './controllers/hubspotIntegrationController';
+app.get('/api/integrations/hubspot/authorize', asyncHandler(hubspotIntegrationController.authorize));
+app.get('/api/integrations/hubspot/lists', asyncHandler(hubspotIntegrationController.listLists));
+app.get('/api/integrations/hubspot/fields', asyncHandler(hubspotIntegrationController.describeFields));
+app.post('/api/integrations/hubspot/import', asyncHandler(hubspotIntegrationController.startImport));
+
+// CRM — Salesforce (Phase 3).
+import * as salesforceIntegrationController from './controllers/salesforceIntegrationController';
+app.get('/api/integrations/salesforce/authorize', asyncHandler(salesforceIntegrationController.authorize));
+app.get('/api/integrations/salesforce/list-views', asyncHandler(salesforceIntegrationController.listViews));
+app.get('/api/integrations/salesforce/fields', asyncHandler(salesforceIntegrationController.describeFields));
+app.post('/api/integrations/salesforce/import', asyncHandler(salesforceIntegrationController.startImport));
+
+// Public OAuth callback endpoints — must be reachable without an
+// authenticated session (the browser is mid-redirect from the CRM).
+// Mounted under /api so the global rate-limit + correlation middleware
+// still apply, but with their own bypass on extractOrgContext via the
+// publicPaths allowlist below.
+app.get('/api/integrations/hubspot/callback', asyncHandler(hubspotIntegrationController.callback));
+app.get('/api/integrations/salesforce/callback', asyncHandler(salesforceIntegrationController.callback));
+
+// HubSpot webhooks — POST from HubSpot's servers, no Superkabe session.
+// Auth is via HMAC-SHA256 signature on every request (verified inside
+// the controller). Whitelisted in extractOrgContext / subscription gate.
+import { handleHubSpotWebhook } from './controllers/hubspotWebhooksController';
+app.post('/api/integrations/hubspot/webhooks', asyncHandler(handleHubSpotWebhook));
 
 // ── MCP (Model Context Protocol) ────────────────────────────────────
 // Public path /mcp for Claude.ai browser integrations and any remote
@@ -781,6 +808,21 @@ initRateLimiters();
 import { registerActivityPushSubscriber } from './services/crm/activityPushService';
 registerActivityPushSubscriber();
 
+// Register CRM provider factories so workers and controllers can resolve
+// the right client per connection.provider. Provider modules are
+// import-only (no side effects beyond registering); skip if env vars
+// for that provider aren't set so we don't surface "not configured"
+// connect attempts in the dashboard.
+import { registerProvider } from './services/crm/registry';
+import { hubspotFactory } from './services/crm/hubspot/factory';
+import { salesforceFactory } from './services/crm/salesforce/factory';
+if (process.env.HUBSPOT_CLIENT_ID && process.env.HUBSPOT_CLIENT_SECRET) {
+    registerProvider(hubspotFactory);
+}
+if (process.env.SALESFORCE_CLIENT_ID && process.env.SALESFORCE_CLIENT_SECRET) {
+    registerProvider(salesforceFactory);
+}
+
 const server = app.listen(PORT, () => {
     logger.info(`Server started on port ${PORT}`, {
         port: PORT,
@@ -790,6 +832,14 @@ const server = app.listen(PORT, () => {
     // Start background workers
     startMetricsWorker();
     logger.info('Metrics worker started');
+
+    // CRM workers (Phase 2 / Phase 3) — provider-blind, dispatch via the
+    // factory registry. Started unconditionally; if no factories are
+    // registered (env vars missing) the workers loop with no-ops.
+    import('./workers/crmActivityPushWorker').then(m => m.startCrmActivityPushWorker());
+    import('./workers/crmContactImportWorker').then(m => m.startCrmContactImportWorker());
+    import('./workers/crmSuppressionSyncWorker').then(m => m.startCrmSuppressionSyncWorker());
+    import('./workers/crmIncrementalImportScheduler').then(m => m.startCrmIncrementalImportScheduler());
 
     startRetentionJob();
     logger.info('Compliance retention job started');

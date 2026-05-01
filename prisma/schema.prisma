@@ -1249,6 +1249,18 @@ model ConnectedAccount {
   tracking_domain_last_check_at DateTime?
   tracking_domain_last_error    String?
 
+  // Zapmail Custom-OAuth resilience state — see migration
+  // 20260430120000_zapmail_resilience_columns for the full rationale.
+  // zapmail_export_id lets the reconciliation worker re-poll Zapmail for a
+  // stuck oauth_pending row. oauth_initiated_at bounds polling + drives the
+  // stale-row sweep. oauth_attempts + oauth_first_attempt_at enforce the
+  // 3-per-mailbox-per-7-day Custom OAuth quota at our edge so the user
+  // gets a typed error instead of a generic 429.
+  zapmail_export_id        Int?
+  oauth_initiated_at       DateTime?
+  oauth_attempts           Int       @default(0)
+  oauth_first_attempt_at   DateTime?
+
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
@@ -1261,6 +1273,7 @@ model ConnectedAccount {
   @@unique([organization_id, email])
   @@index([organization_id, provider])
   @@index([organization_id, connection_status])
+  @@index([connection_status, oauth_initiated_at])
 }
 
 // SendCampaign has been merged into Campaign (source_platform='sequencer').
