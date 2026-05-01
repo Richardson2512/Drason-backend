@@ -93,6 +93,7 @@ import { initEventQueue, getQueueStatus, shutdownEventQueue } from './services/e
 import { startLeadHealthWorker, getLeadHealthWorkerStatus } from './services/leadHealthWorker';
 import { schedulePostmasterFetch, stopPostmasterFetch, getPostmasterWorkerStatus } from './workers/postmasterToolsWorker';
 import { scheduleImportKeyTtlSweep, stopImportKeyTtlSweep } from './workers/importKeyTtlWorker';
+import { scheduleZapmailReconciliationWorker, stopZapmailReconciliationWorker } from './workers/zapmailReconciliationWorker';
 import { scheduleAccountDeletionWorker, stopAccountDeletionWorker } from './workers/accountDeletionWorker';
 import * as postmasterController from './controllers/postmasterController';
 import * as migrationController from './controllers/migrationFromSmartleadController';
@@ -860,6 +861,11 @@ const server = app.listen(PORT, () => {
     scheduleImportKeyTtlSweep();
     logger.info('Import-key TTL worker started (sweep every 15m)');
 
+    // Start Zapmail reconciliation worker — sweeps abandoned oauth_pending +
+    // provisioning_failed ConnectedAccount rows from the Zapmail import flow.
+    scheduleZapmailReconciliationWorker();
+    logger.info('Zapmail reconciliation worker started (sweep every 15m)');
+
     // Start DSAR account-deletion worker — executes deletion requests after
     // the 30-day grace period. Required for GDPR Art. 17 compliance.
     scheduleAccountDeletionWorker();
@@ -944,6 +950,9 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
     stopImportKeyTtlSweep();
     logger.info('Import-key TTL worker stopped');
+
+    stopZapmailReconciliationWorker();
+    logger.info('Zapmail reconciliation worker stopped');
 
     stopAccountDeletionWorker();
     logger.info('Account deletion worker stopped');

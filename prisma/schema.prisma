@@ -101,6 +101,8 @@ model Organization {
   validationBatches      ValidationBatch[]
   connectedAccounts      ConnectedAccount[]
   crmConnections         CrmConnection[]
+  leadSourceConnections  LeadSourceConnection[]
+  outreachConnections    OutreachConnection[]
   // SendCampaign was unified into Campaign. Sequencer campaigns now appear in the
   // `campaigns` relation above with source_platform='sequencer'.
   emailThreads           EmailThread[]
@@ -1913,4 +1915,175 @@ model CrmActivityPushItem {
   @@index([crm_connection_id, state])
   @@index([state, next_attempt_at])
   @@index([superkabe_lead_id])
+}
+
+/// Lead-source connection — Apollo (Phase 5), ZoomInfo (later). One per
+/// (org, provider). API key is encrypted at rest using the same
+/// AES-256-GCM helper as CRM connections. Distinct from CrmConnection
+/// because the model is read-only (we pull contacts; we don't write
+/// activity back to the lead source).
+model LeadSourceConnection {
+  id                     String    @id @default(uuid())
+  organization_id        String
+  provider               String // "apollo" | "zoominfo"
+
+  api_key_encrypted      String
+  status                 String    @default("active") // active | error | expired | disconnected
+  external_account_name  String? // Apollo workspace name / ZoomInfo org name
+  external_account_id    String?
+
+  last_validated_at      DateTime?
+  last_used_at           DateTime?
+  last_error             String?
+
+  connected_at           DateTime  @default(now())
+  connected_by_user_id   String?
+  disconnected_at        DateTime?
+
+  created_at             DateTime  @default(now())
+  updated_at             DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  importJobs   LeadSourceImportJob[]
+
+  @@unique([organization_id, provider])
+  @@index([organization_id])
+  @@index([provider])
+  @@index([status])
+}
+
+/// One row per "import a list of contacts from a lead source" run. Stores
+/// the source URL the user pasted, the parsed search params we replay
+/// against the provider's search API, and progress counters / cursor for
+/// resumable pagination. Imports are idempotent on email — re-running the
+/// same job is safe.
+model LeadSourceImportJob {
+  id                          String    @id @default(uuid())
+  lead_source_connection_id   String
+  organization_id             String
+
+  source_url                  String? // raw URL pasted by the user
+  parsed_filters              Json? // structured search params sent to the provider
+  source_kind                 String? // "people_search" | "saved_list" | "saved_search"
+  source_external_id          String? // Apollo list_id when source_kind=saved_list
+
+  target_campaign_id          String? // optional campaign to enroll into
+  reveal_personal_emails      Boolean   @default(true)
+  cap                         Int? // hard cap on contacts to import; null = no cap
+  total_estimated             Int       @default(0) // count from initial preview
+
+  state                       String    @default("pending") // pending | running | completed | failed | cancelled
+
+  // Progress counters
+  total_processed             Int       @default(0)
+  total_created               Int       @default(0)
+  total_updated               Int       @default(0)
+  total_skipped               Int       @default(0)
+  total_failed                Int       @default(0)
+  credits_consumed            Int       @default(0)
+
+  // Resumable cursor — opaque per provider (Apollo page number; ZoomInfo cursor token)
+  cursor                      String?
+  page                        Int       @default(1)
+
+  // Lifecycle
+  started_at                  DateTime?
+  finished_at                 DateTime?
+  error_message               String?
+  error_count                 Int       @default(0)
+  triggered_by_user_id        String?
+
+  created_at                  DateTime  @default(now())
+  updated_at                  DateTime  @updatedAt
+
+  connection LeadSourceConnection @relation(fields: [lead_source_connection_id], references: [id], onDelete: Cascade)
+
+  @@index([lead_source_connection_id])
+  @@index([organization_id])
+  @@index([state])
+  @@index([created_at])
+}
+
+/// Outreach.io OAuth connection — one per organization. Distinct from
+/// CrmConnection because the model is purely outbound (we push prospects
+/// + add to sequences; we don't pull contacts back).
+model OutreachConnection {
+  id                       String    @id @default(uuid())
+  organization_id          String
+
+  // OAuth tokens — encrypted at rest (AES-256-GCM)
+  access_token             String
+  refresh_token            String
+  token_expires_at         DateTime
+  scopes                   String?   // space-separated granted scopes
+
+  // Provider-side identity
+  outreach_user_id         String?
+  outreach_user_email      String?
+  outreach_org_name        String?
+
+  status                   String    @default("active") // active | error | expired | disconnected
+  last_validated_at        DateTime?
+  last_used_at             DateTime?
+  last_error               String?
+  connected_at             DateTime  @default(now())
+  connected_by_user_id     String?
+  disconnected_at          DateTime?
+
+  created_at               DateTime  @default(now())
+  updated_at               DateTime  @updatedAt
+
+  organization Organization         @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  exportJobs   OutreachExportJob[]
+
+  @@unique([organization_id])
+  @@index([status])
+}
+
+/// Background export job — pushes a snapshot of Superkabe leads into an
+/// Outreach sequence. lead_ids is captured at job-creation time so the
+/// list doesn't drift mid-run if the underlying campaign changes.
+model OutreachExportJob {
+  id                          String   @id @default(uuid())
+  outreach_connection_id      String
+  organization_id             String
+
+  // Source snapshot
+  source_kind                 String   // 'todays_list' | 'custom_list' | 'campaign'
+  source_label                String?
+  prospect_ids                String[] // CampaignLead.id snapshot at queue time
+
+  // Sequence target
+  sequence_id                 String   // outreach sequence id
+  sequence_name               String?
+  created_sequence            Boolean  @default(false)
+  add_to_mailbox_id           String?  // outreach mailbox id used for sends
+
+  // Counters
+  total                       Int      @default(0)
+  total_processed             Int      @default(0)
+  total_prospects_created     Int      @default(0)
+  total_prospects_updated     Int      @default(0)
+  total_added_to_sequence     Int      @default(0)
+  total_skipped               Int      @default(0)
+  total_failed                Int      @default(0)
+  cursor                      Int      @default(0) // index into lead_ids
+
+  // Lifecycle
+  state                       String   @default("pending") // pending | running | completed | failed | cancelled
+  started_at                  DateTime?
+  finished_at                 DateTime?
+  error_message               String?
+  error_count                 Int      @default(0)
+  triggered_by_user_id        String?
+
+  created_at                  DateTime @default(now())
+  updated_at                  DateTime @updatedAt
+
+  connection OutreachConnection @relation(fields: [outreach_connection_id], references: [id], onDelete: Cascade)
+
+  @@index([outreach_connection_id])
+  @@index([organization_id])
+  @@index([state])
+  @@index([created_at])
 }

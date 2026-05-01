@@ -256,23 +256,73 @@ export interface CustomOAuthRequest {
  * mailbox using the credentials it owns and walks our consent URL. Auth codes
  * land at the redirect_uri inside oauthLink (i.e. our existing callback).
  *
+ * Retry behavior: Zapmail's `add-client-id` (which must run before this call
+ * for Google mailboxes) is async — its response says "Client ID will be
+ * added to the domains soon." If we hit `custom-oauth` before propagation
+ * completes, Zapmail (or Google's OAuth server inside Zapmail's walk) returns
+ * an `unauthorized_client` / `client_id` error. We retry with exponential
+ * backoff up to MAX_CUSTOM_OAUTH_RETRIES, only on signals that look like
+ * the propagation race. Other errors (auth, validation, rate limit) bubble
+ * up immediately — no point retrying those.
+ *
  * Returns Zapmail's exportId for status polling.
  */
+const MAX_CUSTOM_OAUTH_RETRIES = 4;
+const CLIENT_ID_RACE_SIGNALS = [
+    'unauthorized_client',
+    'client_id',
+    'not authorized',
+    'not whitelisted',
+    'not configured',
+];
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+function isClientIdPropagationRace(message: string): boolean {
+    const lower = message.toLowerCase();
+    return CLIENT_ID_RACE_SIGNALS.some((s) => lower.includes(s));
+}
+
 export async function triggerCustomOAuth(
     apiKey: string,
     request: CustomOAuthRequest,
     workspaceKey?: string,
 ): Promise<{ exportId: number }> {
-    const data = (await zapmailFetch('/v2/mailboxes/custom-oauth', apiKey, {
-        method: 'POST',
-        body: request,
-        workspaceKey,
-    })) as { data?: { exportId: number } };
+    let attempt = 0;
+    let delayMs = 2000;
+    let lastError: Error | null = null;
 
-    if (!data?.data?.exportId) {
-        throw new Error('Zapmail did not return an exportId for the OAuth orchestration');
+    while (attempt <= MAX_CUSTOM_OAUTH_RETRIES) {
+        try {
+            const data = (await zapmailFetch('/v2/mailboxes/custom-oauth', apiKey, {
+                method: 'POST',
+                body: request,
+                workspaceKey,
+            })) as { data?: { exportId: number } };
+
+            if (!data?.data?.exportId) {
+                throw new Error('Zapmail did not return an exportId for the OAuth orchestration');
+            }
+            return { exportId: data.data.exportId };
+        } catch (err) {
+            const e = err as Error;
+            lastError = e;
+
+            // Only retry on the documented race; everything else is a real
+            // error (rate limit, auth failure, validation) and retrying
+            // would just compound the issue.
+            if (!isClientIdPropagationRace(e.message) || attempt === MAX_CUSTOM_OAUTH_RETRIES) {
+                throw e;
+            }
+
+            await sleep(delayMs);
+            delayMs *= 2; // 2s → 4s → 8s → 16s (max ~30s total wait)
+            attempt++;
+        }
     }
-    return { exportId: data.data.exportId };
+
+    // Unreachable in practice, but keeps the type checker happy.
+    throw lastError || new Error('triggerCustomOAuth retry loop exited unexpectedly');
 }
 
 export interface ExportStatus {

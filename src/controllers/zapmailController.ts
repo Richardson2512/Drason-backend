@@ -26,7 +26,6 @@ import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
 import { encrypt, decrypt } from '../utils/encryption';
 import { getSequencerSettings } from '../services/sequencerSettingsService';
-import { provisionMailboxForConnectedAccount } from '../services/mailboxProvisioningService';
 import {
     validateZapmailKey,
     listAllMailboxes,
@@ -45,6 +44,16 @@ const MAX_IMPORT = 200;
 // docs don't enumerate accepted values for the add-client-id endpoint — open
 // question to support. Until confirmed we send a stable identifier.
 const SUPERKABE_APP_NAME = process.env.ZAPMAIL_APP_NAME || 'SUPERKABE';
+
+// Zapmail's documented quota: max 3 Custom-OAuth attempts per mailbox per
+// rolling 7-day window. Hitting it returns a generic 429 — we pre-check and
+// surface an actionable error code instead.
+const ZAPMAIL_OAUTH_MAX_ATTEMPTS = 3;
+const ZAPMAIL_OAUTH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Bound for treating an oauth_pending row as "in-progress" rather than
+// abandoned. Aligns with the importStatus poll expiry below.
+const OAUTH_PENDING_FRESHNESS_MS = 60 * 60 * 1000;
 
 async function loadOrgKey(orgId: string): Promise<string | null> {
     const org = await prisma.organization.findUnique({
@@ -206,12 +215,21 @@ export const importMailboxes = async (req: Request, res: Response): Promise<Resp
         const defaultDailyLimit = orgSettings.default_daily_limit;
 
         const results: ImportRowResult[] = [];
-        const queuedGoogle: { mailbox: ZapmailMailbox; entry: CustomOAuthMailboxEntry }[] = [];
-        const queuedMicrosoft: { mailbox: ZapmailMailbox; entry: CustomOAuthMailboxEntry }[] = [];
+        const queuedGoogle: { mailbox: ZapmailMailbox; entry: CustomOAuthMailboxEntry; accountId: string }[] = [];
+        const queuedMicrosoft: { mailbox: ZapmailMailbox; entry: CustomOAuthMailboxEntry; accountId: string }[] = [];
 
-        // Phase 1: pre-create ConnectedAccount rows in oauth_pending. The
-        // existing OAuth callback upserts on (org, email) and will flip these
-        // to `active` once Zapmail completes the orchestrated consent.
+        const now = new Date();
+
+        // Phase 1: smart-upsert ConnectedAccount rows.
+        //
+        //   active                                          → skipped/duplicate
+        //   oauth_pending  AND  oauth_initiated_at < 60min  → skipped/in_progress
+        //   oauth_failed   OR   stale oauth_pending         → resumable: re-arm row
+        //                                                     (rolls window/quota)
+        //   no row                                          → create fresh
+        //
+        // The OAuth callback upserts on (org, email) and flips this row to
+        // `active`. The reconciliation worker sweeps abandoned oauth_pending.
         for (const email of requestedEmails) {
             const remote = remoteByEmail.get(email);
             if (!remote) {
@@ -220,25 +238,81 @@ export const importMailboxes = async (req: Request, res: Response): Promise<Resp
             }
 
             try {
-                const account = await prisma.connectedAccount.create({
-                    data: {
+                const existing = await prisma.connectedAccount.findUnique({
+                    where: { organization_id_email: { organization_id: orgId, email } },
+                    select: {
+                        id: true,
+                        connection_status: true,
+                        oauth_initiated_at: true,
+                        oauth_attempts: true,
+                        oauth_first_attempt_at: true,
+                    },
+                });
+
+                if (existing && existing.connection_status === 'active') {
+                    results.push({ email, status: 'skipped', error_code: 'duplicate', error_message: 'Mailbox already imported' });
+                    continue;
+                }
+
+                if (
+                    existing &&
+                    existing.connection_status === 'oauth_pending' &&
+                    existing.oauth_initiated_at &&
+                    now.getTime() - existing.oauth_initiated_at.getTime() < OAUTH_PENDING_FRESHNESS_MS
+                ) {
+                    results.push({ email, status: 'skipped', error_code: 'in_progress', error_message: 'OAuth already in progress for this mailbox' });
+                    continue;
+                }
+
+                // Pre-flight Zapmail's 3/mailbox/7d quota. Reset window if it
+                // has fully passed.
+                let attemptsInWindow = existing?.oauth_attempts ?? 0;
+                let windowAnchor = existing?.oauth_first_attempt_at ?? null;
+                if (windowAnchor && now.getTime() - windowAnchor.getTime() >= ZAPMAIL_OAUTH_WINDOW_MS) {
+                    attemptsInWindow = 0;
+                    windowAnchor = null;
+                }
+                if (attemptsInWindow >= ZAPMAIL_OAUTH_MAX_ATTEMPTS) {
+                    const resetAt = windowAnchor ? new Date(windowAnchor.getTime() + ZAPMAIL_OAUTH_WINDOW_MS) : null;
+                    results.push({
+                        email,
+                        status: 'failed',
+                        error_code: 'oauth_quota_exhausted',
+                        error_message: resetAt
+                            ? `Zapmail allows max ${ZAPMAIL_OAUTH_MAX_ATTEMPTS} OAuth attempts per mailbox per 7 days. Try again after ${resetAt.toISOString()}.`
+                            : `Zapmail allows max ${ZAPMAIL_OAUTH_MAX_ATTEMPTS} OAuth attempts per mailbox per 7 days.`,
+                    });
+                    continue;
+                }
+
+                const nextAttempts = attemptsInWindow + 1;
+                const nextAnchor = windowAnchor ?? now;
+
+                const account = await prisma.connectedAccount.upsert({
+                    where: { organization_id_email: { organization_id: orgId, email } },
+                    create: {
                         organization_id: orgId,
                         email,
                         display_name: remote.displayName || null,
                         provider: remote.provider,
                         connection_status: 'oauth_pending',
                         daily_send_limit: defaultDailyLimit,
+                        oauth_initiated_at: now,
+                        oauth_attempts: nextAttempts,
+                        oauth_first_attempt_at: nextAnchor,
+                        last_error: null,
+                    },
+                    update: {
+                        display_name: remote.displayName || null,
+                        provider: remote.provider,
+                        connection_status: 'oauth_pending',
+                        oauth_initiated_at: now,
+                        oauth_attempts: nextAttempts,
+                        oauth_first_attempt_at: nextAnchor,
+                        zapmail_export_id: null,
+                        last_error: null,
                     },
                 });
-
-                provisionMailboxForConnectedAccount({
-                    connectedAccountId: account.id,
-                    organizationId: orgId,
-                    email: account.email,
-                    displayName: account.display_name,
-                }).catch((err) =>
-                    logger.error('[ZAPMAIL] Shadow provisioning failed', err instanceof Error ? err : new Error(String(err))),
-                );
 
                 // Build the OAuth URL Zapmail will walk on the mailbox side. Our
                 // existing /api/sequencer/accounts/{provider}/callback handles
@@ -249,18 +323,14 @@ export const importMailboxes = async (req: Request, res: Response): Promise<Resp
                         : await getMicrosoftAuthorizationUrl(orgId, email);
 
                 const entry: CustomOAuthMailboxEntry = { mailboxId: remote.id, oauthLink };
-                if (remote.provider === 'google') queuedGoogle.push({ mailbox: remote, entry });
-                else queuedMicrosoft.push({ mailbox: remote, entry });
+                if (remote.provider === 'google') queuedGoogle.push({ mailbox: remote, entry, accountId: account.id });
+                else queuedMicrosoft.push({ mailbox: remote, entry, accountId: account.id });
 
                 results.push({ email, status: 'queued', accountId: account.id, provider: remote.provider });
             } catch (err: unknown) {
                 const e = err as { code?: string; message?: string };
-                if (e?.code === 'P2002') {
-                    results.push({ email, status: 'skipped', error_code: 'duplicate', error_message: 'Mailbox already imported' });
-                } else {
-                    logger.error('[ZAPMAIL] Pre-create failed', err instanceof Error ? err : new Error(String(err)));
-                    results.push({ email, status: 'failed', error_code: 'precreate_failed', error_message: e?.message || 'Failed to create mailbox row' });
-                }
+                logger.error('[ZAPMAIL] Pre-create failed', err instanceof Error ? err : new Error(String(err)));
+                results.push({ email, status: 'failed', error_code: 'precreate_failed', error_message: e?.message || 'Failed to create mailbox row' });
             }
         }
 
@@ -277,14 +347,24 @@ export const importMailboxes = async (req: Request, res: Response): Promise<Resp
                 });
             } catch (err: unknown) {
                 const e = err as { message?: string };
+                const reason = e?.message || 'Failed to whitelist OAuth client on Zapmail domains';
                 logger.error('[ZAPMAIL] add-client-id failed', err instanceof Error ? err : new Error(String(err)));
-                // Mark all google-queued rows as failed at this stage
+                // Roll the DB rows back to oauth_failed so the reconciler and
+                // the listMailboxes annotation reflect reality, not a zombie
+                // oauth_pending.
+                const failedIds = queuedGoogle.map((q) => q.accountId);
+                if (failedIds.length > 0) {
+                    await prisma.connectedAccount.updateMany({
+                        where: { id: { in: failedIds } },
+                        data: { connection_status: 'oauth_failed', last_error: `add-client-id: ${reason}` },
+                    });
+                }
                 for (const { mailbox } of queuedGoogle) {
                     const r = results.find((x) => x.email === mailbox.email);
                     if (r) {
                         r.status = 'failed';
                         r.error_code = 'add_client_id_failed';
-                        r.error_message = e?.message || 'Failed to whitelist OAuth client on Zapmail domains';
+                        r.error_message = reason;
                     }
                 }
                 queuedGoogle.length = 0;
@@ -325,15 +405,34 @@ export const importMailboxes = async (req: Request, res: Response): Promise<Resp
                         : {}),
                 });
                 exportId = result.exportId;
+
+                // Persist export id on every queued row so the reconciler can
+                // re-poll Zapmail after a process restart, and so importStatus
+                // can scope the freshness check to this batch.
+                const queuedIds = [...queuedGoogle, ...queuedMicrosoft].map((q) => q.accountId);
+                if (queuedIds.length > 0) {
+                    await prisma.connectedAccount.updateMany({
+                        where: { id: { in: queuedIds } },
+                        data: { zapmail_export_id: exportId },
+                    });
+                }
             } catch (err: unknown) {
                 const e = err as { message?: string };
+                const reason = e?.message || 'Zapmail rejected the OAuth orchestration request';
                 logger.error('[ZAPMAIL] custom-oauth trigger failed', err instanceof Error ? err : new Error(String(err)));
+                const failedIds = [...queuedGoogle, ...queuedMicrosoft].map((q) => q.accountId);
+                if (failedIds.length > 0) {
+                    await prisma.connectedAccount.updateMany({
+                        where: { id: { in: failedIds } },
+                        data: { connection_status: 'oauth_failed', last_error: `custom-oauth: ${reason}` },
+                    });
+                }
                 for (const { mailbox } of [...queuedGoogle, ...queuedMicrosoft]) {
                     const r = results.find((x) => x.email === mailbox.email);
                     if (r && r.status === 'queued') {
                         r.status = 'failed';
                         r.error_code = 'custom_oauth_failed';
-                        r.error_message = e?.message || 'Zapmail rejected the OAuth orchestration request';
+                        r.error_message = reason;
                     }
                 }
             }
@@ -371,17 +470,44 @@ export const importStatus = async (req: Request, res: Response): Promise<Respons
             return res.status(400).json({ success: false, error: 'Zapmail is not connected' });
         }
 
-        const status = await getExportStatus(apiKey, exportId);
-
-        // Cross-check our own ConnectedAccount rows so the UI can show what's
-        // actually landed (Zapmail's status is opaque). Active rows = OAuth
-        // callback completed; oauth_pending = still waiting.
-        const recent = await prisma.connectedAccount.findMany({
-            where: { organization_id: orgId, created_at: { gte: new Date(Date.now() - 24 * 3600 * 1000) } },
-            select: { email: true, connection_status: true, last_error: true },
-            orderBy: { created_at: 'desc' },
+        // Scope the freshness check to rows belonging to THIS export. If the
+        // newest oauth_initiated_at is past the 60-min bound, stop polling
+        // Zapmail — the front-end loop is unbounded otherwise. Reconciler
+        // sweeps the abandoned oauth_pending rows server-side.
+        const exportRows = await prisma.connectedAccount.findMany({
+            where: { organization_id: orgId, zapmail_export_id: exportId },
+            select: { email: true, connection_status: true, last_error: true, oauth_initiated_at: true },
+            orderBy: { oauth_initiated_at: 'desc' },
             take: 200,
         });
+
+        const newestInitiated = exportRows.reduce<Date | null>(
+            (acc, r) => (r.oauth_initiated_at && (!acc || r.oauth_initiated_at > acc) ? r.oauth_initiated_at : acc),
+            null,
+        );
+        const isExpired = newestInitiated
+            ? Date.now() - newestInitiated.getTime() > OAUTH_PENDING_FRESHNESS_MS
+            : false;
+
+        if (isExpired) {
+            return res.status(200).json({
+                success: true,
+                data: {
+                    exportId,
+                    zapmailStatus: 'expired',
+                    zapmailProgress: null,
+                    expired: true,
+                    expiredAfterMs: OAUTH_PENDING_FRESHNESS_MS,
+                    recentAccounts: exportRows.map(({ email, connection_status, last_error }) => ({
+                        email,
+                        connection_status,
+                        last_error,
+                    })),
+                },
+            });
+        }
+
+        const status = await getExportStatus(apiKey, exportId);
 
         return res.status(200).json({
             success: true,
@@ -389,7 +515,12 @@ export const importStatus = async (req: Request, res: Response): Promise<Respons
                 exportId,
                 zapmailStatus: status.status,
                 zapmailProgress: status.progress,
-                recentAccounts: recent,
+                expired: false,
+                recentAccounts: exportRows.map(({ email, connection_status, last_error }) => ({
+                    email,
+                    connection_status,
+                    last_error,
+                })),
             },
         });
     } catch (err: unknown) {

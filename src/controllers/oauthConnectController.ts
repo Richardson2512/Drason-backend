@@ -99,13 +99,31 @@ export const googleCallback = async (req: Request, res: Response): Promise<void>
             accountId = created.id;
         }
 
-        // Idempotent — creates shadow Mailbox + Domain if missing, no-op if already exists
-        await provisionMailboxForConnectedAccount({
-            connectedAccountId: accountId,
-            organizationId: parsed.orgId,
-            email,
-            displayName: name,
-        }).catch((e) => logger.error('[OAUTH] Google provisioning failed', e));
+        // Idempotent — creates shadow Mailbox + Domain if missing, no-op if already exists.
+        // Synchronous so that a provisioning failure leaves the row in
+        // `provisioning_failed` instead of a silently-half-set-up `active` state.
+        // The reconciliation worker re-tries `provisioning_failed` rows.
+        try {
+            await provisionMailboxForConnectedAccount({
+                connectedAccountId: accountId,
+                organizationId: parsed.orgId,
+                email,
+                displayName: name,
+            });
+        } catch (provisionErr) {
+            logger.error(
+                '[OAUTH] Google provisioning failed',
+                provisionErr instanceof Error ? provisionErr : new Error(String(provisionErr)),
+                { orgId: parsed.orgId, email, accountId },
+            );
+            await prisma.connectedAccount.update({
+                where: { id: accountId },
+                data: {
+                    connection_status: 'provisioning_failed',
+                    last_error: `provisioning: ${provisionErr instanceof Error ? provisionErr.message : String(provisionErr)}`,
+                },
+            }).catch(() => undefined);
+        }
 
         // Record OAuth consent — captures scope + identity for the audit trail.
         try {
@@ -215,12 +233,28 @@ export const microsoftCallback = async (req: Request, res: Response): Promise<vo
             accountId = created.id;
         }
 
-        await provisionMailboxForConnectedAccount({
-            connectedAccountId: accountId,
-            organizationId: parsed.orgId,
-            email,
-            displayName: name,
-        }).catch((e) => logger.error('[OAUTH] Microsoft provisioning failed', e));
+        // Synchronous — see Google branch for the rationale.
+        try {
+            await provisionMailboxForConnectedAccount({
+                connectedAccountId: accountId,
+                organizationId: parsed.orgId,
+                email,
+                displayName: name,
+            });
+        } catch (provisionErr) {
+            logger.error(
+                '[OAUTH] Microsoft provisioning failed',
+                provisionErr instanceof Error ? provisionErr : new Error(String(provisionErr)),
+                { orgId: parsed.orgId, email, accountId },
+            );
+            await prisma.connectedAccount.update({
+                where: { id: accountId },
+                data: {
+                    connection_status: 'provisioning_failed',
+                    last_error: `provisioning: ${provisionErr instanceof Error ? provisionErr.message : String(provisionErr)}`,
+                },
+            }).catch(() => undefined);
+        }
 
         // Record OAuth consent for audit.
         try {
