@@ -13,6 +13,5 @@ const router = Router();
 router.get('/', asyncHandler(apiKeyController.listApiKeys));
 router.post('/', asyncHandler(apiKeyController.createApiKey));
 router.delete('/:id', asyncHandler(apiKeyController.revokeApiKey));
-router.get('/scopes', asyncHandler(apiKeyController.getAvailableScopes));
 
 export default router;

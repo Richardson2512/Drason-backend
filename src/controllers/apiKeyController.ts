@@ -170,10 +170,3 @@ export const revokeApiKey = async (req: Request, res: Response): Promise<Respons
     }
 };
 
-/**
- * GET /api/api-keys/scopes
- * Return all available scopes for reference.
- */
-export const getAvailableScopes = async (_req: Request, res: Response): Promise<Response> => {
-    return res.json({ success: true, scopes: AVAILABLE_SCOPES });
-};
