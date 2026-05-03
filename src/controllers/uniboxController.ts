@@ -127,7 +127,7 @@ export const getThread = async (req: Request, res: Response): Promise<Response> 
         }
 
         // Get lead context if linked to a campaign
-        let leadContext = null;
+        let leadContext: any = null;
         if (thread.campaign_id && thread.contact_email) {
             const campaignLead = await prisma.campaignLead.findFirst({
                 where: { campaign_id: thread.campaign_id, email: thread.contact_email },
@@ -138,6 +138,18 @@ export const getThread = async (req: Request, res: Response): Promise<Response> 
                 },
             });
             if (campaignLead) leadContext = campaignLead;
+        }
+        // Resolve the canonical Lead.id (UUID in the org-wide Lead table) so
+        // the unibox right-panel can deep-link to the contact detail page.
+        // CampaignLead is a per-campaign join; the master record lives on Lead.
+        if (thread.contact_email && thread.organization_id) {
+            const lead = await prisma.lead.findFirst({
+                where: { organization_id: thread.organization_id, email: thread.contact_email, status: { not: 'erased' } },
+                select: { id: true },
+            });
+            if (lead) {
+                leadContext = { ...(leadContext || { email: thread.contact_email }), lead_id: lead.id };
+            }
         }
 
         // Nest leadContext inside `data` — apiClient auto-unwraps `data`, so

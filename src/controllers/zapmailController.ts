@@ -301,6 +301,7 @@ export const importMailboxes = async (req: Request, res: Response): Promise<Resp
                         oauth_attempts: nextAttempts,
                         oauth_first_attempt_at: nextAnchor,
                         last_error: null,
+                        source: 'zapmail',
                     },
                     update: {
                         display_name: remote.displayName || null,
@@ -319,7 +320,7 @@ export const importMailboxes = async (req: Request, res: Response): Promise<Resp
                 // the auth code and upserts tokens onto this same row.
                 const oauthLink =
                     remote.provider === 'google'
-                        ? getGoogleAuthorizationUrl(orgId, email)
+                        ? await getGoogleAuthorizationUrl(orgId, email)
                         : await getMicrosoftAuthorizationUrl(orgId, email);
 
                 const entry: CustomOAuthMailboxEntry = { mailboxId: remote.id, oauthLink };

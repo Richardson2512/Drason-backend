@@ -11,6 +11,8 @@ import { logger } from '../services/observabilityService';
 import { getSequencerSettings } from '../services/sequencerSettingsService';
 import { provisionMailboxForConnectedAccount, deprovisionMailboxForConnectedAccount } from '../services/mailboxProvisioningService';
 import { verifyAndPersistForAccount, checkTrackingDomain } from '../services/trackingDomainVerifierService';
+import { encrypt, decrypt, isEncrypted } from '../utils/encryption';
+import { revokeGoogleToken } from '../utils/googleOAuth';
 
 /**
  * GET /api/sequencer/accounts
@@ -86,6 +88,9 @@ export const listAccounts = async (req: Request, res: Response): Promise<Respons
                 warmup_complete: a.warmup_complete,
                 signature_html: a.signature_html,
                 campaign_count: a.campaignAccounts.length,
+                // How this mailbox got into Superkabe — drives the Source
+                // column + filter on the mailboxes page.
+                source: a.source,
                 // Protection + utilization signals for campaign mailbox picker
                 mailbox_status: mailboxStatus,
                 recovery_phase: recoveryPhase,
@@ -135,6 +140,10 @@ export const createAccount = async (req: Request, res: Response): Promise<Respon
             display_name: displayName || null,
             provider,
             daily_send_limit: effectiveDailyLimit,
+            // Single-mailbox connections from the "Connect Mailbox" modal
+            // are tagged 'manual' regardless of OAuth/SMTP — the OAuth case
+            // is overridden later in the OAuth callback (oauthConnectController).
+            source: 'manual',
         };
 
         // For SMTP accounts, store connection details
@@ -145,7 +154,12 @@ export const createAccount = async (req: Request, res: Response): Promise<Respon
             data.smtp_host = smtpHost;
             data.smtp_port = smtpPort;
             data.smtp_username = smtpUsername;
-            data.smtp_password = smtpPassword;
+            // Encrypt at rest. The schema marks this field encrypted but
+            // historic code stored plaintext — this fixes the gap. Consumers
+            // (emailSendAdapters, imapReplyWorker) tolerate both encrypted
+            // and legacy plaintext via isEncrypted() probe so existing rows
+            // keep working without migration.
+            data.smtp_password = encrypt(smtpPassword);
             data.imap_host = imapHost || null;
             data.imap_port = imapPort || null;
         }
@@ -291,12 +305,14 @@ export const bulkCreateAccounts = async (req: Request, res: Response): Promise<R
                 display_name: row.displayName || null,
                 provider,
                 daily_send_limit: row.dailySendLimit || defaultDailyLimit,
+                source: 'csv',
             };
             if (provider === 'smtp') {
                 data.smtp_host = row.smtpHost;
                 data.smtp_port = row.smtpPort;
                 data.smtp_username = row.smtpUsername;
-                data.smtp_password = row.smtpPassword;
+                // Encrypt at rest — see single-account create handler above.
+                data.smtp_password = row.smtpPassword ? encrypt(row.smtpPassword) : null;
                 data.imap_host = row.imapHost || null;
                 data.imap_port = row.imapPort || null;
             }
@@ -372,6 +388,26 @@ export const deleteAccount = async (req: Request, res: Response): Promise<Respon
 
         if (!account) return res.status(404).json({ success: false, error: 'Account not found' });
 
+        // Revoke the Google grant before clearing local state. Google's
+        // OAuth best-practices: "Revoke tokens as soon as they are no
+        // longer needed." Best-effort — never block deletion on revoke
+        // failure (the user always sees an honest UI), but the grant
+        // SHOULD be killed on Google's side regardless of our DB state.
+        if (account.provider === 'google' && account.refresh_token) {
+            try {
+                const refresh = isEncrypted(account.refresh_token)
+                    ? decrypt(account.refresh_token)
+                    : account.refresh_token;
+                const result = await revokeGoogleToken(refresh);
+                logger.info('[ACCOUNTS] Google revoke outcome', { accountId, revoked: result.revoked, status: result.status });
+            } catch (revokeErr) {
+                logger.warn('[ACCOUNTS] Google revoke threw — proceeding with local cleanup', {
+                    accountId,
+                    error: revokeErr instanceof Error ? revokeErr.message : String(revokeErr),
+                });
+            }
+        }
+
         // Soft-disconnect shadow mailbox first (preserves SendEvent history)
         await deprovisionMailboxForConnectedAccount(accountId);
 
@@ -437,26 +473,6 @@ export const testConnection = async (req: Request, res: Response): Promise<Respo
     } catch (error: any) {
         logger.error('[ACCOUNTS] Failed to test connection', error instanceof Error ? error : new Error(String(error)));
         return res.status(500).json({ success: false, error: 'Failed to test connection' });
-    }
-};
-
-/**
- * POST /api/sequencer/accounts/reset-sends
- * Reset sends_today to 0 for all org accounts (called by cron).
- */
-export const resetDailySends = async (req: Request, res: Response): Promise<Response> => {
-    try {
-        const orgId = getOrgId(req);
-
-        const result = await prisma.connectedAccount.updateMany({
-            where: { organization_id: orgId },
-            data: { sends_today: 0, sends_reset_at: new Date() },
-        });
-
-        return res.json({ success: true, message: `Reset sends for ${result.count} accounts` });
-    } catch (error: any) {
-        logger.error('[ACCOUNTS] Failed to reset daily sends', error instanceof Error ? error : new Error(String(error)));
-        return res.status(500).json({ success: false, error: 'Failed to reset daily sends' });
     }
 };
 

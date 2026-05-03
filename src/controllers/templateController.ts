@@ -48,9 +48,15 @@ export const listTemplates = async (req: Request, res: Response): Promise<Respon
         const orgId = getOrgId(req);
         const category = (req.query.category as string) || undefined;
         const search = (req.query.search as string) || undefined;
+        // Folder filter: 'all' (default) → no filter; 'uncategorized' → folder_id is null;
+        // any other string → folder_id matches.
+        const folder = (req.query.folder as string) || undefined;
 
         const where: any = { organization_id: orgId };
         if (category && category !== 'all') where.category = category;
+        if (folder && folder !== 'all') {
+            where.folder_id = folder === 'uncategorized' ? null : folder;
+        }
         if (search) {
             where.OR = [
                 { name: { contains: search, mode: 'insensitive' } },
@@ -99,7 +105,7 @@ export const getTemplate = async (req: Request, res: Response): Promise<Response
 export const createTemplate = async (req: Request, res: Response): Promise<Response> => {
     try {
         const orgId = getOrgId(req);
-        const { name, subject, bodyHtml, bodyText, category } = req.body;
+        const { name, subject, bodyHtml, bodyText, category, folder_id } = req.body;
 
         if (!name || !subject || !bodyHtml) {
             return res.status(400).json({ success: false, error: 'name, subject, and bodyHtml are required' });
@@ -113,6 +119,7 @@ export const createTemplate = async (req: Request, res: Response): Promise<Respo
                 body_html: bodyHtml,
                 body_text: bodyText || null,
                 category: category || 'general',
+                folder_id: folder_id || null,
             },
         });
 
@@ -131,7 +138,7 @@ export const updateTemplate = async (req: Request, res: Response): Promise<Respo
     try {
         const orgId = getOrgId(req);
         const templateId = String(req.params.id);
-        const { name, subject, bodyHtml, bodyText, category } = req.body;
+        const { name, subject, bodyHtml, bodyText, category, folder_id } = req.body;
 
         const template = await prisma.emailTemplate.findFirst({
             where: { id: templateId, organization_id: orgId },
@@ -145,6 +152,8 @@ export const updateTemplate = async (req: Request, res: Response): Promise<Respo
         if (bodyHtml !== undefined) updateData.body_html = bodyHtml;
         if (bodyText !== undefined) updateData.body_text = bodyText;
         if (category !== undefined) updateData.category = category;
+        // folder_id can be null (move to Uncategorized) or a string id (move to folder).
+        if (folder_id !== undefined) updateData.folder_id = folder_id || null;
 
         const updated = await prisma.emailTemplate.update({
             where: { id: templateId },

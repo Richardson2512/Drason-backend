@@ -190,7 +190,7 @@ export const initiateGoogleAuth = async (req: Request, res: Response) => {
         const plan = req.query.plan as string | undefined;
         const source = req.query.source as string | undefined;
 
-        const { url } = googleOAuth.generateAuthUrl({ plan, source });
+        const { url } = await googleOAuth.generateAuthUrl({ plan, source });
 
         logger.info('[GoogleAuth] Initiating OAuth flow', { plan, source });
 
@@ -232,8 +232,9 @@ export const handleGoogleCallback = async (req: Request, res: Response) => {
             return res.redirect(`${frontendUrl}/signup?error=${encodeURIComponent('Invalid state parameter')}`);
         }
 
-        // Validate state to prevent CSRF — now returns metadata
-        const stateMetadata = googleOAuth.validateState(state);
+        // Validate state to prevent CSRF — now returns metadata.
+        // Async because the underlying store is the database.
+        const stateMetadata = await googleOAuth.validateState(state);
         if (!stateMetadata) {
             logger.warn('[GoogleAuth] Invalid or expired state parameter', { state });
             return res.redirect(`${frontendUrl}/signup?error=${encodeURIComponent('Invalid or expired session')}`);

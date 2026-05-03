@@ -51,19 +51,29 @@ export const getContactFacets = async (req: Request, res: Response): Promise<Res
     try {
         const orgId = getOrgId(req);
 
-        const [companyGroups, titleGroups] = await Promise.all([
+        // Prisma groupBy orderBy can't use the grouped field itself
+        // (it'd require id in `by`). Order by count of a guaranteed-non-null
+        // column — email — so we get rows-per-group count, top-down.
+        const [companyGroups, titleGroups, sourceGroups] = await Promise.all([
             prisma.lead.groupBy({
                 by: ['company'],
                 where: { organization_id: orgId, company: { not: null } },
                 _count: { _all: true },
-                orderBy: { _count: { company: 'desc' } },
+                orderBy: { _count: { email: 'desc' } },
                 take: FACET_LIMIT,
             }),
             prisma.lead.groupBy({
                 by: ['title'],
                 where: { organization_id: orgId, title: { not: null } },
                 _count: { _all: true },
-                orderBy: { _count: { title: 'desc' } },
+                orderBy: { _count: { email: 'desc' } },
+                take: FACET_LIMIT,
+            }),
+            prisma.lead.groupBy({
+                by: ['source'],
+                where: { organization_id: orgId },
+                _count: { _all: true },
+                orderBy: { _count: { email: 'desc' } },
                 take: FACET_LIMIT,
             }),
         ]);
@@ -74,10 +84,13 @@ export const getContactFacets = async (req: Request, res: Response): Promise<Res
         const titles = titleGroups
             .filter(g => g.title && g.title.trim().length > 0)
             .map(g => ({ value: g.title as string, count: g._count._all }));
+        const sources = sourceGroups
+            .filter(g => g.source && g.source.trim().length > 0)
+            .map(g => ({ value: g.source as string, count: g._count._all }));
 
         return res.json({
             success: true,
-            data: { companies, titles, limit: FACET_LIMIT },
+            data: { companies, titles, sources, limit: FACET_LIMIT },
         });
     } catch (error) {
         logger.error('[CONTACTS] facets failed', error instanceof Error ? error : new Error(String(error)));
@@ -102,6 +115,9 @@ export const listContacts = async (req: Request, res: Response): Promise<Respons
         // Empty / missing means "no filter on that field."
         const companies = parseCsv(req.query.companies as string | undefined);
         const titles = parseCsv(req.query.titles as string | undefined);
+        const sources = parseCsv(req.query.sources as string | undefined);
+        // tag_ids filters to leads that carry AT LEAST ONE of the given tags.
+        const tagIds = parseCsv(req.query.tag_ids as string | undefined);
 
         // Query the main Lead table — source of truth for all contacts.
         // Campaign assignments are counted separately.
@@ -119,6 +135,13 @@ export const listContacts = async (req: Request, res: Response): Promise<Respons
         if (validation_status) leadWhere.validation_status = validation_status;
         if (companies.length > 0) leadWhere.company = { in: companies };
         if (titles.length > 0) leadWhere.title = { in: titles };
+        if (sources.length > 0) leadWhere.source = { in: sources };
+        if (tagIds.length > 0) {
+            // OR semantics — match leads tagged with any of the given tag IDs.
+            // For AND ("must have ALL of these tags") we'd need a different
+            // query shape; keeping OR for now since it matches typical UX.
+            leadWhere.tags = { some: { tag_id: { in: tagIds } } };
+        }
         if (search) {
             leadWhere.OR = [
                 { email: { contains: search, mode: 'insensitive' } },
@@ -136,6 +159,9 @@ export const listContacts = async (req: Request, res: Response): Promise<Respons
                 orderBy: { created_at: 'desc' },
                 skip: (page - 1) * limit,
                 take: limit,
+                include: {
+                    tags: { include: { tag: { select: { id: true, name: true, color: true } } } },
+                },
             }),
             prisma.lead.count({ where: leadWhere }),
         ]);
@@ -177,6 +203,7 @@ export const listContacts = async (req: Request, res: Response): Promise<Respons
             lead_score: lead.lead_score,
             campaign_count: assignmentCounts.get(lead.email) || 0,
             current_step: null,
+            tags: lead.tags.map(lt => ({ id: lt.tag.id, name: lt.tag.name, color: lt.tag.color })),
             created_at: lead.created_at,
         }));
 
@@ -190,6 +217,216 @@ export const listContacts = async (req: Request, res: Response): Promise<Respons
     } catch (error: any) {
         logger.error('[CONTACTS] Failed to list contacts', error instanceof Error ? error : new Error(String(error)));
         return res.status(500).json({ success: false, error: 'Failed to list contacts' });
+    }
+};
+
+/**
+ * GET /api/sequencer/contacts/:id
+ * Returns the full Lead record + that lead's CampaignLead history (every
+ * campaign the email has ever been enrolled in across this org). Powers the
+ * dedicated contact detail page.
+ */
+export const getContact = async (req: Request, res: Response): Promise<Response> => {
+    try {
+        const orgId = getOrgId(req);
+        const id = String(req.params.id);
+        if (!id) return res.status(400).json({ success: false, error: 'Contact id required' });
+
+        const lead = await prisma.lead.findFirst({
+            where: { id, organization_id: orgId, status: { not: 'erased' } },
+            include: {
+                tags: { include: { tag: { select: { id: true, name: true, color: true } } } },
+            },
+        });
+        if (!lead) return res.status(404).json({ success: false, error: 'Contact not found' });
+
+        // Pull every campaign this email has ever been enrolled in, scoped to org.
+        const orgCampaigns = await prisma.campaign.findMany({
+            where: { organization_id: orgId },
+            select: { id: true, name: true, status: true },
+        });
+        const campaignMap = new Map(orgCampaigns.map(c => [c.id, c]));
+        const enrollments = await prisma.campaignLead.findMany({
+            where: { email: lead.email, campaign_id: { in: orgCampaigns.map(c => c.id) } },
+            orderBy: { created_at: 'desc' },
+        });
+        const enrollment_history = enrollments.map(e => ({
+            campaign_id: e.campaign_id,
+            campaign_name: campaignMap.get(e.campaign_id)?.name || '(deleted)',
+            campaign_status: campaignMap.get(e.campaign_id)?.status || null,
+            status: e.status,
+            current_step: e.current_step,
+            created_at: e.created_at,
+        }));
+
+        return res.json({
+            success: true,
+            contact: {
+                id: lead.id,
+                email: lead.email,
+                first_name: lead.first_name,
+                last_name: lead.last_name,
+                full_name: lead.full_name,
+                company: lead.company,
+                website: lead.website,
+                title: lead.title,
+                persona: lead.persona,
+                phone: lead.phone,
+                linkedin_url: lead.linkedin_url,
+                source: lead.source,
+                status: lead.status,
+                health_classification: lead.health_classification,
+                health_checks: lead.health_checks,
+                validation_status: lead.validation_status,
+                validation_score: lead.validation_score,
+                validation_source: lead.validation_source,
+                validated_at: lead.validated_at,
+                is_catch_all: lead.is_catch_all,
+                is_disposable: lead.is_disposable,
+                emails_sent: lead.emails_sent,
+                emails_opened: lead.emails_opened,
+                emails_clicked: lead.emails_clicked,
+                emails_replied: lead.emails_replied,
+                last_activity_at: lead.last_activity_at,
+                bounced: lead.bounced,
+                bounced_at: lead.bounced_at,
+                unsubscribed_at: lead.unsubscribed_at,
+                unsubscribed_reason: lead.unsubscribed_reason,
+                notes: lead.notes,
+                tags: lead.tags.map(lt => ({ id: lt.tag.id, name: lt.tag.name, color: lt.tag.color })),
+                created_at: lead.created_at,
+                updated_at: lead.updated_at,
+            },
+            enrollment_history,
+        });
+    } catch (error) {
+        logger.error('[CONTACTS] getContact failed', error instanceof Error ? error : new Error(String(error)));
+        return res.status(500).json({ success: false, error: 'Failed to load contact' });
+    }
+};
+
+/**
+ * PATCH /api/sequencer/contacts/:id/notes
+ * Updates the operator notes on a Lead. Body: { notes: string | null }.
+ * No history kept — this is intentionally a scratch field, not a thread.
+ */
+export const updateContactNotes = async (req: Request, res: Response): Promise<Response> => {
+    try {
+        const orgId = getOrgId(req);
+        const id = String(req.params.id);
+        const notes = typeof req.body?.notes === 'string' ? req.body.notes : null;
+
+        const lead = await prisma.lead.findFirst({
+            where: { id, organization_id: orgId, status: { not: 'erased' } },
+            select: { id: true },
+        });
+        if (!lead) return res.status(404).json({ success: false, error: 'Contact not found' });
+
+        await prisma.lead.update({
+            where: { id },
+            data: { notes: notes && notes.trim().length > 0 ? notes : null },
+        });
+        return res.json({ success: true });
+    } catch (error) {
+        logger.error('[CONTACTS] updateContactNotes failed', error instanceof Error ? error : new Error(String(error)));
+        return res.status(500).json({ success: false, error: 'Failed to update notes' });
+    }
+};
+
+/**
+ * PUT /api/sequencer/contacts/:id/tags
+ * Body: { tagIds: string[] }
+ *
+ * Replaces the lead's tag set wholesale. Atomic — caller-friendly because
+ * the frontend sends the full desired state on each save, no need to
+ * compute add/remove deltas client-side.
+ *
+ * Validates that every tagId belongs to the caller's org so a malicious
+ * client can't apply another org's tag to a lead.
+ */
+export const setContactTags = async (req: Request, res: Response): Promise<Response> => {
+    try {
+        const orgId = getOrgId(req);
+        const leadId = String(req.params.id);
+        const tagIds = Array.isArray(req.body?.tagIds) ? (req.body.tagIds as unknown[]).map(x => String(x)) : null;
+        if (!tagIds) return res.status(400).json({ success: false, error: 'tagIds array is required' });
+
+        const lead = await prisma.lead.findFirst({
+            where: { id: leadId, organization_id: orgId, status: { not: 'erased' } },
+            select: { id: true },
+        });
+        if (!lead) return res.status(404).json({ success: false, error: 'Contact not found' });
+
+        // Validate all tagIds belong to this org. Reject the whole request
+        // on any mismatch — partial application would surprise the operator.
+        if (tagIds.length > 0) {
+            const validTags = await prisma.tag.findMany({
+                where: { id: { in: tagIds }, organization_id: orgId },
+                select: { id: true },
+            });
+            if (validTags.length !== tagIds.length) {
+                return res.status(400).json({ success: false, error: 'One or more tags not found in this organization' });
+            }
+        }
+
+        await prisma.$transaction([
+            prisma.leadTag.deleteMany({ where: { lead_id: leadId } }),
+            prisma.leadTag.createMany({
+                data: tagIds.map(tagId => ({ lead_id: leadId, tag_id: tagId })),
+                skipDuplicates: true,
+            }),
+        ]);
+
+        return res.json({ success: true });
+    } catch (err) {
+        logger.error('[CONTACTS] setContactTags failed', err instanceof Error ? err : new Error(String(err)));
+        return res.status(500).json({ success: false, error: 'Failed to update tags' });
+    }
+};
+
+/**
+ * POST /api/sequencer/contacts/bulk-tag
+ * Body: { ids: string[], tagId: string, action: 'add' | 'remove' }
+ *
+ * Add or remove a SINGLE tag across many leads at once. Used by the
+ * contacts page bulk-action bar.
+ */
+export const bulkTagContacts = async (req: Request, res: Response): Promise<Response> => {
+    try {
+        const orgId = getOrgId(req);
+        const ids = Array.isArray(req.body?.ids) ? (req.body.ids as unknown[]).map(x => String(x)) : null;
+        const tagId = typeof req.body?.tagId === 'string' ? req.body.tagId : null;
+        const action = req.body?.action === 'remove' ? 'remove' : 'add';
+
+        if (!ids || ids.length === 0) return res.status(400).json({ success: false, error: 'ids array is required' });
+        if (!tagId) return res.status(400).json({ success: false, error: 'tagId is required' });
+
+        const tag = await prisma.tag.findFirst({ where: { id: tagId, organization_id: orgId } });
+        if (!tag) return res.status(404).json({ success: false, error: 'Tag not found' });
+
+        // Filter ids to ones that actually belong to this org's lead pool.
+        const validLeads = await prisma.lead.findMany({
+            where: { id: { in: ids }, organization_id: orgId, status: { not: 'erased' } },
+            select: { id: true },
+        });
+        const validIds = validLeads.map(l => l.id);
+        if (validIds.length === 0) return res.json({ success: true, affected: 0 });
+
+        if (action === 'add') {
+            await prisma.leadTag.createMany({
+                data: validIds.map(leadId => ({ lead_id: leadId, tag_id: tagId })),
+                skipDuplicates: true,
+            });
+        } else {
+            await prisma.leadTag.deleteMany({
+                where: { tag_id: tagId, lead_id: { in: validIds } },
+            });
+        }
+
+        return res.json({ success: true, affected: validIds.length });
+    } catch (err) {
+        logger.error('[CONTACTS] bulkTagContacts failed', err instanceof Error ? err : new Error(String(err)));
+        return res.status(500).json({ success: false, error: 'Failed to apply tag' });
     }
 };
 
@@ -486,10 +723,29 @@ export const deleteContacts = async (req: Request, res: Response): Promise<Respo
 export const validateContacts = async (req: Request, res: Response): Promise<Response> => {
     try {
         const orgId = getOrgId(req);
-        const { ids } = req.body;
+        // Accept EITHER explicit lead ids OR a single tagId. tagId mode resolves
+        // to "every lead in this org carrying that tag" — used by the Email
+        // Validation page's "Validate by tag" flow. Either way, downstream
+        // logic operates on a concrete list of lead ids.
+        let ids: string[] | undefined = Array.isArray(req.body?.ids) ? req.body.ids : undefined;
+        const tagId = typeof req.body?.tagId === 'string' && req.body.tagId.trim() ? req.body.tagId : null;
 
-        if (!ids || !Array.isArray(ids) || ids.length === 0) {
-            return res.status(400).json({ success: false, error: 'ids array is required' });
+        if (!ids && tagId) {
+            // Verify the tag belongs to this org before resolving leads.
+            const tag = await prisma.tag.findFirst({
+                where: { id: tagId, organization_id: orgId },
+                select: { id: true },
+            });
+            if (!tag) return res.status(404).json({ success: false, error: 'Tag not found' });
+            const links = await prisma.leadTag.findMany({
+                where: { tag_id: tagId },
+                select: { lead_id: true },
+            });
+            ids = links.map(l => l.lead_id);
+        }
+
+        if (!ids || ids.length === 0) {
+            return res.status(400).json({ success: false, error: tagId ? 'No contacts carry that tag' : 'ids array is required' });
         }
 
         // Load tier limits for credit gating

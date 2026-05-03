@@ -36,6 +36,16 @@ export interface ZapmailMailbox {
     status?: string;
     isWarmedUp?: boolean;
     workspaceId?: string;
+    // Credential fields exposed by /v2/mailboxes/list — previously
+    // discarded; now captured so we can connect via SMTP/IMAP without
+    // needing OAuth (which requires Restricted-scope verification + CASA).
+    // All three are nullable in Zapmail's response: the mailbox may still
+    // be in CREATING_PASSWORD state, or the customer may not have enabled
+    // app passwords / 2FA yet.
+    password?: string | null;       // Workspace user login password
+    appPassword?: string | null;    // Gmail/Outlook app password — for SMTP/IMAP
+    secret?: string | null;         // 2FA TOTP seed — generates OTPs
+    recoveryEmail?: string | null;
 }
 
 interface RawMailbox {
@@ -46,6 +56,10 @@ interface RawMailbox {
     lastName?: string | null;
     status?: string;
     isWarmedUp?: boolean;
+    password?: string | null;
+    appPassword?: string | null;
+    secret?: string | null;
+    recoveryEmail?: string | null;
 }
 
 interface RawDomainGroup {
@@ -173,6 +187,12 @@ export async function listMailboxesForProvider(
                     displayName,
                     status: m.status,
                     isWarmedUp: m.isWarmedUp,
+                    // Credential bundle. These are PLAINTEXT — caller must
+                    // encrypt before any DB write.
+                    password: m.password ?? null,
+                    appPassword: m.appPassword ?? null,
+                    secret: m.secret ?? null,
+                    recoveryEmail: m.recoveryEmail ?? null,
                 });
             }
         }

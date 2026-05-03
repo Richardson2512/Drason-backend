@@ -9,10 +9,23 @@
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
+// nodemailer's MailComposer is the internal MIME builder. Importing it
+// directly (vs. re-implementing MIME construction) keeps the message we
+// APPEND to Sent byte-identical to the one we sent via SMTP.
+import MailComposer from 'nodemailer/lib/mail-composer';
 import { logger } from './observabilityService';
-import { decrypt } from '../utils/encryption';
+import { decrypt, isEncrypted } from '../utils/encryption';
+
+/** Decrypt smtp_password if it's encrypted; return as-is for legacy
+ *  plaintext rows. Both shapes coexist while the encryption rollout
+ *  reaches every existing row (SMTP pre-existed encryption-at-rest). */
+function readSmtpPassword(stored: string | null | undefined): string | null {
+    if (!stored) return null;
+    return isEncrypted(stored) ? decrypt(stored) : stored;
+}
 import { sendEmailViaGmailApi, refreshGoogleAccessToken } from './gmailSendService';
 import { sendEmailViaGraph, refreshMicrosoftAccessToken } from './microsoftSendService';
+import { appendToSentFolder } from './imapSentAppendService';
 import { prisma } from '../index';
 
 interface ConnectedAccountInput {
@@ -23,6 +36,8 @@ interface ConnectedAccountInput {
     smtp_port?: number | null;
     smtp_username?: string | null;
     smtp_password?: string | null;
+    imap_host?: string | null;
+    imap_port?: number | null;
     access_token?: string | null;
     refresh_token?: string | null;
     token_expires_at?: Date | null;
@@ -50,12 +65,13 @@ async function ensureFreshAccessToken(account: ConnectedAccountInput): Promise<s
     logger.info(`[SEND] Refreshing ${account.provider} token for ${account.email}`);
 
     if (account.provider === 'google') {
-        const { access_token, expires_at } = await refreshGoogleAccessToken(decryptedRefresh);
+        const { access_token, expires_at, rotated_refresh_token } = await refreshGoogleAccessToken(decryptedRefresh);
         const { encrypt } = await import('../utils/encryption');
-        await prisma.connectedAccount.update({
-            where: { id: account.id },
-            data: { access_token: encrypt(access_token), token_expires_at: expires_at },
-        });
+        // Persist a rotated refresh token if Google supplied one. Ignoring it
+        // would strand the connection on the next refresh.
+        const updateData: any = { access_token: encrypt(access_token), token_expires_at: expires_at };
+        if (rotated_refresh_token) updateData.refresh_token = encrypt(rotated_refresh_token);
+        await prisma.connectedAccount.update({ where: { id: account.id }, data: updateData });
         return access_token;
     } else if (account.provider === 'microsoft') {
         const { access_token, refresh_token: newRefresh, expires_at } = await refreshMicrosoftAccessToken(decryptedRefresh);
@@ -132,7 +148,7 @@ function getOrCreateTransporter(account: ConnectedAccountInput): Transporter {
     const host = account.smtp_host;
     const port = account.smtp_port || 587;
     const user = account.smtp_username || account.email;
-    const pass = account.smtp_password;
+    const pass = readSmtpPassword(account.smtp_password);
 
     if (!host || !pass) {
         throw new Error(`Missing SMTP credentials for ${account.email}`);
@@ -199,13 +215,16 @@ export async function sendViaSMTP(
 
     const messageId = `<${crypto.randomUUID()}@superkabe.com>`;
 
-    const info = await transporter.sendMail({
+    // Build the MIME message ONCE so we can both (a) send it via SMTP and
+    // (b) APPEND the byte-identical message to the operator's Sent folder
+    // afterwards. Nodemailer's internal MailComposer is what `sendMail`
+    // uses under the hood — using it directly here gives us the raw bytes.
+    const mailOptions = {
         from: account.email,
         to,
         subject,
         html: finalHtml,
         messageId,
-        // nodemailer natively emits In-Reply-To / References headers from these fields
         ...(options?.inReplyTo ? { inReplyTo: options.inReplyTo } : {}),
         ...(options?.references ? { references: options.references } : {}),
         headers: {
@@ -219,6 +238,19 @@ export async function sendViaSMTP(
                 }
                 : {}),
         },
+    };
+
+    const composer = new MailComposer(mailOptions);
+    const rawBuffer: Buffer = await new Promise((resolve, reject) => {
+        composer.compile().build((err: Error | null, message: Buffer) => {
+            if (err) reject(err);
+            else resolve(message);
+        });
+    });
+
+    const info = await transporter.sendMail({
+        envelope: { from: account.email, to: [to] },
+        raw: rawBuffer,
     });
 
     const smtpMessageId = info.messageId || messageId;
@@ -230,12 +262,53 @@ export async function sendViaSMTP(
         response: info.response,
     });
 
+    // Fire-and-forget: append the same message bytes to the operator's
+    // Sent folder so it appears in their Gmail/Outlook UI under "Sent".
+    // SMTP alone doesn't do this — Gmail's web UI only shows messages
+    // the server placed there directly. Failure here NEVER affects the
+    // send result; we just log and move on.
+    if (account.smtp_password && account.smtp_host) {
+        const imapHost = account.imap_host || (
+            account.provider === 'google' ? 'imap.gmail.com' :
+            account.provider === 'microsoft' ? 'outlook.office365.com' :
+            null
+        );
+        if (imapHost) {
+            const imapPort = account.imap_port || 993;
+            const username = account.smtp_username || account.email;
+            // The smtp_password field stores the encrypted credential; we
+            // need plaintext for IMAP auth. The transporter cache holds
+            // the same plaintext but isn't exposed — decrypt here.
+            const plaintextPass = readSmtpPassword(account.smtp_password);
+            if (plaintextPass) {
+                appendToSentFolder({
+                    email: account.email,
+                    imapHost,
+                    imapPort,
+                    username,
+                    password: plaintextPass,
+                    provider: account.provider,
+                    rfc822: rawBuffer,
+                }).catch(() => undefined);
+            }
+        }
+    }
+
     return { success: true, messageId: smtpMessageId };
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Gmail Adapter — uses SMTP with app password
-// (OAuth implementation can be added later)
+// Gmail Adapter — prefers SMTP with app password
+//
+// Send priority is intentionally SMTP-FIRST. Reasons:
+//   1. SMTP requires no Restricted-scope verification or CASA — Google
+//      treats SMTP via app password as a normal authenticated user.
+//   2. Inbox placement is identical (same Gmail outbound MTA either way).
+//   3. The Gmail API path is grandfathered for legacy users who connected
+//      via OAuth before bulk import existed; it stays as a fallback.
+//
+// Order: SMTP creds present → SMTP. Else OAuth tokens present → API.
+// Else error.
 // ────────────────────────────────────────────────────────────────────
 
 export async function sendViaGmail(
@@ -245,7 +318,12 @@ export async function sendViaGmail(
     bodyHtml: string,
     options?: SendOptions
 ): Promise<SendResult> {
-    // Prefer OAuth (Gmail API) if tokens exist
+    // Preferred: SMTP with app password (from bulk import or manual setup).
+    if (account.smtp_host && account.smtp_password) {
+        return sendViaSMTP(account, to, subject, bodyHtml, options);
+    }
+
+    // Fallback: Gmail API (legacy OAuth path).
     if (account.access_token && account.refresh_token) {
         const accessToken = await ensureFreshAccessToken(account);
 
@@ -259,20 +337,21 @@ export async function sendViaGmail(
         return { success: true, messageId };
     }
 
-    // Fallback: SMTP with app password (from bulk import)
-    if (account.smtp_host && account.smtp_password) {
-        return sendViaSMTP(account, to, subject, bodyHtml, options);
-    }
-
     return {
         success: false,
-        error: 'Gmail account has no OAuth tokens or SMTP credentials. Reconnect the mailbox.',
+        error: 'Gmail account has no SMTP credentials or OAuth tokens. Reconnect the mailbox.',
     };
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Microsoft Adapter — uses SMTP with app password
-// (OAuth implementation can be added later)
+// Microsoft Adapter — prefers SMTP with app password
+//
+// Same priority logic as Gmail: SMTP first (no Microsoft Graph permission
+// review needed), Graph API fallback for legacy connections.
+//
+// NOTE: Microsoft 365 SMTP AUTH must be enabled at the tenant level by
+// the Workspace admin. Some enterprise tenants disable it for security
+// policy reasons — those will fall through to the Graph API path.
 // ────────────────────────────────────────────────────────────────────
 
 export async function sendViaMicrosoft(
@@ -282,7 +361,12 @@ export async function sendViaMicrosoft(
     bodyHtml: string,
     options?: SendOptions
 ): Promise<SendResult> {
-    // Prefer OAuth (Graph API) if tokens exist
+    // Preferred: SMTP with app password / SMTP AUTH credentials.
+    if (account.smtp_host && account.smtp_password) {
+        return sendViaSMTP(account, to, subject, bodyHtml, options);
+    }
+
+    // Fallback: Microsoft Graph API (legacy OAuth path).
     if (account.access_token && account.refresh_token) {
         const accessToken = await ensureFreshAccessToken(account);
 
@@ -296,14 +380,9 @@ export async function sendViaMicrosoft(
         return { success: true, messageId };
     }
 
-    // Fallback: SMTP with app password (tenant must have SMTP AUTH enabled)
-    if (account.smtp_host && account.smtp_password) {
-        return sendViaSMTP(account, to, subject, bodyHtml, options);
-    }
-
     return {
         success: false,
-        error: 'Microsoft account has no OAuth tokens or SMTP credentials. Reconnect the mailbox.',
+        error: 'Microsoft account has no SMTP credentials or OAuth tokens. Reconnect the mailbox.',
     };
 }
 

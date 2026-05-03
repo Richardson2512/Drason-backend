@@ -17,7 +17,7 @@
 import { ImapFlow } from 'imapflow';
 import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
-import { decrypt, encrypt } from '../utils/encryption';
+import { decrypt, encrypt, isEncrypted } from '../utils/encryption';
 import { fetchGmailReplies, refreshGoogleAccessToken } from '../services/gmailSendService';
 import { fetchMicrosoftReplies, refreshMicrosoftAccessToken } from '../services/microsoftSendService';
 import { tryProcessBounce } from '../services/bounceParserService';
@@ -451,11 +451,10 @@ async function ensureFreshAccessTokenForWorker(account: {
     }
 
     if (account.provider === 'google') {
-        const { access_token, expires_at } = await refreshGoogleAccessToken(decryptedRefresh);
-        await prisma.connectedAccount.update({
-            where: { id: account.id },
-            data: { access_token: encrypt(access_token), token_expires_at: expires_at },
-        });
+        const { access_token, expires_at, rotated_refresh_token } = await refreshGoogleAccessToken(decryptedRefresh);
+        const updateData: any = { access_token: encrypt(access_token), token_expires_at: expires_at };
+        if (rotated_refresh_token) updateData.refresh_token = encrypt(rotated_refresh_token);
+        await prisma.connectedAccount.update({ where: { id: account.id }, data: updateData });
         return access_token;
     } else if (account.provider === 'microsoft') {
         const { access_token, refresh_token: newRefresh, expires_at } = await refreshMicrosoftAccessToken(decryptedRefresh);
@@ -550,13 +549,20 @@ async function fetchRepliesFromAccount(account: {
         return 0;
     }
 
+    // smtp_password may be encrypted (new code path) or plaintext (legacy).
+    // isEncrypted() probes the format; decrypt only if it matches the
+    // AES-256-GCM ciphertext shape.
+    const passPlaintext = isEncrypted(account.smtp_password)
+        ? decrypt(account.smtp_password)
+        : account.smtp_password;
+
     const client = new ImapFlow({
         host: account.imap_host,
         port: account.imap_port || 993,
         secure: true,
         auth: {
             user: account.smtp_username || account.email,
-            pass: account.smtp_password,
+            pass: passPlaintext,
         },
         logger: false, // Suppress imapflow's own logging
         tls: {
@@ -716,7 +722,17 @@ export async function checkReplies(): Promise<void> {
             const batch = accounts.slice(i, i + BATCH_SIZE);
             const results = await Promise.allSettled(
                 batch.map(account => {
-                    // Route to OAuth fetch for google/microsoft with tokens, else IMAP
+                    // Route priority must mirror emailSendAdapters: prefer IMAP
+                    // when SMTP/IMAP credentials are present, fall back to API
+                    // for legacy OAuth-only accounts. Mailbox resellers (Zapmail
+                    // etc.) populate smtp_password via bulk import — those
+                    // accounts may also have access_token from a stale OAuth
+                    // flow but should NEVER route to the API path because the
+                    // new OAuth scopes (openid+email+profile only) lack the
+                    // gmail.modify / Mail.Read permission.
+                    if (account.imap_host && account.smtp_password) {
+                        return fetchRepliesFromAccount(account as any);
+                    }
                     if ((account.provider === 'google' || account.provider === 'microsoft') && account.access_token) {
                         return fetchRepliesFromOAuthAccount(account as any);
                     }

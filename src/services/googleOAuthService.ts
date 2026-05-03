@@ -1,6 +1,7 @@
 import { google } from 'googleapis';
-import crypto from 'crypto';
 import { logger } from '../services/observabilityService';
+import { createState, consumeState } from './oauthStateService';
+import { verifyGrantedScopes } from '../utils/googleOAuth';
 
 const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
@@ -8,27 +9,16 @@ const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_REDIRECT_URI
 );
 
-// Metadata stored alongside CSRF state tokens
+// Metadata stored alongside the state token. Persisted in the DB-backed
+// OAuthState row so it survives restarts and works under horizontal scale.
 export interface StateMetadata {
-    timestamp: number;
     plan?: string;   // Selected plan from pricing (starter/growth/scale)
     source?: string; // Origin page (signup/login)
 }
 
-// Store state parameters in memory with TTL and associated metadata
-const stateStore = new Map<string, StateMetadata>();
-
-// Clean up expired state parameters every 5 minutes
-setInterval(() => {
-    const now = Date.now();
-    const FIVE_MINUTES = 5 * 60 * 1000;
-
-    for (const [state, data] of stateStore.entries()) {
-        if (now - data.timestamp > FIVE_MINUTES) {
-            stateStore.delete(state);
-        }
-    }
-}, 5 * 60 * 1000);
+const USER_LOGIN_REQUIRED_SCOPES = [
+    'https://www.googleapis.com/auth/userinfo.email',
+];
 
 export interface GoogleUserInfo {
     id: string;
@@ -50,18 +40,16 @@ export interface GoogleTokens {
 }
 
 /**
- * Generate Google OAuth authorization URL with state parameter for CSRF protection.
- * Accepts optional metadata (plan, source) to pass through the OAuth flow.
+ * Generate Google OAuth authorization URL with state parameter for CSRF
+ * protection. The state nonce is persisted in the DB-backed OAuthState
+ * table — replaces the earlier in-memory Map which was lost on every
+ * restart and broken under horizontal scale.
  */
-export function generateAuthUrl(options?: { plan?: string; source?: string }): { url: string; state: string } {
-    // Generate cryptographically secure random state parameter
-    const state = crypto.randomBytes(32).toString('hex');
-
-    // Store state with timestamp and metadata for validation
-    stateStore.set(state, {
-        timestamp: Date.now(),
-        plan: options?.plan,
-        source: options?.source,
+export async function generateAuthUrl(options?: { plan?: string; source?: string }): Promise<{ url: string; state: string }> {
+    const state = await createState({
+        purpose: 'user_login_oauth',
+        organizationId: null, // user-login: no org exists yet
+        metadata: { plan: options?.plan, source: options?.source },
     });
 
     const url = oauth2Client.generateAuthUrl({
@@ -72,10 +60,11 @@ export function generateAuthUrl(options?: { plan?: string; source?: string }): {
             'https://www.googleapis.com/auth/userinfo.email',
             'openid'
         ],
-        state
+        state,
+        include_granted_scopes: true, // future-proof for incremental scope additions
     });
 
-    logger.info('[GoogleOAuth] Generated auth URL', { state, plan: options?.plan, source: options?.source });
+    logger.info('[GoogleOAuth] Generated auth URL', { plan: options?.plan, source: options?.source });
 
     return { url, state };
 }
@@ -83,30 +72,13 @@ export function generateAuthUrl(options?: { plan?: string; source?: string }): {
 /**
  * Validate state parameter to prevent CSRF attacks.
  * Returns the stored metadata if valid, or null if invalid/expired.
+ *
+ * Async because the underlying store is the database — caller must await.
  */
-export function validateState(state: string): StateMetadata | null {
-    const storedState = stateStore.get(state);
-
-    if (!storedState) {
-        logger.warn('[GoogleOAuth] Invalid state parameter', { state });
-        return null;
-    }
-
-    // Check if state is expired (5 minutes)
-    const FIVE_MINUTES = 5 * 60 * 1000;
-    const now = Date.now();
-
-    if (now - storedState.timestamp > FIVE_MINUTES) {
-        logger.warn('[GoogleOAuth] Expired state parameter', { state });
-        stateStore.delete(state);
-        return null;
-    }
-
-    // State is valid, remove it (one-time use)
-    stateStore.delete(state);
-
-    logger.info('[GoogleOAuth] State validated successfully', { state, plan: storedState.plan });
-    return storedState;
+export async function validateState(state: string): Promise<StateMetadata | null> {
+    const result = await consumeState(state, 'user_login_oauth');
+    if (!result) return null;
+    return result.metadata as StateMetadata;
 }
 
 /**
@@ -118,6 +90,17 @@ export async function exchangeCodeForTokens(code: string): Promise<GoogleTokens>
 
         if (!tokens.access_token) {
             throw new Error('No access token received from Google');
+        }
+
+        // Verify the user granted the email scope at minimum — without it
+        // we can't identify them and the login is meaningless. Profile is
+        // nice-to-have; email is hard-required.
+        const missing = verifyGrantedScopes(tokens.scope, USER_LOGIN_REQUIRED_SCOPES);
+        if (missing.length > 0) {
+            throw new Error(
+                `Google did not grant the required permission to read your email address. ` +
+                `Please retry and grant all requested permissions on the consent screen.`,
+            );
         }
 
         logger.info('[GoogleOAuth] Successfully exchanged code for tokens');
@@ -187,9 +170,15 @@ export async function refreshAccessToken(refreshToken: string): Promise<GoogleTo
 
         logger.info('[GoogleOAuth] Successfully refreshed access token');
 
+        // Capture rotated refresh token if Google supplied one. Keeping the
+        // old token after a rotation strands the connection.
+        const rotated = credentials.refresh_token && credentials.refresh_token !== refreshToken;
+        if (rotated) {
+            logger.info('[GoogleOAuth] Refresh token rotated by Google');
+        }
         return {
             access_token: credentials.access_token,
-            refresh_token: credentials.refresh_token || refreshToken, // Keep old refresh token if new one not provided
+            refresh_token: credentials.refresh_token || refreshToken,
             expiry_date: credentials.expiry_date || undefined
         };
     } catch (error: any) {

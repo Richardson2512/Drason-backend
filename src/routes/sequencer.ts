@@ -4,6 +4,9 @@ import * as oauthConnectController from '../controllers/oauthConnectController';
 import * as infraProvidersController from '../controllers/infraProvidersController';
 import * as campaignController2 from '../controllers/campaignController2';
 import * as templateController from '../controllers/templateController';
+import * as templateFolderController from '../controllers/templateFolderController';
+import * as mailboxImportController from '../controllers/mailboxImportController';
+import * as tagController from '../controllers/tagController';
 import * as contactController from '../controllers/contactController';
 import * as sequencerSettingsController from '../controllers/sequencerSettingsController';
 import * as sequencerAnalyticsController from '../controllers/sequencerAnalyticsController';
@@ -21,7 +24,6 @@ accountRoutes.post('/bulk', connectedAccountController.bulkCreateAccounts);
 accountRoutes.delete('/:id', connectedAccountController.deleteAccount);
 accountRoutes.patch('/:id', connectedAccountController.updateAccount);
 accountRoutes.post('/:id/test', connectedAccountController.testConnection);
-accountRoutes.post('/reset-sends', connectedAccountController.resetDailySends);
 accountRoutes.get('/tracking-domain/check', connectedAccountController.checkTrackingDomainEndpoint);
 accountRoutes.post('/:id/tracking-domain', connectedAccountController.setTrackingDomain);
 accountRoutes.post('/:id/tracking-domain/verify', connectedAccountController.verifyTrackingDomain);
@@ -45,6 +47,10 @@ campaignRoutes.delete('/:id', campaignController2.deleteCampaign);
 campaignRoutes.post('/:id/launch', campaignController2.launchCampaign);
 campaignRoutes.post('/:id/pause', campaignController2.pauseCampaign);
 campaignRoutes.post('/:id/resume', campaignController2.resumeCampaign);
+// Tags. bulk-tag must come BEFORE /:id/tags so Express doesn't treat
+// 'bulk-tag' as a campaign id. Distinct method+path so they don't collide.
+campaignRoutes.post('/bulk-tag', campaignController2.bulkTagCampaigns);
+campaignRoutes.put('/:id/tags', campaignController2.setCampaignTags);
 router.use('/campaigns', campaignRoutes);
 
 // --- Templates ---
@@ -57,6 +63,25 @@ templateRoutes.patch('/:id', templateController.updateTemplate);
 templateRoutes.delete('/:id', templateController.deleteTemplate);
 templateRoutes.post('/:id/duplicate', templateController.duplicateTemplate);
 router.use('/templates', templateRoutes);
+
+// --- Mailbox Import (Zapmail / Premium Inboxes / Mission Inbox / Scaled Mail) ---
+// Provider-agnostic bulk import — no Google OAuth scopes required for the
+// mailboxes themselves. See controllers/mailboxImportController.ts.
+const mailboxImportRoutes = Router();
+mailboxImportRoutes.get('/providers', mailboxImportController.listProviders);
+mailboxImportRoutes.post('/:provider/connect', mailboxImportController.connectProvider);
+mailboxImportRoutes.post('/:provider/disconnect', mailboxImportController.disconnectProvider);
+mailboxImportRoutes.get('/:provider/mailboxes', mailboxImportController.listProviderMailboxes);
+mailboxImportRoutes.post('/:provider/import', mailboxImportController.bulkImport);
+router.use('/mailbox-import', mailboxImportRoutes);
+
+// --- Template Folders ---
+const templateFolderRoutes = Router();
+templateFolderRoutes.get('/', templateFolderController.listFolders);
+templateFolderRoutes.post('/', templateFolderController.createFolder);
+templateFolderRoutes.patch('/:id', templateFolderController.renameFolder);
+templateFolderRoutes.delete('/:id', templateFolderController.deleteFolder);
+router.use('/template-folders', templateFolderRoutes);
 
 // --- Infrastructure Providers (for bulk mailbox import) ---
 router.get('/infra-providers', infraProvidersController.listInfraProviders);
@@ -83,7 +108,19 @@ contactRoutes.post('/validate-preview', contactController.validateLeadsPreview);
 contactRoutes.post('/assign-campaign/preview', contactController.previewAssignToCampaign);
 contactRoutes.post('/assign-campaign', contactController.assignToCampaign);
 contactRoutes.get('/export', contactController.exportContacts);
+contactRoutes.get('/:id', contactController.getContact);
+contactRoutes.patch('/:id/notes', contactController.updateContactNotes);
+contactRoutes.put('/:id/tags', contactController.setContactTags);
+contactRoutes.post('/bulk-tag', contactController.bulkTagContacts);
 router.use('/contacts', contactRoutes);
+
+// --- Tags ---
+const tagRoutes = Router();
+tagRoutes.get('/', tagController.listTags);
+tagRoutes.post('/', tagController.createTag);
+tagRoutes.patch('/:id', tagController.updateTag);
+tagRoutes.delete('/:id', tagController.deleteTag);
+router.use('/tags', tagRoutes);
 
 // --- Settings ---
 const settingsRoutes = Router();

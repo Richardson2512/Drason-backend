@@ -13,9 +13,6 @@ const router = Router();
 // Get latest infrastructure report
 router.get('/report', assessmentController.getReport);
 
-// Get all reports (up to 10 most recent)
-router.get('/reports', assessmentController.getReports);
-
 // Trigger manual re-assessment (required for DNS recovery verification)
 router.post('/run', assessmentController.runAssessment);
 

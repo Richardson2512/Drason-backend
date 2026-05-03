@@ -17,6 +17,7 @@ import { recordConsentFromRequest } from '../services/consentService';
 import {
     buildAuthorizeUrl,
     completeAuthorization,
+    consumePostmasterState,
     disconnect as svcDisconnect,
     fetchAllForOrg,
 } from '../services/postmasterToolsService';
@@ -26,7 +27,7 @@ import {
 export const startConnect = async (req: Request, res: Response) => {
     try {
         const orgId = getOrgId(req);
-        const url = buildAuthorizeUrl(orgId);
+        const url = await buildAuthorizeUrl(orgId);
         res.json({ success: true, authorizeUrl: url });
     } catch (err: any) {
         logger.error('[POSTMASTER] startConnect failed', err);
@@ -48,15 +49,23 @@ export const oauthCallback = async (req: Request, res: Response) => {
         return res.status(400).send('Missing code/state');
     }
 
+    // Validate state against the server-side store (CSRF protection). Bail
+    // immediately on any failure — never trust a state we didn't mint.
+    const orgId = await consumePostmasterState(state);
+    if (!orgId) {
+        logger.warn('[POSTMASTER] OAuth callback rejected — invalid state');
+        return res.redirect(`${frontendBase}/dashboard/settings?postmaster=error&reason=invalid_state`);
+    }
+
     try {
-        await completeAuthorization(state, code);
+        await completeAuthorization(orgId, code);
 
         // Record OAuth consent — required for GDPR Art. 7(1) auditability.
         // We capture the moment Google's consent UI was completed, with the
         // exact scope string the user authorized.
         try {
             const orgFirstUser = await prisma.user.findFirst({
-                where: { organization_id: state },
+                where: { organization_id: orgId },
                 orderBy: { created_at: 'asc' },
                 select: { id: true, email: true, name: true },
             });
@@ -65,7 +74,7 @@ export const oauthCallback = async (req: Request, res: Response) => {
                 documentVersion: 'https://www.googleapis.com/auth/postmaster.readonly',
                 channel: 'oauth_callback',
                 userId: orgFirstUser?.id || null,
-                organizationId: state,
+                organizationId: orgId,
                 userEmailSnapshot: orgFirstUser?.email || null,
                 userNameSnapshot: orgFirstUser?.name || null,
                 metadata: {
@@ -77,7 +86,7 @@ export const oauthCallback = async (req: Request, res: Response) => {
             logger.error(
                 '[POSTMASTER] OAuth consent record failed — manual remediation required',
                 consentErr instanceof Error ? consentErr : new Error(String(consentErr)),
-                { orgId: state },
+                { orgId },
             );
         }
 

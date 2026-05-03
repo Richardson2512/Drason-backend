@@ -1155,23 +1155,6 @@ export async function getLatestReport(organizationId: string) {
     });
 }
 
-/**
- * Get infrastructure reports for an organization.
- * @param days — how many days of history to return (default 30, max 90)
- */
-export async function getReports(organizationId: string, days: number = 30) {
-    const since = new Date();
-    since.setDate(since.getDate() - Math.min(days, 90));
-
-    return prisma.infrastructureReport.findMany({
-        where: {
-            organization_id: organizationId,
-            created_at: { gte: since },
-        },
-        orderBy: { created_at: 'desc' },
-    });
-}
-
 // ─── Helper Functions ────────────────────────────────────────────────────────
 
 /**

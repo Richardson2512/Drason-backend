@@ -16,7 +16,7 @@ import { provisionMailboxForConnectedAccount } from '../services/mailboxProvisio
 import { recordConsentFromRequest } from '../services/consentService';
 import {
     getGoogleAuthorizationUrl,
-    parseGoogleState,
+    consumeSequencerGoogleState,
     exchangeGoogleCodeForTokens,
 } from '../services/gmailSendService';
 import {
@@ -33,7 +33,7 @@ export const googleAuthorize = async (req: Request, res: Response): Promise<void
     try {
         const orgId = getOrgId(req);
         const loginHint = typeof req.query.email === 'string' && req.query.email ? req.query.email : undefined;
-        const url = getGoogleAuthorizationUrl(orgId, loginHint);
+        const url = await getGoogleAuthorizationUrl(orgId, loginHint);
         res.redirect(url);
     } catch (err: any) {
         logger.error('[OAUTH] Google authorize failed', err);
@@ -53,10 +53,14 @@ export const googleCallback = async (req: Request, res: Response): Promise<void>
         return res.redirect(`${FRONTEND_URL}/dashboard/sequencer/accounts?error=missing_code_or_state`);
     }
 
-    const parsed = parseGoogleState(String(state));
-    if (!parsed) {
+    // Validate state against the server-side store (CSRF protection). Any
+    // failure here means the callback wasn't initiated by us — abort.
+    const orgId = await consumeSequencerGoogleState(String(state));
+    if (!orgId) {
+        logger.warn('[OAUTH] Google callback rejected — invalid state');
         return res.redirect(`${FRONTEND_URL}/dashboard/sequencer/accounts?error=invalid_state`);
     }
+    const parsed = { orgId };
 
     try {
         const { access_token, refresh_token, expires_at, email, name } = await exchangeGoogleCodeForTokens(String(code));
@@ -94,6 +98,7 @@ export const googleCallback = async (req: Request, res: Response): Promise<void>
                     token_expires_at: expires_at,
                     connection_status: 'active',
                     daily_send_limit: orgSettings.default_daily_limit,
+                    source: 'oauth',
                 },
             });
             accountId = created.id;
@@ -228,6 +233,7 @@ export const microsoftCallback = async (req: Request, res: Response): Promise<vo
                     token_expires_at: expires_at,
                     connection_status: 'active',
                     daily_send_limit: orgSettings.default_daily_limit,
+                    source: 'oauth',
                 },
             });
             accountId = created.id;

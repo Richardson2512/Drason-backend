@@ -13,13 +13,45 @@
 import { google } from 'googleapis';
 import crypto from 'crypto';
 import { logger } from './observabilityService';
+import { verifyGrantedScopes, verifyIdTokenEmail } from '../utils/googleOAuth';
+import { createState, consumeState } from './oauthStateService';
 
+// Sequencer Google OAuth scope set — DELIBERATELY NON-RESTRICTED.
+//
+// We previously requested gmail.send + gmail.modify (Restricted scopes) for
+// API-based sending and reply detection. That path required:
+//   - Google CASA security audit ($15K-$75K/year)
+//   - 6-12 weeks of verification before launch
+//   - 100-test-user cap during the wait
+//
+// We now send via SMTP (smtp.gmail.com:587) using app passwords supplied
+// by mailbox resellers (Zapmail, etc.) and read replies via IMAP. Both
+// paths use Gmail's normal authenticated-user infrastructure — same inbox
+// placement, same authentication, same delivery quality as the API path.
+// Neither requires Gmail-specific OAuth scopes.
+//
+// What remains here (openid + email + profile) is the basic identity
+// triplet — non-sensitive, no verification needed. It lets the sequencer
+// confirm WHICH Google account someone is connecting (email + name from
+// the signed id_token), without ever asking Google for permission to send
+// or read mail.
+//
+// The legacy Gmail API code paths in THIS FILE (sendEmailViaGmailApi,
+// fetchGmailReplies) are kept intact so any pre-existing OAuth-connected
+// account keeps working until manually re-imported via SMTP. New
+// connections never go through gmail.* scopes.
 const SCOPES = [
-    'https://www.googleapis.com/auth/gmail.send',
-    'https://www.googleapis.com/auth/gmail.readonly',
-    'https://www.googleapis.com/auth/gmail.modify',
+    'openid',
+    'email',
+    'profile',
+];
+
+// All scopes in SCOPES are non-sensitive identity triplet — Google grants
+// them as a bundle. There's no granular per-scope consent screen for these
+// like there was for gmail.send/modify. Verifying email-scope-granted is
+// enough to know identity worked.
+const REQUIRED_SCOPES = [
     'https://www.googleapis.com/auth/userinfo.email',
-    'https://www.googleapis.com/auth/userinfo.profile',
 ];
 
 function getOAuthClient() {
@@ -38,18 +70,19 @@ function getOAuthClient() {
     );
 }
 
-export function getGoogleAuthorizationUrl(orgId: string, loginHint?: string): string {
+export async function getGoogleAuthorizationUrl(orgId: string, loginHint?: string): Promise<string> {
     const oauth2Client = getOAuthClient();
-
-    const nonce = crypto.randomBytes(16).toString('hex');
-    const statePayload = JSON.stringify({ orgId, nonce, provider: 'google' });
-    const state = Buffer.from(statePayload).toString('base64url');
+    // Server-side state nonce — replaces the earlier base64-encoded JSON
+    // scheme that was structurally validated only and trivially forgeable
+    // (anyone could mint a state with any orgId).
+    const state = await createState({ purpose: 'sequencer_google_oauth', organizationId: orgId });
 
     return oauth2Client.generateAuthUrl({
         access_type: 'offline',
         prompt: 'consent', // Force consent to guarantee refresh token
         scope: SCOPES,
         state,
+        include_granted_scopes: true, // future-proof for incremental scope additions
         // login_hint pre-selects the right Google account on the consent screen.
         // Used by Zapmail bulk-import flow so the user just clicks "Allow" instead
         // of picking the right inbox out of many signed-in Google accounts.
@@ -57,15 +90,13 @@ export function getGoogleAuthorizationUrl(orgId: string, loginHint?: string): st
     });
 }
 
-export function parseGoogleState(state: string): { orgId: string; nonce: string } | null {
-    try {
-        const decoded = Buffer.from(state, 'base64url').toString('utf8');
-        const payload = JSON.parse(decoded);
-        if (payload.orgId && payload.nonce && payload.provider === 'google') return payload;
-        return null;
-    } catch {
-        return null;
-    }
+/**
+ * Validate a callback state and return the org it was minted for, or null
+ * if missing/expired/CSRF. Caller MUST abort on null.
+ */
+export async function consumeSequencerGoogleState(state: string): Promise<string | null> {
+    const result = await consumeState(state, 'sequencer_google_oauth');
+    return result?.organizationId ?? null;
 }
 
 export async function exchangeGoogleCodeForTokens(code: string): Promise<{
@@ -82,30 +113,54 @@ export async function exchangeGoogleCodeForTokens(code: string): Promise<{
         throw new Error('No access_token received from Google');
     }
     if (!tokens.refresh_token) {
-        throw new Error('No refresh_token received. Re-authorize with prompt=consent.');
+        // We always pass prompt=consent, so a missing refresh_token here
+        // almost always means the user previously connected this Google
+        // account to another flow under the same Cloud project. Tell them
+        // explicitly how to recover instead of vaguely suggesting a retry.
+        throw new Error(
+            'Google did not return a refresh_token. This usually means this Google ' +
+            'account already granted access via another flow. Visit ' +
+            'myaccount.google.com → Security → Third-party apps, remove the ' +
+            'existing grant for Superkabe, then retry.',
+        );
     }
 
-    oauth2Client.setCredentials(tokens);
-
-    const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
-    const userInfo = await oauth2.userinfo.get();
-
-    if (!userInfo.data.email) {
-        throw new Error('Could not fetch user email from Google');
+    // Per Google web-server doc step 6: verify the user actually granted
+    // every scope we required on the granular consent screen. Refuse the
+    // connection on any miss.
+    const missing = verifyGrantedScopes(tokens.scope, REQUIRED_SCOPES);
+    if (missing.length > 0) {
+        throw new Error(
+            `Google did not grant required scope(s): ${missing.join(', ')}. ` +
+            `Please retry and grant all requested permissions on the consent screen.`,
+        );
     }
+
+    // Verify identity via the signed id_token (locally-verifiable JWT).
+    // Removes the extra HTTP round-trip to oauth2.userinfo.get and closes a
+    // class of MitM scenarios where an attacker could inject a fake
+    // userinfo response between us and Google.
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    if (!tokens.id_token || !clientId) {
+        throw new Error('Google did not return an id_token; cannot verify identity');
+    }
+    const identity = await verifyIdTokenEmail(tokens.id_token, clientId);
 
     return {
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
         expires_at: tokens.expiry_date ? new Date(tokens.expiry_date) : new Date(Date.now() + 3600 * 1000),
-        email: userInfo.data.email.toLowerCase(),
-        name: userInfo.data.name || undefined,
+        email: identity.email,
+        name: identity.name,
     };
 }
 
 export async function refreshGoogleAccessToken(refreshToken: string): Promise<{
     access_token: string;
     expires_at: Date;
+    /** Populated if Google rotated the refresh token. Caller MUST persist the
+     *  new value; ignoring it strands the connection on the next refresh. */
+    rotated_refresh_token?: string;
 }> {
     const oauth2Client = getOAuthClient();
     oauth2Client.setCredentials({ refresh_token: refreshToken });
@@ -118,6 +173,9 @@ export async function refreshGoogleAccessToken(refreshToken: string): Promise<{
         return {
             access_token: credentials.access_token,
             expires_at: credentials.expiry_date ? new Date(credentials.expiry_date) : new Date(Date.now() + 3600 * 1000),
+            rotated_refresh_token: credentials.refresh_token && credentials.refresh_token !== refreshToken
+                ? credentials.refresh_token
+                : undefined,
         };
     } catch (err: any) {
         logger.error('[GOOGLE_OAUTH] Failed to refresh token', err);

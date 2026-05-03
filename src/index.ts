@@ -23,6 +23,20 @@ function validateEnvironment(): void {
             `Server cannot start without these.`
         );
     }
+
+    // Google's OAuth 2.0 web-server doc: "Redirect URIs must use the HTTPS
+    // scheme, not plain HTTP. Localhost URIs are exempt." Catch the misconfig
+    // at boot — otherwise users hit a confusing redirect_uri_mismatch the
+    // first time they click Connect.
+    if (process.env.NODE_ENV === 'production') {
+        const backendUrl = process.env.BACKEND_URL || '';
+        if (backendUrl && !backendUrl.startsWith('https://')) {
+            throw new Error(
+                `FATAL: BACKEND_URL must be HTTPS in production (got: ${backendUrl}). ` +
+                `Google rejects non-HTTPS OAuth redirect URIs for non-localhost hosts.`,
+            );
+        }
+    }
 }
 
 validateEnvironment();
@@ -398,6 +412,29 @@ app.get('/api/integrations/salesforce/list-views', asyncHandler(salesforceIntegr
 app.get('/api/integrations/salesforce/fields', asyncHandler(salesforceIntegrationController.describeFields));
 app.post('/api/integrations/salesforce/import', asyncHandler(salesforceIntegrationController.startImport));
 
+// Lead-source integrations (Phase 5+) — provider-blind reads + Apollo flow.
+import * as leadSourcesController from './controllers/leadSourcesController';
+app.get('/api/integrations/lead-sources/connections', asyncHandler(leadSourcesController.listConnections));
+app.get('/api/integrations/lead-sources/connections/:id', asyncHandler(leadSourcesController.getConnectionDetail));
+app.post('/api/integrations/lead-sources/connections/:id/disconnect', asyncHandler(leadSourcesController.disconnectConnection));
+
+import * as apolloIntegrationController from './controllers/apolloIntegrationController';
+app.post('/api/integrations/apollo/connect', asyncHandler(apolloIntegrationController.connect));
+app.post('/api/integrations/apollo/parse-url', asyncHandler(apolloIntegrationController.parseUrl));
+app.post('/api/integrations/apollo/import', asyncHandler(apolloIntegrationController.startImport));
+app.get('/api/integrations/apollo/jobs/:id', asyncHandler(apolloIntegrationController.getJobStatus));
+
+// Outreach.io — outbound prospect/sequence push (Phase 6).
+import * as outreachIntegrationController from './controllers/outreachIntegrationController';
+app.get('/api/integrations/outreach/authorize', asyncHandler(outreachIntegrationController.authorize));
+app.get('/api/integrations/outreach/connection', asyncHandler(outreachIntegrationController.getConnection));
+app.post('/api/integrations/outreach/disconnect', asyncHandler(outreachIntegrationController.disconnect));
+app.get('/api/integrations/outreach/sequences', asyncHandler(outreachIntegrationController.listSequences));
+app.post('/api/integrations/outreach/sequences', asyncHandler(outreachIntegrationController.createSequence));
+app.get('/api/integrations/outreach/mailboxes', asyncHandler(outreachIntegrationController.listMailboxes));
+app.post('/api/integrations/outreach/exports', asyncHandler(outreachIntegrationController.startExport));
+app.get('/api/integrations/outreach/exports/:id', asyncHandler(outreachIntegrationController.getExportJob));
+
 // Public OAuth callback endpoints — must be reachable without an
 // authenticated session (the browser is mid-redirect from the CRM).
 // Mounted under /api so the global rate-limit + correlation middleware
@@ -405,6 +442,7 @@ app.post('/api/integrations/salesforce/import', asyncHandler(salesforceIntegrati
 // publicPaths allowlist below.
 app.get('/api/integrations/hubspot/callback', asyncHandler(hubspotIntegrationController.callback));
 app.get('/api/integrations/salesforce/callback', asyncHandler(salesforceIntegrationController.callback));
+app.get('/api/integrations/outreach/callback', asyncHandler(outreachIntegrationController.callback));
 
 // HubSpot webhooks — POST from HubSpot's servers, no Superkabe session.
 // Auth is via HMAC-SHA256 signature on every request (verified inside
@@ -824,6 +862,12 @@ if (process.env.SALESFORCE_CLIENT_ID && process.env.SALESFORCE_CLIENT_SECRET) {
     registerProvider(salesforceFactory);
 }
 
+// Lead-source providers (Phase 5+). API-key driven — no env-gating;
+// availability is per-org via LeadSourceConnection rows.
+import { registerLeadSourceProvider } from './services/leadSources/registry';
+import { apolloFactory } from './services/leadSources/apollo/factory';
+registerLeadSourceProvider(apolloFactory);
+
 const server = app.listen(PORT, () => {
     logger.info(`Server started on port ${PORT}`, {
         port: PORT,
@@ -841,6 +885,12 @@ const server = app.listen(PORT, () => {
     import('./workers/crmContactImportWorker').then(m => m.startCrmContactImportWorker());
     import('./workers/crmSuppressionSyncWorker').then(m => m.startCrmSuppressionSyncWorker());
     import('./workers/crmIncrementalImportScheduler').then(m => m.startCrmIncrementalImportScheduler());
+
+    // Lead-source import worker (Phase 5+) — Apollo + future ZoomInfo.
+    import('./workers/apolloImportWorker').then(m => m.startLeadSourceImportWorker());
+
+    // Outreach.io export worker — pushes Superkabe leads to Outreach prospects + sequences.
+    import('./workers/outreachExportWorker').then(m => m.startOutreachExportWorker());
 
     startRetentionJob();
     logger.info('Compliance retention job started');

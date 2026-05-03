@@ -26,11 +26,17 @@ export const listCampaigns = async (req: Request, res: Response): Promise<Respon
         const page = parseInt(req.query.page as string) || 1;
         const limit = parseInt(req.query.limit as string) || 25;
         const status = (req.query.status as string) || undefined;
+        // Filter by org-level tag IDs (OR semantics — any tag matches).
+        const tagIdsRaw = (req.query.tag_ids as string) || '';
+        const tagIds = tagIdsRaw.split(',').map(s => s.trim()).filter(Boolean);
 
         // List all of the org's campaigns. Campaign table is unified post-Phase-B
         // (2026-04-26) — every row is a native sequencer campaign.
         const where: any = { organization_id: orgId };
         if (status && status !== 'all') where.status = status;
+        if (tagIds.length > 0) {
+            where.tagLinks = { some: { tag_id: { in: tagIds } } };
+        }
 
         const [campaigns, total] = await Promise.all([
             prisma.campaign.findMany({
@@ -46,6 +52,7 @@ export const listCampaigns = async (req: Request, res: Response): Promise<Respon
                             accounts: true,
                         },
                     },
+                    tagLinks: { include: { tag: { select: { id: true, name: true, color: true } } } },
                 },
             }),
             prisma.campaign.count({ where }),
@@ -55,7 +62,12 @@ export const listCampaigns = async (req: Request, res: Response): Promise<Respon
             id: c.id,
             name: c.name,
             status: c.status,
-            tags: c.tags,
+            // Org-level tag relation — objects with { id, name, color }.
+            // Used for the new tag UI on the campaigns list.
+            tags: c.tagLinks.map(tl => ({ id: tl.tag.id, name: tl.tag.name, color: tl.tag.color })),
+            // Legacy Smartlead-import string-array tags. Kept under a distinct
+            // key so the create/duplicate wizard's pre-fill keeps working.
+            legacy_tags: c.tags,
             daily_limit: c.daily_limit,
             send_gap_minutes: c.send_gap_minutes,
             total_leads: c.total_leads,
@@ -108,6 +120,7 @@ export const getCampaign = async (req: Request, res: Response): Promise<Response
                         },
                     },
                 },
+                tagLinks: { include: { tag: { select: { id: true, name: true, color: true } } } },
                 _count: { select: { leads: true } },
             },
         });
@@ -145,6 +158,14 @@ export const getCampaign = async (req: Request, res: Response): Promise<Response
             success: true,
             data: {
                 ...campaign,
+                // Override the raw Prisma `tags` (legacy String[]) and
+                // `tagLinks` (relation) with the same dual-key shape the
+                // list endpoint returns: `tags` = proper objects,
+                // `legacy_tags` = the old string array. Wizard reads
+                // `legacy_tags`; the new tag UI reads `tags`.
+                tags: campaign.tagLinks.map(tl => ({ id: tl.tag.id, name: tl.tag.name, color: tl.tag.color })),
+                legacy_tags: campaign.tags,
+                tagLinks: undefined,
                 total_opened: campaign.open_count,
                 total_clicked: campaign.click_count,
                 total_replied: campaign.reply_count,
@@ -934,5 +955,95 @@ export const resumeCampaign = async (req: Request, res: Response): Promise<Respo
     } catch (error: any) {
         logger.error('[CAMPAIGNS2] Failed to resume campaign', error instanceof Error ? error : new Error(String(error)));
         return res.status(500).json({ success: false, error: 'Failed to resume campaign' });
+    }
+};
+
+/**
+ * PUT /api/sequencer/campaigns/:id/tags
+ * Body: { tagIds: string[] }
+ *
+ * Replace the campaign's tag set wholesale. Mirror of contacts'
+ * setContactTags — server-side validation that all tagIds belong to
+ * the caller's org so cross-org tags can't be applied.
+ */
+export const setCampaignTags = async (req: Request, res: Response): Promise<Response> => {
+    try {
+        const orgId = getOrgId(req);
+        const campaignId = String(req.params.id);
+        const tagIds = Array.isArray(req.body?.tagIds) ? (req.body.tagIds as unknown[]).map(x => String(x)) : null;
+        if (!tagIds) return res.status(400).json({ success: false, error: 'tagIds array is required' });
+
+        const campaign = await prisma.campaign.findFirst({
+            where: { id: campaignId, organization_id: orgId },
+            select: { id: true },
+        });
+        if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
+
+        if (tagIds.length > 0) {
+            const validTags = await prisma.tag.findMany({
+                where: { id: { in: tagIds }, organization_id: orgId },
+                select: { id: true },
+            });
+            if (validTags.length !== tagIds.length) {
+                return res.status(400).json({ success: false, error: 'One or more tags not found in this organization' });
+            }
+        }
+
+        await prisma.$transaction([
+            prisma.campaignTag.deleteMany({ where: { campaign_id: campaignId } }),
+            prisma.campaignTag.createMany({
+                data: tagIds.map(tagId => ({ campaign_id: campaignId, tag_id: tagId })),
+                skipDuplicates: true,
+            }),
+        ]);
+
+        return res.json({ success: true });
+    } catch (err) {
+        logger.error('[CAMPAIGNS2] setCampaignTags failed', err instanceof Error ? err : new Error(String(err)));
+        return res.status(500).json({ success: false, error: 'Failed to update tags' });
+    }
+};
+
+/**
+ * POST /api/sequencer/campaigns/bulk-tag
+ * Body: { ids: string[], tagId: string, action: 'add' | 'remove' }
+ *
+ * Add or remove a single tag across many campaigns at once.
+ */
+export const bulkTagCampaigns = async (req: Request, res: Response): Promise<Response> => {
+    try {
+        const orgId = getOrgId(req);
+        const ids = Array.isArray(req.body?.ids) ? (req.body.ids as unknown[]).map(x => String(x)) : null;
+        const tagId = typeof req.body?.tagId === 'string' ? req.body.tagId : null;
+        const action = req.body?.action === 'remove' ? 'remove' : 'add';
+
+        if (!ids || ids.length === 0) return res.status(400).json({ success: false, error: 'ids array is required' });
+        if (!tagId) return res.status(400).json({ success: false, error: 'tagId is required' });
+
+        const tag = await prisma.tag.findFirst({ where: { id: tagId, organization_id: orgId } });
+        if (!tag) return res.status(404).json({ success: false, error: 'Tag not found' });
+
+        const validCampaigns = await prisma.campaign.findMany({
+            where: { id: { in: ids }, organization_id: orgId },
+            select: { id: true },
+        });
+        const validIds = validCampaigns.map(c => c.id);
+        if (validIds.length === 0) return res.json({ success: true, affected: 0 });
+
+        if (action === 'add') {
+            await prisma.campaignTag.createMany({
+                data: validIds.map(campaignId => ({ campaign_id: campaignId, tag_id: tagId })),
+                skipDuplicates: true,
+            });
+        } else {
+            await prisma.campaignTag.deleteMany({
+                where: { tag_id: tagId, campaign_id: { in: validIds } },
+            });
+        }
+
+        return res.json({ success: true, affected: validIds.length });
+    } catch (err) {
+        logger.error('[CAMPAIGNS2] bulkTagCampaigns failed', err instanceof Error ? err : new Error(String(err)));
+        return res.status(500).json({ success: false, error: 'Failed to apply tag' });
     }
 };

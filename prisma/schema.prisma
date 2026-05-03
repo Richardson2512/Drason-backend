@@ -107,6 +107,8 @@ model Organization {
   // `campaigns` relation above with source_platform='sequencer'.
   emailThreads           EmailThread[]
   emailTemplates         EmailTemplate[]
+  templateFolders        TemplateFolder[]
+  tags                   Tag[]
   emailSignatures        EmailSignature[]
   sequencerSettings      SequencerSettings?
   businessProfile        BusinessProfile?
@@ -325,10 +327,16 @@ model Lead {
   // import flow. Used to upsert idempotently on retry. Safe to drop 30d post-import.
   import_external_id String?
 
+  // Free-text notes written by the operator on the contact detail page.
+  // Kept on the Lead row (not a separate Notes table) because we don't need
+  // history / threading / multi-author — it's a simple scratch field.
+  notes              String?
+
   created_at   DateTime     @default(now())
   updated_at   DateTime     @updatedAt
   deleted_at   DateTime?
   organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  tags         LeadTag[]
 
   @@unique([organization_id, email])
   @@unique([organization_id, import_external_id])
@@ -339,6 +347,59 @@ model Lead {
   @@index([health_classification, health_checked_at]) // For health worker queries
   @@index([status])
   @@index([bounced])
+}
+
+/// Operator-defined tags for organizing contacts. Org-scoped — each
+/// organization has its own tag namespace. Many-to-many with Lead via
+/// LeadTag join table.
+model Tag {
+  id              String   @id @default(uuid())
+  organization_id String
+  name            String
+  /// Hex color for the tag pill in the UI. Defaults applied client-side
+  /// if null. Stored as 7-char string with leading '#' (e.g. "#3B82F6").
+  color           String?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  leadTags     LeadTag[]
+  campaignTags CampaignTag[]
+
+  @@unique([organization_id, name])
+  @@index([organization_id])
+}
+
+/// Many-to-many join between Lead and Tag. Both sides cascade-delete:
+/// removing a Tag clears it from all leads, removing a Lead clears its
+/// tags. The pair is unique so a lead can't carry the same tag twice.
+model LeadTag {
+  lead_id    String
+  tag_id     String
+  created_at DateTime @default(now())
+
+  lead Lead @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+  tag  Tag  @relation(fields: [tag_id], references: [id], onDelete: Cascade)
+
+  @@id([lead_id, tag_id])
+  @@index([tag_id])
+  @@index([lead_id])
+}
+
+/// Many-to-many join between Campaign and Tag. Tags are shared with
+/// leads (same Tag table) — defining "Q2 priority" once tags it across
+/// every surface. Cascade-delete on both sides matches LeadTag semantics.
+model CampaignTag {
+  campaign_id String
+  tag_id      String
+  created_at  DateTime @default(now())
+
+  campaign Campaign @relation(fields: [campaign_id], references: [id], onDelete: Cascade)
+  tag      Tag      @relation(fields: [tag_id], references: [id], onDelete: Cascade)
+
+  @@id([campaign_id, tag_id])
+  @@index([tag_id])
+  @@index([campaign_id])
 }
 
 model ValidationAttempt {
@@ -448,6 +509,10 @@ model Campaign {
   leads          CampaignLead[]
   accounts       CampaignAccount[]
   leadImports    CampaignLeadImport[]
+  // Distinct from the legacy `tags` String[] field above — that one was
+  // populated by Smartlead imports as free-text labels. `tagLinks` is the
+  // proper many-to-many relation backed by the org-level Tag model.
+  tagLinks       CampaignTag[]
 
   @@unique([organization_id, import_external_id])
   @@index([organization_id, status])
@@ -1073,6 +1138,32 @@ model PendingRegistration {
   @@index([expires_at])
 }
 
+/// Server-side store for OAuth `state` nonces. Created on /authorize, deleted
+/// on first /callback (single-use). TTL enforced via expires_at + a periodic
+/// sweep so abandoned flows don't accumulate.
+///
+/// Why DB instead of Redis: the dev environment runs without Redis, and we
+/// want OAuth flows to work identically across environments. State writes
+/// are one row per /authorize click — negligible load.
+///
+/// SECURITY:
+///   - `state` is a 32-byte hex nonce (256 bits) — unguessable.
+///   - One row per flow, deleted on first read (replay-protected).
+///   - `purpose` lets the callback verify the state was minted for the
+///     right flow (prevents code-from-flow-A being redeemed in flow-B).
+model OAuthState {
+  id              String   @id @default(uuid())
+  state           String   @unique // 32-byte hex nonce sent to Google
+  purpose         String // e.g. 'postmaster_oauth' | 'sequencer_google_oauth' | 'user_login_oauth'
+  organization_id String? // null for user-login (org doesn't exist yet)
+  metadata        Json     @default("{}") // e.g. { plan, source } for user-login
+  expires_at      DateTime
+  created_at      DateTime @default(now())
+
+  @@index([expires_at])
+  @@index([organization_id])
+}
+
 // ─── DNSBL Monitoring ─────────────────────────────────────────────────────────
 
 model DnsblList {
@@ -1250,6 +1341,19 @@ model ConnectedAccount {
   tracking_domain_verified_at   DateTime?
   tracking_domain_last_check_at DateTime?
   tracking_domain_last_error    String?
+
+  // How this mailbox got into Superkabe. Lets the operator filter the
+  // mailboxes list by origin and show a Source column. Stable strings:
+  //   'oauth'           — connected via Google/Microsoft OAuth flow
+  //   'manual'          — single mailbox created via the Connect Mailbox modal
+  //   'csv'             — bulk-imported via CSV upload
+  //   'zapmail'         — imported via Zapmail (either reseller bulk-import OR legacy custom-OAuth orchestration)
+  //   'premium_inboxes' — imported via Premium Inboxes reseller
+  //   'mission_inbox'   — imported via Mission Inbox reseller
+  //   'scaled_mail'     — imported via Scaled Mail reseller
+  // Nullable so legacy rows (created before this field) don't fail; UI
+  // renders "—" for null.
+  source String?
 
   // Zapmail Custom-OAuth resilience state — see migration
   // 20260430120000_zapmail_resilience_columns for the full rationale.
@@ -1453,13 +1557,35 @@ model EmailTemplate {
   body_html       String
   body_text       String?
   category        String   @default("general") // general, introduction, follow-up, breakup, meeting, referral
+  // Optional folder. NULL = uncategorized (default). Folder belongs to the
+  // same org; SetNull on delete so removing a folder doesn't cascade-delete templates.
+  folder_id       String?
   created_at      DateTime @default(now())
   updated_at      DateTime @updatedAt
 
-  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  organization Organization    @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  folder       TemplateFolder? @relation(fields: [folder_id], references: [id], onDelete: SetNull)
 
   @@index([organization_id, category])
   @@index([organization_id, created_at])
+  @@index([organization_id, folder_id])
+}
+
+/// Operator-defined organizational folder for EmailTemplate rows. Kept
+/// flat (no nested folders) — folders are an organizational hint, not a
+/// permission boundary, so depth would be over-engineering.
+model TemplateFolder {
+  id              String   @id @default(uuid())
+  organization_id String
+  name            String
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  organization Organization    @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  templates    EmailTemplate[]
+
+  @@unique([organization_id, name])
+  @@index([organization_id])
 }
 
 model EmailSignature {

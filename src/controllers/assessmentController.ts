@@ -32,22 +32,6 @@ export const getReport = async (req: Request, res: Response): Promise<void> => {
 };
 
 /**
- * GET /api/assessment/reports?days=30
- * Fetch infrastructure health reports for the given time range.
- */
-export const getReports = async (req: Request, res: Response): Promise<void> => {
-    try {
-        const orgId = getOrgId(req);
-        const days = req.query.days ? parseInt(req.query.days as string, 10) : 30;
-        const reports = await assessmentService.getReports(orgId, days);
-        res.json({ success: true, data: reports });
-    } catch (e: any) {
-        logger.error('Failed to fetch assessment reports', e);
-        res.status(500).json({ success: false, error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
-    }
-};
-
-/**
  * POST /api/assessment/run
  * Trigger a manual re-assessment.
  * Used after DNS fixes to verify recovery — DNS-based recovery requires

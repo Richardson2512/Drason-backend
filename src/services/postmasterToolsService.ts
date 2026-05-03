@@ -24,8 +24,11 @@ import axios from 'axios';
 import { prisma } from '../index';
 import { logger } from './observabilityService';
 import { encrypt, decrypt, isEncrypted } from '../utils/encryption';
+import { revokeGoogleToken, verifyGrantedScopes } from '../utils/googleOAuth';
+import { createState, consumeState } from './oauthStateService';
 
 const POSTMASTER_SCOPE = 'https://www.googleapis.com/auth/postmaster.readonly';
+const POSTMASTER_REQUIRED_SCOPES = [POSTMASTER_SCOPE];
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const POSTMASTER_API = 'https://gmailpostmastertools.googleapis.com/v1';
@@ -50,12 +53,14 @@ function clientCreds(): { clientId: string; clientSecret: string } {
 }
 
 /**
- * Build the Google OAuth authorize URL. The `state` param carries the
- * organization_id through Google's redirect so the callback knows which
- * org to attach the tokens to.
+ * Build the Google OAuth authorize URL. The `state` param is a one-time
+ * cryptographic nonce stored server-side keyed to this org — replaces the
+ * earlier scheme of stuffing orgId into state, which was CSRF-vulnerable
+ * because orgId is semi-public (UUIDs leak via JWTs, logs, URLs).
  */
-export function buildAuthorizeUrl(orgId: string): string {
+export async function buildAuthorizeUrl(orgId: string): Promise<string> {
     const { clientId } = clientCreds();
+    const state = await createState({ purpose: 'postmaster_oauth', organizationId: orgId });
     const params = new URLSearchParams({
         client_id: clientId,
         redirect_uri: callbackUrl(),
@@ -63,9 +68,19 @@ export function buildAuthorizeUrl(orgId: string): string {
         scope: POSTMASTER_SCOPE,
         access_type: 'offline',
         prompt: 'consent',  // forces refresh_token return even for repeat auth
-        state: orgId,
+        include_granted_scopes: 'true',  // future-proof for incremental scope additions
+        state,
     });
     return `${AUTHORIZE_URL}?${params.toString()}`;
+}
+
+/**
+ * Verify a callback `state` and return the org it was minted for, or null
+ * if the state is missing/expired/CSRF. Caller must abort on null.
+ */
+export async function consumePostmasterState(state: string): Promise<string | null> {
+    const result = await consumeState(state, 'postmaster_oauth');
+    return result?.organizationId ?? null;
 }
 
 /**
@@ -86,14 +101,34 @@ export async function completeAuthorization(orgId: string, code: string): Promis
         timeout: 15_000,
     });
 
-    const { access_token, refresh_token, expires_in } = res.data as {
-        access_token: string; refresh_token?: string; expires_in: number;
+    const { access_token, refresh_token, expires_in, scope: returnedScope } = res.data as {
+        access_token: string; refresh_token?: string; expires_in: number; scope?: string;
     };
 
+    // Per Google's OAuth 2.0 web-server doc step 6, we MUST verify the user
+    // didn't deselect any required scope on the granular consent screen.
+    // Silently storing tokens for a partial grant produces 403s at runtime
+    // and a half-broken connection in the UI.
+    const missing = verifyGrantedScopes(returnedScope, POSTMASTER_REQUIRED_SCOPES);
+    if (missing.length > 0) {
+        throw new Error(
+            `Google did not grant required scope(s): ${missing.join(', ')}. ` +
+            `Please retry and grant all requested permissions on the consent screen.`,
+        );
+    }
+
     if (!refresh_token) {
-        // Google only returns refresh_token on first consent OR when prompt=consent.
-        // We always pass prompt=consent so this should always populate.
-        throw new Error('Google did not return a refresh_token. Re-try with prompt=consent.');
+        // We pass prompt=consent so Google should return a refresh_token. The
+        // common cause when this still misses is: the user previously connected
+        // this same Google account to another OAuth flow under the same Cloud
+        // project, and Google considers it already-consented at the project
+        // level. Tell the user how to recover.
+        throw new Error(
+            'Google did not return a refresh_token. This usually means this Google ' +
+            'account already granted access via another flow. Visit ' +
+            'myaccount.google.com → Security → Third-party apps, remove the ' +
+            'existing grant for this app, then retry.',
+        );
     }
 
     const expiresAt = new Date(Date.now() + expires_in * 1000);
@@ -150,16 +185,22 @@ export async function getValidAccessToken(orgId: string): Promise<string | null>
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             timeout: 15_000,
         });
-        const { access_token, expires_in } = res.data as { access_token: string; expires_in: number };
+        const { access_token, expires_in, refresh_token: rotatedRefresh } = res.data as {
+            access_token: string; expires_in: number; refresh_token?: string;
+        };
         const newExpiresAt = new Date(Date.now() + expires_in * 1000);
-        await prisma.organization.update({
-            where: { id: orgId },
-            data: {
-                postmaster_access_token: encrypt(access_token),
-                postmaster_token_expires_at: newExpiresAt,
-                postmaster_last_error: null,
-            },
-        });
+        // Google occasionally rotates refresh tokens (rare, but documented).
+        // If we ignore the new one, the old token stops working on the next
+        // refresh and the user has to reconnect. Always capture if present.
+        const updateData: any = {
+            postmaster_access_token: encrypt(access_token),
+            postmaster_token_expires_at: newExpiresAt,
+            postmaster_last_error: null,
+        };
+        if (rotatedRefresh) {
+            updateData.postmaster_refresh_token = encrypt(rotatedRefresh);
+        }
+        await prisma.organization.update({ where: { id: orgId }, data: updateData });
         return access_token;
     } catch (err: any) {
         logger.error('[POSTMASTER] Token refresh failed', err, { orgId });
@@ -172,11 +213,29 @@ export async function getValidAccessToken(orgId: string): Promise<string | null>
 }
 
 /**
- * Disconnect: clear stored tokens. Postmaster API access stops on next
- * worker tick. Token revocation on Google's side requires a separate
- * revoke call which we'll add when needed.
+ * Disconnect: revoke the grant on Google's side, then clear stored tokens.
+ *
+ * Per Google best-practices: "Revoke tokens as soon as they are no longer
+ * needed and delete them permanently from your systems." We do BOTH —
+ * revoke first (so Google kills the grant even if the DB row leaks later),
+ * then clear locally.
+ *
+ * Revoking the refresh_token invalidates ALL access tokens issued for that
+ * grant, immediately. We never raise on revoke failure — best-effort, log
+ * it, and proceed to clear locally so the user always sees an honest UI.
  */
 export async function disconnect(orgId: string): Promise<void> {
+    const org = await prisma.organization.findUnique({
+        where: { id: orgId },
+        select: { postmaster_refresh_token: true },
+    });
+    if (org?.postmaster_refresh_token) {
+        const refresh = isEncrypted(org.postmaster_refresh_token)
+            ? decrypt(org.postmaster_refresh_token)
+            : org.postmaster_refresh_token;
+        const result = await revokeGoogleToken(refresh);
+        logger.info('[POSTMASTER] Revoke outcome', { orgId, revoked: result.revoked, status: result.status });
+    }
     await prisma.organization.update({
         where: { id: orgId },
         data: {

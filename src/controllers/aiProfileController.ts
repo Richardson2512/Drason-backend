@@ -122,7 +122,14 @@ export const deleteProfile = async (req: Request, res: Response): Promise<Respon
 
 // ────────────────────────────────────────────────────────────────────
 // GET /api/ai/status
-// Quick "is AI configured & reachable" probe for the UI.
+//
+// Diagnostic endpoint — returns whether OPENAI_API_KEY is configured and
+// which model is currently active. Not currently consumed by any UI; kept
+// available for ops debugging (curl from Railway shell, runbooks, future
+// admin/health surface). Cheap to leave in place — leaks no secrets.
+//
+// Audit trail: 2026-04-30 audit verified no FE caller; intentionally retained
+// per ops-runbook usage pattern.
 // ────────────────────────────────────────────────────────────────────
 
 export const getStatus = async (_req: Request, res: Response): Promise<Response> => {

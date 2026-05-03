@@ -11,15 +11,28 @@ import { ConfidentialClientApplication, LogLevel } from '@azure/msal-node';
 import crypto from 'crypto';
 import { logger } from './observabilityService';
 
-// Scopes for Graph API (delegated, user-level)
+// Scopes for Microsoft OAuth — DELIBERATELY MINIMAL.
+//
+// We previously requested Mail.Send + Mail.Read for Graph-API-based
+// sending and reply detection. Symmetric to the Gmail decision: we now
+// send via SMTP (smtp.office365.com:587) using credentials from mailbox
+// resellers and read replies via IMAP (outlook.office365.com:993). Both
+// paths use Microsoft's normal authenticated-user infrastructure.
+//
+// What remains is the basic identity triplet (openid + profile + email)
+// plus User.Read so we can resolve the connecting account's email. None
+// of these require admin consent or the Microsoft App Compliance Program.
+//
+// The legacy Graph code paths in THIS FILE (sendEmailViaGraph,
+// fetchMicrosoftReplies) are kept intact — pre-existing OAuth-connected
+// users already granted Mail.Send/Mail.Read and keep working until they
+// re-import via SMTP.
 const SCOPES = [
     'offline_access',
     'openid',
     'profile',
     'email',
     'User.Read',
-    'Mail.Send',
-    'Mail.Read',
 ];
 
 const AUTHORITY = 'https://login.microsoftonline.com/common';
