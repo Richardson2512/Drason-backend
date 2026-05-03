@@ -468,20 +468,52 @@ app.post('/api/integrations/hubspot/webhooks', asyncHandler(handleHubSpotWebhook
 // keys (sk_*) — both go through extractOrgContext.
 import { handleMcpRequest, handleMcpMethodNotAllowed } from './mcp/transport';
 
-// Emit RFC 9728 WWW-Authenticate header on 401 so MCP clients can
-// discover our OAuth metadata. extractOrgContext sets 401 status when
-// auth is missing/invalid; the header set here ships with that response.
+// RFC 9728 OAuth 2.0 Protected Resource Metadata. Claude.ai (and any
+// MCP-spec client) probes this endpoint to discover which authorization
+// server protects /mcp before ever attempting an unauthenticated call.
+// Without it, the OAuth handshake never bootstraps — the user clicks
+// "Connect" in Claude and nothing happens.
+//
+// Mounted at the URL the WWW-Authenticate header advertises so the
+// resource_metadata link in the 401 actually resolves.
+app.get('/.well-known/oauth-protected-resource/mcp', (_req, res) => {
+    res.json({
+        resource: `${PUBLIC_BACKEND_URL}/mcp`,
+        authorization_servers: [PUBLIC_BACKEND_URL],
+        scopes_supported: SUPPORTED_SCOPES,
+        bearer_methods_supported: ['header'],
+        resource_documentation: `${PUBLIC_BACKEND_URL}/docs/mcp-server`,
+    });
+});
+// Also accept the bare path in case a client follows the older draft
+// that omits the resource path suffix.
+app.get('/.well-known/oauth-protected-resource', (_req, res) => {
+    res.json({
+        resource: `${PUBLIC_BACKEND_URL}/mcp`,
+        authorization_servers: [PUBLIC_BACKEND_URL],
+        scopes_supported: SUPPORTED_SCOPES,
+        bearer_methods_supported: ['header'],
+        resource_documentation: `${PUBLIC_BACKEND_URL}/docs/mcp-server`,
+    });
+});
+
+// Emit RFC 9728 WWW-Authenticate header on every /mcp method so any
+// initial probe (GET, OPTIONS, DELETE, POST) carries the discovery hint.
+// extractOrgContext sets 401 status when auth is missing/invalid; the
+// header set here ships with that response.
 const advertiseResourceMetadata = (req: express.Request, res: express.Response, next: express.NextFunction) => {
     res.setHeader(
         'WWW-Authenticate',
-        `Bearer resource_metadata="${PUBLIC_BACKEND_URL}/.well-known/oauth-protected-resource/mcp"`
+        `Bearer realm="Superkabe MCP", resource_metadata="${PUBLIC_BACKEND_URL}/.well-known/oauth-protected-resource/mcp"`
     );
     next();
 };
 
 app.post('/mcp', advertiseResourceMetadata, extractOrgContext, checkSubscriptionStatus, asyncHandler(handleMcpRequest));
-app.get('/mcp', handleMcpMethodNotAllowed);
-app.delete('/mcp', handleMcpMethodNotAllowed);
+// GET / DELETE return 405, but with the WWW-Authenticate header so a
+// client that probes with the wrong verb still gets the OAuth hint.
+app.get('/mcp', advertiseResourceMetadata, handleMcpMethodNotAllowed);
+app.delete('/mcp', advertiseResourceMetadata, handleMcpMethodNotAllowed);
 
 // Ingestion endpoints
 app.post('/api/ingest', asyncHandler(ingestionController.ingestLead));
