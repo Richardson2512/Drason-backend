@@ -1039,6 +1039,79 @@ export const checkWarmupProgress = async (req: Request, res: Response, next: Nex
 };
 
 /**
+ * GET /api/dashboard/healing/recently-recovered?days=7
+ *
+ * List entities that graduated to the healthy phase within the lookback
+ * window. Sourced from StateTransition (clean from_state/to_state columns
+ * written by healingService.transitionPhase) joined with the entity table
+ * for the operator-facing name (email/domain).
+ *
+ * Used by the "Recently Recovered" panel on /dashboard/healing.
+ */
+export const getRecentlyRecovered = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const orgId = getOrgId(req);
+        const days = Math.min(Math.max(parseInt(String(req.query.days || '7'), 10) || 7, 1), 90);
+        const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+        const transitions = await prisma.stateTransition.findMany({
+            where: {
+                organization_id: orgId,
+                to_state: 'healthy',
+                created_at: { gte: since },
+            },
+            orderBy: { created_at: 'desc' },
+            take: 50,
+        });
+
+        if (transitions.length === 0) {
+            return res.json({ success: true, data: [] });
+        }
+
+        const mailboxIds = transitions.filter(t => t.entity_type === 'mailbox').map(t => t.entity_id);
+        const domainIds = transitions.filter(t => t.entity_type === 'domain').map(t => t.entity_id);
+
+        const [mailboxes, domains] = await Promise.all([
+            mailboxIds.length
+                ? prisma.mailbox.findMany({
+                      where: { id: { in: mailboxIds }, organization_id: orgId },
+                      select: { id: true, email: true, phase_entered_at: true, resilience_score: true },
+                  })
+                : Promise.resolve([]),
+            domainIds.length
+                ? prisma.domain.findMany({
+                      where: { id: { in: domainIds }, organization_id: orgId },
+                      select: { id: true, domain: true, phase_entered_at: true, resilience_score: true },
+                  })
+                : Promise.resolve([]),
+        ]);
+
+        const mailboxById = new Map(mailboxes.map(m => [m.id, m]));
+        const domainById = new Map(domains.map(d => [d.id, d]));
+
+        const data = transitions.map(t => {
+            const entity = t.entity_type === 'mailbox' ? mailboxById.get(t.entity_id) : domainById.get(t.entity_id);
+            const name = (entity as any)?.email || (entity as any)?.domain || null;
+            return {
+                id: t.id,
+                entity_type: t.entity_type,
+                entity_id: t.entity_id,
+                entity_name: name,
+                from_phase: t.from_state,
+                to_phase: t.to_state,
+                reason: t.reason,
+                recovered_at: t.created_at,
+                resilience_score: (entity as any)?.resilience_score ?? null,
+            };
+        });
+
+        res.json({ success: true, data });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
  * Manually resume a paused mailbox
  * @route POST /api/infrastructure/mailbox/resume
  */

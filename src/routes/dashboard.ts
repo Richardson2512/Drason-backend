@@ -58,6 +58,7 @@ router.post('/notifications/read-all', notificationController.markAllAsRead);
 // Warmup recovery endpoints
 router.get('/warmup-status', dashboardController.getWarmupStatus);
 router.post('/warmup/check', dashboardController.checkWarmupProgress);
+router.get('/healing/recently-recovered', dashboardController.getRecentlyRecovered);
 
 // Report generation endpoint
 router.get('/reports/generate', dashboardController.generateReport);
