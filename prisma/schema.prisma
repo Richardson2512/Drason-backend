@@ -103,6 +103,7 @@ model Organization {
   crmConnections         CrmConnection[]
   leadSourceConnections  LeadSourceConnection[]
   outreachConnections    OutreachConnection[]
+  justCallConnections    JustCallConnection[]
   // SendCampaign was unified into Campaign. Sequencer campaigns now appear in the
   // `campaigns` relation above with source_platform='sequencer'.
   emailThreads           EmailThread[]
@@ -2209,6 +2210,91 @@ model OutreachExportJob {
   connection OutreachConnection @relation(fields: [outreach_connection_id], references: [id], onDelete: Cascade)
 
   @@index([outreach_connection_id])
+  @@index([organization_id])
+  @@index([state])
+  @@index([created_at])
+}
+
+/// JustCall.io connection — API-key + secret based (no OAuth). One row per
+/// org. Both credentials are encrypted at rest (AES-256-GCM, same key used
+/// for OutreachConnection.access_token).
+model JustCallConnection {
+  id                       String    @id @default(uuid())
+  organization_id          String
+
+  // Credentials — encrypted at rest. JustCall's public API takes them as
+  // `Authorization: <api_key>:<api_secret>` (colon-joined, NOT HTTP Basic).
+  api_key                  String
+  api_secret               String
+
+  // Provider-side identity, surfaced in the dashboard so the operator can
+  // confirm which JustCall workspace is connected. Captured via a /users
+  // probe at connect time.
+  justcall_user_id         String?
+  justcall_user_email      String?
+  justcall_account_name    String?
+
+  status                   String    @default("active") // active | error | disconnected
+  last_validated_at        DateTime?
+  last_used_at             DateTime?
+  last_error               String?
+  connected_at             DateTime  @default(now())
+  connected_by_user_id     String?
+  disconnected_at          DateTime?
+
+  created_at               DateTime  @default(now())
+  updated_at               DateTime  @updatedAt
+
+  organization Organization         @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  exportJobs   JustCallExportJob[]
+
+  @@unique([organization_id])
+  @@index([status])
+}
+
+/// Background export job — pushes Superkabe leads into a JustCall sales
+/// dialer campaign. lead_ids is captured at queue time so the snapshot
+/// doesn't drift mid-run if the source campaign changes.
+model JustCallExportJob {
+  id                          String   @id @default(uuid())
+  justcall_connection_id      String
+  organization_id             String
+
+  // Source snapshot
+  source_kind                 String   // 'todays_list' | 'custom_list' | 'campaign'
+  source_label                String?
+  prospect_ids                String[] // CampaignLead.id snapshot at queue time
+
+  // Target — JustCall sales dialer campaign
+  campaign_id                 String   // JustCall sales_dialer campaign id
+  campaign_name               String?
+  created_campaign            Boolean  @default(false)
+
+  // Counters. JustCall's bulk_import returns aggregate counts per batch
+  // rather than per-contact results, so created/updated isn't always
+  // disambiguated — when only one number comes back we record it under
+  // total_added.
+  total                       Int      @default(0)
+  total_processed             Int      @default(0)
+  total_added                 Int      @default(0)
+  total_skipped               Int      @default(0)
+  total_failed                Int      @default(0)
+  cursor                      Int      @default(0) // index into prospect_ids
+
+  // Lifecycle
+  state                       String   @default("pending") // pending | running | completed | failed | cancelled
+  started_at                  DateTime?
+  finished_at                 DateTime?
+  error_message               String?
+  error_count                 Int      @default(0)
+  triggered_by_user_id        String?
+
+  created_at                  DateTime @default(now())
+  updated_at                  DateTime @updatedAt
+
+  connection JustCallConnection @relation(fields: [justcall_connection_id], references: [id], onDelete: Cascade)
+
+  @@index([justcall_connection_id])
   @@index([organization_id])
   @@index([state])
   @@index([created_at])

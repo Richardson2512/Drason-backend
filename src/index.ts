@@ -435,6 +435,17 @@ app.get('/api/integrations/outreach/mailboxes', asyncHandler(outreachIntegration
 app.post('/api/integrations/outreach/exports', asyncHandler(outreachIntegrationController.startExport));
 app.get('/api/integrations/outreach/exports/:id', asyncHandler(outreachIntegrationController.getExportJob));
 
+// JustCall.io — outbound voice/SMS dialer push. API key + secret auth
+// (no OAuth), so there's no /authorize or /callback route.
+import * as justcallIntegrationController from './controllers/justcallIntegrationController';
+app.post('/api/integrations/justcall/connect', asyncHandler(justcallIntegrationController.connect));
+app.get('/api/integrations/justcall/connection', asyncHandler(justcallIntegrationController.getConnection));
+app.post('/api/integrations/justcall/disconnect', asyncHandler(justcallIntegrationController.disconnect));
+app.get('/api/integrations/justcall/campaigns', asyncHandler(justcallIntegrationController.listCampaigns));
+app.post('/api/integrations/justcall/campaigns', asyncHandler(justcallIntegrationController.createCampaign));
+app.post('/api/integrations/justcall/exports', asyncHandler(justcallIntegrationController.startExport));
+app.get('/api/integrations/justcall/exports/:id', asyncHandler(justcallIntegrationController.getExportJob));
+
 // Public OAuth callback endpoints — must be reachable without an
 // authenticated session (the browser is mid-redirect from the CRM).
 // Mounted under /api so the global rate-limit + correlation middleware
@@ -891,6 +902,9 @@ const server = app.listen(PORT, () => {
 
     // Outreach.io export worker — pushes Superkabe leads to Outreach prospects + sequences.
     import('./workers/outreachExportWorker').then(m => m.startOutreachExportWorker());
+
+    // JustCall.io export worker — pushes Superkabe leads to a sales-dialer campaign.
+    import('./workers/justcallExportWorker').then(m => m.startJustCallExportWorker());
 
     startRetentionJob();
     logger.info('Compliance retention job started');
