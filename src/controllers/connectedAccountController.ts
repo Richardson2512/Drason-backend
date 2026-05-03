@@ -13,6 +13,7 @@ import { provisionMailboxForConnectedAccount, deprovisionMailboxForConnectedAcco
 import { verifyAndPersistForAccount, checkTrackingDomain } from '../services/trackingDomainVerifierService';
 import { encrypt, decrypt, isEncrypted } from '../utils/encryption';
 import { revokeGoogleToken } from '../utils/googleOAuth';
+import nodemailer from 'nodemailer';
 
 /**
  * GET /api/sequencer/accounts
@@ -455,7 +456,11 @@ export const updateAccount = async (req: Request, res: Response): Promise<Respon
 
 /**
  * POST /api/sequencer/accounts/:id/test
- * Test SMTP connection (placeholder — actual test added later).
+ * Probe live mailbox credentials. For SMTP-password accounts we run
+ * nodemailer.verify() (issues a NOOP + AUTH against the configured host),
+ * which catches changed passwords, blocked-by-ESP, and host-down cases
+ * before a campaign send fails. OAuth accounts skip the probe — token
+ * validity is enforced at refresh time by emailSendAdapters.
  */
 export const testConnection = async (req: Request, res: Response): Promise<Response> => {
     try {
@@ -468,11 +473,49 @@ export const testConnection = async (req: Request, res: Response): Promise<Respo
 
         if (!account) return res.status(404).json({ success: false, error: 'Account not found' });
 
-        // TODO: Implement actual SMTP connection test
-        return res.json({ success: true, message: 'Connection test passed', status: 'ok' });
+        if (!account.smtp_host || !account.smtp_password) {
+            return res.json({
+                success: true,
+                status: 'oauth',
+                message: 'OAuth account — credentials revalidated at send time.',
+            });
+        }
+
+        const port = account.smtp_port || 587;
+        const user = account.smtp_username || account.email;
+        const storedPass = String(account.smtp_password);
+        const pass = isEncrypted(storedPass) ? decrypt(storedPass) : storedPass;
+
+        const probe = nodemailer.createTransport({
+            host: account.smtp_host,
+            port,
+            secure: port === 465,
+            auth: { user, pass },
+            tls: { rejectUnauthorized: false },
+            connectionTimeout: 8000,
+            greetingTimeout: 8000,
+            socketTimeout: 8000,
+        });
+
+        try {
+            await probe.verify();
+        } finally {
+            probe.close();
+        }
+
+        return res.json({
+            success: true,
+            status: 'ok',
+            message: `SMTP login succeeded at ${account.smtp_host}:${port}.`,
+        });
     } catch (error: any) {
-        logger.error('[ACCOUNTS] Failed to test connection', error instanceof Error ? error : new Error(String(error)));
-        return res.status(500).json({ success: false, error: 'Failed to test connection' });
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error('[ACCOUNTS] Connection test failed', error instanceof Error ? error : new Error(message));
+        return res.status(400).json({
+            success: false,
+            status: 'failed',
+            error: message || 'Connection test failed',
+        });
     }
 };
 
