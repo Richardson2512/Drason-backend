@@ -14,6 +14,24 @@ import { prisma } from '../index';
 import { oauthProvider, verifyConsentSession, SUPPORTED_SCOPES } from '../mcp/oauthProvider';
 
 /**
+ * Pull the org slug out of an RFC 8707 resource URL like
+ * `https://api.superkabe.com/mcp/<slug>`. Returns null for the bare
+ * `/mcp` URL (back-compat — no per-org binding requested) or anything
+ * that doesn't match the expected shape.
+ */
+function extractOrgSlugFromResource(resource: string | undefined): string | null {
+    if (!resource) return null;
+    try {
+        const u = new URL(resource);
+        // Match /mcp/<slug> only — bare /mcp returns null.
+        const m = u.pathname.match(/^\/mcp\/([^\/]+)$/);
+        return m ? m[1] : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
  * GET /oauth/consent/details?session=<jwt>
  * Returns information the consent page needs to render.
  */
@@ -36,6 +54,26 @@ export async function getConsentDetails(req: Request, res: Response): Promise<Re
         return res.status(400).json({ success: false, error: 'Unknown OAuth client' });
     }
 
+    // If the client requested a per-org resource (e.g. `/mcp/acme-inc`),
+    // resolve the org so the consent UI can show "Authorize Claude for
+    // Acme Inc." instead of a generic prompt. Bare `/mcp` returns null →
+    // UI falls back to the user's current org at approve time.
+    const targetSlug = extractOrgSlugFromResource(payload.resource);
+    let target_org: { id: string; name: string; slug: string } | null = null;
+    if (targetSlug) {
+        const org = await prisma.organization.findUnique({
+            where: { slug: targetSlug },
+            select: { id: true, name: true, slug: true },
+        });
+        if (!org) {
+            return res.status(404).json({
+                success: false,
+                error: `No organization found for "${targetSlug}". The MCP URL in your client may be wrong.`,
+            });
+        }
+        target_org = org;
+    }
+
     return res.json({
         success: true,
         data: {
@@ -46,6 +84,7 @@ export async function getConsentDetails(req: Request, res: Response): Promise<Re
             },
             scopes: payload.scopes,
             supported_scopes: SUPPORTED_SCOPES,
+            target_org,
         },
     });
 }
@@ -77,6 +116,38 @@ export async function approveConsent(req: Request, res: Response): Promise<Respo
     const orgId = req.orgContext.organizationId;
     if (!userId || !orgId) {
         return res.status(401).json({ success: false, error: 'Login required' });
+    }
+
+    // Per-org URL flow: if the resource pinned a specific org, verify the
+    // signed-in user actually belongs to it. Without this check, a user
+    // logged into Org A could approve a Claude.ai connector pointed at
+    // `/mcp/org-b` and the resulting token would still bind to Org A —
+    // the URL would lie about which org Claude is talking to. Reject with
+    // a message that tells them what to do (log into the right account).
+    const targetSlug = extractOrgSlugFromResource(payload.resource);
+    if (targetSlug) {
+        const targetOrg = await prisma.organization.findUnique({
+            where: { slug: targetSlug },
+            select: { id: true, slug: true, name: true },
+        });
+        if (!targetOrg) {
+            return res.status(404).json({
+                success: false,
+                error: `No organization found for "${targetSlug}".`,
+            });
+        }
+        if (targetOrg.id !== orgId) {
+            logger.warn('[OAUTH] Consent denied — signed-in org does not match resource slug', {
+                userId,
+                signedInOrgId: orgId,
+                targetSlug,
+                targetOrgId: targetOrg.id,
+            });
+            return res.status(403).json({
+                success: false,
+                error: `You're signed in to a different Superkabe organization than this connector targets (${targetOrg.name}). Sign out and sign in with an account that belongs to ${targetOrg.name}, then re-open this consent link from your MCP client.`,
+            });
+        }
     }
 
     const code = await oauthProvider.createAuthorizationCode({

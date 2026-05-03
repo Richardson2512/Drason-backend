@@ -34,7 +34,12 @@ export const getCurrentUser = async (req: Request, res: Response): Promise<void>
                 role: true,
                 organization_id: true,
                 last_login_at: true,
-                created_at: true
+                created_at: true,
+                // Surface the org's slug so the dashboard can render the
+                // per-org MCP URL (`/mcp/<slug>`) without an extra round-trip.
+                organization: {
+                    select: { id: true, name: true, slug: true },
+                },
             }
         });
 

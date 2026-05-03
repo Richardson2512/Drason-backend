@@ -416,3 +416,78 @@ export function getOrgId(req: Request): string {
     }
     return req.orgContext.organizationId;
 }
+
+/**
+ * Per-org MCP URL guard. When mounted on routes shaped `/mcp/:orgSlug`
+ * (and analogous per-org metadata paths), enforces that the bearer token
+ * resolved by extractOrgContext was issued for the org named in the URL.
+ *
+ * Why a separate middleware rather than baking this into extractOrgContext:
+ * the bare `/mcp` path is back-compat — any valid token works there, with
+ * the org coming from the token alone. The per-org URL is the new shape
+ * that lets one user (one Superkabe account) hold separate Claude.ai
+ * connectors per org without the cached-token cross-talk we hit before.
+ *
+ * Behavior:
+ *   - 404 if the slug doesn't resolve to an org (bad URL, never authorize
+ *     a connector against it).
+ *   - 403 if the resolved token's org doesn't match the slug. The caller
+ *     is presenting a token for a different org — this is the audience
+ *     mismatch we explicitly want to reject.
+ *   - Pass-through otherwise; downstream sees req.orgContext as today.
+ */
+export const enforceOrgSlug = async (
+    req: Request,
+    res: Response,
+    next: NextFunction
+): Promise<void> => {
+    const rawSlug = req.params?.orgSlug;
+    const slug = Array.isArray(rawSlug) ? rawSlug[0] : rawSlug;
+    if (!slug || typeof slug !== 'string') {
+        return next();
+    }
+
+    const org = await prisma.organization.findUnique({
+        where: { slug },
+        select: { id: true },
+    });
+    if (!org) {
+        res.status(404).json({
+            jsonrpc: '2.0',
+            error: { code: -32004, message: 'Organization not found for this MCP URL.' },
+            id: null,
+        });
+        return;
+    }
+
+    // Token must already have been resolved upstream. If not, the upstream
+    // middleware should have already 401'd; defensive check just in case.
+    const tokenOrgId = req.orgContext?.organizationId;
+    if (!tokenOrgId) {
+        res.status(401).json({
+            jsonrpc: '2.0',
+            error: { code: -32001, message: 'Authentication required.' },
+            id: null,
+        });
+        return;
+    }
+
+    if (tokenOrgId !== org.id) {
+        logger.warn('[MCP] Per-org URL mismatch — token org does not match URL slug', {
+            urlSlug: slug,
+            urlOrgId: org.id,
+            tokenOrgId,
+        });
+        res.status(403).json({
+            jsonrpc: '2.0',
+            error: {
+                code: -32003,
+                message: 'This connector is for a different organization. Re-authorize from the matching org’s dashboard to connect this URL.',
+            },
+            id: null,
+        });
+        return;
+    }
+
+    next();
+};

@@ -60,7 +60,7 @@ function appendStatementTimeout(url: string): string {
 }
 
 // Import middleware
-import { extractOrgContext } from './middleware/orgContext';
+import { extractOrgContext, enforceOrgSlug } from './middleware/orgContext';
 import { rateLimit, securityHeaders, initRateLimiters } from './middleware/security';
 import { asyncHandler } from './middleware/asyncHandler';
 
@@ -474,46 +474,76 @@ import { handleMcpRequest, handleMcpMethodNotAllowed } from './mcp/transport';
 // Without it, the OAuth handshake never bootstraps — the user clicks
 // "Connect" in Claude and nothing happens.
 //
-// Mounted at the URL the WWW-Authenticate header advertises so the
-// resource_metadata link in the 401 actually resolves.
-app.get('/.well-known/oauth-protected-resource/mcp', (_req, res) => {
-    res.json({
-        resource: `${PUBLIC_BACKEND_URL}/mcp`,
-        authorization_servers: [PUBLIC_BACKEND_URL],
-        scopes_supported: SUPPORTED_SCOPES,
-        bearer_methods_supported: ['header'],
-        resource_documentation: `${PUBLIC_BACKEND_URL}/docs/mcp-server`,
+// Two shapes are advertised:
+//   - bare `/mcp` (back-compat) — any valid token for the user's org
+//   - `/mcp/<org-slug>` (per-org) — token must be issued for that org.
+//     This is what an agency uses to wire up Claude.ai once per client
+//     org, with separate connectors that don't cross-talk.
+const buildResourceMetadata = (resourceUrl: string) => ({
+    resource: resourceUrl,
+    authorization_servers: [PUBLIC_BACKEND_URL],
+    scopes_supported: SUPPORTED_SCOPES,
+    bearer_methods_supported: ['header'],
+    resource_documentation: `${PUBLIC_BACKEND_URL}/docs/mcp-server`,
+});
+
+// Per-org metadata: `/.well-known/oauth-protected-resource/mcp/<slug>`.
+// We resolve the slug before responding so a typo'd connector URL gets a
+// 404 here instead of carrying the user through a half-broken auth flow.
+app.get('/.well-known/oauth-protected-resource/mcp/:orgSlug', async (req, res) => {
+    const slug = req.params.orgSlug;
+    const org = await prisma.organization.findUnique({
+        where: { slug },
+        select: { id: true },
     });
+    if (!org) {
+        res.status(404).json({ error: 'unknown_resource', error_description: `No organization registered for slug "${slug}".` });
+        return;
+    }
+    res.json(buildResourceMetadata(`${PUBLIC_BACKEND_URL}/mcp/${slug}`));
+});
+
+app.get('/.well-known/oauth-protected-resource/mcp', (_req, res) => {
+    res.json(buildResourceMetadata(`${PUBLIC_BACKEND_URL}/mcp`));
 });
 // Also accept the bare path in case a client follows the older draft
 // that omits the resource path suffix.
 app.get('/.well-known/oauth-protected-resource', (_req, res) => {
-    res.json({
-        resource: `${PUBLIC_BACKEND_URL}/mcp`,
-        authorization_servers: [PUBLIC_BACKEND_URL],
-        scopes_supported: SUPPORTED_SCOPES,
-        bearer_methods_supported: ['header'],
-        resource_documentation: `${PUBLIC_BACKEND_URL}/docs/mcp-server`,
-    });
+    res.json(buildResourceMetadata(`${PUBLIC_BACKEND_URL}/mcp`));
 });
 
 // Emit RFC 9728 WWW-Authenticate header on every /mcp method so any
 // initial probe (GET, OPTIONS, DELETE, POST) carries the discovery hint.
 // extractOrgContext sets 401 status when auth is missing/invalid; the
 // header set here ships with that response.
+//
+// When the route includes `:orgSlug`, the resource_metadata URL is the
+// slug-scoped variant so Claude discovers the right per-org metadata
+// (and learns the resource it's actually trying to talk to).
 const advertiseResourceMetadata = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const slug = req.params?.orgSlug;
+    const metadataPath = slug
+        ? `/.well-known/oauth-protected-resource/mcp/${slug}`
+        : `/.well-known/oauth-protected-resource/mcp`;
     res.setHeader(
         'WWW-Authenticate',
-        `Bearer realm="Superkabe MCP", resource_metadata="${PUBLIC_BACKEND_URL}/.well-known/oauth-protected-resource/mcp"`
+        `Bearer realm="Superkabe MCP", resource_metadata="${PUBLIC_BACKEND_URL}${metadataPath}"`
     );
     next();
 };
 
+// Bare /mcp — back-compat. Any valid token works; org comes from the token.
 app.post('/mcp', advertiseResourceMetadata, extractOrgContext, checkSubscriptionStatus, asyncHandler(handleMcpRequest));
-// GET / DELETE return 405, but with the WWW-Authenticate header so a
-// client that probes with the wrong verb still gets the OAuth hint.
 app.get('/mcp', advertiseResourceMetadata, handleMcpMethodNotAllowed);
 app.delete('/mcp', advertiseResourceMetadata, handleMcpMethodNotAllowed);
+
+// Per-org /mcp/<slug> — token must have been issued for that org. This is
+// the recommended URL shape for new connectors; it prevents cross-org
+// token cross-talk (the bug an agency would hit when one Claude.ai account
+// caches a grant from a previously-authorized Superkabe org).
+app.post('/mcp/:orgSlug', advertiseResourceMetadata, extractOrgContext, checkSubscriptionStatus, enforceOrgSlug, asyncHandler(handleMcpRequest));
+app.get('/mcp/:orgSlug', advertiseResourceMetadata, extractOrgContext, enforceOrgSlug, handleMcpMethodNotAllowed);
+app.delete('/mcp/:orgSlug', advertiseResourceMetadata, extractOrgContext, enforceOrgSlug, handleMcpMethodNotAllowed);
 
 // Ingestion endpoints
 app.post('/api/ingest', asyncHandler(ingestionController.ingestLead));
