@@ -75,8 +75,11 @@ export const registerSchema = z.object({
     // current TOS_VERSION / PRIVACY_VERSION constants and 400s on mismatch.
     acceptedTosVersion: z.string().min(1, 'Acceptance of the current Terms of Service is required'),
     acceptedPrivacyVersion: z.string().min(1, 'Acceptance of the current Privacy Policy is required'),
-    // Optional fields kept for backward compatibility
-    tier: z.string().optional(),
+    // Optional fields kept for backward compatibility. Nullable because the
+    // signup form's plan-picker state defaults to null when the user lands on
+    // /signup directly (no ?plan= param) — Zod's .optional() alone rejects
+    // null and was breaking signup for everyone who hit /signup without a plan.
+    tier: z.string().nullable().optional(),
 });
 
 // ============================================================================
