@@ -24,6 +24,48 @@ import { tryProcessBounce } from '../services/bounceParserService';
 import * as webhookBus from '../services/webhookEventBus';
 import { classifyReply } from '../services/replyClassifierService';
 import { parseDsn, isPermanentBounce } from '../services/dsnParser';
+import { dispatchEmail } from '../services/emailTemplates/dispatcher';
+import { mailboxOAuthDisconnectedEmail } from '../services/emailTemplates/operationalAlerts';
+import { buildFrontendUrl } from '../services/emailTemplates/requesterContext';
+
+/**
+ * Notify org admins when a connected mailbox loses authentication so they
+ * can reconnect before campaigns assigned to it stall. Idempotent on the
+ * mailbox + auth-error class so successive failures while it's still
+ * disconnected don't spam.
+ */
+async function notifyMailboxDisconnected(
+    accountId: string,
+    errorClass: 'oauth_revoked' | 'imap_auth' | 'unknown',
+    rawError: string,
+): Promise<void> {
+    try {
+        const account = await prisma.connectedAccount.findUnique({
+            where: { id: accountId },
+            select: { organization_id: true, email: true, provider: true },
+        });
+        if (!account) return;
+        void dispatchEmail({
+            rendered: mailboxOAuthDisconnectedEmail({
+                organizationName: 'Your account',
+                mailboxEmail: account.email,
+                provider: account.provider,
+                providerError: rawError.slice(0, 240),
+                detectedAt: new Date(),
+                reconnectUrl: buildFrontendUrl('/dashboard/sequencer/accounts'),
+            }),
+            audience: { kind: 'org-admins', organizationId: account.organization_id },
+            category: 'integration',
+            eventKind: 'mailbox_oauth_disconnected',
+            // Per (mailbox, error-class) — the same disconnection won't
+            // re-notify on every poll. A NEW class of failure (e.g. imap
+            // auth after oauth revoke is fixed) WILL re-notify.
+            idempotencyKey: `mailbox-disconnected:${accountId}:${errorClass}`,
+        });
+    } catch (err) {
+        logger.warn('[IMAP-REPLY-WORKER] Failed to dispatch disconnect email', { accountId, error: String(err) });
+    }
+}
 import * as monitoringService from '../services/monitoringService';
 import { SlackAlertService } from '../services/SlackAlertService';
 
@@ -530,6 +572,7 @@ async function fetchRepliesFromOAuthAccount(account: {
                 where: { id: account.id },
                 data: { connection_status: 'error', last_error: 'OAuth token expired or revoked — reconnect the mailbox' },
             }).catch(() => {});
+            void notifyMailboxDisconnected(account.id, 'oauth_revoked', err.message || 'invalid_grant');
         }
         logger.error(`[${LOG_TAG}] OAuth fetch failed for ${account.email}`, err);
         return 0;
@@ -662,6 +705,7 @@ async function fetchRepliesFromAccount(account: {
                 where: { id: account.id },
                 data: { connection_status: 'error', last_error: 'IMAP authentication failed — check credentials' },
             }).catch(() => {});
+            void notifyMailboxDisconnected(account.id, 'imap_auth', err.message || 'IMAP auth failed');
             logger.error(`[${LOG_TAG}] Auth failed for ${account.email}`, err);
         } else if (err.message?.includes('timeout')) {
             logger.warn(`[${LOG_TAG}] Connection timeout for ${account.email} (${account.imap_host})`);

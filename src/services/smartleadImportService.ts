@@ -555,6 +555,8 @@ const ingestLeads = async (
 
         // Lead row (org-scoped). Upsert on (org, email) to dedup with prior
         // Clay/CSV ingests; record the Smartlead id for retry idempotency.
+        const phoneFromSmartlead = (lead as any).phone_number || (lead as any).phone || null;
+        const linkedinFromSmartlead = (lead as any).linkedin_profile || (lead as any).linkedin_url || null;
         await prisma.lead.upsert({
             where: { organization_id_email: { organization_id: orgId, email } },
             create: {
@@ -562,6 +564,8 @@ const ingestLeads = async (
                 first_name: lead.first_name || null,
                 last_name: lead.last_name || null,
                 company: lead.company_name || null,
+                phone: phoneFromSmartlead,
+                linkedin_url: linkedinFromSmartlead,
                 persona: 'imported',                // Required field — placeholder for routing
                 lead_score: 50,                     // Default — we don't import their scoring
                 organization_id: orgId,
@@ -573,6 +577,8 @@ const ingestLeads = async (
                 first_name: lead.first_name || null,
                 last_name: lead.last_name || null,
                 company: lead.company_name || null,
+                phone: phoneFromSmartlead,
+                linkedin_url: linkedinFromSmartlead,
                 import_external_id: externalId,
             },
         });

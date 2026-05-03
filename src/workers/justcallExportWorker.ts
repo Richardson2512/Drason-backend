@@ -10,6 +10,9 @@
  * Idempotency: re-running the same job from cursor=N will re-import the
  * same chunk. JustCall dedupes by phone number on the campaign side,
  * so a re-import lands as "skipped" rather than producing duplicates.
+ * Rows pushed without a phone number rely on JustCall's own validation
+ * for per-row dedup/rejection — the response's skipped/failed counters
+ * surface that to the operator.
  *
  * Failure modes:
  *   - 401/403 → mark connection failed, finalize job as `failed`
@@ -111,48 +114,104 @@ async function processJob(jobId: string): Promise<void> {
     const leadByEmail = new Map(leadRows.map(l => [l.email.toLowerCase(), l]));
     const cLeadById = new Map(campaignLeads.map(c => [c.id, c]));
 
-    // Build the JustCall contact payload. Skip rows missing a phone —
-    // a sales-dialer campaign without a phone number is meaningless and
-    // JustCall would 422 the whole batch.
+    // Build the JustCall contact payload. For parity with the Outreach
+    // export, every prospect in the chunk is pushed — phone_number is
+    // omitted when no phone is on file. JustCall itself decides whether
+    // a phoneless row is usable for the sales dialer; phone-validation
+    // outcomes flow back through the bulk_import response (skipped/failed).
     const contacts: JustCallContactInput[] = [];
-    let skippedNoPhone = 0;
+    let missingProspect = 0;
     for (const id of slice) {
         const cl = cLeadById.get(id);
         if (!cl) {
-            skippedNoPhone += 1;
+            missingProspect += 1;
             continue;
         }
         const enriched = cl.email ? leadByEmail.get(cl.email.toLowerCase()) : undefined;
         const phone = enriched?.phone?.trim();
-        if (!phone) {
-            skippedNoPhone += 1;
-            continue;
-        }
         const name = [cl.first_name, cl.last_name].filter(Boolean).join(' ').trim()
             || cl.email
             || 'Superkabe lead';
-        contacts.push({
+        const contact: JustCallContactInput = {
             name,
-            phone_number: phone,
             email: cl.email ?? undefined,
             company: cl.company ?? undefined,
             title: cl.title ?? undefined,
-        });
+        };
+        if (phone) contact.phone_number = phone;
+        contacts.push(contact);
+    }
+
+    // Split into two groups so a JustCall validation failure on phoneless
+    // rows can't kill the whole chunk:
+    //   - withPhone:    fast bulk path; JustCall accepts these as today.
+    //   - withoutPhone: separate isolated bulk call; if JustCall 422s the
+    //                   batch (sales dialer typically needs a phone), only
+    //                   these specific rows are marked failed and the
+    //                   with-phone rows still land. Auth (401/403) and
+    //                   retryable errors (5xx/429) still propagate to the
+    //                   outer handler so connection/health logic kicks in.
+    const withPhone: JustCallContactInput[] = [];
+    const withoutPhone: JustCallContactInput[] = [];
+    for (const c of contacts) {
+        if (c.phone_number && c.phone_number.trim()) withPhone.push(c);
+        else withoutPhone.push(c);
     }
 
     try {
-        if (contacts.length > 0) {
+        let chunkAdded = 0;
+        let chunkSkipped = 0;
+        let chunkFailed = 0;
+
+        if (withPhone.length > 0) {
             const result = await client.bulkImportContacts({
                 campaignId: job.campaign_id,
-                contacts,
+                contacts: withPhone,
             });
-            totalAdded += result.added;
-            totalSkipped += result.skipped + skippedNoPhone;
-            totalFailed += result.failed;
-        } else {
-            // Whole chunk had no usable phones — count and move on.
-            totalSkipped += skippedNoPhone;
+            chunkAdded += result.added;
+            chunkSkipped += result.skipped;
+            chunkFailed += result.failed;
         }
+
+        if (withoutPhone.length > 0) {
+            try {
+                const result = await client.bulkImportContacts({
+                    campaignId: job.campaign_id,
+                    contacts: withoutPhone,
+                });
+                chunkAdded += result.added;
+                chunkSkipped += result.skipped;
+                chunkFailed += result.failed;
+            } catch (err) {
+                // Auth + retryable failures must still bubble up — they
+                // affect every subsequent call, not just this batch.
+                if (err instanceof JustCallError) {
+                    if (err.status === 401 || err.status === 403 || err.retryable) {
+                        throw err;
+                    }
+                } else {
+                    // Network / unexpected error — treat as retryable and bubble.
+                    throw err;
+                }
+                // Validation-class non-retryable JustCallError (typically 422
+                // for "phone_number required") is isolated to phoneless rows.
+                chunkFailed += withoutPhone.length;
+                logger.warn('[JUSTCALL_EXPORT] phoneless batch rejected — counted as failed, with-phone rows unaffected', {
+                    jobId: job.id,
+                    phonelessRows: withoutPhone.length,
+                    providerCode: (err as JustCallError).providerCode,
+                    status: (err as JustCallError).status,
+                    msg: (err as Error).message?.slice(0, 200),
+                });
+            }
+        }
+
+        // CampaignLead rows that didn't resolve in this org always count as skipped.
+        chunkSkipped += missingProspect;
+
+        totalAdded += chunkAdded;
+        totalSkipped += chunkSkipped;
+        totalFailed += chunkFailed;
         totalProcessed += slice.length;
         cursor += slice.length;
 

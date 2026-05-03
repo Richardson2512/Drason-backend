@@ -1,10 +1,17 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
 import { recordConsent, extractClientIp, extractUserAgent } from '../services/consentService';
 import { TOS_VERSION, PRIVACY_VERSION, TOS_PATH, PRIVACY_PATH } from '../constants/legalDocVersions';
+import { dispatchEmail } from '../services/emailTemplates/dispatcher';
+import { passwordResetEmail } from '../services/emailTemplates/passwordReset';
+import { welcomeEmail } from '../services/emailTemplates/welcome';
+import { accountLockedEmail } from '../services/emailTemplates/accountLocked';
+import { passwordChangedEmail } from '../services/emailTemplates/passwordChanged';
+import { summariseRequester, buildFrontendUrl } from '../services/emailTemplates/requesterContext';
 
 // JWT_SECRET is validated at startup in index.ts — crashes if missing in production.
 // In development, a dev-only fallback is used.
@@ -101,6 +108,22 @@ export const login = async (req: Request, res: Response) => {
 
             if (lockUntil) {
                 logger.warn('Account locked after too many failed attempts', { email, attempts: newCount });
+                // Fire-and-forget security notification. Don't await — the
+                // login response should not be slowed by an email send.
+                void dispatchEmail({
+                    rendered: accountLockedEmail({
+                        name: user.name,
+                        lockedUntil: lockUntil,
+                        failedAttempts: newCount,
+                        requesterContext: summariseRequester(req),
+                        forgotPasswordUrl: buildFrontendUrl('/forgot-password'),
+                    }),
+                    audience: { kind: 'email', email: user.email },
+                    category: 'account_security',
+                    eventKind: 'account_locked',
+                    // Per-lockout key so re-locking after auto-unlock sends a fresh email.
+                    idempotencyKey: `account-locked:${user.id}:${lockUntil.getTime()}`,
+                });
                 return res.status(423).json({
                     success: false,
                     error: 'Too many failed login attempts. Account locked for 15 minutes.'
@@ -288,6 +311,22 @@ export const register = async (req: Request, res: Response) => {
 
         logger.info('User registered', { userId: result.user.id, email: result.user.email });
 
+        // Welcome email — fire-and-forget so it doesn't block the response.
+        // Idempotency on user.id ensures a retry of the (already-rare) double-
+        // submit doesn't double-send.
+        void dispatchEmail({
+            rendered: welcomeEmail({
+                name: result.user.name,
+                organizationName: result.org.name,
+                trialDaysRemaining: 14,
+                dashboardUrl: buildFrontendUrl('/dashboard'),
+            }),
+            audience: { kind: 'email', email: result.user.email },
+            category: 'account_security',
+            eventKind: 'welcome',
+            idempotencyKey: `welcome:${result.user.id}`,
+        });
+
         // Set httpOnly cookie server-side
         setTokenCookie(res, token);
 
@@ -399,6 +438,210 @@ export const refreshToken = async (req: Request, res: Response) => {
 export const logout = async (_req: Request, res: Response) => {
     res.clearCookie('token', { path: '/' });
     res.json({ success: true, data: { message: 'Logged out successfully' } });
+};
+
+// ─── Password reset ────────────────────────────────────────────────────────
+//
+// Flow:
+//   1. POST /api/auth/forgot-password { email }
+//      → generates a 32-byte random token, stores SHA-256(token) on the user
+//        with a 1-hour expiry, emails the raw token in a reset URL.
+//      → ALWAYS returns 200 success — anti-enumeration. The response is the
+//        same whether or not the email exists in the system.
+//   2. GET /api/auth/reset-password/verify?token=...
+//      → checks token validity so the reset page can render or show an
+//        expired-link error before the user types a new password.
+//   3. POST /api/auth/reset-password { token, newPassword }
+//      → updates password_hash, bumps password_changed_at (which invalidates
+//        any pre-existing JWTs via the orgContext middleware check), clears
+//        the reset_token columns. Returns 200 on success.
+
+const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;            // 1 hour
+const RESET_TOKEN_BYTES = 32;                         // 256 bits — 64 hex chars
+
+function hashResetToken(rawToken: string): string {
+    return crypto.createHash('sha256').update(rawToken).digest('hex');
+}
+
+function buildResetUrl(rawToken: string): string {
+    const base = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const url = new URL('/reset-password', base);
+    url.searchParams.set('token', rawToken);
+    return url.toString();
+}
+
+
+/**
+ * POST /api/auth/forgot-password
+ * Body: { email }
+ * Always 200 — does not leak whether the email exists.
+ */
+export const forgotPassword = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const { email } = req.body as { email: string };
+        const emailLower = email.toLowerCase().trim();
+        const user = await prisma.user.findUnique({
+            where: { email: emailLower },
+            select: { id: true, email: true, name: true, password_hash: true },
+        });
+
+        // Anti-enumeration: same response shape regardless of outcome.
+        const successResponse = {
+            success: true,
+            message: 'If an account with that email exists, we have sent a password reset link.',
+        };
+
+        if (!user) {
+            logger.info('[AUTH] forgot-password for unknown email — returning generic success', { email: emailLower });
+            res.json(successResponse);
+            return;
+        }
+
+        // OAuth-only accounts have no password to reset; behave the same to the caller
+        // but skip the email send so we don't suggest a flow that won't work.
+        if (!user.password_hash) {
+            logger.info('[AUTH] forgot-password for OAuth-only user — skipping email', { userId: user.id });
+            res.json(successResponse);
+            return;
+        }
+
+        const rawToken = crypto.randomBytes(RESET_TOKEN_BYTES).toString('hex');
+        const tokenHash = hashResetToken(rawToken);
+        const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS);
+
+        await prisma.user.update({
+            where: { id: user.id },
+            data: {
+                reset_token_hash: tokenHash,
+                reset_token_expires_at: expiresAt,
+            },
+        });
+
+        const resetUrl = buildResetUrl(rawToken);
+        const composed = passwordResetEmail({
+            name: user.name,
+            resetUrl,
+            requesterContext: summariseRequester(req),
+            ttlLabel: '1 hour',
+        });
+        await dispatchEmail({
+            rendered: composed,
+            audience: { kind: 'email', email: user.email },
+            category: 'account_security',
+            eventKind: 'password_reset_requested',
+            // Token hash uniquely names THIS reset cycle — re-issuing a new
+            // token rotates the key and Resend will send the new email.
+            idempotencyKey: `pwreset:${user.id}:${tokenHash.slice(0, 16)}`,
+        });
+
+        res.json(successResponse);
+    } catch (err) {
+        logger.error('[AUTH] forgot-password failed', err instanceof Error ? err : new Error(String(err)));
+        res.status(500).json({ success: false, error: 'Failed to process request' });
+    }
+};
+
+/**
+ * GET /api/auth/reset-password/verify?token=...
+ * Lets the reset page show a sensible error before the user types their new password.
+ */
+export const verifyResetToken = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const rawToken = (req.query.token as string | undefined) || '';
+        if (!rawToken || rawToken.length < 20) {
+            res.json({ valid: false, reason: 'invalid' });
+            return;
+        }
+        const tokenHash = hashResetToken(rawToken);
+        const user = await prisma.user.findUnique({
+            where: { reset_token_hash: tokenHash },
+            select: { email: true, reset_token_expires_at: true },
+        });
+        if (!user || !user.reset_token_expires_at) {
+            res.json({ valid: false, reason: 'invalid' });
+            return;
+        }
+        if (user.reset_token_expires_at < new Date()) {
+            res.json({ valid: false, reason: 'expired' });
+            return;
+        }
+        // Mask the email for display (e.g. "j***@example.com") so a stolen
+        // link doesn't disclose the full account address.
+        const masked = user.email.replace(/^([^@])[^@]*(@.*)$/, (_m, a, c) => `${a}***${c}`);
+        res.json({ valid: true, email_masked: masked });
+    } catch (err) {
+        logger.error('[AUTH] verifyResetToken failed', err instanceof Error ? err : new Error(String(err)));
+        res.status(500).json({ success: false, error: 'Failed to verify token' });
+    }
+};
+
+/**
+ * POST /api/auth/reset-password
+ * Body: { token, newPassword }
+ */
+export const resetPassword = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const { token, newPassword } = req.body as { token: string; newPassword: string };
+        const tokenHash = hashResetToken(token);
+        const user = await prisma.user.findUnique({
+            where: { reset_token_hash: tokenHash },
+            select: { id: true, email: true, reset_token_expires_at: true },
+        });
+        if (!user || !user.reset_token_expires_at) {
+            res.status(400).json({ success: false, error: 'Reset link is invalid or has already been used.' });
+            return;
+        }
+        if (user.reset_token_expires_at < new Date()) {
+            res.status(400).json({ success: false, error: 'Reset link has expired. Request a new one.' });
+            return;
+        }
+
+        const newHash = await bcrypt.hash(newPassword, 10);
+        const changedAt = new Date();
+        await prisma.user.update({
+            where: { id: user.id },
+            data: {
+                password_hash: newHash,
+                password_changed_at: changedAt,     // invalidates any pre-existing JWTs
+                reset_token_hash: null,             // single-use — burn it
+                reset_token_expires_at: null,
+                failed_login_count: 0,              // a successful reset clears any lockout
+                locked_until: null,
+            },
+        });
+
+        // If the user happened to be authenticated in another tab, kill that
+        // session too so the new password is effectively a clean slate.
+        res.clearCookie('token', { path: '/' });
+
+        // Security notification — confirm the change and surface a recovery
+        // path if the user wasn't the one who reset it.
+        const userRecord = await prisma.user.findUnique({
+            where: { id: user.id },
+            select: { name: true, email: true },
+        });
+        if (userRecord) {
+            void dispatchEmail({
+                rendered: passwordChangedEmail({
+                    name: userRecord.name,
+                    changedAt,
+                    requesterContext: summariseRequester(req),
+                    source: 'reset_link',
+                    forgotPasswordUrl: buildFrontendUrl('/forgot-password'),
+                }),
+                audience: { kind: 'email', email: userRecord.email },
+                category: 'account_security',
+                eventKind: 'password_changed',
+                idempotencyKey: `pwchanged:${user.id}:${changedAt.getTime()}`,
+            });
+        }
+
+        logger.info('[AUTH] Password reset completed', { userId: user.id });
+        res.json({ success: true, message: 'Password reset successfully. Please log in with your new password.' });
+    } catch (err) {
+        logger.error('[AUTH] resetPassword failed', err instanceof Error ? err : new Error(String(err)));
+        res.status(500).json({ success: false, error: 'Failed to reset password' });
+    }
 };
 
 /**

@@ -109,6 +109,7 @@ import { schedulePostmasterFetch, stopPostmasterFetch, getPostmasterWorkerStatus
 import { scheduleImportKeyTtlSweep, stopImportKeyTtlSweep } from './workers/importKeyTtlWorker';
 import { scheduleZapmailReconciliationWorker, stopZapmailReconciliationWorker } from './workers/zapmailReconciliationWorker';
 import { scheduleAccountDeletionWorker, stopAccountDeletionWorker } from './workers/accountDeletionWorker';
+import { scheduleWeeklyDigestWorker, stopWeeklyDigestWorker } from './workers/weeklyDigestWorker';
 import * as postmasterController from './controllers/postmasterController';
 import * as migrationController from './controllers/migrationFromSmartleadController';
 import * as migrationInstantlyController from './controllers/migrationFromInstantlyController';
@@ -935,6 +936,11 @@ const server = app.listen(PORT, () => {
     scheduleAccountDeletionWorker();
     logger.info('Account deletion worker started (sweep every 6h)');
 
+    // Weekly performance digest — fires Mondays at 09:00 UTC, idempotent
+    // per (org, ISO week). Skips dormant workspaces and canceled subs.
+    scheduleWeeklyDigestWorker();
+    logger.info('Weekly digest worker started (checks every 5m, fires Mondays 09:00 UTC)');
+
     // Start lead scoring worker
     startLeadScoringWorker();
     logger.info('Lead scoring worker started (runs every 24h)');
@@ -1020,6 +1026,9 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
     stopAccountDeletionWorker();
     logger.info('Account deletion worker stopped');
+
+    stopWeeklyDigestWorker();
+    logger.info('Weekly digest worker stopped');
 
     stopSequencerSpikeWorker();
     logger.info('Sequencer spike detector stopped');

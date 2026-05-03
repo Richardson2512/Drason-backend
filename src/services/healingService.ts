@@ -23,6 +23,166 @@ import {
 import * as auditLogService from './auditLogService';
 import * as notificationService from './notificationService';
 import * as entityStateService from './entityStateService';
+import { dispatchEmail } from './emailTemplates/dispatcher';
+import {
+    mailboxPausedEmail,
+    mailboxQuarantineEmail,
+    mailboxRecoveredEmail,
+    domainPausedEmail,
+    manualInterventionEmail,
+    coalesceBucket,
+} from './emailTemplates/operationalAlerts';
+import { buildFrontendUrl } from './emailTemplates/requesterContext';
+import { logger as healingLogger } from './observabilityService';
+
+/**
+ * Format a duration in ms as a human-readable label like "2h 15m" or
+ * "3d 4h". Used in the recovered email so the operator knows how long
+ * the mailbox was in the pipeline.
+ */
+function formatDuration(ms: number): string {
+    if (ms <= 0) return 'less than a minute';
+    const minutes = Math.floor(ms / 60_000);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    if (hours < 24) return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+    const days = Math.floor(hours / 24);
+    const hrs = hours % 24;
+    return hrs > 0 ? `${days}d ${hrs}h` : `${days}d`;
+}
+
+/**
+ * Fire-and-forget email dispatch for healing phase transitions. Wrapped
+ * in try/catch so an email-send failure can never crash the healing
+ * pipeline. 15-min coalescing bucket on the auto-pause/quarantine emails
+ * collapses storms (multiple mailboxes pausing in sequence) to one
+ * email per (org, alert kind, 15-min) window — operators consult the
+ * dashboard for the full inventory.
+ */
+async function dispatchHealingTransitionEmail(args: {
+    entityType: 'mailbox' | 'domain';
+    entityId: string;
+    organizationId: string;
+    fromPhase: RecoveryPhase;
+    toPhase: RecoveryPhase;
+    reason: string;
+    currentResilienceScore: number;
+}): Promise<void> {
+    try {
+        const org = await prisma.organization.findUnique({
+            where: { id: args.organizationId },
+            select: { name: true },
+        });
+        const orgName = org?.name || 'Your account';
+
+        if (args.entityType === 'mailbox') {
+            const mailbox = await prisma.mailbox.findUnique({
+                where: { id: args.entityId },
+                select: {
+                    email: true,
+                    relapse_count: true,
+                    resilience_score: true,
+                    domain: { select: { domain: true } },
+                },
+            });
+            if (!mailbox) return;
+            const mailboxUrl = buildFrontendUrl(`/dashboard/mailboxes?selected=${args.entityId}`);
+            const healingUrl = buildFrontendUrl('/dashboard/healing');
+
+            if (args.toPhase === RecoveryPhase.PAUSED) {
+                void dispatchEmail({
+                    rendered: mailboxPausedEmail({
+                        organizationName: orgName,
+                        mailboxEmail: mailbox.email,
+                        domainName: mailbox.domain.domain,
+                        reason: args.reason,
+                        pausedAt: new Date(),
+                        mailboxUrl,
+                    }),
+                    audience: { kind: 'org-admins', organizationId: args.organizationId },
+                    category: 'operational_alert',
+                    eventKind: 'mailbox_paused',
+                    idempotencyKey: `mailbox-paused:${args.organizationId}:${coalesceBucket()}`,
+                });
+            } else if (args.toPhase === RecoveryPhase.QUARANTINE) {
+                void dispatchEmail({
+                    rendered: mailboxQuarantineEmail({
+                        organizationName: orgName,
+                        mailboxEmail: mailbox.email,
+                        domainName: mailbox.domain.domain,
+                        relapseCount: mailbox.relapse_count ?? 0,
+                        resilienceScore: mailbox.resilience_score ?? args.currentResilienceScore,
+                        healingUrl,
+                    }),
+                    audience: { kind: 'org-admins', organizationId: args.organizationId },
+                    category: 'operational_alert',
+                    eventKind: 'mailbox_quarantine',
+                    idempotencyKey: `mailbox-quarantine:${args.organizationId}:${coalesceBucket()}`,
+                });
+            } else if (args.toPhase === RecoveryPhase.HEALTHY && args.fromPhase !== RecoveryPhase.HEALTHY) {
+                // "Recovery duration" = time since the FIRST entry into a
+                // non-healthy phase for this mailbox. Falls back to "less
+                // than a minute" if no prior pause transition is recorded.
+                const firstNonHealthy = await prisma.stateTransition.findFirst({
+                    where: {
+                        organization_id: args.organizationId,
+                        entity_type: 'mailbox',
+                        entity_id: args.entityId,
+                        to_state: { in: [RecoveryPhase.PAUSED, RecoveryPhase.QUARANTINE] },
+                    },
+                    orderBy: { created_at: 'asc' },
+                    select: { created_at: true },
+                });
+                const durationMs = firstNonHealthy
+                    ? Date.now() - firstNonHealthy.created_at.getTime()
+                    : 0;
+                void dispatchEmail({
+                    rendered: mailboxRecoveredEmail({
+                        organizationName: orgName,
+                        mailboxEmail: mailbox.email,
+                        domainName: mailbox.domain.domain,
+                        recoveredAt: new Date(),
+                        durationLabel: formatDuration(durationMs),
+                        mailboxUrl,
+                    }),
+                    audience: { kind: 'org-admins', organizationId: args.organizationId },
+                    category: 'operational_alert',
+                    eventKind: 'mailbox_recovered',
+                    // Per-recovery key — once-per-graduation. A future
+                    // relapse + re-graduation gets a fresh email because
+                    // this key only matches THIS recovery instant.
+                    idempotencyKey: `mailbox-recovered:${args.entityId}:${Date.now()}`,
+                });
+            }
+        } else if (args.entityType === 'domain' && args.toPhase === RecoveryPhase.PAUSED) {
+            const domain = await prisma.domain.findUnique({
+                where: { id: args.entityId },
+                select: { domain: true },
+            });
+            if (!domain) return;
+            void dispatchEmail({
+                rendered: domainPausedEmail({
+                    organizationName: orgName,
+                    domainName: domain.domain,
+                    reason: args.reason,
+                    pausedAt: new Date(),
+                    domainUrl: buildFrontendUrl(`/dashboard/domains?selected=${args.entityId}`),
+                }),
+                audience: { kind: 'org-admins', organizationId: args.organizationId },
+                category: 'operational_alert',
+                eventKind: 'domain_paused',
+                idempotencyKey: `domain-paused:${args.organizationId}:${coalesceBucket()}`,
+            });
+        }
+    } catch (err) {
+        healingLogger.warn('[HEALING] Phase-transition email dispatch failed', {
+            entityType: args.entityType,
+            entityId: args.entityId,
+            error: err instanceof Error ? err.message : String(err),
+        });
+    }
+}
 import * as warmupService from './warmupService';
 import { MailboxState, DomainState } from '../types';
 import { SlackAlertService } from './SlackAlertService';
@@ -505,6 +665,45 @@ export async function handleRelapse(
         logger.warn('Failed to create relapse notification', { entityId });
     }
 
+    // Manual-intervention email — fires once per (entity, escalation
+    // event). Idempotency keyed on (entity, relapse count) so a second
+    // relapse at the same count doesn't re-notify, but the next escalation
+    // (relapseCount + 1) does.
+    if (requiresManualIntervention) {
+        try {
+            const orgRow = await prisma.organization.findUnique({
+                where: { id: organizationId },
+                select: { name: true },
+            });
+            let entityLabel = entityId;
+            if (entityType === 'mailbox') {
+                const mb = await prisma.mailbox.findUnique({ where: { id: entityId }, select: { email: true } });
+                if (mb) entityLabel = mb.email;
+            } else {
+                const dm = await prisma.domain.findUnique({ where: { id: entityId }, select: { domain: true } });
+                if (dm) entityLabel = dm.domain;
+            }
+            void dispatchEmail({
+                rendered: manualInterventionEmail({
+                    organizationName: orgRow?.name || 'Your account',
+                    entityType,
+                    entityLabel,
+                    relapseCount,
+                    reason,
+                    healingUrl: buildFrontendUrl('/dashboard/healing'),
+                }),
+                audience: { kind: 'org-admins', organizationId },
+                category: 'operational_alert',
+                eventKind: 'manual_intervention_required',
+                idempotencyKey: `manual-intervention:${entityId}:relapse-${relapseCount}`,
+            });
+        } catch (err) {
+            healingLogger.warn('[HEALING] manual-intervention email dispatch failed', {
+                entityId, relapseCount, error: err instanceof Error ? err.message : String(err),
+            });
+        }
+    }
+
     return {
         transitioned: true,
         fromPhase: currentPhase,
@@ -852,6 +1051,19 @@ export async function transitionPhase(
             reason,
             resilienceScore: currentResilienceScore,
         }),
+    });
+
+    // Email dispatch — fire-and-forget. Covers paused/quarantine/recovered
+    // for mailboxes and paused for domains. See dispatchHealingTransitionEmail
+    // for coalescing + idempotency notes.
+    void dispatchHealingTransitionEmail({
+        entityType,
+        entityId,
+        organizationId,
+        fromPhase,
+        toPhase,
+        reason,
+        currentResilienceScore,
     });
 
     // ── AUTOMATED WARMUP: Enable/Update warmup based on phase ──

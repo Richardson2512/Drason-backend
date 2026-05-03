@@ -579,6 +579,7 @@ const ingestLeads = async (
             : lead.status === 'Unsubscribed' ? 'unsubscribed'
             : 'pending';
 
+        const linkedinFromInstantly = (lead as any).linkedin_url || null;
         await prisma.lead.upsert({
             where: { organization_id_email: { organization_id: orgId, email } },
             create: {
@@ -588,6 +589,8 @@ const ingestLeads = async (
                 company: lead.company_name || null,
                 website: lead.website || null,
                 title: lead.job_title || null,
+                phone: lead.phone || null,
+                linkedin_url: linkedinFromInstantly,
                 persona: 'imported',
                 lead_score: 50,
                 organization_id: orgId,
@@ -607,6 +610,8 @@ const ingestLeads = async (
                 company: lead.company_name || null,
                 website: lead.website || null,
                 title: lead.job_title || null,
+                phone: lead.phone || null,
+                linkedin_url: linkedinFromInstantly,
                 import_external_id: externalId,
             },
         });

@@ -13,6 +13,9 @@ import { logger } from './observabilityService';
 import * as notificationService from './notificationService';
 import * as auditLogService from './auditLogService';
 import { SlackAlertService } from './SlackAlertService';
+import { dispatchEmail } from './emailTemplates/dispatcher';
+import { trialEndingEmail, trialExpiredEmail } from './emailTemplates/billing';
+import { buildFrontendUrl } from './emailTemplates/requesterContext';
 
 // ============================================================================
 // CONSTANTS
@@ -160,6 +163,22 @@ async function sendExpirationWarnings(warningThreshold: Date): Promise<void> {
                 title: '⏳ Trial expiring soon',
                 message: `Your Superkabe trial ends in *${daysRemaining} day${daysRemaining !== 1 ? 's' : ''}*. Upgrade now to keep sending without interruption.`,
             }).catch((err) => logger.warn('[TRIAL-WORKER] Slack alert failed (expiring_soon)', { error: err?.message }));
+
+            // Email all org admins. Idempotency keyed on (org, daysRemaining)
+            // so a second worker tick the same day for the same band doesn't
+            // double-send, but tomorrow's "2 days left" email DOES go out.
+            void dispatchEmail({
+                rendered: trialEndingEmail({
+                    organizationName: org.name,
+                    daysRemaining,
+                    trialEndsAt: org.trial_ends_at!,
+                    billingUrl: buildFrontendUrl('/dashboard/billing'),
+                }),
+                audience: { kind: 'org-admins', organizationId: org.id },
+                category: 'billing',
+                eventKind: 'trial_ending',
+                idempotencyKey: `trial-ending:${org.id}:${daysRemaining}`,
+            });
         } catch (error) {
             logger.error(`[TRIAL-WORKER] Failed to send warning to ${org.id}`, error instanceof Error ? error : new Error(String(error)));
         }
@@ -229,6 +248,20 @@ async function expireTrials(now: Date): Promise<void> {
                 title: '🛑 Trial expired',
                 message: `Your Superkabe trial has ended. Sending and validation are paused. Upgrade to resume.`,
             }).catch((err) => logger.warn('[TRIAL-WORKER] Slack alert failed (expired)', { error: err?.message }));
+
+            // Notify all org admins. Single email per org per trial — once
+            // expired they don't expire again, so a static idempotency key
+            // is fine.
+            void dispatchEmail({
+                rendered: trialExpiredEmail({
+                    organizationName: org.name,
+                    billingUrl: buildFrontendUrl('/dashboard/billing'),
+                }),
+                audience: { kind: 'org-admins', organizationId: org.id },
+                category: 'billing',
+                eventKind: 'trial_expired',
+                idempotencyKey: `trial-expired:${org.id}`,
+            });
         } catch (error) {
             logger.error(`[TRIAL-WORKER] Failed to expire trial for ${org.id}`, error instanceof Error ? error : new Error(String(error)));
         }

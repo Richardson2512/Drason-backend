@@ -23,6 +23,9 @@ import type {
     LeadSourceProvider,
 } from '../services/leadSources/types';
 import { LeadSourceError } from '../services/leadSources/types';
+import { dispatchEmail } from '../services/emailTemplates/dispatcher';
+import { importCompletedEmail } from '../services/emailTemplates/integrations';
+import { buildFrontendUrl } from '../services/emailTemplates/requesterContext';
 
 const POLL_INTERVAL_MS = 30_000;
 const PAGE_SIZE = 100;
@@ -245,6 +248,16 @@ async function finalize(
         totalEstimated?: number | null;
     },
 ): Promise<void> {
+    const finishedAt = new Date();
+    // `provider` lives on the parent LeadSourceConnection, not the job row.
+    const job = await prisma.leadSourceImportJob.findUnique({
+        where: { id: jobId },
+        select: {
+            organization_id: true,
+            started_at: true,
+            connection: { select: { provider: true } },
+        },
+    });
     await prisma.leadSourceImportJob.update({
         where: { id: jobId },
         data: {
@@ -257,13 +270,67 @@ async function finalize(
             total_failed: counters.totalFailed,
             credits_consumed: counters.creditsConsumed,
             ...(counters.totalEstimated != null ? { total_estimated: counters.totalEstimated } : {}),
-            finished_at: new Date(),
+            finished_at: finishedAt,
         },
     });
     await prisma.leadSourceConnection.update({
         where: { id: connectionId },
         data: { last_used_at: new Date() },
     });
+
+    // Import-complete email — fire-and-forget. Idempotent on jobId so a
+    // duplicate finalize call can't double-send.
+    if (job) {
+        try {
+            const org = await prisma.organization.findUnique({
+                where: { id: job.organization_id },
+                select: { name: true },
+            });
+            const durationMs = job.started_at ? finishedAt.getTime() - job.started_at.getTime() : 0;
+            const sourceLabel = labelForSource(job.connection?.provider || 'unknown');
+            void dispatchEmail({
+                rendered: importCompletedEmail({
+                    organizationName: org?.name || 'Your account',
+                    sourceLabel,
+                    totalProcessed: counters.totalProcessed,
+                    totalCreated: counters.totalCreated,
+                    totalUpdated: counters.totalUpdated,
+                    totalSkipped: counters.totalSkipped,
+                    totalFailed: counters.totalFailed,
+                    durationLabel: formatImportDuration(durationMs),
+                    creditsConsumed: counters.creditsConsumed,
+                    contactsUrl: buildFrontendUrl('/dashboard/sequencer/contacts'),
+                }),
+                audience: { kind: 'org-admins', organizationId: job.organization_id },
+                category: 'integration',
+                eventKind: 'import_completed',
+                idempotencyKey: `import-completed:${jobId}`,
+            });
+        } catch (err) {
+            logger.warn('[APOLLO-IMPORT] Failed to dispatch completion email', { jobId, error: String(err) });
+        }
+    }
+}
+
+function labelForSource(provider: string): string {
+    if (provider === 'apollo') return 'Apollo';
+    if (provider === 'zoominfo') return 'ZoomInfo';
+    if (provider === 'clay') return 'Clay';
+    if (provider === 'smartlead') return 'Smartlead';
+    if (provider === 'instantly') return 'Instantly';
+    return provider.charAt(0).toUpperCase() + provider.slice(1);
+}
+
+function formatImportDuration(ms: number): string | null {
+    if (ms <= 0) return null;
+    const seconds = Math.floor(ms / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remSec = seconds % 60;
+    if (minutes < 60) return remSec > 0 ? `${minutes}m ${remSec}s` : `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    const remMin = minutes % 60;
+    return remMin > 0 ? `${hours}h ${remMin}m` : `${hours}h`;
 }
 
 async function upsertLead(

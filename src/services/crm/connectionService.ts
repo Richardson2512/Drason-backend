@@ -192,6 +192,49 @@ export async function markConnectionFailed(
         data: { status, last_error: error.slice(0, 500) },
     });
     logger.warn('[CRM] connection marked failed', { connectionId, status, error });
+
+    // Notify org admins. Per-day idempotency bucket so successive retries
+    // inside a 24-hour window collapse to one email — admins fix the
+    // connection, count resets next time it fails. Dynamic imports keep
+    // this service decoupled from email-template module loading order.
+    try {
+        const conn = await prisma.crmConnection.findUnique({
+            where: { id: connectionId },
+            select: { organization_id: true, provider: true, last_sync_at: true },
+        });
+        if (!conn) return;
+
+        const { dispatchEmail } = await import('../emailTemplates/dispatcher');
+        const { crmSyncFailedEmail } = await import('../emailTemplates/integrations');
+        const { buildFrontendUrl } = await import('../emailTemplates/requesterContext');
+        const org = await prisma.organization.findUnique({
+            where: { id: conn.organization_id },
+            select: { name: true },
+        });
+        const providerLabel = conn.provider === 'hubspot' ? 'HubSpot'
+            : conn.provider === 'salesforce' ? 'Salesforce'
+            : conn.provider;
+        // Day bucket — UTC date. Same connection failing 50× today
+        // collapses to one email; tomorrow's first failure re-notifies.
+        const dayBucket = new Date().toISOString().slice(0, 10);
+        void dispatchEmail({
+            rendered: crmSyncFailedEmail({
+                organizationName: org?.name || 'Your account',
+                provider: providerLabel,
+                operation: 'sync',
+                errorMessage: error,
+                consecutiveFailures: 1,
+                lastSuccessAt: conn.last_sync_at,
+                integrationUrl: buildFrontendUrl(`/dashboard/integrations/crm/${conn.provider}`),
+            }),
+            audience: { kind: 'org-admins', organizationId: conn.organization_id },
+            category: 'integration',
+            eventKind: 'crm_sync_failed',
+            idempotencyKey: `crm-failed:${connectionId}:${dayBucket}`,
+        });
+    } catch (err) {
+        logger.warn('[CRM] failed to dispatch sync-failed email', { connectionId, error: String(err) });
+    }
 }
 
 /**

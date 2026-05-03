@@ -11,6 +11,15 @@ import * as notificationService from './notificationService';
 import * as auditLogService from './auditLogService';
 import { TIER_LIMITS } from './polarClient';
 import { SlackAlertService } from './SlackAlertService';
+import { dispatchEmail } from './emailTemplates/dispatcher';
+import {
+    paymentFailedEmail,
+    subscriptionCanceledEmail,
+    subscriptionChangedEmail,
+    invoicePaidEmail,
+    usageThresholdEmail,
+} from './emailTemplates/billing';
+import { buildFrontendUrl } from './emailTemplates/requesterContext';
 
 // ============================================================================
 // TYPES
@@ -209,6 +218,49 @@ async function handleSubscriptionUpdated(event: WebhookEvent): Promise<void> {
     });
 
     logger.info('[BILLING] Subscription updated', { orgId, previousTier, newTier });
+
+    // Email notification — only when the tier actually changed (Polar
+    // sends "updated" events for many things; we don't want to spam on
+    // every webhook). Idempotency keys on the (subscription, tier-pair)
+    // so a duplicate webhook delivery dedupes.
+    if (previousTier !== newTier) {
+        const direction: 'upgrade' | 'downgrade' = isUpgrade(previousTier, newTier) ? 'upgrade' : 'downgrade';
+        const orgRow = await prisma.organization.findUnique({
+            where: { id: orgId },
+            select: { name: true },
+        });
+        void dispatchEmail({
+            rendered: subscriptionChangedEmail({
+                organizationName: orgRow?.name || 'Your account',
+                fromTier: previousTier,
+                toTier: newTier,
+                direction,
+                effectiveAt: new Date(),
+                billingUrl: buildFrontendUrl('/dashboard/billing'),
+            }),
+            audience: { kind: 'org-admins', organizationId: orgId },
+            category: 'billing',
+            eventKind: 'subscription_changed',
+            idempotencyKey: `sub-changed:${subscriptionId}:${previousTier}->${newTier}`,
+        });
+    }
+}
+
+/**
+ * Heuristic ordering of tiers — used to label changes as upgrade vs
+ * downgrade for copy purposes only. Unknown tiers fall through as
+ * downgrade since that's the more cautious framing.
+ */
+function isUpgrade(from: string, to: string): boolean {
+    const order: Record<string, number> = {
+        free: 0,
+        trial: 1,
+        starter: 2,
+        pro: 3,
+        growth: 4,
+        scale: 5,
+    };
+    return (order[to] ?? 0) > (order[from] ?? 0);
 }
 
 /**
@@ -260,6 +312,26 @@ async function handleSubscriptionCanceled(event: WebhookEvent): Promise<void> {
         title: '🛑 Subscription canceled',
         message: `Your Superkabe subscription has been canceled. Access continues until the end of your billing period.`,
     }).catch((err) => logger.warn('[BILLING] Slack alert failed (subscription_canceled)', { error: err?.message }));
+
+    // Email all org admins. Active-until is the period_end from Polar so
+    // the customer knows exactly when service stops.
+    const orgForCancel = await prisma.organization.findUnique({
+        where: { id: orgId },
+        select: { name: true, next_billing_date: true },
+    });
+    const activeUntil = orgForCancel?.next_billing_date || new Date(event.data.current_period_end || Date.now());
+    void dispatchEmail({
+        rendered: subscriptionCanceledEmail({
+            organizationName: orgForCancel?.name || 'Your account',
+            activeUntil,
+            reason: event.data.reason || null,
+            billingUrl: buildFrontendUrl('/dashboard/billing'),
+        }),
+        audience: { kind: 'org-admins', organizationId: orgId },
+        category: 'billing',
+        eventKind: 'subscription_canceled',
+        idempotencyKey: `sub-canceled:${subscriptionId}`,
+    });
 }
 
 /**
@@ -284,6 +356,33 @@ async function handleInvoicePaid(event: WebhookEvent): Promise<void> {
     // Event already recorded in processWebhook() for idempotency
 
     logger.info('[BILLING] Invoice paid', { orgId, subscriptionId: subscription_id });
+
+    // Receipt email. Polar's webhook may include a hosted-invoice URL —
+    // surface it as the CTA when present so the customer can pull a PDF.
+    const orgForReceipt = await prisma.organization.findUnique({
+        where: { id: orgId },
+        select: { name: true, next_billing_date: true },
+    });
+    const amountCents = Number(event.data.amount_paid || event.data.amount || 0);
+    const currency = String(event.data.currency || 'USD').toUpperCase();
+    const amountLabel = amountCents > 0
+        ? `${(amountCents / 100).toFixed(2)} ${currency}`
+        : 'Payment received';
+    void dispatchEmail({
+        rendered: invoicePaidEmail({
+            organizationName: orgForReceipt?.name || 'Your account',
+            invoiceId: String(event.data.id || event.data.invoice_id || event.id),
+            amountLabel,
+            paidAt: new Date(event.data.paid_at || event.created_at || Date.now()),
+            nextBillingDate: orgForReceipt?.next_billing_date || null,
+            receiptUrl: event.data.hosted_invoice_url || event.data.receipt_url || null,
+            billingUrl: buildFrontendUrl('/dashboard/billing'),
+        }),
+        audience: { kind: 'org-admins', organizationId: orgId },
+        category: 'billing',
+        eventKind: 'invoice_paid',
+        idempotencyKey: `invoice-paid:${event.data.id || event.id}`,
+    });
 }
 
 /**
@@ -334,6 +433,30 @@ async function handlePaymentFailed(event: WebhookEvent): Promise<void> {
         title: '💳 Payment failed',
         message: `Superkabe could not charge your card. Update your payment method to avoid service interruption — account is now in past-due state.`,
     }).catch((err) => logger.warn('[BILLING] Slack alert failed (payment_failed)', { error: err?.message }));
+
+    // Critical email to org admins — they need to act before the next
+    // retry cycle exhausts.
+    const orgForFailure = await prisma.organization.findUnique({
+        where: { id: orgId },
+        select: { name: true },
+    });
+    const failedAmountCents = Number(event.data.amount_due || event.data.amount || 0);
+    const failedCurrency = String(event.data.currency || 'USD').toUpperCase();
+    void dispatchEmail({
+        rendered: paymentFailedEmail({
+            organizationName: orgForFailure?.name || 'Your account',
+            attemptId: event.data.id || event.data.invoice_id || null,
+            amountLabel: failedAmountCents > 0 ? `${(failedAmountCents / 100).toFixed(2)} ${failedCurrency}` : null,
+            nextRetryAt: event.data.next_payment_attempt ? new Date(event.data.next_payment_attempt) : null,
+            billingUrl: buildFrontendUrl('/dashboard/billing'),
+        }),
+        audience: { kind: 'org-admins', organizationId: orgId },
+        category: 'billing',
+        eventKind: 'payment_failed',
+        // Per-attempt key: each new retry that fails sends a fresh email,
+        // but a duplicate webhook delivery for the same attempt dedupes.
+        idempotencyKey: `payment-failed:${event.data.id || subscription_id}:${event.created_at}`,
+    });
 }
 
 // ============================================================================
@@ -363,7 +486,88 @@ export async function refreshUsageCounts(orgId: string): Promise<UsageCounts> {
         data: { usage_last_updated_at: new Date() },
     });
 
+    // Threshold notifications — fire once per (org, period, threshold)
+    // band. The dispatcher's idempotency-key gives us per-band dedup, and
+    // the period anchor (next_billing_date) rolls over naturally so the
+    // band re-arms on a fresh billing cycle.
+    void evaluateUsageThresholds(orgId, { emailsValidated, monthlySends }).catch((err) => {
+        logger.warn('[BILLING] usage-threshold evaluation failed', { orgId, error: err?.message });
+    });
+
     return { emailsValidated, monthlySends };
+}
+
+/**
+ * Picks the highest band (80, 90, or 100) the org has crossed for either
+ * sends or validations and sends a notification, idempotent per period.
+ */
+async function evaluateUsageThresholds(orgId: string, usage: UsageCounts): Promise<void> {
+    const org = await prisma.organization.findUnique({
+        where: { id: orgId },
+        select: { name: true, subscription_tier: true, next_billing_date: true },
+    });
+    if (!org) return;
+
+    const limits = TIER_LIMITS[org.subscription_tier];
+    if (!limits) return;
+
+    // Period anchor — rolls over each billing cycle. Falls back to a
+    // 30-day calendar bucket so trial / unbilled orgs still get
+    // sensible thresholds.
+    const periodAnchor = org.next_billing_date
+        ? org.next_billing_date.toISOString().slice(0, 10)
+        : `30d-${Math.floor(Date.now() / (30 * 24 * 60 * 60 * 1000))}`;
+
+    const sendsLimit = (limits as any).monthly_sends ?? (limits as any).sends ?? 0;
+    const validationsLimit = (limits as any).monthly_validations ?? (limits as any).validations ?? 0;
+
+    const sendsBand = bandFor(usage.monthlySends, sendsLimit);
+    const validationsBand = bandFor(usage.emailsValidated, validationsLimit);
+
+    if (sendsBand && sendsLimit > 0) {
+        void dispatchEmail({
+            rendered: usageThresholdEmail({
+                organizationName: org.name,
+                metric: 'sends',
+                percentUsed: sendsBand,
+                used: usage.monthlySends,
+                limit: sendsLimit,
+                resetsAt: org.next_billing_date,
+                billingUrl: buildFrontendUrl('/dashboard/billing'),
+            }),
+            audience: { kind: 'org-admins', organizationId: orgId },
+            category: 'billing',
+            eventKind: 'usage_threshold',
+            idempotencyKey: `usage:${orgId}:${periodAnchor}:sends:${sendsBand}`,
+        });
+    }
+    if (validationsBand && validationsLimit > 0) {
+        void dispatchEmail({
+            rendered: usageThresholdEmail({
+                organizationName: org.name,
+                metric: 'validations',
+                percentUsed: validationsBand,
+                used: usage.emailsValidated,
+                limit: validationsLimit,
+                resetsAt: org.next_billing_date,
+                billingUrl: buildFrontendUrl('/dashboard/billing'),
+            }),
+            audience: { kind: 'org-admins', organizationId: orgId },
+            category: 'billing',
+            eventKind: 'usage_threshold',
+            idempotencyKey: `usage:${orgId}:${periodAnchor}:validations:${validationsBand}`,
+        });
+    }
+}
+
+/** Returns the highest crossed band (80, 90, 100) or null. */
+function bandFor(used: number, limit: number): 80 | 90 | 100 | null {
+    if (limit <= 0) return null;
+    const pct = (used / limit) * 100;
+    if (pct >= 100) return 100;
+    if (pct >= 90) return 90;
+    if (pct >= 80) return 80;
+    return null;
 }
 
 /**

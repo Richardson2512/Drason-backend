@@ -244,6 +244,12 @@ model User {
   google_token_expires_at DateTime? // Token expiry timestamp
   avatar_url              String? // Google profile picture URL
 
+  // Password reset — we store SHA-256(token) so a DB leak doesn't yield a
+  // ready-to-use reset link. The raw token is only returned in the email.
+  // Single outstanding token per user; re-issuing forgot-password rotates it.
+  reset_token_hash       String?   @unique
+  reset_token_expires_at DateTime?
+
   organization      Organization       @relation(fields: [organization_id], references: [id], onDelete: Cascade)
   slackIntegrations SlackIntegration[] // Integrations installed by this user
   consents          Consent[] // GDPR/DPDP/PDPA consent audit trail

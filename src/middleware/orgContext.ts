@@ -101,7 +101,7 @@ export const extractOrgContext = async (
 
         // PUBLIC ROUTES: Skip context check for auth endpoints and webhooks
         // Note: req.path is relative to the mount point ('/api')
-        const publicPaths = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout', '/auth/google', '/auth/onboarding', '/auth/legal-versions', '/ingest/clay', '/billing/polar-webhook', '/sequencer/accounts/google/callback', '/sequencer/accounts/microsoft/callback', '/oauth/callback/postmaster', '/oauth/consent/details', '/oauth/consent/deny', '/consent/cookies', '/integrations/hubspot/callback', '/integrations/salesforce/callback', '/integrations/outreach/callback', '/integrations/hubspot/webhooks'];
+        const publicPaths = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout', '/auth/google', '/auth/onboarding', '/auth/legal-versions', '/auth/forgot-password', '/auth/reset-password', '/ingest/clay', '/billing/polar-webhook', '/sequencer/accounts/google/callback', '/sequencer/accounts/microsoft/callback', '/oauth/callback/postmaster', '/oauth/consent/details', '/oauth/consent/deny', '/consent/cookies', '/integrations/hubspot/callback', '/integrations/salesforce/callback', '/integrations/outreach/callback', '/integrations/hubspot/webhooks'];
         if (publicPaths.some(path => req.path.startsWith(path))) {
             return next();
         }
@@ -118,24 +118,64 @@ export const extractOrgContext = async (
             // Try JWT first
             const jwtPayload = verifyJwt(token);
             if (jwtPayload) {
-                // Check if JWT was issued before a password change (invalidated)
-                if (jwtPayload.iat) {
-                    const user = await prisma.user.findUnique({
-                        where: { id: jwtPayload.userId },
-                        select: { password_changed_at: true }
+                // Verify the user (and the org membership claim) the JWT
+                // points at still exist. Without this, a JWT signed with a
+                // valid secret but referencing a deleted user (re-seed,
+                // schema reset, account deletion, restored backup, org
+                // moved) is accepted by the middleware — every controller
+                // below us then hits a null findUnique and returns 404
+                // "User not found" / "Organization not found", and the
+                // frontend (which only auto-redirects on 401) traps the
+                // operator in a broken /dashboard with no path to /login.
+                // Fold the password_changed_at check into the same lookup
+                // so this is one query, not two.
+                const user = await prisma.user.findUnique({
+                    where: { id: jwtPayload.userId },
+                    select: {
+                        id: true,
+                        organization_id: true,
+                        password_changed_at: true,
+                    },
+                });
+                if (!user) {
+                    logger.warn('[ORG_CONTEXT] JWT references unknown user — clearing cookie + 401', {
+                        userId: jwtPayload.userId,
                     });
-                    if (user?.password_changed_at) {
-                        const tokenIssuedAt = new Date(jwtPayload.iat * 1000);
-                        if (tokenIssuedAt < user.password_changed_at) {
-                            logger.warn('[ORG_CONTEXT] JWT issued before password change — rejected', {
-                                userId: jwtPayload.userId,
-                            });
-                            res.status(401).json({
-                                error: 'Session expired',
-                                message: 'Your password was changed. Please log in again.',
-                            });
-                            return;
-                        }
+                    res.clearCookie('token', { path: '/' });
+                    res.status(401).json({
+                        success: false,
+                        error: 'Session expired',
+                        message: 'Your session is no longer valid. Please log in again.',
+                    });
+                    return;
+                }
+                if (user.organization_id !== jwtPayload.orgId) {
+                    logger.warn('[ORG_CONTEXT] JWT orgId no longer matches user — clearing cookie + 401', {
+                        userId: jwtPayload.userId,
+                        jwtOrgId: jwtPayload.orgId,
+                        currentOrgId: user.organization_id,
+                    });
+                    res.clearCookie('token', { path: '/' });
+                    res.status(401).json({
+                        success: false,
+                        error: 'Session expired',
+                        message: 'Your session is no longer valid. Please log in again.',
+                    });
+                    return;
+                }
+                if (user.password_changed_at && jwtPayload.iat) {
+                    const tokenIssuedAt = new Date(jwtPayload.iat * 1000);
+                    if (tokenIssuedAt < user.password_changed_at) {
+                        logger.warn('[ORG_CONTEXT] JWT issued before password change — rejected', {
+                            userId: jwtPayload.userId,
+                        });
+                        res.clearCookie('token', { path: '/' });
+                        res.status(401).json({
+                            success: false,
+                            error: 'Session expired',
+                            message: 'Your password was changed. Please log in again.',
+                        });
+                        return;
                     }
                 }
 
@@ -185,9 +225,33 @@ export const extractOrgContext = async (
                     (req as any)._apiKeyScopes = keyData.scopes;
                 }
             }
+
+            // A token was supplied but matched none of the supported auth
+            // methods (JWT signature invalid → likely a cookie from a prior
+            // JWT_SECRET; OAuth token unknown; API key revoked/missing).
+            // Falling through to the dev fallback here would be wrong: the
+            // request *intended* to be authenticated, so quietly granting it
+            // an empty userId + DEFAULT_ORG_ID just produces "User not found"
+            // 404s in every downstream controller and traps the operator in
+            // a broken /dashboard. Return 401 so the global frontend handler
+            // redirects to /login, and clear the stale cookie on the way out.
+            if (!organizationId) {
+                logger.warn('[ORG_CONTEXT] Token present but unverifiable — clearing cookie + 401');
+                if (req.cookies?.token) {
+                    res.clearCookie('token', { path: '/' });
+                }
+                res.status(401).json({
+                    success: false,
+                    error: 'Session expired',
+                    message: 'Your session is no longer valid. Please log in again.',
+                });
+                return;
+            }
         }
 
-        // Development fallback — ONLY when no auth provided and NOT in production
+        // Development fallback — ONLY when NO token was provided at all and
+        // we're not in production. (If a token was present but unverifiable,
+        // the block above already returned 401 — we never reach this.)
         if (!organizationId && process.env.NODE_ENV !== 'production') {
             organizationId = DEFAULT_ORG_ID;
             role = UserRole.ADMIN; // Dev gets admin for convenience

@@ -8,6 +8,9 @@ import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
+import { dispatchEmail } from '../services/emailTemplates/dispatcher';
+import { passwordChangedEmail } from '../services/emailTemplates/passwordChanged';
+import { summariseRequester, buildFrontendUrl } from '../services/emailTemplates/requesterContext';
 
 /**
  * Get current user information.
@@ -147,16 +150,39 @@ export const changePassword = async (req: Request, res: Response): Promise<void>
         const salt = await bcrypt.genSalt(10);
         const newHash = await bcrypt.hash(newPassword, salt);
 
+        const changedAt = new Date();
         await prisma.user.update({
             where: { id: userId },
             data: {
                 password_hash: newHash,
-                password_changed_at: new Date()
+                password_changed_at: changedAt
             }
         });
 
         // Clear the current session cookie — force re-login
         res.clearCookie('token', { path: '/' });
+
+        // Security notification — fire-and-forget. Confirms the change and
+        // gives the user a fast recovery path if it wasn't them.
+        const userRecord = await prisma.user.findUnique({
+            where: { id: userId },
+            select: { name: true, email: true },
+        });
+        if (userRecord) {
+            void dispatchEmail({
+                rendered: passwordChangedEmail({
+                    name: userRecord.name,
+                    changedAt,
+                    requesterContext: summariseRequester(req),
+                    source: 'self_service',
+                    forgotPasswordUrl: buildFrontendUrl('/forgot-password'),
+                }),
+                audience: { kind: 'email', email: userRecord.email },
+                category: 'account_security',
+                eventKind: 'password_changed',
+                idempotencyKey: `pwchanged:${userId}:${changedAt.getTime()}`,
+            });
+        }
 
         logger.info('[USER] Password changed — all prior sessions invalidated', { userId });
         res.json({ success: true, message: 'Password changed successfully. Please log in again.' });

@@ -187,6 +187,15 @@ export const changePasswordSchema = z.object({
     newPassword: z.string().min(8, 'New password must be at least 8 characters').max(128, 'Password must be at most 128 characters')
 });
 
+export const forgotPasswordSchema = z.object({
+    email: z.string().email('Invalid email format'),
+});
+
+export const resetPasswordSchema = z.object({
+    token: z.string().min(20, 'Invalid reset token'),
+    newPassword: z.string().min(8, 'New password must be at least 8 characters').max(128, 'Password must be at most 128 characters'),
+});
+
 // ============================================================================
 // SCHEMAS — Billing
 // ============================================================================

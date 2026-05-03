@@ -306,6 +306,61 @@ export const getContact = async (req: Request, res: Response): Promise<Response>
 };
 
 /**
+ * PATCH /api/sequencer/contacts/:id
+ * Updates editable Lead detail fields. Body may include any of:
+ *   first_name, last_name, full_name, company, website, title, phone, linkedin_url
+ * Empty string clears the field; undefined leaves it unchanged. Email is
+ * intentionally not editable here — it is the unique identity key for the
+ * lead within the org and changing it would orphan campaign history.
+ */
+const EDITABLE_FIELDS = ['first_name', 'last_name', 'full_name', 'company', 'website', 'title', 'phone', 'linkedin_url'] as const;
+type EditableField = typeof EDITABLE_FIELDS[number];
+
+export const updateContactDetails = async (req: Request, res: Response): Promise<Response> => {
+    try {
+        const orgId = getOrgId(req);
+        const id = String(req.params.id);
+        const lead = await prisma.lead.findFirst({
+            where: { id, organization_id: orgId, status: { not: 'erased' } },
+            select: { id: true, first_name: true, last_name: true },
+        });
+        if (!lead) return res.status(404).json({ success: false, error: 'Contact not found' });
+
+        const data: Partial<Record<EditableField, string | null>> = {};
+        const body = req.body || {};
+        for (const field of EDITABLE_FIELDS) {
+            if (Object.prototype.hasOwnProperty.call(body, field)) {
+                const v = body[field];
+                data[field] = typeof v === 'string' && v.trim() ? v.trim() : null;
+            }
+        }
+        if (Object.keys(data).length === 0) {
+            return res.status(400).json({ success: false, error: 'No editable fields provided' });
+        }
+
+        // If the caller updated first/last name but didn't explicitly send
+        // full_name, keep full_name in sync so the contact list and detail
+        // header don't go stale.
+        if (
+            !Object.prototype.hasOwnProperty.call(body, 'full_name') &&
+            (Object.prototype.hasOwnProperty.call(body, 'first_name') ||
+                Object.prototype.hasOwnProperty.call(body, 'last_name'))
+        ) {
+            const firstName = data.first_name ?? lead.first_name;
+            const lastName = data.last_name ?? lead.last_name;
+            const joined = [firstName, lastName].filter(Boolean).join(' ').trim();
+            data.full_name = joined || null;
+        }
+
+        await prisma.lead.update({ where: { id }, data });
+        return res.json({ success: true, data });
+    } catch (error) {
+        logger.error('[CONTACTS] updateContactDetails failed', error instanceof Error ? error : new Error(String(error)));
+        return res.status(500).json({ success: false, error: 'Failed to update contact' });
+    }
+};
+
+/**
  * PATCH /api/sequencer/contacts/:id/notes
  * Updates the operator notes on a Lead. Body: { notes: string | null }.
  * No history kept — this is intentionally a scratch field, not a thread.
@@ -439,7 +494,7 @@ export const bulkTagContacts = async (req: Request, res: Response): Promise<Resp
 export const createContact = async (req: Request, res: Response): Promise<Response> => {
     try {
         const orgId = getOrgId(req);
-        const { email, first_name, last_name, full_name, company, website, title, persona, source } = req.body;
+        const { email, first_name, last_name, full_name, company, website, title, persona, source, phone, linkedin_url } = req.body;
 
         if (!email || typeof email !== 'string' || !email.includes('@')) {
             return res.status(400).json({ success: false, error: 'Valid email address is required' });
@@ -489,6 +544,8 @@ export const createContact = async (req: Request, res: Response): Promise<Respon
                 company: company?.trim() || null,
                 website: website?.trim() || null,
                 title: title?.trim() || null,
+                phone: typeof phone === 'string' && phone.trim() ? phone.trim() : null,
+                linkedin_url: typeof linkedin_url === 'string' && linkedin_url.trim() ? linkedin_url.trim() : null,
                 persona: finalPersona,
                 source: source?.trim() || 'manual',
                 status: 'held',
@@ -611,6 +668,8 @@ export const bulkCreateContacts = async (req: Request, res: Response): Promise<R
                     company: c.company ? String(c.company).trim() : null,
                     website: c.website ? String(c.website).trim() : null,
                     title: c.title ? String(c.title).trim() : null,
+                    phone: c.phone ? String(c.phone).trim() : null,
+                    linkedin_url: c.linkedin_url ? String(c.linkedin_url).trim() : null,
                     persona: finalPersona,
                     source: c.source ? String(c.source).trim() : 'csv',
                     status: 'held',
@@ -630,6 +689,8 @@ export const bulkCreateContacts = async (req: Request, res: Response): Promise<R
                             company: data.company,
                             website: data.website,
                             title: data.title,
+                            phone: data.phone,
+                            linkedin_url: data.linkedin_url,
                         },
                     }).catch(() => {});
                     updated++;

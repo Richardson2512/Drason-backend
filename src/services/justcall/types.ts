@@ -38,8 +38,11 @@ export interface JustCallContactInput {
     /** Free-form display name. Required by JustCall — first+last joined. */
     name: string;
     /** E.164 if possible; JustCall accepts national format too as long as
-     *  country_code is present on the campaign. */
-    phone_number: string;
+     *  country_code is present on the campaign. Optional now — for parity
+     *  with Outreach we push contacts even when no phone is on file; JustCall
+     *  validates per-row and reports unusable rows back via the bulk_import
+     *  response (skipped/failed counts). */
+    phone_number?: string | null;
     email?: string | null;
     company?: string | null;
     title?: string | null;

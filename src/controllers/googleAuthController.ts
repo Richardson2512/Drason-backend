@@ -5,6 +5,9 @@ import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
 import * as googleOAuth from '../services/googleOAuthService';
 import { encrypt } from '../utils/encryption';
+import { dispatchEmail } from '../services/emailTemplates/dispatcher';
+import { welcomeEmail } from '../services/emailTemplates/welcome';
+import { buildFrontendUrl } from '../services/emailTemplates/requesterContext';
 
 // JWT_SECRET is validated at startup in index.ts
 function getJwtSecret(): string {
@@ -460,6 +463,22 @@ export const completeOnboarding = async (req: Request, res: Response) => {
             userId: result.user.id,
             orgId: result.org.id,
             orgName: result.org.name
+        });
+
+        // Welcome email — fire-and-forget. Idempotency on user.id ensures
+        // a re-submit (rare given pending_token is single-use) doesn't
+        // double-send.
+        void dispatchEmail({
+            rendered: welcomeEmail({
+                name: result.user.name,
+                organizationName: result.org.name,
+                trialDaysRemaining: 14,
+                dashboardUrl: buildFrontendUrl('/dashboard'),
+            }),
+            audience: { kind: 'email', email: result.user.email },
+            category: 'account_security',
+            eventKind: 'welcome',
+            idempotencyKey: `welcome:${result.user.id}`,
         });
 
         return res.json({ success: true });

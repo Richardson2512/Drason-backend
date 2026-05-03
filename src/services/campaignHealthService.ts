@@ -18,6 +18,9 @@ import * as auditLogService from './auditLogService';
 import * as notificationService from './notificationService';
 import { logger } from './observabilityService';
 import { MONITORING_THRESHOLDS } from '../types';
+import { dispatchEmail } from './emailTemplates/dispatcher';
+import { campaignPausedEmail, coalesceBucket } from './emailTemplates/operationalAlerts';
+import { buildFrontendUrl } from './emailTemplates/requesterContext';
 
 // ============================================================================
 // TYPES
@@ -189,6 +192,42 @@ export async function pauseCampaign(
         });
     } catch (notifError) {
         logger.warn('Failed to create campaign pause notification', { campaignId });
+    }
+
+    // Email all org admins. 15-min coalescing bucket → if multiple
+    // campaigns trip the same threshold inside the window, only the first
+    // email lands. Operators should use the dashboard for the full list.
+    try {
+        const stats = await prisma.campaignDailyAnalytics.aggregate({
+            where: { campaign_id: campaignId },
+            _sum: { sent_count: true, bounce_count: true },
+        });
+        const sent = stats._sum.sent_count || 0;
+        const bounced = stats._sum.bounce_count || 0;
+        const bounceRate = sent > 0 ? bounced / sent : 0;
+        const org = await prisma.organization.findUnique({
+            where: { id: organizationId },
+            select: { name: true },
+        });
+        void dispatchEmail({
+            rendered: campaignPausedEmail({
+                organizationName: org?.name || 'Your account',
+                campaignName: campaign.name || campaignId,
+                reason,
+                pausedAt: new Date(),
+                sentSoFar: sent,
+                bounceRate,
+                campaignUrl: buildFrontendUrl(`/dashboard/campaigns?selected=${campaignId}`),
+            }),
+            audience: { kind: 'org-admins', organizationId },
+            category: 'operational_alert',
+            eventKind: 'campaign_paused',
+            // Per-campaign + 15-min bucket — re-pauses outside the window
+            // re-notify; storms inside the window collapse to one email.
+            idempotencyKey: `campaign-paused:${campaignId}:${coalesceBucket()}`,
+        });
+    } catch (emailErr) {
+        logger.warn('[CAMPAIGN] Failed to dispatch pause email', { campaignId, error: String(emailErr) });
     }
 }
 

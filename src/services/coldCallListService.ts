@@ -72,6 +72,7 @@ export const DEFAULT_CUSTOM_RULES: ListRules = {
 
 export interface ProspectRow {
     campaign_lead_id: string;
+    lead_id: string | null;
     email: string;
     full_name: string | null;
     company: string | null;
@@ -413,7 +414,7 @@ export async function generateProspectList(ctx: ScoringContext): Promise<Prospec
     // Pull Protection-layer Lead enrichment (phone, linkedin_url, full_name).
     const leadEnrich = await prisma.lead.findMany({
         where: { organization_id: organizationId, email: { in: cappedEmails } },
-        select: { email: true, phone: true, linkedin_url: true, full_name: true, last_activity_at: true },
+        select: { id: true, email: true, phone: true, linkedin_url: true, full_name: true, last_activity_at: true },
     });
     const enrichByEmail = new Map<string, (typeof leadEnrich)[number]>();
     for (const l of leadEnrich) enrichByEmail.set(l.email.toLowerCase(), l);
@@ -430,6 +431,7 @@ export async function generateProspectList(ctx: ScoringContext): Promise<Prospec
 
         return {
             campaign_lead_id: row.campaign_lead_id,
+            lead_id: enrich?.id ?? null,
             email: row.email,
             full_name:
                 enrich?.full_name ||
@@ -821,7 +823,7 @@ async function materializeFromIds(organizationId: string, ids: string[]): Promis
 
     const leadEnrich = await prisma.lead.findMany({
         where: { organization_id: organizationId, email: { in: cappedEmails } },
-        select: { email: true, phone: true, linkedin_url: true, full_name: true, last_activity_at: true },
+        select: { id: true, email: true, phone: true, linkedin_url: true, full_name: true, last_activity_at: true },
     });
     const enrichByEmail = new Map<string, (typeof leadEnrich)[number]>();
     for (const l of leadEnrich) enrichByEmail.set(l.email.toLowerCase(), l);
@@ -848,6 +850,7 @@ async function materializeFromIds(organizationId: string, ids: string[]): Promis
         const sentKey = `${cl.campaign_id}::${cl.email.toLowerCase()}`;
         return {
             campaign_lead_id: cl.id,
+            lead_id: enrich?.id ?? null,
             email: cl.email,
             full_name: enrich?.full_name || [cl.first_name, cl.last_name].filter(Boolean).join(' ') || null,
             company: cl.company,

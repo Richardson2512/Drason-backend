@@ -79,6 +79,12 @@ export const bulkImportLeads = async (req: Request, res: Response): Promise<Resp
                     data: {
                         organization_id: orgId,
                         email: lead.email.toLowerCase().trim(),
+                        first_name: lead.first_name || null,
+                        last_name: lead.last_name || null,
+                        company: lead.company || null,
+                        title: lead.title || null,
+                        phone: lead.phone || null,
+                        linkedin_url: lead.linkedin_url || null,
                         persona: lead.persona || 'general',
                         source: lead.source || 'api',
                         status: 'held',

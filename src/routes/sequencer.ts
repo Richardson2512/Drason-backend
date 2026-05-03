@@ -110,6 +110,7 @@ contactRoutes.post('/assign-campaign', contactController.assignToCampaign);
 contactRoutes.get('/export', contactController.exportContacts);
 contactRoutes.get('/:id', contactController.getContact);
 contactRoutes.patch('/:id/notes', contactController.updateContactNotes);
+contactRoutes.patch('/:id', contactController.updateContactDetails);
 contactRoutes.put('/:id/tags', contactController.setContactTags);
 contactRoutes.post('/bulk-tag', contactController.bulkTagContacts);
 router.use('/contacts', contactRoutes);

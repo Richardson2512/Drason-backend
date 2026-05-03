@@ -15,6 +15,8 @@
 import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
 import { eraseOrganization } from '../services/piiErasureService';
+import { dispatchEmail } from '../services/emailTemplates/dispatcher';
+import { accountDeletionExecutedEmail } from '../services/emailTemplates/accountDeletionExecuted';
 
 const RUN_INTERVAL_MS = 6 * 60 * 60 * 1000;     // 6h — deletion is not time-critical
 const FIRST_RUN_DELAY_MS = 5 * 60 * 1000;       // 5min after boot
@@ -125,9 +127,22 @@ export async function runOnce(): Promise<{ executed: number; errors: number }> {
             continue;
         }
 
+        // Snapshot identity before erasure — once eraseOrganization runs,
+        // both the User and Organization rows are gone, so we can't look
+        // them up to send the confirmation email.
+        const requester = req.entity_id ? await prisma.user.findUnique({
+            where: { id: req.entity_id },
+            select: { name: true, email: true },
+        }) : null;
+        const org = await prisma.organization.findUnique({
+            where: { id: req.organization_id },
+            select: { name: true },
+        });
+
         // Execute. eraseOrganization scrubs PII + deletes the Organization row.
         try {
             const summary = await eraseOrganization(req.organization_id);
+            const executedAt = new Date();
             await prisma.auditLog.create({
                 data: {
                     // The Organization is deleted; this row's FK relation will SetNull.
@@ -138,12 +153,31 @@ export async function runOnce(): Promise<{ executed: number; errors: number }> {
                     action: 'deletion_executed',
                     details: JSON.stringify({
                         ...summary,
-                        executed_at: new Date().toISOString(),
+                        executed_at: executedAt.toISOString(),
                         original_request_id: req.id,
                         grace_days: graceDays,
                     }),
                 },
             });
+
+            // Final confirmation email — sent AFTER erasure since we already
+            // snapshotted identity above. Recipient address is the only PII
+            // we still hold, and it's intentional: GDPR Art. 12(3) requires
+            // confirmation that the request was carried out.
+            if (requester?.email) {
+                void dispatchEmail({
+                    rendered: accountDeletionExecutedEmail({
+                        requesterName: requester.name,
+                        organizationName: org?.name || null,
+                        executedAt,
+                    }),
+                    audience: { kind: 'email', email: requester.email },
+                    category: 'compliance',
+                    eventKind: 'account_deletion_executed',
+                    idempotencyKey: `delete-executed:${req.organization_id}:${req.entity_id}`,
+                });
+            }
+
             executed++;
             totalErased++;
         } catch (err) {

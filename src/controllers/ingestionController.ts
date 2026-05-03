@@ -36,6 +36,9 @@ interface LeadInput {
     first_name?: string;
     last_name?: string;
     company?: string;
+    title?: string;
+    phone?: string;
+    linkedin_url?: string;
     idempotencyKey?: string;
     extraPayload?: Record<string, any>;
 }
@@ -62,7 +65,7 @@ export async function processLead(
     organizationId: string,
     input: LeadInput
 ): Promise<ProcessResult> {
-    const { persona, lead_score, source, first_name, last_name, company } = input;
+    const { persona, lead_score, source, first_name, last_name, company, title, phone, linkedin_url } = input;
     const email = input.email.toLowerCase().trim();
     const logTag = source === 'clay' ? 'INGEST CLAY' : 'INGEST';
 
@@ -122,6 +125,14 @@ export async function processLead(
             persona,
             lead_score,
             source,
+            // Contact fields — only overwrite when caller supplies a value, so re-ingests
+            // don't blow away enrichment from CRM/Apollo workers.
+            ...(first_name !== undefined ? { first_name } : {}),
+            ...(last_name !== undefined ? { last_name } : {}),
+            ...(company !== undefined ? { company } : {}),
+            ...(title !== undefined ? { title } : {}),
+            ...(phone !== undefined ? { phone } : {}),
+            ...(linkedin_url !== undefined ? { linkedin_url } : {}),
             health_classification: healthResult.classification,
             health_score_calc: healthResult.score,
             health_checks: healthResult.checks,
@@ -139,6 +150,12 @@ export async function processLead(
             persona,
             lead_score,
             source,
+            first_name: first_name ?? null,
+            last_name: last_name ?? null,
+            company: company ?? null,
+            title: title ?? null,
+            phone: phone ?? null,
+            linkedin_url: linkedin_url ?? null,
             status: initialStatus,
             health_state: 'healthy',
             health_classification: healthResult.classification,
@@ -398,6 +415,9 @@ export const ingestLead = async (req: Request, res: Response) => {
             first_name: req.body.first_name,
             last_name: req.body.last_name,
             company: req.body.company,
+            title: req.body.title,
+            phone: req.body.phone,
+            linkedin_url: req.body.linkedin_url,
         });
 
         res.json({ success: true, data: result });
@@ -519,6 +539,9 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
             first_name: findVal(['first_name', 'firstname', 'first name', 'fname']),
             last_name: findVal(['last_name', 'lastname', 'last name', 'lname']),
             company: findVal(['company', 'company_name', 'company name', 'organization']),
+            title: findVal(['title', 'job_title', 'job title', 'role']),
+            phone: findVal(['phone', 'phone_number', 'mobile', 'mobile_number', 'cell', 'cell phone']),
+            linkedin_url: findVal(['linkedin', 'linkedin_url', 'linkedin profile', 'linkedin_profile']),
             idempotencyKey: `${organizationId}:clay:${externalId}`,
             extraPayload: payload,
         });

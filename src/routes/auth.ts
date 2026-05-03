@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import * as authController from '../controllers/authController';
 import * as googleAuthController from '../controllers/googleAuthController';
-import { validateBody, loginSchema, registerSchema } from '../middleware/validation';
+import { validateBody, loginSchema, registerSchema, forgotPasswordSchema, resetPasswordSchema } from '../middleware/validation';
 
 const router = Router();
 
@@ -17,6 +17,11 @@ router.post('/login', validateBody(loginSchema), authController.login);
 router.post('/register', validateBody(registerSchema), authController.register);
 router.post('/refresh', authController.refreshToken);
 router.post('/logout', authController.logout);
+
+// Password reset (public — no auth required)
+router.post('/forgot-password', validateBody(forgotPasswordSchema), authController.forgotPassword);
+router.get('/reset-password/verify', authController.verifyResetToken);
+router.post('/reset-password', validateBody(resetPasswordSchema), authController.resetPassword);
 
 // Google OAuth 2.0 authentication
 router.get('/google', googleAuthController.initiateGoogleAuth);

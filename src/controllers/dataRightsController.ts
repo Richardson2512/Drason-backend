@@ -20,6 +20,10 @@ import type { Request, Response } from 'express';
 import crypto from 'crypto';
 import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
+import { dispatchEmail } from '../services/emailTemplates/dispatcher';
+import { accountDeletionScheduledEmail } from '../services/emailTemplates/accountDeletionScheduled';
+import { dataExportReadyEmail } from '../services/emailTemplates/dataExport';
+import { buildFrontendUrl, summariseRequester } from '../services/emailTemplates/requesterContext';
 import { listConsentsForUser } from '../services/consentService';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -115,6 +119,31 @@ export const exportMyData = async (req: Request, res: Response): Promise<void> =
                 'Encrypted secrets (OAuth tokens, SMTP credentials, import keys) are not included for security. ' +
                 'Email bodies of sent messages are not retained by Superkabe; reply messages are stored only until the customer deletes them.',
         });
+
+        // Security-audit confirmation email — fire-and-forget. Single email
+        // per export request; idempotency keyed on (user, second-precision
+        // timestamp) so the rare double-click can't double-send.
+        const exportedAt = new Date();
+        void dispatchEmail({
+            rendered: dataExportReadyEmail({
+                name: user.name,
+                organizationName: organization?.name || null,
+                exportedAt,
+                requesterContext: summariseRequester(req),
+                counts: {
+                    mailboxes: mailboxesCount,
+                    leads: leadsCount,
+                    campaigns: campaignsCount,
+                    emailsSent: monthlySends,
+                    emailsValidated,
+                },
+                dataRightsUrl: buildFrontendUrl('/dashboard/data-rights'),
+            }),
+            audience: { kind: 'email', email: user.email },
+            category: 'compliance',
+            eventKind: 'data_export_ready',
+            idempotencyKey: `data-export:${user.id}:${Math.floor(exportedAt.getTime() / 1000)}`,
+        });
     } catch (err: any) {
         logger.error('[DATA-RIGHTS] exportMyData failed', err);
         res.status(500).json({ success: false, error: 'Failed to export data' });
@@ -186,6 +215,32 @@ export const requestAccountDeletion = async (req: Request, res: Response): Promi
         const executesAfter = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
         logger.info('[DATA-RIGHTS] Account deletion requested', { userId, orgId, executesAfter });
+
+        // Notify all org admins so the workspace owner sees the deletion
+        // request even if a viewer or compromised admin initiated it.
+        // Cancellation URL points at the dashboard, where the user can
+        // present the token via the dashboard UI to abort.
+        const requester = await prisma.user.findUnique({
+            where: { id: userId },
+            select: { name: true },
+        });
+        const org = await prisma.organization.findUnique({
+            where: { id: orgId },
+            select: { name: true },
+        });
+        void dispatchEmail({
+            rendered: accountDeletionScheduledEmail({
+                requesterName: requester?.name || null,
+                organizationName: org?.name || null,
+                executesAt: executesAfter,
+                cancellationToken: token,
+                cancelUrl: buildFrontendUrl('/dashboard/data-rights'),
+            }),
+            audience: { kind: 'org-admins', organizationId: orgId },
+            category: 'compliance',
+            eventKind: 'account_deletion_scheduled',
+            idempotencyKey: `delete-scheduled:${orgId}:${userId}`,
+        });
 
         res.json({
             success: true,

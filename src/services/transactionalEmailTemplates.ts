@@ -136,11 +136,29 @@ export function renderEmailTemplate(p: RenderEmailParams): string {
     <tr>
       <td align="center" style="padding:32px 16px;">
 
-        <!-- Header: wordmark only, no card frame. Vercel-style. -->
+        <!-- Header: logo mark + wordmark. The mark is hosted on the
+             frontend's public/image folder so any deploy that ships the
+             frontend also ships the email asset. Image-blocked clients
+             still see the wordmark via the alt + adjacent text fallback. -->
         <table role="presentation" cellpadding="0" cellspacing="0" border="0" class="container" width="600" style="max-width:600px;width:100%;">
           <tr>
-            <td style="padding:0 0 24px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-size:14px;line-height:20px;font-weight:700;letter-spacing:-0.01em;color:${C.brand};">
-              Superkabe
+            <td style="padding:0 0 24px 0;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td valign="middle" style="padding-right:10px;">
+                    <img
+                      src="${getEmailLogoUrl()}"
+                      width="32"
+                      height="32"
+                      alt="Superkabe"
+                      style="display:block;border:0;outline:none;text-decoration:none;width:32px;height:32px;"
+                    />
+                  </td>
+                  <td valign="middle" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-size:16px;line-height:20px;font-weight:700;letter-spacing:-0.01em;color:${C.brand};">
+                    Superkabe
+                  </td>
+                </tr>
+              </table>
             </td>
           </tr>
         </table>
@@ -268,6 +286,22 @@ function renderButton(label: string, url: string): string {
 
 function escapeHtml(s: string): string {
     return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+}
+
+/**
+ * Resolves to an absolute URL for the email logo. Email clients can't
+ * resolve relative paths, so we prepend the frontend's public origin.
+ *
+ *   - Production: should be set to the customer-facing CDN/origin
+ *     via EMAIL_LOGO_URL or FRONTEND_URL env.
+ *   - Local dev: degrades to localhost:3000 — the logo won't render in
+ *     a real inbox (recipient can't reach localhost), but everything
+ *     else still works and the alt text + wordmark appear instead.
+ */
+function getEmailLogoUrl(): string {
+    if (process.env.EMAIL_LOGO_URL) return process.env.EMAIL_LOGO_URL;
+    const base = process.env.FRONTEND_URL || 'https://www.superkabe.com';
+    return `${base.replace(/\/+$/, '')}/image/logo-v2.png`;
 }
 
 function escapeAttr(s: string): string {
