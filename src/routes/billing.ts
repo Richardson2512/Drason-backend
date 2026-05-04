@@ -7,7 +7,7 @@
 
 import { Router } from 'express';
 import * as billingController from '../controllers/billingController';
-import { validateBody, createCheckoutSchema, changePlanSchema } from '../middleware/validation';
+import { validateBody, createCheckoutSchema, changePlanSchema, cancelSubscriptionSchema } from '../middleware/validation';
 
 const router = Router();
 
@@ -49,9 +49,10 @@ router.post('/change-plan', validateBody(changePlanSchema), billingController.ch
 
 /**
  * POST /api/billing/cancel
- * Cancel current subscription.
+ * Cancel current subscription. Requires explicit data-retention consent
+ * (GDPR/DPDP) — body must include `data_retention: 'keep' | 'delete'`.
  */
-router.post('/cancel', billingController.cancelSubscription);
+router.post('/cancel', validateBody(cancelSubscriptionSchema), billingController.cancelSubscription);
 
 /**
  * POST /api/billing/refresh-usage

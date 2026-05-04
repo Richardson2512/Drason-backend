@@ -225,6 +225,16 @@ export const changePlanSchema = z.object({
     confirm: z.boolean().optional().default(false)
 });
 
+// Cancel-subscription consent. We can't silently preserve user data after
+// a paid relationship ends — GDPR/DPDP require an affirmative choice. The
+// frontend forces the user to pick one of these before the cancel button
+// becomes active. No default; the request 400s if data_retention is
+// missing or not one of the two allowed values.
+export const cancelSubscriptionSchema = z.object({
+    data_retention: z.enum(['keep', 'delete']),
+    reason: z.string().max(500).optional(),
+});
+
 // ============================================================================
 // SCHEMAS — Healing
 // ============================================================================

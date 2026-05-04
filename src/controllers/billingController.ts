@@ -184,16 +184,114 @@ export const getSubscriptionStatus = async (req: Request, res: Response): Promis
 /**
  * Cancel current subscription.
  */
+/**
+ * Cancel the current subscription with explicit data-retention consent.
+ *
+ * GDPR / DPDP / PDPA: we can't silently retain user data after the paid
+ * relationship ends. The body MUST carry data_retention ('keep' | 'delete')
+ * — Zod middleware enforces this. Behavior per choice:
+ *
+ *   keep   — record an affirmative Consent row (audit-grade artifact: who,
+ *            when, IP, UA, document version) and proceed with a normal
+ *            Polar cancel_at_period_end. Customer keeps full access until
+ *            period end; we keep their data for re-subscription afterwards.
+ *
+ *   delete — record a deletion-request audit log keyed at period end, then
+ *            cancel Polar at period end. The existing accountDeletionWorker
+ *            picks up the audit row after the grace window and erases.
+ *            We do NOT delete now — the customer paid for the period and
+ *            should keep using the product until it ends.
+ */
 export const cancelSubscription = async (req: Request, res: Response): Promise<Response> => {
     try {
         const orgId = getOrgId(req);
+        const userId = req.orgContext?.userId;
+        const { data_retention, reason } = req.body as { data_retention: 'keep' | 'delete'; reason?: string };
 
+        if (!userId) {
+            return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+
+        // Cancel Polar subscription first — if this fails we don't want
+        // a stale consent or deletion request lying around with no actual
+        // cancellation backing it. Polar takes effect at period end, so
+        // the access window is preserved for the customer either way.
         await polarClient.cancelSubscription(orgId);
 
-        return res.json({ success: true, message: 'Subscription canceled. Access will continue until the end of your billing period.' });
+        const ipAddress = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
+            || req.socket.remoteAddress
+            || null;
+        const userAgent = req.headers['user-agent'] || null;
+
+        if (data_retention === 'keep') {
+            // Affirmative consent to retain post-cancellation. Snapshot the
+            // user identity so the consent stays valid even if the user is
+            // later erased.
+            const user = await prisma.user.findUnique({
+                where: { id: userId },
+                select: { email: true, name: true },
+            });
+            await prisma.consent.create({
+                data: {
+                    organization_id: orgId,
+                    user_id: userId,
+                    user_email_snapshot: user?.email || null,
+                    user_name_snapshot: user?.name || null,
+                    consent_type: 'data_retention_post_cancellation',
+                    document_version: '2026-05-04',
+                    channel: 'dashboard_billing_cancel',
+                    ip_address: ipAddress,
+                    user_agent: userAgent,
+                },
+            });
+            logger.info('[BILLING] Cancellation with data-retention consent', { orgId, userId, choice: 'keep' });
+        } else {
+            // Schedule account deletion. We mirror the dataRights flow:
+            // an AuditLog row with entity='account_deletion' is the
+            // source of truth — accountDeletionWorker scans for these.
+            // Idempotent: don't double-schedule if a request already exists.
+            const existing = await prisma.auditLog.findFirst({
+                where: {
+                    organization_id: orgId,
+                    entity: 'account_deletion',
+                    entity_id: userId,
+                    action: 'deletion_requested',
+                },
+                orderBy: { timestamp: 'desc' },
+            });
+            if (!existing) {
+                await prisma.auditLog.create({
+                    data: {
+                        organization_id: orgId,
+                        entity: 'account_deletion',
+                        entity_id: userId,
+                        trigger: 'user',
+                        action: 'deletion_requested',
+                        user_id: userId,
+                        details: JSON.stringify({
+                            source: 'subscription_cancellation',
+                            reason: reason || null,
+                            grace_period_days: 30,
+                            consent_ip: ipAddress,
+                            consent_user_agent: userAgent,
+                        }),
+                    },
+                });
+            }
+            logger.info('[BILLING] Cancellation with data-deletion request', { orgId, userId, choice: 'delete' });
+        }
+
+        return res.json({
+            success: true,
+            data_retention,
+            message: data_retention === 'keep'
+                ? 'Subscription canceled. Access continues until period end. Your data will be retained for re-subscription.'
+                : 'Subscription canceled. Access continues until period end. Your account and all data will be permanently deleted after the 30-day grace period.',
+        });
     } catch (error) {
-        logger.error('[BILLING] Failed to cancel subscription', error instanceof Error ? error : new Error(String(error)));
-        return res.status(500).json({ success: false, error: 'Failed to cancel subscription' });
+        const errMsg = error instanceof Error ? error.message : String(error);
+        logger.error('[BILLING] Failed to cancel subscription', error instanceof Error ? error : new Error(errMsg));
+        return res.status(500).json({ success: false, error: errMsg || 'Failed to cancel subscription' });
     }
 };
 
