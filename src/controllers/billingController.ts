@@ -14,6 +14,7 @@ import { logger } from '../services/observabilityService';
 import * as billingService from '../services/billingService';
 import * as polarClient from '../services/polarClient';
 import { TIER_LIMITS } from '../services/polarClient';
+import { recordConsentFromRequest } from '../services/consentService';
 import { getOrgId } from '../middleware/orgContext';
 import { prisma } from '../index';
 
@@ -218,34 +219,32 @@ export const cancelSubscription = async (req: Request, res: Response): Promise<R
         // the access window is preserved for the customer either way.
         await polarClient.cancelSubscription(orgId);
 
-        const ipAddress = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
-            || req.socket.remoteAddress
-            || null;
-        const userAgent = req.headers['user-agent'] || null;
+        // Snapshot user identity now so the consent record stays valid as
+        // an audit artifact even if the user row is later erased.
+        const user = await prisma.user.findUnique({
+            where: { id: userId },
+            select: { email: true, name: true },
+        });
 
-        if (data_retention === 'keep') {
-            // Affirmative consent to retain post-cancellation. Snapshot the
-            // user identity so the consent stays valid even if the user is
-            // later erased.
-            const user = await prisma.user.findUnique({
-                where: { id: userId },
-                select: { email: true, name: true },
-            });
-            await prisma.consent.create({
-                data: {
-                    organization_id: orgId,
-                    user_id: userId,
-                    user_email_snapshot: user?.email || null,
-                    user_name_snapshot: user?.name || null,
-                    consent_type: 'data_retention_post_cancellation',
-                    document_version: '2026-05-04',
-                    channel: 'dashboard_billing_cancel',
-                    ip_address: ipAddress,
-                    user_agent: userAgent,
-                },
-            });
-            logger.info('[BILLING] Cancellation with data-retention consent', { orgId, userId, choice: 'keep' });
-        } else {
+        // Record the consent for BOTH choices via the canonical
+        // consentService. 'keep' is consent to retain after cancellation;
+        // 'delete' is consent to erase. Either way the user made an
+        // affirmative privacy decision and we want it on the audit trail.
+        await recordConsentFromRequest(req, {
+            consentType: 'subscription_cancellation',
+            documentVersion: '2026-05-04',
+            channel: 'dashboard_billing_cancel',
+            userId,
+            organizationId: orgId,
+            userEmailSnapshot: user?.email || null,
+            userNameSnapshot: user?.name || null,
+            metadata: {
+                choice: data_retention,
+                reason: reason || null,
+            },
+        });
+
+        if (data_retention === 'delete') {
             // Schedule account deletion. We mirror the dataRights flow:
             // an AuditLog row with entity='account_deletion' is the
             // source of truth — accountDeletionWorker scans for these.
@@ -272,14 +271,13 @@ export const cancelSubscription = async (req: Request, res: Response): Promise<R
                             source: 'subscription_cancellation',
                             reason: reason || null,
                             grace_period_days: 30,
-                            consent_ip: ipAddress,
-                            consent_user_agent: userAgent,
                         }),
                     },
                 });
             }
-            logger.info('[BILLING] Cancellation with data-deletion request', { orgId, userId, choice: 'delete' });
         }
+
+        logger.info('[BILLING] Cancellation processed', { orgId, userId, choice: data_retention });
 
         return res.json({
             success: true,

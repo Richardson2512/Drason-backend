@@ -33,6 +33,8 @@ export type ConsentType =
     | 'oauth_gmail'
     | 'oauth_microsoft'
     | 'oauth_postmaster'
+    | 'mcp_oauth_grant'                    // Claude.ai / DCR-registered MCP client authorization
+    | 'subscription_cancellation'          // GDPR/DPDP data-retention choice at cancel time
     | 'import_key'
     | 'dpa';
 
@@ -41,6 +43,8 @@ export type ConsentChannel =
     | 'reacceptance_modal'
     | 'cookie_banner'
     | 'oauth_callback'
+    | 'oauth_consent_screen'               // /oauth/consent — MCP client authorization screen
+    | 'dashboard_billing_cancel'           // billing page cancellation modal
     | 'wizard_step'
     | 'api';
 
