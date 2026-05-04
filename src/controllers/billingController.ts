@@ -387,9 +387,15 @@ export const changePlan = async (req: Request, res: Response): Promise<Response>
             newTier: tier,
             direction: isDowngrade ? 'downgrade' : 'upgrade',
             effective: result.effective,
+            // Both directions take effect immediately on Polar's side; the
+            // dollar diff just lands differently. Earlier copy promised
+            // "downgrade applies at end of period" which Polar's PATCH
+            // doesn't actually do — that was misleading. New copy matches
+            // the real behavior so customers aren't surprised when they
+            // lose the old tier's features right away.
             message: isDowngrade
-                ? `Downgrade to ${tier} will take effect at the end of your current billing period.`
-                : `Upgrade to ${tier} is effective immediately. Your next invoice will be prorated.`
+                ? `Downgrade to ${tier} is effective immediately. Your next invoice will be reduced and credited for the remainder of the period you already paid for.`
+                : `Upgrade to ${tier} is effective immediately. A prorated charge for the difference has been added to your billing.`
         });
     } catch (error) {
         // changeSubscription now throws with Polar's actual error body when

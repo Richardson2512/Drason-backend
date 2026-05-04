@@ -129,6 +129,47 @@ const polarApi = axios.create({
     }
 });
 
+/**
+ * Centralized error reporter for Polar API calls. Every polarApi.* catch
+ * should funnel through this so Railway logs reliably contain the actual
+ * Polar rejection (status + response body) instead of just the axios
+ * wrapper Error.message ("Request failed with status code 422"). Returns
+ * a string suitable for re-throwing as the user-facing error message —
+ * Polar's `detail` / `error` fields usually surface the field that failed
+ * validation, which is what an operator (or the customer in the dashboard)
+ * actually needs to act on.
+ */
+function logPolarError(prefix: string, error: any, context: Record<string, any>): string {
+    const status = error?.response?.status;
+    const data = error?.response?.data;
+    const wrapperMessage = error instanceof Error ? error.message : String(error);
+
+    // Console.error so Railway captures the structured detail; logger.error
+    // is for indexed structured logs and only sees the wrapper Error.
+    console.error(`${prefix} — Polar API error detail`, {
+        ...context,
+        status,
+        responseBody: data,
+        wrapperMessage,
+    });
+    logger.error(prefix, error instanceof Error ? error : new Error(wrapperMessage));
+
+    // Polar response body can be string, an object with detail/error/message,
+    // or an array of validation errors (FastAPI-style). Try each.
+    if (typeof data === 'string' && data.trim()) return data;
+    if (data && typeof data === 'object') {
+        if (typeof data.detail === 'string') return data.detail;
+        if (Array.isArray(data.detail) && data.detail[0]?.msg) {
+            const first = data.detail[0];
+            const fieldPath = Array.isArray(first.loc) ? first.loc.join('.') : '';
+            return fieldPath ? `${fieldPath}: ${first.msg}` : first.msg;
+        }
+        if (typeof data.error === 'string') return data.error;
+        if (typeof data.message === 'string') return data.message;
+    }
+    return `Polar API error${status ? ` (HTTP ${status})` : ''}: ${wrapperMessage}`;
+}
+
 // ============================================================================
 // CUSTOMER MANAGEMENT
 // ============================================================================
@@ -177,19 +218,9 @@ export async function ensurePolarCustomer(orgId: string): Promise<string> {
 
         return customerId;
     } catch (error: any) {
-        // Log the FULL Polar error response so we know exactly what was rejected
-        if (error?.response) {
-            logger.error('[POLAR] Customer creation rejected', new Error(JSON.stringify({
-                status: error.response.status,
-                body: error.response.data,
-                email: customerEmail,
-                orgId
-            })));
-        }
-
         // 422 = customer with this email already exists in Polar
         // (can happen if a previous attempt created the customer but DB save failed)
-        // Look up the existing customer and link it
+        // Look up the existing customer and link it.
         if (error?.response?.status === 422) {
             logger.info(`[POLAR] Customer may already exist for ${customerEmail}, looking up...`);
             try {
@@ -207,13 +238,17 @@ export async function ensurePolarCustomer(orgId: string): Promise<string> {
                     logger.info(`[POLAR] Linked existing customer for ${orgId}`, { customerId: existingCustomer.id });
                     return existingCustomer.id;
                 }
-            } catch (lookupError) {
-                logger.error('[POLAR] Failed to look up existing customer', lookupError instanceof Error ? lookupError : new Error(String(lookupError)));
+            } catch (lookupError: any) {
+                logPolarError('[POLAR] Failed to look up existing customer', lookupError, { customerEmail, orgId });
+                // fall through to the main error path below
             }
         }
 
-        logger.error('[POLAR] Failed to create customer', error instanceof Error ? error : new Error(String(error)));
-        throw new Error('Failed to create Polar customer');
+        const detail = logPolarError('[POLAR] Failed to create customer', error, {
+            orgId,
+            customerEmail,
+        });
+        throw new Error(detail);
     }
 }
 
@@ -255,9 +290,14 @@ export async function createCheckoutSession(
             url: response.data.url,
             id: response.data.id
         };
-    } catch (error) {
-        logger.error('[POLAR] Failed to create checkout session', error instanceof Error ? error : new Error(String(error)));
-        throw new Error('Failed to create checkout session');
+    } catch (error: any) {
+        const detail = logPolarError('[POLAR] Failed to create checkout session', error, {
+            orgId,
+            tier,
+            productId,
+            customerId,
+        });
+        throw new Error(detail);
     }
 }
 
@@ -266,7 +306,18 @@ export async function createCheckoutSession(
 // ============================================================================
 
 /**
- * Cancel a subscription in Polar.
+ * Cancel a subscription in Polar at the end of the current billing period.
+ *
+ * Uses the canonical Polar pattern: PATCH /v1/subscriptions/{id} with
+ * `cancel_at_period_end: true`. The prior version POSTed to
+ * `/subscriptions/{id}/cancel` which is not part of Polar's documented v1
+ * surface — that 404'd, threw, and showed users the same opaque "Failed
+ * to cancel subscription" we just fixed for plan changes.
+ *
+ * Customer keeps access until next_billing_date; on that date, Polar fires
+ * subscription.canceled and our webhook handler flips the status. To
+ * cancel immediately instead, use revokeSubscription (not implemented —
+ * we always honor the paid period).
  */
 export async function cancelSubscription(orgId: string): Promise<void> {
     const org = await prisma.organization.findUnique({
@@ -279,16 +330,19 @@ export async function cancelSubscription(orgId: string): Promise<void> {
     }
 
     try {
-        await polarApi.post(`/subscriptions/${org.polar_subscription_id}/cancel`, {
-            cancel_at_period_end: true // Don't cancel immediately, wait for billing period end
+        await polarApi.patch(`/subscriptions/${org.polar_subscription_id}`, {
+            cancel_at_period_end: true,
         });
 
         logger.info(`[POLAR] Canceled subscription for ${orgId}`, {
             subscriptionId: org.polar_subscription_id
         });
-    } catch (error) {
-        logger.error('[POLAR] Failed to cancel subscription', error instanceof Error ? error : new Error(String(error)));
-        throw new Error('Failed to cancel subscription');
+    } catch (error: any) {
+        const detail = logPolarError('[POLAR] Failed to cancel subscription', error, {
+            orgId,
+            subscriptionId: org.polar_subscription_id,
+        });
+        throw new Error(detail);
     }
 }
 
@@ -330,50 +384,47 @@ export async function changeSubscription(orgId: string, newTier: string): Promis
     const newRank = tierOrder[newTier] || 0;
     const isUpgrade = newRank > currentRank;
 
-    // Build the request body. Only include proration_behavior on upgrades —
-    // downgrades flip at period end with no immediate charge, so we leave
-    // the field off entirely.
-    const body: Record<string, any> = { product_id: newProductId };
-    if (isUpgrade) {
-        body.proration_behavior = 'invoice';
-    }
+    // Build the request body. Both upgrades and downgrades take effect
+    // immediately on Polar's side; the difference is only in how the
+    // dollar diff lands:
+    //   - upgrade   → 'invoice' — charge the prorated difference NOW on a
+    //                 new invoice. Customer pays, gets new tier instantly.
+    //   - downgrade → 'prorate' — apply the prorated credit to the NEXT
+    //                 invoice. Customer keeps the rest of the higher-tier
+    //                 features they already paid for (Polar bills the
+    //                 lower amount minus credit at next renewal).
+    // Sending no proration_behavior at all lets Polar pick a default which
+    // varies by account settings — explicit is better.
+    const body: Record<string, any> = {
+        product_id: newProductId,
+        proration_behavior: isUpgrade ? 'invoice' : 'prorate',
+    };
 
     try {
         await polarApi.patch(`/subscriptions/${org.polar_subscription_id}`, body);
 
-        // Update org tier
-        await prisma.organization.update({
-            where: { id: orgId },
-            data: { subscription_tier: newTier },
-        });
+        // Don't pre-emptively flip the local tier here — the
+        // subscription.updated webhook fires immediately after Polar
+        // accepts the PATCH and our handler updates the org row from the
+        // authoritative payload. Updating locally before the webhook
+        // arrived caused a brief window where our DB and Polar disagreed,
+        // and on rare Polar 5xx-after-2xx returns we'd be stuck out of
+        // sync. The webhook is the source of truth.
 
-        logger.info(`[POLAR] Subscription changed for ${orgId}: ${org.subscription_tier} → ${newTier}`, {
+        logger.info(`[POLAR] Subscription change accepted for ${orgId}: ${org.subscription_tier} → ${newTier}`, {
             subscriptionId: org.polar_subscription_id,
             direction: isUpgrade ? 'upgrade' : 'downgrade',
         });
 
-        return { success: true, effective: isUpgrade ? 'immediate' : 'end_of_period' };
+        return { success: true, effective: 'immediate' };
     } catch (error: any) {
-        // Capture Polar's actual rejection reason. Axios stuffs the API
-        // response body in error.response.data — without this, Railway
-        // logs only show "Request failed with status code 422" which tells
-        // us nothing about which field Polar didn't like.
-        const status = error?.response?.status;
-        const data = error?.response?.data;
-        const detail = data ? JSON.stringify(data) : (error?.message || String(error));
-        logger.error('[POLAR] Failed to change subscription', error instanceof Error ? error : new Error(detail));
-        console.error('[POLAR] Subscription PATCH error detail', {
+        const detail = logPolarError('[POLAR] Failed to change subscription', error, {
             orgId,
             subscriptionId: org.polar_subscription_id,
             newTier,
             requestBody: body,
-            status,
-            data,
         });
-        // Bubble up Polar's message to the caller so the controller can
-        // show something actionable to the user instead of a generic 500.
-        const userFacing = data?.detail || data?.error || data?.message || `Polar rejected the plan change${status ? ` (HTTP ${status})` : ''}`;
-        throw new Error(typeof userFacing === 'string' ? userFacing : JSON.stringify(userFacing));
+        throw new Error(detail);
     }
 }
 
@@ -384,9 +435,9 @@ export async function getSubscription(subscriptionId: string): Promise<any> {
     try {
         const response = await polarApi.get(`/subscriptions/${subscriptionId}`);
         return response.data;
-    } catch (error) {
-        logger.error('[POLAR] Failed to fetch subscription', error instanceof Error ? error : new Error(String(error)));
-        throw new Error('Failed to fetch subscription details');
+    } catch (error: any) {
+        const detail = logPolarError('[POLAR] Failed to fetch subscription', error, { subscriptionId });
+        throw new Error(detail);
     }
 }
 
