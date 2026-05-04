@@ -93,8 +93,13 @@ export const createCheckout = async (req: Request, res: Response): Promise<Respo
         const orgId = getOrgId(req);
         const { tier } = req.body;
 
-        if (!tier || !['starter', 'pro', 'growth', 'scale'].includes(tier)) {
-            return res.status(400).json({ success: false, error: 'Invalid tier. Must be one of: starter, pro, growth, scale' });
+        // Defensive — the route's Zod middleware already enforces this,
+        // but if a path ever reaches here without that middleware (e.g.
+        // future internal calls) we still want a clear error rather than
+        // a downstream Polar 4xx.
+        const ALLOWED_TIERS = ['starter', 'pro', 'pro_80k', 'pro_100k', 'pro_150k', 'pro_200k', 'pro_250k', 'growth', 'scale'];
+        if (!tier || !ALLOWED_TIERS.includes(tier)) {
+            return res.status(400).json({ success: false, error: `Invalid tier. Must be one of: ${ALLOWED_TIERS.join(', ')}` });
         }
 
         const { prisma } = await import('../index');
@@ -330,8 +335,10 @@ export const changePlan = async (req: Request, res: Response): Promise<Response>
         const orgId = getOrgId(req);
         const { tier, confirm } = req.body;
 
-        // Validate tier
-        const validTiers = ['starter', 'pro', 'growth', 'scale'];
+        // Defensive validation — Zod middleware already accepts the same
+        // list. Keep these in sync with SUBSCRIBABLE_TIERS in validation.ts
+        // and PRODUCT_IDS in services/polarClient.ts.
+        const validTiers = ['starter', 'pro', 'pro_80k', 'pro_100k', 'pro_150k', 'pro_200k', 'pro_250k', 'growth', 'scale'];
         if (!tier || !validTiers.includes(tier)) {
             return res.status(400).json({ success: false, error: `Invalid tier. Must be one of: ${validTiers.join(', ')}` });
         }
