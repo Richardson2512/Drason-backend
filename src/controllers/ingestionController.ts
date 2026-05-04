@@ -460,17 +460,21 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
         return res.status(404).json({ success: false, error: 'Invalid Organization ID' });
     }
 
-    // === SECURITY: Validate HMAC-SHA256 Signature ===
-    const signature = req.headers['x-clay-signature'] as string;
-
-    if (!signature && process.env.NODE_ENV === 'production') {
-        logger.warn('[INGEST CLAY] Missing signature in production - rejecting', { organizationId });
-        return res.status(401).json({
-            success: false,
-            error: 'Missing webhook signature',
-            message: 'Clay webhooks must include X-Clay-Signature header. Configure this in your Clay webhook settings.'
-        });
-    }
+    // === SECURITY: validate webhook auth ===
+    // Two acceptable forms, in priority order:
+    //   1. X-Clay-Secret: <secret>            — bearer-style direct compare
+    //      Clay's HTTP API column doesn't have a built-in HMAC primitive,
+    //      so requiring HMAC realistically blocks every Clay user. Sending
+    //      the per-org secret as a header value (same security model as a
+    //      bearer token) is the standard webhook pattern and what Clay
+    //      users can actually configure in 30 seconds.
+    //   2. X-Clay-Signature: <hex HMAC-SHA256> — HMAC of raw body
+    //      Kept for callers who can produce HMAC (custom ingestion script,
+    //      a different webhook source pretending to be Clay, etc.).
+    //
+    // Either header satisfies prod auth. Missing both → 401.
+    const secretHeader = req.headers['x-clay-secret'] as string | undefined;
+    const signature = req.headers['x-clay-signature'] as string | undefined;
 
     if (!org.clay_webhook_secret) {
         logger.warn('[INGEST CLAY] No webhook secret configured for org', { organizationId });
@@ -484,29 +488,56 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
         logger.info('[INGEST CLAY] Allowing in development without secret');
     }
 
-    // Validate signature if secret exists
-    if (signature && org.clay_webhook_secret) {
-        const crypto = await import('crypto');
-        const expectedSignature = crypto
-            .createHmac('sha256', org.clay_webhook_secret)
-            .update(JSON.stringify(req.body))
-            .digest('hex');
+    let authMethod: 'secret-header' | 'hmac-signature' | 'none' = 'none';
+    let authPassed = false;
 
-        const isValid = crypto.timingSafeEqual(
-            Buffer.from(signature),
-            Buffer.from(expectedSignature)
-        );
+    if (org.clay_webhook_secret) {
+        const cryptoMod = await import('crypto');
 
-        if (!isValid) {
-            logger.warn('[INGEST CLAY] Invalid signature', { organizationId });
-            return res.status(401).json({
-                success: false,
-                error: 'Invalid webhook signature',
-                message: 'Signature validation failed. Ensure Clay is configured with the correct webhook secret.'
-            });
+        // Try X-Clay-Secret first — easiest to set up in Clay.
+        if (secretHeader) {
+            authMethod = 'secret-header';
+            const a = Buffer.from(secretHeader);
+            const b = Buffer.from(org.clay_webhook_secret);
+            // timingSafeEqual demands equal length — short-circuit here so
+            // a wrong-length header just returns 401 instead of crashing.
+            authPassed = a.length === b.length && cryptoMod.timingSafeEqual(a, b);
         }
 
-        logger.info('[INGEST CLAY] Signature validated successfully', { organizationId });
+        // Fall through to HMAC if secret-header didn't pass.
+        if (!authPassed && signature) {
+            authMethod = 'hmac-signature';
+            const expectedSignature = cryptoMod
+                .createHmac('sha256', org.clay_webhook_secret)
+                .update(JSON.stringify(req.body))
+                .digest('hex');
+            const a = Buffer.from(signature);
+            const b = Buffer.from(expectedSignature);
+            authPassed = a.length === b.length && cryptoMod.timingSafeEqual(a, b);
+        }
+    }
+
+    if (!authPassed && process.env.NODE_ENV === 'production') {
+        if (!secretHeader && !signature) {
+            logger.warn('[INGEST CLAY] Missing auth in production', { organizationId });
+            return res.status(401).json({
+                success: false,
+                error: 'Missing webhook auth',
+                message: 'Send your per-org webhook secret as `X-Clay-Secret: <secret>`. (Or, if you can compute HMAC-SHA256 of the raw body with the secret, send `X-Clay-Signature: <hex>` instead.)',
+            });
+        }
+        logger.warn('[INGEST CLAY] Auth rejected', { organizationId, method: authMethod });
+        return res.status(401).json({
+            success: false,
+            error: 'Invalid webhook auth',
+            message: authMethod === 'secret-header'
+                ? 'X-Clay-Secret does not match. Copy the current secret from your Superkabe dashboard → Integrations → Clay.'
+                : 'X-Clay-Signature did not match the expected HMAC-SHA256 of the request body.',
+        });
+    }
+
+    if (authPassed) {
+        logger.info('[INGEST CLAY] Auth validated', { organizationId, method: authMethod });
     }
 
     // Helper to find value case-insensitively
