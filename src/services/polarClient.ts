@@ -257,11 +257,15 @@ export async function ensurePolarCustomer(orgId: string): Promise<string> {
 // ============================================================================
 
 /**
- * Create a Polar checkout session for upgrading to a paid tier.
+ * Create a Polar checkout session for any paid tier — initial subscription
+ * or plan change. The checkout flow is the single payment path: every
+ * subscribe / upgrade / downgrade / re-subscribe goes through here so
+ * coupon and non-coupon customers are treated identically and the new
+ * tier's price is always actually paid.
  */
 export async function createCheckoutSession(
     orgId: string,
-    tier: 'starter' | 'growth' | 'scale'
+    tier: string
 ): Promise<CheckoutSession> {
     const customerId = await ensurePolarCustomer(orgId);
     const productId = PRODUCT_IDS[tier];

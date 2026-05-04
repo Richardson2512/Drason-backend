@@ -76,7 +76,17 @@ export const handlePolarWebhook = async (req: Request, res: Response): Promise<R
 // ============================================================================
 
 /**
- * Create a Polar checkout session for upgrading.
+ * Create a Polar checkout session for ANY plan transition — initial
+ * subscribe, upgrade, downgrade, or re-subscribe after cancellation.
+ *
+ * The "every plan change goes through checkout" model. Earlier we had a
+ * second path (PATCH /subscriptions via change-plan) that tried to be
+ * smart with proration — but that path didn't take a payment, so coupon
+ * customers could upgrade themselves to a higher tier without paying.
+ * Routing every change through checkout makes coupon/non-coupon and
+ * upgrade/downgrade behave identically: customer pays the new tier price,
+ * Polar fires subscription.created, our webhook updates the org and
+ * cancels the old subscription so they aren't double-billed at renewal.
  */
 export const createCheckout = async (req: Request, res: Response): Promise<Response> => {
     try {
@@ -87,31 +97,21 @@ export const createCheckout = async (req: Request, res: Response): Promise<Respo
             return res.status(400).json({ success: false, error: 'Invalid tier. Must be one of: starter, pro, growth, scale' });
         }
 
-        // Check subscription status instead of tier
-        // With no-payment trials, users can be on 'growth' tier while 'trialing'
         const { prisma } = await import('../index');
         const org = await prisma.organization.findUnique({
             where: { id: orgId },
-            select: {
-                subscription_status: true,
-                subscription_tier: true
-            }
+            select: { subscription_status: true, subscription_tier: true }
         });
-
         if (!org) {
             return res.status(404).json({ success: false, error: 'Organization not found' });
         }
 
-        // Active subscribers should use the change-plan endpoint instead
-        if (org.subscription_status === 'active') {
-            return res.status(400).json({
-                success: false,
-                error: 'You already have an active subscription. Use the change-plan endpoint to upgrade or downgrade.',
-                useChangePlan: true
-            });
+        // Block only the no-op case: same tier, already active. Otherwise
+        // any state (trialing, active, canceled, past_due) goes to checkout.
+        if (org.subscription_status === 'active' && org.subscription_tier === tier) {
+            return res.status(400).json({ success: false, error: `You're already on the ${tier} plan.` });
         }
 
-        // Create checkout session
         const checkoutSession = await polarClient.createCheckoutSession(orgId, tier);
 
         return res.json({
@@ -120,8 +120,9 @@ export const createCheckout = async (req: Request, res: Response): Promise<Respo
             checkoutId: checkoutSession.id
         });
     } catch (error) {
-        logger.error('[BILLING] Checkout creation failed', error instanceof Error ? error : new Error(String(error)));
-        return res.status(500).json({ success: false, error: 'Failed to create checkout session' });
+        const errMsg = error instanceof Error ? error.message : String(error);
+        logger.error('[BILLING] Checkout creation failed', error instanceof Error ? error : new Error(errMsg));
+        return res.status(500).json({ success: false, error: errMsg || 'Failed to create checkout session' });
     }
 };
 
@@ -362,50 +363,30 @@ export const changePlan = async (req: Request, res: Response): Promise<Response>
             return res.status(400).json({ success: false, error: `Already on the ${tier} plan.` });
         }
 
-        // Determine direction
-        const tierOrder: Record<string, number> = { trial: 0, starter: 1, pro: 2, growth: 3, scale: 4, enterprise: 5 };
-        const currentRank = tierOrder[org.subscription_tier || 'trial'] || 0;
-        const newRank = tierOrder[tier] || 0;
-        const isDowngrade = newRank < currentRank;
+        // Plan changes now go through Polar checkout — same flow as the
+        // initial purchase. Customer pays the new tier's price, Polar
+        // fires subscription.created, our webhook updates the org and
+        // cancels the old subscription. No proration weirdness, no card-
+        // on-file edge cases, no "free upgrade" exploit for coupon users.
+        const checkoutSession = await polarClient.createCheckoutSession(orgId, tier);
 
-        // Downgrades no longer surface lead/domain/mailbox warnings — those caps
-        // were removed 2026-04-27. Validation credits and monthly sends are
-        // rolling counters that reset, so they don't need a confirm-prompt either.
-
-        // Execute the plan change via Polar
-        const result = await polarClient.changeSubscription(orgId, tier);
-
-        logger.info(`[BILLING] Plan changed for ${orgId}: ${org.subscription_tier} → ${tier}`, {
-            direction: isDowngrade ? 'downgrade' : 'upgrade',
-            effective: result.effective,
-            confirmed: !!confirm
+        logger.info(`[BILLING] Plan-change checkout created for ${orgId}: ${org.subscription_tier} → ${tier}`, {
+            checkoutId: checkoutSession.id,
+            confirmed: !!confirm,
         });
 
         return res.json({
             success: true,
             previousTier: org.subscription_tier,
             newTier: tier,
-            direction: isDowngrade ? 'downgrade' : 'upgrade',
-            effective: result.effective,
-            // Both directions take effect immediately on Polar's side; the
-            // dollar diff just lands differently. Earlier copy promised
-            // "downgrade applies at end of period" which Polar's PATCH
-            // doesn't actually do — that was misleading. New copy matches
-            // the real behavior so customers aren't surprised when they
-            // lose the old tier's features right away.
-            message: isDowngrade
-                ? `Downgrade to ${tier} is effective immediately. Your next invoice will be reduced and credited for the remainder of the period you already paid for.`
-                : `Upgrade to ${tier} is effective immediately. A prorated charge for the difference has been added to your billing.`
+            checkoutUrl: checkoutSession.url,
+            checkoutId: checkoutSession.id,
+            message: `Redirecting to checkout for ${tier}. Your existing subscription will be canceled automatically once payment completes.`,
         });
     } catch (error) {
-        // changeSubscription now throws with Polar's actual error body when
-        // available — surface that to the user so they (and we) can see
-        // *why* Polar rejected, instead of the prior opaque "Failed to
-        // change plan". Server-side console.error in polarClient logs the
-        // full structured detail for ops.
         const errMsg = error instanceof Error ? error.message : String(error);
         logger.error('[BILLING] Plan change failed', error instanceof Error ? error : new Error(errMsg));
-        return res.status(500).json({ success: false, error: errMsg || 'Failed to change plan' });
+        return res.status(500).json({ success: false, error: errMsg || 'Failed to start plan change' });
     }
 };
 

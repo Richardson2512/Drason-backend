@@ -241,6 +241,20 @@ async function handleSubscriptionCreated(event: WebhookEvent, orgId: string): Pr
     const periodEnd = event.data?.current_period_end;
     const nextBillingDate = periodEnd ? new Date(periodEnd) : null;
 
+    // Plan-change flow: customer went through a fresh checkout for the new
+    // tier, which created a brand-new subscription in Polar. Their previous
+    // subscription is still active in Polar's books — without canceling it,
+    // they'd get billed twice at next renewal. Cancel the old one at period
+    // end (they keep the value of what they already paid for, but the
+    // recurring billing stops). We do this BEFORE updating the org row so
+    // the cancel uses the still-recorded old subscription_id.
+    const orgBefore = await prisma.organization.findUnique({
+        where: { id: orgId },
+        select: { polar_subscription_id: true },
+    });
+    const previousSubscriptionId = orgBefore?.polar_subscription_id;
+    const isPlanChange = previousSubscriptionId && subscriptionId && previousSubscriptionId !== subscriptionId;
+
     await prisma.organization.update({
         where: { id: orgId },
         data: {
@@ -252,6 +266,48 @@ async function handleSubscriptionCreated(event: WebhookEvent, orgId: string): Pr
             next_billing_date: nextBillingDate || undefined,
         }
     });
+
+    // After we've switched our org to the new sub, cancel the previous one
+    // in Polar. Best-effort — failures here just leave the old sub running
+    // until the operator reconciles, they don't break the new activation.
+    if (isPlanChange) {
+        try {
+            const polarClient = await import('./polarClient');
+            // Direct Polar API call — using cancelSubscription() would look
+            // up the org's current polar_subscription_id (which we just
+            // overwrote with the NEW one), so we patch the old id directly.
+            const axios = (await import('axios')).default;
+            await axios.patch(
+                `https://api.polar.sh/v1/subscriptions/${previousSubscriptionId}`,
+                { cancel_at_period_end: true },
+                {
+                    headers: {
+                        Authorization: `Bearer ${process.env.POLAR_ACCESS_TOKEN}`,
+                        'Content-Type': 'application/json',
+                    },
+                }
+            );
+            logger.info('[BILLING] Canceled previous subscription on plan change', {
+                orgId,
+                previousSubscriptionId,
+                newSubscriptionId: subscriptionId,
+            });
+        } catch (err: any) {
+            // Don't throw — the new subscription is already active. An
+            // orphaned old sub is recoverable manually; failing the webhook
+            // here would leave the customer in a worse state.
+            console.error('[BILLING] Failed to cancel previous subscription on plan change', {
+                orgId,
+                previousSubscriptionId,
+                newSubscriptionId: subscriptionId,
+                status: err?.response?.status,
+                data: err?.response?.data,
+                message: err?.message,
+            });
+            logger.error('[BILLING] Failed to cancel previous subscription on plan change',
+                err instanceof Error ? err : new Error(String(err)));
+        }
+    }
 
     // Event already recorded in processWebhook() for idempotency
 
