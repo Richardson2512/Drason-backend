@@ -203,12 +203,25 @@ export const resetPasswordSchema = z.object({
 // SCHEMAS — Billing
 // ============================================================================
 
+// Every tier key the dashboard's billing page can offer the user. Pro is
+// a family — `pro` is the $49 / 60K default plus five volume variants.
+// Earlier these schemas only accepted the four base tiers, so clicking any
+// Pro volume button (rendered from /api/billing/tiers) returned 400 with
+// 'Validation failed'. Source of much confusion. Keep this list in sync
+// with PRODUCT_IDS in services/polarClient.ts and PRO_SEND_TIERS keys.
+const SUBSCRIBABLE_TIERS = [
+    'starter',
+    'pro', 'pro_80k', 'pro_100k', 'pro_150k', 'pro_200k', 'pro_250k',
+    'growth',
+    'scale',
+] as const;
+
 export const createCheckoutSchema = z.object({
-    tier: z.enum(['starter', 'pro', 'growth', 'scale', 'enterprise'])
+    tier: z.enum([...SUBSCRIBABLE_TIERS, 'enterprise'])
 });
 
 export const changePlanSchema = z.object({
-    tier: z.enum(['starter', 'pro', 'growth', 'scale']),
+    tier: z.enum(SUBSCRIBABLE_TIERS),
     confirm: z.boolean().optional().default(false)
 });
 
