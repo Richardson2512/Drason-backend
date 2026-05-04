@@ -54,49 +54,11 @@ const REQUIRED_SCOPES = [
     'https://www.googleapis.com/auth/userinfo.email',
 ];
 
-/**
- * Resolve the public-facing backend URL — what Google, Microsoft, etc.
- * see as our redirect_uri origin. Order:
- *
- *   1. PUBLIC_BACKEND_URL if set (lets ops override without touching
- *      anything else that reads BACKEND_URL).
- *   2. BACKEND_URL if set AND it isn't a Railway-internal hostname
- *      (`*.up.railway.app` / `*.railway.internal`). Internal hostnames
- *      pass our healthchecks but are NOT what we register as authorized
- *      redirect URIs in OAuth provider consoles, so handing them to a
- *      provider produces redirect_uri_mismatch every time.
- *   3. Hardcoded https://api.superkabe.com in production — this is the
- *      domain registered in Google / Microsoft / etc. consoles.
- *   4. http://localhost:<PORT> in dev.
- *
- * Strips trailing slashes — Google's exact-match check fails on a
- * stray `//api/...` when callers do `${url}/api/...`.
- */
-export function getPublicBackendUrl(): string {
-    const isRailwayInternal = (raw: string): boolean => {
-        try {
-            const u = new URL(raw);
-            return u.hostname.endsWith('.up.railway.app') || u.hostname.endsWith('.railway.internal');
-        } catch {
-            return false;
-        }
-    };
-
-    const candidates = [process.env.PUBLIC_BACKEND_URL, process.env.BACKEND_URL];
-    for (const raw of candidates) {
-        if (!raw) continue;
-        const trimmed = raw.replace(/\/+$/, '');
-        if (!trimmed) continue;
-        if (process.env.NODE_ENV === 'production' && isRailwayInternal(trimmed)) {
-            console.warn(`[BACKEND_URL] "${raw}" is a Railway-internal hostname — skipping for OAuth redirect_uri`);
-            continue;
-        }
-        return trimmed;
-    }
-    return process.env.NODE_ENV === 'production'
-        ? 'https://api.superkabe.com'
-        : `http://localhost:${process.env.PORT || 4000}`;
-}
+// Use the canonical public-URL resolver from utils/publicBackendUrl.
+// This was inlined here originally for the redirect_uri_mismatch fix
+// — same logic now lives in the shared util so all customer-facing URL
+// builders agree on the answer.
+import { getPublicBackendUrl } from '../utils/publicBackendUrl';
 
 function getOAuthClient() {
     const clientId = process.env.GOOGLE_CLIENT_ID;

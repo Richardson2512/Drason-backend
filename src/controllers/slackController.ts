@@ -4,6 +4,7 @@ import { logger } from '../services/observabilityService';
 import { prisma } from '../index';
 import axios from 'axios';
 import crypto from 'crypto';
+import { getPublicBackendUrl } from '../utils/publicBackendUrl';
 
 interface RequestWithRawBody extends Request {
     rawBody?: string;
@@ -59,8 +60,7 @@ export const initiateInstall = async (req: Request, res: Response) => {
         return res.redirect(`${process.env.FRONTEND_URL}/dashboard/settings?slack_error=slack_not_configured`);
     }
 
-    const backendUrl = process.env.BACKEND_URL || process.env.BASE_URL;
-    const redirectUri = backendUrl ? `${backendUrl}/slack/oauth/callback` : '';
+    const redirectUri = `${getPublicBackendUrl()}/slack/oauth/callback`;
 
     // Encode orgId:userId into state (matches what handleOAuthCallback expects)
     const state = userId ? `${orgId}:${userId}` : orgId;
@@ -77,11 +77,8 @@ export const initiateInstall = async (req: Request, res: Response) => {
         client_id: clientId,
         scope: scopes,
         state,
+        redirect_uri: redirectUri,
     });
-
-    if (redirectUri) {
-        params.set('redirect_uri', redirectUri);
-    }
 
     const authorizeUrl = `https://slack.com/oauth/v2/authorize?${params.toString()}`;
     logger.info(`[Slack] Initiating OAuth install for Org ${orgId}`);
@@ -106,8 +103,7 @@ export const handleOAuthCallback = async (req: Request, res: Response) => {
     }
 
     try {
-        const backendUrl = process.env.BACKEND_URL || process.env.BASE_URL;
-        const redirectUri = backendUrl ? `${backendUrl}/slack/oauth/callback` : undefined;
+        const redirectUri = `${getPublicBackendUrl()}/slack/oauth/callback`;
 
         // Exchange code for token. redirect_uri must match the one sent at
         // install initiation, otherwise Slack returns `bad_redirect_uri`.

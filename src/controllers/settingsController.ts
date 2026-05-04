@@ -11,6 +11,7 @@ import { prisma } from '../index';
 import { getOrgId } from '../middleware/orgContext';
 import { logger } from '../services/observabilityService';
 import { encrypt, decrypt, isEncrypted } from '../utils/encryption';
+import { getPublicBackendUrl } from '../utils/publicBackendUrl';
 
 /**
  * Get all settings for the organization.
@@ -130,17 +131,11 @@ export const getClayWebhookUrl = async (req: Request, res: Response) => {
     try {
         const orgId = getOrgId(req);
 
-        let baseUrl = process.env.BACKEND_URL || process.env.BASE_URL;
-        if (!baseUrl) {
-            return res.status(500).json({
-                success: false,
-                error: 'Server configuration error: BACKEND_URL is not set. Contact your administrator.'
-            });
-        }
-
-        if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
-            baseUrl = `https://${baseUrl}`;
-        }
+        // Use the canonical public-URL resolver so the Clay webhook URL we
+        // hand the customer is the api.superkabe.com customer-facing domain
+        // — not a Railway-internal hostname that confuses customers and
+        // breaks if Railway changes the internal name.
+        const baseUrl = getPublicBackendUrl();
 
         let org = await prisma.organization.findUnique({
             where: { id: orgId },

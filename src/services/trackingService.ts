@@ -16,6 +16,7 @@
  */
 
 import { signTrackingToken } from '../utils/trackingToken';
+import { getPublicBackendUrl } from '../utils/publicBackendUrl';
 
 export interface TrackingOptions {
     leadId: string;
@@ -30,7 +31,12 @@ function getTrackingBase(override?: string | null): string {
         const t = override.trim().replace(/\/+$/, '');
         return t.startsWith('http://') || t.startsWith('https://') ? t : `https://${t}`;
     }
-    return (process.env.BACKEND_URL || 'http://localhost:4000').replace(/\/+$/, '');
+    // No per-campaign tracking domain override — fall back to the platform's
+    // public backend URL. Critical that this NEVER returns a Railway-internal
+    // hostname: tracking pixels and click-through links land in customer
+    // recipients' inboxes, where a `*.up.railway.app` URL looks broken (and
+    // some email clients flag it as suspicious).
+    return getPublicBackendUrl();
 }
 
 /**

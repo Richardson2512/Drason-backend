@@ -519,7 +519,11 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
         return undefined;
     };
 
-    const email = findVal(['email', 'e-mail', 'work email']);
+    // Both spaced ("Work Email") and underscored ("Work_Email") forms —
+    // Clay's HTTP-action editor recommends underscored JSON keys (with
+    // spaced `{{ Column Name }}` references), so `work_email` is what
+    // arrives in the payload by default per Clay's docs.
+    const email = findVal(['email', 'e-mail', 'work email', 'work_email']);
     const persona = findVal(['persona', 'job title', 'title', 'role']) || 'General';
     const lead_score = parseInt(findVal(['lead score', 'score', 'lead_score']) || '50', 10);
 

@@ -26,6 +26,7 @@ import { logger } from './observabilityService';
 import { encrypt, decrypt, isEncrypted } from '../utils/encryption';
 import { revokeGoogleToken, verifyGrantedScopes } from '../utils/googleOAuth';
 import { createState, consumeState } from './oauthStateService';
+import { getPublicBackendUrl } from '../utils/publicBackendUrl';
 
 const POSTMASTER_SCOPE = 'https://www.googleapis.com/auth/postmaster.readonly';
 const POSTMASTER_REQUIRED_SCOPES = [POSTMASTER_SCOPE];
@@ -38,9 +39,7 @@ const POSTMASTER_API = 'https://gmailpostmastertools.googleapis.com/v1';
 const CALLBACK_PATH = '/oauth/callback/postmaster';
 
 function callbackUrl(): string {
-    const base = (process.env.BACKEND_URL || process.env.BASE_URL || '').replace(/\/+$/, '');
-    if (!base) throw new Error('BACKEND_URL is not configured — cannot construct OAuth callback URL');
-    return `${base}${CALLBACK_PATH}`;
+    return `${getPublicBackendUrl()}${CALLBACK_PATH}`;
 }
 
 function clientCreds(): { clientId: string; clientSecret: string } {

@@ -10,6 +10,7 @@
 import { ConfidentialClientApplication, LogLevel } from '@azure/msal-node';
 import crypto from 'crypto';
 import { logger } from './observabilityService';
+import { getPublicBackendUrl } from '../utils/publicBackendUrl';
 
 // Scopes for Microsoft OAuth — DELIBERATELY MINIMAL.
 //
@@ -62,8 +63,7 @@ function getMsalApp(): ConfidentialClientApplication {
 }
 
 function getRedirectUri(): string {
-    const backendUrl = process.env.BACKEND_URL || 'http://localhost:4000';
-    return `${backendUrl}/api/sequencer/accounts/microsoft/callback`;
+    return `${getPublicBackendUrl()}/api/sequencer/accounts/microsoft/callback`;
 }
 
 export async function getMicrosoftAuthorizationUrl(orgId: string, loginHint?: string): Promise<string> {
