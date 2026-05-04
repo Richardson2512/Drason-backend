@@ -57,17 +57,25 @@ const REQUIRED_SCOPES = [
 function getOAuthClient() {
     const clientId = process.env.GOOGLE_CLIENT_ID;
     const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-    const backendUrl = process.env.BACKEND_URL || 'http://localhost:4000';
+    const rawBackendUrl = process.env.BACKEND_URL || 'http://localhost:4000';
 
     if (!clientId || !clientSecret) {
         throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set in environment');
     }
 
-    return new google.auth.OAuth2(
-        clientId,
-        clientSecret,
-        `${backendUrl}/api/sequencer/accounts/google/callback`
-    );
+    // Strip a trailing slash on BACKEND_URL — otherwise the redirect_uri
+    // we hand Google ends up with `//api/sequencer/...` and Google's
+    // exact-match check fails with redirect_uri_mismatch even though the
+    // host is right.
+    const backendUrl = rawBackendUrl.replace(/\/+$/, '');
+    const redirectUri = `${backendUrl}/api/sequencer/accounts/google/callback`;
+
+    // Log on every authorize call so the operator can copy the exact
+    // string into Google Console's authorized-redirect-URI list when the
+    // mismatch error shows up.
+    console.log('[GMAIL_OAUTH] Using redirect_uri', redirectUri);
+
+    return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
 }
 
 export async function getGoogleAuthorizationUrl(orgId: string, loginHint?: string): Promise<string> {
