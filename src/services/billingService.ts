@@ -26,10 +26,72 @@ import { buildFrontendUrl } from './emailTemplates/requesterContext';
 // ============================================================================
 
 export interface WebhookEvent {
-    id: string;
+    // NOTE: Polar webhook payloads do NOT have a top-level `id` — the prior
+    // assumption here led to polar_event_id being undefined on every event,
+    // breaking idempotency. Real shape Polar sends: { type, timestamp, data }.
+    id?: string;
     type: string;
     data: any;
-    created_at: string;
+    timestamp?: string;
+    created_at?: string;
+}
+
+/**
+ * Build a stable idempotency key for a Polar webhook event.
+ *
+ * Polar's payload doesn't carry a top-level event id, so we synthesize one
+ * from the event type, the resource id (data.id), and the delivery timestamp.
+ * This is stable across deliveries (Polar's retry mechanism reuses the same
+ * timestamp for retries of the same logical delivery) but distinct enough
+ * that subscription.created and subscription.active for the same sub_id
+ * each get their own row.
+ */
+function buildEventIdempotencyKey(event: WebhookEvent): string {
+    const dataId = event.data?.id || 'no-data-id';
+    const ts = event.timestamp || event.created_at || event.data?.created_at || 'no-ts';
+    return `${event.type}:${dataId}:${ts}`;
+}
+
+/**
+ * Resolve the org for a webhook event. Tries metadata first (set by us at
+ * checkout time), then falls back to looking up by Polar customer_id which
+ * we persist on Organization.polar_customer_id @unique. Returns null only
+ * if both lookups fail — the caller decides whether that's fatal.
+ */
+async function resolveOrgIdFromEvent(event: WebhookEvent): Promise<string | null> {
+    const metadataOrgId = event.data?.metadata?.organization_id;
+    if (metadataOrgId) {
+        const org = await prisma.organization.findUnique({
+            where: { id: metadataOrgId },
+            select: { id: true },
+        });
+        if (org) return org.id;
+    }
+
+    const customerId =
+        event.data?.customer_id ||
+        event.data?.customer?.id ||
+        event.data?.subscription?.customer_id ||
+        null;
+    if (customerId) {
+        const org = await prisma.organization.findUnique({
+            where: { polar_customer_id: String(customerId) },
+            select: { id: true },
+        });
+        if (org) return org.id;
+    }
+
+    // Polar's customer payload also carries metadata.organization_slug.
+    const slug = event.data?.customer?.metadata?.organization_slug || null;
+    if (slug) {
+        const org = await prisma.organization.findUnique({
+            where: { slug: String(slug) },
+            select: { id: true },
+        });
+        if (org) return org.id;
+    }
+
+    return null;
 }
 
 export interface UsageCounts {
@@ -76,13 +138,36 @@ export async function processWebhook(event: WebhookEvent): Promise<void> {
         typeof d.number === 'string' ? d.number :
         null;
 
-    // Idempotency check + record in a single transaction to prevent race conditions
+    // Resolve org once up front so we can:
+    //   1. Stamp subscriptionEvent.organization_id with a real FK target
+    //      (prior code stored 'unknown' which violated the FK and caused
+    //      every webhook to crash → outer catch returned 200 → DB never
+    //      updated → paying customers stuck on trial).
+    //   2. Skip event recording cleanly when we can't resolve the org
+    //      instead of crashing — some events (customer.created, system
+    //      events) legitimately have no org context and aren't relevant
+    //      to subscription state.
+    const resolvedOrgId = await resolveOrgIdFromEvent(event);
+    const polarEventId = buildEventIdempotencyKey(event);
+
+    if (!resolvedOrgId) {
+        logger.info('[BILLING] Webhook with no resolvable org — skipping recording', {
+            eventType: event.type,
+            polarEventId,
+        });
+        // Still hand off to type-specific handlers if they can do anything
+        // useful without an org (none currently — but don't drop silently).
+        return;
+    }
+
+    // Idempotency check + record. Prisma's unique-constraint violation
+    // (P2002) on polar_event_id means we've seen this delivery already.
     try {
         await prisma.subscriptionEvent.create({
             data: {
-                organization_id: event.data?.metadata?.organization_id || 'unknown',
+                organization_id: resolvedOrgId,
                 event_type: event.type,
-                polar_event_id: event.id,
+                polar_event_id: polarEventId,
                 new_tier: event.data?.metadata?.tier || null,
                 amount_cents: amountCents,
                 currency: currency || 'USD',
@@ -92,36 +177,50 @@ export async function processWebhook(event: WebhookEvent): Promise<void> {
             }
         });
     } catch (err: unknown) {
-        // Unique constraint violation = duplicate event, safe to skip
         if (err instanceof Error && 'code' in err && (err as { code: string }).code === 'P2002') {
-            logger.info('[BILLING] Duplicate webhook event, skipping', { eventId: event.id });
+            logger.info('[BILLING] Duplicate webhook event, skipping', { polarEventId });
             return;
         }
         throw err;
     }
 
-    // Process based on event type
+    // Process based on event type. Unknown types log a warn but don't
+    // throw — Polar adds new event types over time and we shouldn't 200/
+    // -fail every delivery just because of an unhandled kind.
     switch (event.type) {
         case 'subscription.created':
-            await handleSubscriptionCreated(event);
+        case 'subscription.active':
+            // Polar fires subscription.active on activation (paid + period
+            // started). Treat it the same as created so a paid customer
+            // gets activated even if .created fires after .active in
+            // delivery order.
+            await handleSubscriptionCreated(event, resolvedOrgId);
             break;
         case 'subscription.updated':
-            await handleSubscriptionUpdated(event);
+            await handleSubscriptionUpdated(event, resolvedOrgId);
             break;
         case 'subscription.canceled':
-            await handleSubscriptionCanceled(event);
+        case 'subscription.revoked':
+            await handleSubscriptionCanceled(event, resolvedOrgId);
+            break;
+        case 'order.paid':
+        case 'order.updated':
+            // Order paid carries the invoice info we want to surface in the
+            // dashboard's billing list. Subscription state is handled by
+            // subscription.* events, so this just records.
+            logger.info('[BILLING] Order event recorded', { eventType: event.type, orgId: resolvedOrgId });
             break;
         case 'invoice.paid':
-            await handleInvoicePaid(event);
+            await handleInvoicePaid(event, resolvedOrgId);
             break;
         case 'invoice.payment_failed':
-            await handlePaymentFailed(event);
+            await handlePaymentFailed(event, resolvedOrgId);
             break;
         default:
             logger.warn('[BILLING] Unknown webhook event type', { type: event.type });
     }
 
-    logger.info('[BILLING] Webhook processed successfully', { eventType: event.type, eventId: event.id });
+    logger.info('[BILLING] Webhook processed successfully', { eventType: event.type, polarEventId });
 }
 
 // ============================================================================
@@ -129,29 +228,28 @@ export async function processWebhook(event: WebhookEvent): Promise<void> {
 // ============================================================================
 
 /**
- * Handle subscription.created event.
- * Activates subscription and ends trial.
+ * Handle subscription.created and subscription.active events.
+ * Activates subscription and ends trial. Idempotent — calling twice for the
+ * same subscription leaves the org in the same state.
  */
-async function handleSubscriptionCreated(event: WebhookEvent): Promise<void> {
-    const { customer_id, id: subscriptionId, metadata } = event.data;
-    const orgId = metadata.organization_id;
+async function handleSubscriptionCreated(event: WebhookEvent, orgId: string): Promise<void> {
+    const subscriptionId = event.data?.id;
+    const metadata = event.data?.metadata || {};
 
-    if (!orgId) {
-        throw new Error('Missing organization_id in webhook metadata');
-    }
-
-    const validTiers = ['trial', 'starter', 'growth', 'scale', 'enterprise'];
+    const validTiers = ['trial', 'starter', 'pro', 'growth', 'scale', 'enterprise'];
     const tier = validTiers.includes(metadata.tier) ? metadata.tier : 'starter';
+    const periodEnd = event.data?.current_period_end;
+    const nextBillingDate = periodEnd ? new Date(periodEnd) : null;
 
     await prisma.organization.update({
         where: { id: orgId },
         data: {
             subscription_tier: tier,
             subscription_status: 'active',
-            polar_subscription_id: subscriptionId,
+            polar_subscription_id: subscriptionId || undefined,
             subscription_started_at: new Date(),
             trial_ends_at: new Date(), // End trial immediately
-            next_billing_date: new Date(event.data.current_period_end)
+            next_billing_date: nextBillingDate || undefined,
         }
     });
 
@@ -181,13 +279,9 @@ async function handleSubscriptionCreated(event: WebhookEvent): Promise<void> {
  * Handle subscription.updated event.
  * Updates tier and billing information.
  */
-async function handleSubscriptionUpdated(event: WebhookEvent): Promise<void> {
-    const { id: subscriptionId, metadata } = event.data;
-    const orgId = metadata.organization_id;
-
-    if (!orgId) {
-        throw new Error('Missing organization_id in webhook metadata');
-    }
+async function handleSubscriptionUpdated(event: WebhookEvent, orgId: string): Promise<void> {
+    const subscriptionId = event.data?.id;
+    const metadata = event.data?.metadata || {};
 
     const org = await prisma.organization.findUnique({
         where: { id: orgId },
@@ -196,12 +290,13 @@ async function handleSubscriptionUpdated(event: WebhookEvent): Promise<void> {
 
     const previousTier = org?.subscription_tier || 'unknown';
     const newTier = metadata.tier || previousTier;
+    const periodEnd = event.data?.current_period_end;
 
     await prisma.organization.update({
         where: { id: orgId },
         data: {
             subscription_tier: newTier,
-            next_billing_date: new Date(event.data.current_period_end)
+            next_billing_date: periodEnd ? new Date(periodEnd) : undefined,
         }
     });
 
@@ -267,13 +362,8 @@ function isUpgrade(from: string, to: string): boolean {
  * Handle subscription.canceled event.
  * Marks subscription as canceled.
  */
-async function handleSubscriptionCanceled(event: WebhookEvent): Promise<void> {
-    const { id: subscriptionId, metadata } = event.data;
-    const orgId = metadata.organization_id;
-
-    if (!orgId) {
-        throw new Error('Missing organization_id in webhook metadata');
-    }
+async function handleSubscriptionCanceled(event: WebhookEvent, orgId: string): Promise<void> {
+    const subscriptionId = event.data?.id;
 
     await prisma.organization.update({
         where: { id: orgId },
@@ -338,18 +428,14 @@ async function handleSubscriptionCanceled(event: WebhookEvent): Promise<void> {
  * Handle invoice.paid event.
  * Updates billing date.
  */
-async function handleInvoicePaid(event: WebhookEvent): Promise<void> {
-    const { subscription_id, metadata } = event.data;
-    const orgId = metadata.organization_id;
-
-    if (!orgId) {
-        return; // Not all invoices have metadata
-    }
+async function handleInvoicePaid(event: WebhookEvent, orgId: string): Promise<void> {
+    const subscription_id = event.data?.subscription_id;
+    const periodEnd = event.data?.period_end;
 
     await prisma.organization.update({
         where: { id: orgId },
         data: {
-            next_billing_date: new Date(event.data.period_end)
+            next_billing_date: periodEnd ? new Date(periodEnd) : undefined,
         }
     });
 
@@ -389,13 +475,8 @@ async function handleInvoicePaid(event: WebhookEvent): Promise<void> {
  * Handle invoice.payment_failed event.
  * Sets status to past_due with 7-day grace period.
  */
-async function handlePaymentFailed(event: WebhookEvent): Promise<void> {
-    const { subscription_id, metadata } = event.data;
-    const orgId = metadata.organization_id;
-
-    if (!orgId) {
-        throw new Error('Missing organization_id in webhook metadata');
-    }
+async function handlePaymentFailed(event: WebhookEvent, orgId: string): Promise<void> {
+    const subscription_id = event.data?.subscription_id;
 
     await prisma.organization.update({
         where: { id: orgId },

@@ -359,19 +359,98 @@ export async function getSubscription(subscriptionId: string): Promise<any> {
 // ============================================================================
 
 /**
- * Validate Polar webhook signature using HMAC-SHA256.
+ * Verify a Polar webhook signature using the Standard Webhooks format
+ * (https://www.standardwebhooks.com/) that Polar adopted in 2024+.
+ *
+ * Polar sends three headers:
+ *   webhook-id        — unique delivery identifier
+ *   webhook-timestamp — unix seconds at delivery time
+ *   webhook-signature — space-separated list, each entry "v1,<base64-hmac>"
+ *                       (multiple sigs let Polar rotate keys without an
+ *                       atomic cutover; verify if ANY entry matches)
+ *
+ * The signed payload is `${id}.${timestamp}.${rawBody}`. The secret is the
+ * raw value Polar showed at endpoint setup (sometimes prefixed `whsec_`,
+ * sometimes base64). We accept both, normalize, then HMAC-SHA256.
+ *
+ * Returns true on first matching signature, false otherwise. Never throws
+ * (constant-time check uses fixed-length buffers; bad input → false rather
+ * than crashing the request, which previously got swallowed by an outer
+ * try/catch that returned 200 — the bug that left customers stuck on trial).
  */
-export function validateWebhookSignature(
-    payload: string,
-    signature: string,
+export function verifyPolarWebhook(
+    rawBody: Buffer | string,
+    headers: Record<string, string | string[] | undefined>,
     secret: string
 ): boolean {
-    const crypto = require('crypto');
-    const hmac = crypto.createHmac('sha256', secret);
-    hmac.update(payload);
-    const expectedSignature = hmac.digest('hex');
-    return crypto.timingSafeEqual(
-        Buffer.from(signature),
-        Buffer.from(expectedSignature)
-    );
+    if (!rawBody || !secret) return false;
+
+    const get = (name: string): string | null => {
+        const raw = headers[name] ?? headers[name.toLowerCase()];
+        if (!raw) return null;
+        return Array.isArray(raw) ? raw[0] : String(raw);
+    };
+
+    const webhookId = get('webhook-id');
+    const webhookTs = get('webhook-timestamp');
+    const sigHeader = get('webhook-signature');
+    if (!webhookId || !webhookTs || !sigHeader) return false;
+
+    // Reject deliveries older than 5 minutes — protects against replay if
+    // the secret leaks. Polar's own client uses the same window.
+    const tsSec = parseInt(webhookTs, 10);
+    if (!Number.isFinite(tsSec) || Math.abs(Date.now() / 1000 - tsSec) > 300) {
+        logger.warn('[POLAR] Webhook rejected — timestamp outside 5-min window', { webhookTs });
+        return false;
+    }
+
+    // Normalize the secret. Polar's dashboard surfaces the secret as
+    // `whsec_<base64>`. Older endpoints may have raw base64 or raw bytes.
+    const secretBytes = secret.startsWith('whsec_')
+        ? Buffer.from(secret.slice('whsec_'.length), 'base64')
+        : (() => {
+            // Heuristic: treat as base64 if it looks base64-ish (length % 4 = 0
+            // and only base64 chars). Fallback to raw bytes.
+            const trimmed = secret.trim();
+            const looksBase64 = /^[A-Za-z0-9+/=]+$/.test(trimmed) && trimmed.length % 4 === 0;
+            return looksBase64 ? Buffer.from(trimmed, 'base64') : Buffer.from(trimmed, 'utf8');
+        })();
+
+    const bodyStr = Buffer.isBuffer(rawBody) ? rawBody.toString('utf8') : rawBody;
+    const signedPayload = `${webhookId}.${webhookTs}.${bodyStr}`;
+    const expected = require('crypto')
+        .createHmac('sha256', secretBytes)
+        .update(signedPayload, 'utf8')
+        .digest('base64');
+
+    // Header looks like "v1,abc... v1,def..." — possibly multiple. Try each.
+    for (const part of sigHeader.split(/\s+/)) {
+        const idx = part.indexOf(',');
+        if (idx < 0) continue;
+        const version = part.slice(0, idx);
+        const sig = part.slice(idx + 1);
+        if (version !== 'v1') continue;
+        try {
+            const a = Buffer.from(sig, 'base64');
+            const b = Buffer.from(expected, 'base64');
+            if (a.length !== b.length) continue;
+            if (require('crypto').timingSafeEqual(a, b)) return true;
+        } catch {
+            continue;
+        }
+    }
+    return false;
+}
+
+/**
+ * @deprecated Kept for callers that haven't migrated yet. Always returns
+ * false in production — forces an explicit migration to verifyPolarWebhook.
+ */
+export function validateWebhookSignature(
+    _payload: string,
+    _signature: string,
+    _secret: string
+): boolean {
+    logger.error('[POLAR] validateWebhookSignature is deprecated — use verifyPolarWebhook with rawBody + headers');
+    return false;
 }

@@ -170,9 +170,18 @@ app.use(cors({
 }));
 app.use(cookieParser());
 
-// Capture raw body for Slack signature verification 
+// Capture raw body for HMAC signature verification on inbound webhooks.
+// Slack and Polar both sign the byte-exact request payload — re-stringifying
+// req.body produces different bytes (whitespace/key-order), so we need the
+// original buffer. Restricted to known webhook prefixes so we don't double
+// the memory cost on every API request.
 const verifyRawBody = (req: any, res: any, buf: Buffer) => {
-    if (req.url && req.originalUrl && req.originalUrl.startsWith('/slack')) {
+    if (!req.originalUrl) return;
+    if (
+        req.originalUrl.startsWith('/slack') ||
+        req.originalUrl.startsWith('/api/billing/polar-webhook') ||
+        req.originalUrl.startsWith('/api/billing/webhook') // legacy alias
+    ) {
         req.rawBody = buf;
     }
 };

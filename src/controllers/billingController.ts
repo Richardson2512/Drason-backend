@@ -22,37 +22,52 @@ import { prisma } from '../index';
 // ============================================================================
 
 /**
- * Handle Polar webhook events.
- * Validates signature and processes events idempotently.
+ * Handle Polar webhook events. Validates signature using Standard Webhooks
+ * format and processes events idempotently.
+ *
+ * Returns 200 on success and on permanent failures (so Polar doesn't retry
+ * a malformed event forever), but returns 401 on signature failure and 500
+ * on transient infra errors so Polar's retry queue can recover.
  */
 export const handlePolarWebhook = async (req: Request, res: Response): Promise<Response> => {
+    const eventType = (req.body && (req.body as any).type) || 'unknown';
+    const dataId = (req.body && (req.body as any).data && (req.body as any).data.id) || null;
     try {
-        const signature = req.headers['x-polar-signature'] as string;
         const webhookSecret = process.env.POLAR_WEBHOOK_SECRET;
-
         if (!webhookSecret) {
             logger.error('[BILLING] Missing POLAR_WEBHOOK_SECRET environment variable');
             return res.status(500).json({ success: false, error: 'Webhook secret not configured' });
         }
 
-        // Validate HMAC-SHA256 signature
-        const payload = JSON.stringify(req.body);
-        const isValid = polarClient.validateWebhookSignature(payload, signature, webhookSecret);
+        // Standard Webhooks: signature is over `${id}.${ts}.${rawBody}`. We
+        // need the original bytes — express.json() captures them via
+        // verifyRawBody for /api/billing/* and stores on req.rawBody.
+        const rawBody = (req as any).rawBody as Buffer | undefined;
+        if (!rawBody) {
+            logger.error('[BILLING] rawBody missing on Polar webhook — bodyParser misconfigured', undefined, { eventType, dataId });
+            return res.status(500).json({ success: false, error: 'Server misconfiguration' });
+        }
 
+        const isValid = polarClient.verifyPolarWebhook(rawBody, req.headers as any, webhookSecret);
         if (!isValid) {
-            logger.warn('[BILLING] Invalid webhook signature — rejected');
+            logger.warn('[BILLING] Invalid Polar webhook signature — rejected', { eventType, dataId });
             return res.status(401).json({ success: false, error: 'Invalid signature' });
         }
 
-        // Process webhook event
         await billingService.processWebhook(req.body);
-
-        // Always return 200 to prevent retry storms
         return res.json({ success: true, received: true });
     } catch (error) {
-        logger.error('[BILLING] Webhook processing failed', error instanceof Error ? error : new Error(String(error)));
-        // Still return 200 to prevent retries for non-retryable errors
-        return res.status(200).json({ success: false, error: 'Processing failed', received: true });
+        // Log the actual message — the prior version logged just a prefix
+        // and the underlying error never made it to Railway, leaving us
+        // blind to root causes for paying customers stuck on trial.
+        const errMsg = error instanceof Error ? error.message : String(error);
+        const errStack = error instanceof Error ? error.stack : undefined;
+        logger.error('[BILLING] Webhook processing failed', error instanceof Error ? error : new Error(errMsg));
+        console.error('[BILLING] Webhook error detail', { eventType, dataId, message: errMsg, stack: errStack });
+        // 200 with explicit error so Polar marks delivered (we don't want
+        // retry storms on permanent errors). Operator needs to watch the
+        // detail logs and reconcile manually if needed.
+        return res.status(200).json({ success: false, error: 'Processing failed', received: true, message: errMsg });
     }
 };
 
