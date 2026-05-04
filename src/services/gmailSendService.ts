@@ -54,25 +54,59 @@ const REQUIRED_SCOPES = [
     'https://www.googleapis.com/auth/userinfo.email',
 ];
 
+/**
+ * Resolve the public-facing backend URL — what Google, Microsoft, etc.
+ * see as our redirect_uri origin. Order:
+ *
+ *   1. PUBLIC_BACKEND_URL if set (lets ops override without touching
+ *      anything else that reads BACKEND_URL).
+ *   2. BACKEND_URL if set AND it isn't a Railway-internal hostname
+ *      (`*.up.railway.app` / `*.railway.internal`). Internal hostnames
+ *      pass our healthchecks but are NOT what we register as authorized
+ *      redirect URIs in OAuth provider consoles, so handing them to a
+ *      provider produces redirect_uri_mismatch every time.
+ *   3. Hardcoded https://api.superkabe.com in production — this is the
+ *      domain registered in Google / Microsoft / etc. consoles.
+ *   4. http://localhost:<PORT> in dev.
+ *
+ * Strips trailing slashes — Google's exact-match check fails on a
+ * stray `//api/...` when callers do `${url}/api/...`.
+ */
+export function getPublicBackendUrl(): string {
+    const isRailwayInternal = (raw: string): boolean => {
+        try {
+            const u = new URL(raw);
+            return u.hostname.endsWith('.up.railway.app') || u.hostname.endsWith('.railway.internal');
+        } catch {
+            return false;
+        }
+    };
+
+    const candidates = [process.env.PUBLIC_BACKEND_URL, process.env.BACKEND_URL];
+    for (const raw of candidates) {
+        if (!raw) continue;
+        const trimmed = raw.replace(/\/+$/, '');
+        if (!trimmed) continue;
+        if (process.env.NODE_ENV === 'production' && isRailwayInternal(trimmed)) {
+            console.warn(`[BACKEND_URL] "${raw}" is a Railway-internal hostname — skipping for OAuth redirect_uri`);
+            continue;
+        }
+        return trimmed;
+    }
+    return process.env.NODE_ENV === 'production'
+        ? 'https://api.superkabe.com'
+        : `http://localhost:${process.env.PORT || 4000}`;
+}
+
 function getOAuthClient() {
     const clientId = process.env.GOOGLE_CLIENT_ID;
     const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-    const rawBackendUrl = process.env.BACKEND_URL || 'http://localhost:4000';
 
     if (!clientId || !clientSecret) {
         throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set in environment');
     }
 
-    // Strip a trailing slash on BACKEND_URL — otherwise the redirect_uri
-    // we hand Google ends up with `//api/sequencer/...` and Google's
-    // exact-match check fails with redirect_uri_mismatch even though the
-    // host is right.
-    const backendUrl = rawBackendUrl.replace(/\/+$/, '');
-    const redirectUri = `${backendUrl}/api/sequencer/accounts/google/callback`;
-
-    // Log on every authorize call so the operator can copy the exact
-    // string into Google Console's authorized-redirect-URI list when the
-    // mismatch error shows up.
+    const redirectUri = `${getPublicBackendUrl()}/api/sequencer/accounts/google/callback`;
     console.log('[GMAIL_OAUTH] Using redirect_uri', redirectUri);
 
     return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
