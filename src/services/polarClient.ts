@@ -99,23 +99,48 @@ export function isProTier(tierKey: string): boolean {
 const POLAR_API_BASE = 'https://api.polar.sh/v1';
 const POLAR_ACCESS_TOKEN = process.env.POLAR_ACCESS_TOKEN;
 
-// Each Pro volume option corresponds to its own Polar product. Until the
-// matching Polar products exist the values fall back to the 60k product so
-// checkout still resolves to *something* while the UI is being validated.
-// Replace each env var once the Polar dashboard has the matching products.
-const PRO_PRODUCT_FALLBACK = process.env.POLAR_PRO_PRODUCT_ID || process.env.POLAR_STARTER_PRODUCT_ID || '';
-
+// Polar product IDs — every tier the dashboard exposes. The hardcoded
+// fallback for each entry is the live Polar product UUID confirmed by the
+// operator on 2026-05-04; env vars override only if explicitly set, which
+// is normally only needed for staging vs prod splits.
+//
+// Earlier this map had a `PRO_PRODUCT_FALLBACK` chain that fell back to
+// `POLAR_STARTER_PRODUCT_ID` when `POLAR_PRO_PRODUCT_ID` was unset. That
+// silently routed Pro checkouts to the Starter product (or vice versa
+// when a Starter-named env var actually held a Pro UUID), producing the
+// "I clicked Starter but landed on Pro" mis-route. Removing the chain so
+// each tier resolves only to its own ID — there is no cross-tier
+// fallback path in this map by design.
 const PRODUCT_IDS: Record<string, string> = {
-    starter: process.env.POLAR_STARTER_PRODUCT_ID || 'dfa51c15-8e20-452d-b51a-476d94b73d21',
-    pro: process.env.POLAR_PRO_PRODUCT_ID || PRO_PRODUCT_FALLBACK,
+    starter:  process.env.POLAR_STARTER_PRODUCT_ID  || 'dfa51c15-8e20-452d-b51a-476d94b73d21',
+    pro:      process.env.POLAR_PRO_PRODUCT_ID      || 'f82a3f93-14d5-49c6-b6cf-6bc0d8e6ca6c',
     pro_80k:  process.env.POLAR_PRO_80K_PRODUCT_ID  || '7eda5c17-e9fc-4685-9e86-7a3c8b66fd79',
     pro_100k: process.env.POLAR_PRO_100K_PRODUCT_ID || '85e99d6f-a3cd-4dff-8c06-d28a74347878',
     pro_150k: process.env.POLAR_PRO_150K_PRODUCT_ID || 'bea564d5-82f9-4e8b-8551-9e38bf698c0f',
     pro_200k: process.env.POLAR_PRO_200K_PRODUCT_ID || 'f27a02fa-92bf-465f-879d-d6179f14f12c',
     pro_250k: process.env.POLAR_PRO_250K_PRODUCT_ID || 'd070f69d-f1ae-44d6-893f-e4b460ee16f3',
-    growth: process.env.POLAR_GROWTH_PRODUCT_ID || '0690578b-2fe7-4e05-a2e2-a258a90599e9',
-    scale: process.env.POLAR_SCALE_PRODUCT_ID || 'edae6a6e-bfd2-4f24-9092-197021cf984d'
+    growth:   process.env.POLAR_GROWTH_PRODUCT_ID   || '0690578b-2fe7-4e05-a2e2-a258a90599e9',
+    scale:    process.env.POLAR_SCALE_PRODUCT_ID    || 'edae6a6e-bfd2-4f24-9092-197021cf984d',
 };
+
+// Boot-time sanity check: warn loudly if any tier resolves to the same
+// product UUID as another, since that's almost always a misconfiguration
+// (e.g. POLAR_STARTER_PRODUCT_ID accidentally set to the Pro UUID), and
+// it's exactly what produced the cross-tier mis-route customers saw.
+(() => {
+    const seen = new Map<string, string>();
+    for (const [tier, id] of Object.entries(PRODUCT_IDS)) {
+        if (!id) {
+            console.warn(`[POLAR] No product ID configured for tier "${tier}" — checkout will fail`);
+            continue;
+        }
+        const prior = seen.get(id);
+        if (prior) {
+            console.warn(`[POLAR] Tier "${tier}" and "${prior}" both map to product ID ${id} — fix the env var override or the hardcoded fallback`);
+        }
+        seen.set(id, tier);
+    }
+})();
 
 // ============================================================================
 // POLAR API CLIENT
