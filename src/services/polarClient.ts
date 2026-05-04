@@ -274,6 +274,17 @@ export async function createCheckoutSession(
         throw new Error(`Invalid tier or missing product ID: ${tier}`);
     }
 
+    // Log the resolved product_id alongside the requested tier so a
+    // misconfigured env var (e.g. POLAR_STARTER_PRODUCT_ID set to a Pro
+    // product) shows up in Railway the first time a customer hits it,
+    // instead of being discovered by support tickets.
+    logger.info('[POLAR] Checkout product resolved', {
+        orgId,
+        requestedTier: tier,
+        resolvedProductId: productId,
+        envOverride: !!process.env[`POLAR_${tier.toUpperCase()}_PRODUCT_ID`],
+    });
+
     try {
         const response = await polarApi.post('/checkouts', {
             product_id: productId,
