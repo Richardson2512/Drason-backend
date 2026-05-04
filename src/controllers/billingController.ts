@@ -392,8 +392,14 @@ export const changePlan = async (req: Request, res: Response): Promise<Response>
                 : `Upgrade to ${tier} is effective immediately. Your next invoice will be prorated.`
         });
     } catch (error) {
-        logger.error('[BILLING] Plan change failed', error instanceof Error ? error : new Error(String(error)));
-        return res.status(500).json({ success: false, error: 'Failed to change plan' });
+        // changeSubscription now throws with Polar's actual error body when
+        // available — surface that to the user so they (and we) can see
+        // *why* Polar rejected, instead of the prior opaque "Failed to
+        // change plan". Server-side console.error in polarClient logs the
+        // full structured detail for ops.
+        const errMsg = error instanceof Error ? error.message : String(error);
+        logger.error('[BILLING] Plan change failed', error instanceof Error ? error : new Error(errMsg));
+        return res.status(500).json({ success: false, error: errMsg || 'Failed to change plan' });
     }
 };
 

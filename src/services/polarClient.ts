@@ -294,8 +294,21 @@ export async function cancelSubscription(orgId: string): Promise<void> {
 
 /**
  * Change subscription to a different tier (upgrade or downgrade).
- * Upgrades: prorated, take effect immediately.
- * Downgrades: take effect at end of current billing period.
+ *
+ * Polar's `PATCH /v1/subscriptions/{id}` uses Polar-specific vocabulary —
+ * NOT Stripe's. The prior version sent `proration_behavior:
+ * 'create_prorations'` which is a Stripe-only value Polar rejects with
+ * 422, and the resulting error body never made it to Railway logs because
+ * the catch only logged the wrapper Error.message ("Request failed with
+ * status code 422") instead of the axios error.response.data with the
+ * real "invalid value" detail. Customers saw a generic "Failed to change
+ * plan" with no recoverable info.
+ *
+ * Polar's accepted values for proration_behavior:
+ *   - 'invoice'  → charge the prorated diff immediately on a new invoice
+ *   - 'prorate'  → apply the prorated diff to the next scheduled invoice
+ *   - omit/null  → no proration (used for downgrades that take effect at
+ *                  the end of the current billing period)
  */
 export async function changeSubscription(orgId: string, newTier: string): Promise<{ success: boolean; effective: 'immediate' | 'end_of_period' }> {
     const org = await prisma.organization.findUnique({
@@ -317,11 +330,16 @@ export async function changeSubscription(orgId: string, newTier: string): Promis
     const newRank = tierOrder[newTier] || 0;
     const isUpgrade = newRank > currentRank;
 
+    // Build the request body. Only include proration_behavior on upgrades —
+    // downgrades flip at period end with no immediate charge, so we leave
+    // the field off entirely.
+    const body: Record<string, any> = { product_id: newProductId };
+    if (isUpgrade) {
+        body.proration_behavior = 'invoice';
+    }
+
     try {
-        await polarApi.patch(`/subscriptions/${org.polar_subscription_id}`, {
-            product_id: newProductId,
-            proration_behavior: isUpgrade ? 'create_prorations' : 'none',
-        });
+        await polarApi.patch(`/subscriptions/${org.polar_subscription_id}`, body);
 
         // Update org tier
         await prisma.organization.update({
@@ -335,9 +353,27 @@ export async function changeSubscription(orgId: string, newTier: string): Promis
         });
 
         return { success: true, effective: isUpgrade ? 'immediate' : 'end_of_period' };
-    } catch (error) {
-        logger.error('[POLAR] Failed to change subscription', error instanceof Error ? error : new Error(String(error)));
-        throw new Error('Failed to change subscription');
+    } catch (error: any) {
+        // Capture Polar's actual rejection reason. Axios stuffs the API
+        // response body in error.response.data — without this, Railway
+        // logs only show "Request failed with status code 422" which tells
+        // us nothing about which field Polar didn't like.
+        const status = error?.response?.status;
+        const data = error?.response?.data;
+        const detail = data ? JSON.stringify(data) : (error?.message || String(error));
+        logger.error('[POLAR] Failed to change subscription', error instanceof Error ? error : new Error(detail));
+        console.error('[POLAR] Subscription PATCH error detail', {
+            orgId,
+            subscriptionId: org.polar_subscription_id,
+            newTier,
+            requestBody: body,
+            status,
+            data,
+        });
+        // Bubble up Polar's message to the caller so the controller can
+        // show something actionable to the user instead of a generic 500.
+        const userFacing = data?.detail || data?.error || data?.message || `Polar rejected the plan change${status ? ` (HTTP ${status})` : ''}`;
+        throw new Error(typeof userFacing === 'string' ? userFacing : JSON.stringify(userFacing));
     }
 }
 
