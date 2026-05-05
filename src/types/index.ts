@@ -578,8 +578,12 @@ export const MONITORING_THRESHOLDS = {
     // Industry guidance: segment risky addresses to a separate stream capped at
     // 10–20% of volume. We use 25% (slightly conservative) and limit to first 2
     // sequence steps so we don't burn reputation on unproven addresses.
-    YELLOW_LEAD_CAMPAIGN_VOLUME_CAP: 0.25,      // 25% of campaign daily volume
     YELLOW_LEAD_MAX_STEP: 2,                    // Stop YELLOW leads after step 2
+    // Per-mailbox YELLOW cap — at most LIMIT YELLOW recipients within the
+    // most recent WINDOW_SIZE sends from a single mailbox. Enforced in
+    // executionGateService.canSendNow at send time.
+    YELLOW_LEAD_PER_MAILBOX_WINDOW_SIZE: 60,
+    YELLOW_LEAD_PER_MAILBOX_WINDOW_LIMIT: 2,
 
     // =========================================================================
     // DomainInsight cache TTL (RFC 2182 + Office 365 MX TTL guidance)

@@ -29,11 +29,17 @@ import { TIER_LIMITS } from './polarClient';
 import { getRedisClient } from '../utils/redis';
 import { provisionMailboxForConnectedAccount } from './mailboxProvisioningService';
 import * as healingService from './healingService';
-import * as monitoringService from './monitoringService';
+import * as bounceProcessingService from './bounceProcessingService';
+import * as executionGateService from './executionGateService';
+import { updateDomainLastSent } from './inactivityService';
+import * as auditLogService from './auditLogService';
 import { SlackAlertService } from './SlackAlertService';
 import * as webhookBus from './webhookEventBus';
 import { applyTracking } from './trackingService';
 import { resolveSpintax } from '../utils/spintax';
+import { MONITORING_THRESHOLDS } from '../types';
+
+const { ROLLING_WINDOW_SIZE } = MONITORING_THRESHOLDS;
 
 const LOG_TAG = 'SEND-QUEUE';
 const QUEUE_NAME = 'email-sends';
@@ -295,16 +301,18 @@ async function resetDailySendsIfNeeded(accountId: string, sendsResetAt: Date): P
 }
 
 /**
- * Handle a send failure — delegates to monitoringService.recordBounce which runs
- * the FULL Protection pipeline: bounce classification, threshold check, correlation,
- * auto-pause (Observe/Suggest/Enforce modes), Slack alert, state transition.
+ * Handle a send failure — delegates to bounceProcessingService.processBounce
+ * which runs the unified Protection pipeline: bounce classification, threshold
+ * check, percentage-rate guard, correlation, auto-pause (Observe/Suggest/
+ * Enforce modes), Slack alert, state transition.
  *
- * This ensures Sequencer bounces flow through the identical pipeline as
- * Smartlead/Instantly webhook bounces.
+ * This ensures sequencer-originated SMTP bounces flow through the *exact same*
+ * pipeline as Smartlead/Instantly/EmailBison/Reply.io webhook bounces — no
+ * split-brain between sequencer and webhook bounce counters.
  */
 async function handleSendFailure(
     mailboxId: string,
-    _orgId: string,
+    orgId: string,
     campaignId: string,
     recipientEmail: string,
     errorMsg: string,
@@ -334,15 +342,24 @@ async function handleSendFailure(
         return;
     }
 
-    // Hard bounce → full Protection pipeline (creates BounceEvent, checks threshold,
-    // runs correlation, auto-pauses mailbox/domain if warranted, sends Slack alert).
-    // We also persist the raw SMTP transcript so analytics can show exact reasons.
+    // Hard bounce → unified Protection pipeline (creates BounceEvent, checks
+    // threshold + percentage-rate, runs correlation, auto-pauses mailbox/domain
+    // if warranted, sends Slack alert). Persist the raw SMTP transcript so
+    // analytics can show exact reasons.
     if (isHardBounce) {
         try {
-            await monitoringService.recordBounce(mailboxId, campaignId, errorMsg, recipientEmail);
+            await bounceProcessingService.processBounce({
+                organizationId: orgId,
+                mailboxId,
+                campaignId,
+                recipientEmail,
+                smtpResponse: smtpResponse || errorMsg,
+                bounceType: 'hard',
+                bouncedAt: new Date(),
+            });
             // Annotate the just-created BounceEvent with the SMTP transcript.
-            // Find by (mailbox_id, recipient, recently created) — the recordBounce
-            // call writes a row before this update lands.
+            // Best-effort: processBounce writes the row inside the same call, so
+            // we look it up by (mailbox_id, recipient, recently created).
             if (smtpCode || smtpResponse) {
                 await prisma.bounceEvent.updateMany({
                     where: {
@@ -357,9 +374,9 @@ async function handleSendFailure(
                     },
                 }).catch(() => { /* annotation is best-effort */ });
             }
-            logger.info(`[${LOG_TAG}] Hard bounce → Protection pipeline: ${maskEmail(recipientEmail)} (${smtpCode || 'no-code'})`);
+            logger.info(`[${LOG_TAG}] Hard bounce → unified pipeline: ${maskEmail(recipientEmail)} (${smtpCode || 'no-code'})`);
         } catch (err: any) {
-            logger.error(`[${LOG_TAG}] recordBounce failed for ${mailboxId}`, err);
+            logger.error(`[${LOG_TAG}] processBounce failed for ${mailboxId}`, err);
         }
     } else {
         // Soft bounce → increment counter, don't trigger pause (transient failures)
@@ -1113,6 +1130,44 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                 continue;
             }
 
+            // ── PROTECTION GATE — re-check at SEND TIME ──
+            // The dispatcher snapshot (~60s ago) and BullMQ worker pickup can
+            // span >60 minutes for batches with high send_gap_minutes, so a
+            // mailbox/domain pause that fires mid-batch must be re-checked
+            // here. Also enforces aggregate-recovery caps and the YELLOW
+            // per-mailbox cap that canExecuteLead can't see at enrollment.
+            const gate = await executionGateService.canSendNow(
+                orgId,
+                campaignId,
+                mailboxId,
+                email.leadEmail,
+            );
+            if (!gate.allowed) {
+                if (gate.deferrable) {
+                    const deferMinutes = gate.deferMinutes ?? 60;
+                    await prisma.campaignLead.update({
+                        where: { id: email.leadId },
+                        data: { next_send_at: new Date(Date.now() + deferMinutes * 60 * 1000) },
+                    }).catch((err) => {
+                        logger.warn(`[${LOG_TAG}] Defer write failed for ${email.leadId}: ${err.message}`);
+                    });
+                    logger.info(`[${LOG_TAG}] Send deferred ${deferMinutes}m for ${maskEmail(email.leadEmail)}: ${gate.reason}`);
+                } else {
+                    // Hard block — pause the lead in this campaign so it stops
+                    // looping. Operator action (or YELLOW reclassification)
+                    // will release it.
+                    await prisma.campaignLead.update({
+                        where: { id: email.leadId },
+                        data: { status: 'paused', next_send_at: null },
+                    }).catch((err) => {
+                        logger.warn(`[${LOG_TAG}] Pause write failed for ${email.leadId}: ${err.message}`);
+                    });
+                    logger.warn(`[${LOG_TAG}] Send blocked for ${maskEmail(email.leadEmail)}: ${gate.reason}`);
+                }
+                failedCount++;
+                continue;
+            }
+
             const result: SendResult = await sendEmail(account, email.leadEmail, email.subject, email.bodyHtml, {
                 unsubscribeUrl: email.unsubscribeUrl || null,
             });
@@ -1212,11 +1267,60 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                 `${campaignId}-${email.leadId}-${email.nextStepNumber}`,
             );
 
-            // Record the send through the Protection pipeline — handles windowing, clean-send
-            // tracking, and healing phase progression (includes recordCleanSend internally).
-            monitoringService.recordSent(mailboxId, campaignId).catch(err =>
-                logger.warn(`[${LOG_TAG}] recordSent failed for ${mailboxId}: ${err.message}`)
-            );
+            // Post-send Protection bookkeeping. Replaces the deprecated
+            // monitoringService.recordSent() which (a) double-counted
+            // window_sent_count via a non-atomic read-then-write race against
+            // the transaction above and (b) created a parallel storeEvent
+            // path the unified eventQueue had already superseded. We do the
+            // three things that recordSent actually contributed:
+            //   1. Conditional clean_sends_since_phase increment for healing
+            //      graduation (only counts in RESTRICTED_SEND / WARM_RECOVERY).
+            //   2. Domain.last_sent_at refresh for inactivity tracking.
+            //   3. Sliding-window roll once we cross ROLLING_WINDOW_SIZE so
+            //      bounce/send ratios stay representative — keep half the
+            //      stats per the original design.
+            (async () => {
+                try {
+                    await healingService.recordCleanSend('mailbox', mailboxId);
+
+                    const post = await prisma.mailbox.findUnique({
+                        where: { id: mailboxId },
+                        select: {
+                            domain_id: true,
+                            window_sent_count: true,
+                            window_bounce_count: true,
+                        },
+                    });
+                    if (!post) return;
+
+                    if (post.domain_id) {
+                        updateDomainLastSent(post.domain_id);
+                    }
+
+                    if (post.window_sent_count >= ROLLING_WINDOW_SIZE) {
+                        const slidSent = Math.floor(post.window_sent_count / 2);
+                        const slidBounce = Math.floor(post.window_bounce_count / 2);
+                        await prisma.mailbox.update({
+                            where: { id: mailboxId },
+                            data: {
+                                window_sent_count: slidSent,
+                                window_bounce_count: slidBounce,
+                                window_start_at: new Date(),
+                            },
+                        });
+                        await auditLogService.logAction({
+                            organizationId: orgId,
+                            entity: 'mailbox',
+                            entityId: mailboxId,
+                            trigger: 'monitor_window',
+                            action: 'window_slide',
+                            details: `Window slid: kept ${slidBounce}/${slidSent} (50% of previous). Sliding heal.`,
+                        });
+                    }
+                } catch (err: any) {
+                    logger.warn(`[${LOG_TAG}] post-send bookkeeping failed for ${mailboxId}: ${err.message}`);
+                }
+            })();
 
             // Record the send in the Unibox's thread + message store so it appears in
             // the Sent view. Thread key is (org, account, contact_email, campaign_id) so

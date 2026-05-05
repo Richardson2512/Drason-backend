@@ -236,6 +236,22 @@ export const checkWarmupProgress = async (orgId?: string): Promise<{
             }
         }
 
+        // ── STABLE-STREAK RESILIENCE BOOST ──
+        // Closes the resilience-score one-way ratchet: PAUSE −15 / RELAPSE −25
+        // / GRADUATION +10 are decrement-heavy, so without a periodic positive
+        // tick a long-healthy mailbox accumulates no credit toward the cap.
+        // Idempotency is enforced via the audit log inside the helper, so
+        // running every tick is safe.
+        try {
+            const boost = await healingService.applyStableStreakBoosts(orgId);
+            if (boost.boostedMailboxes + boost.boostedDomains > 0) {
+                logger.info('[WARMUP-WORKER] Stable-streak resilience boost applied', boost);
+            }
+        } catch (boostError: any) {
+            errors++;
+            logger.error('[WARMUP-WORKER] Stable-streak boost failed', boostError);
+        }
+
         logger.info('[WARMUP-WORKER] Healing pipeline check completed', {
             checked,
             graduated,

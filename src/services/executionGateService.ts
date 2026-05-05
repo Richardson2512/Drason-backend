@@ -33,6 +33,8 @@ const {
     SOFT_RISK_DEFER_THRESHOLD,
     RISK_SCORE_CRITICAL,    // For display/logging
     YELLOW_LEAD_MAX_STEP,
+    YELLOW_LEAD_PER_MAILBOX_WINDOW_SIZE,
+    YELLOW_LEAD_PER_MAILBOX_WINDOW_LIMIT,
     RECIPIENT_DOMAIN_COMPLAINT_THRESHOLD,
     RECIPIENT_DOMAIN_THROTTLE_THRESHOLD
 } = MONITORING_THRESHOLDS;
@@ -581,6 +583,173 @@ export const canExecuteLead = async (
         mode: systemMode,
         checks
     };
+};
+
+/**
+ * Per-send protection gate.
+ *
+ * Lighter than canExecuteLead — runs immediately before each individual
+ * send to (a) close the TOCTOU window between dispatcher snapshot and
+ * BullMQ worker pickup (a paused mailbox can keep sending its in-flight
+ * batch otherwise), and (b) enforce caps that only make sense at send
+ * time (aggregate domain/org throttle, recipient-domain complaint rate,
+ * YELLOW per-mailbox window cap).
+ *
+ * Returns `deferrable=true` for transient blocks so the caller can push
+ * `next_send_at` out instead of pausing the lead permanently.
+ */
+export interface SendNowResult {
+    allowed: boolean;
+    reason?: string;
+    deferrable?: boolean;
+    deferMinutes?: number;
+}
+
+export const canSendNow = async (
+    organizationId: string,
+    campaignId: string,
+    mailboxId: string,
+    leadEmail: string,
+): Promise<SendNowResult> => {
+    // 1. Re-fetch mailbox + parent domain state (closes TOCTOU window).
+    const mailbox = await prisma.mailbox.findUnique({
+        where: { id: mailboxId },
+        select: {
+            status: true,
+            recovery_phase: true,
+            domain_id: true,
+            domain: { select: { status: true } },
+        },
+    });
+    if (!mailbox) {
+        return { allowed: false, reason: 'Mailbox not found', deferrable: false };
+    }
+    if (
+        mailbox.status === 'paused' ||
+        mailbox.recovery_phase === RecoveryPhase.PAUSED ||
+        mailbox.recovery_phase === RecoveryPhase.QUARANTINE
+    ) {
+        return {
+            allowed: false,
+            reason: `Mailbox in ${mailbox.recovery_phase}/${mailbox.status}`,
+            deferrable: true,
+            deferMinutes: 60,
+        };
+    }
+    if (mailbox.domain?.status === 'paused') {
+        return {
+            allowed: false,
+            reason: 'Parent domain paused',
+            deferrable: true,
+            deferMinutes: 60,
+        };
+    }
+
+    // 2. Aggregate caps — domain + org. Closes the gap where follow-up
+    // sequence steps for already-enrolled leads bypass DOMAIN_RECOVERY_CAP
+    // (30/day) and ORG_RECOVERY_CAP (100/day) because canExecuteLead only
+    // runs at enrollment.
+    if (mailbox.domain_id) {
+        const domainLimit = await healingService.getDomainAggregateLimit(mailbox.domain_id);
+        if (domainLimit !== Infinity) {
+            const domainSent = await healingService.getDomainSentToday(mailbox.domain_id);
+            if (domainSent >= domainLimit) {
+                return {
+                    allowed: false,
+                    reason: `Domain recovery cap reached (${domainSent}/${domainLimit} sent today)`,
+                    deferrable: true,
+                    deferMinutes: 60,
+                };
+            }
+        }
+    }
+    const orgLimit = await healingService.getOrgAggregateLimit(organizationId);
+    if (orgLimit !== Infinity) {
+        const orgSent = await healingService.getOrgSentToday(organizationId);
+        if (orgSent >= orgLimit) {
+            return {
+                allowed: false,
+                reason: `Org recovery cap reached (${orgSent}/${orgLimit} sent today)`,
+                deferrable: true,
+                deferMinutes: 60,
+            };
+        }
+    }
+
+    // 3. Recipient-domain complaint rate gate (Google/Yahoo Feb 2024).
+    const recipientDomain = leadEmail.split('@')[1]?.toLowerCase();
+    if (recipientDomain) {
+        const stats = await recipientDomainStats.getRecipientDomainComplaintRate(
+            organizationId,
+            recipientDomain,
+        );
+        if (stats.sufficientSample && stats.rate >= RECIPIENT_DOMAIN_COMPLAINT_THRESHOLD) {
+            return {
+                allowed: false,
+                reason: `Recipient domain ${recipientDomain} complaint rate ${(stats.rate * 100).toFixed(3)}% ≥ ${(RECIPIENT_DOMAIN_COMPLAINT_THRESHOLD * 100).toFixed(2)}%`,
+                deferrable: false,
+            };
+        }
+    }
+
+    // 4. YELLOW lead checks: max-step + per-mailbox window cap.
+    // The lead lookup is case-insensitive on email; the campaignLead lookup
+    // joins by composite (campaign_id, email) — the same convention
+    // canExecuteLead uses.
+    const lead = await prisma.lead.findFirst({
+        where: {
+            organization_id: organizationId,
+            email: { equals: leadEmail, mode: 'insensitive' },
+        },
+        select: { health_classification: true },
+    });
+    if (lead?.health_classification === 'yellow') {
+        const cl = await prisma.campaignLead.findFirst({
+            where: {
+                campaign_id: campaignId,
+                email: { equals: leadEmail, mode: 'insensitive' },
+            },
+            select: { current_step: true },
+        });
+        if (cl && cl.current_step >= YELLOW_LEAD_MAX_STEP) {
+            return {
+                allowed: false,
+                reason: `YELLOW lead reached max step (${cl.current_step}/${YELLOW_LEAD_MAX_STEP})`,
+                deferrable: false,
+            };
+        }
+
+        // Per-mailbox YELLOW window cap: at most LIMIT YELLOW recipients
+        // within the most recent WINDOW_SIZE sends. Industry guidance
+        // (M3AAWG Senders BCP v3 §4.2) is to segment risky addresses to a
+        // limited stream so they can't dominate a mailbox's volume mix.
+        const recentSends = await prisma.sendEvent.findMany({
+            where: { mailbox_id: mailboxId },
+            orderBy: { sent_at: 'desc' },
+            take: YELLOW_LEAD_PER_MAILBOX_WINDOW_SIZE,
+            select: { recipient_email: true },
+        });
+        if (recentSends.length > 0) {
+            const emails = recentSends.map((s) => s.recipient_email.toLowerCase());
+            const yellowInWindow = await prisma.lead.count({
+                where: {
+                    organization_id: organizationId,
+                    email: { in: emails },
+                    health_classification: 'yellow',
+                },
+            });
+            if (yellowInWindow >= YELLOW_LEAD_PER_MAILBOX_WINDOW_LIMIT) {
+                return {
+                    allowed: false,
+                    reason: `Per-mailbox YELLOW cap (${yellowInWindow}/${YELLOW_LEAD_PER_MAILBOX_WINDOW_LIMIT} YELLOW in last ${recentSends.length} sends)`,
+                    deferrable: true,
+                    deferMinutes: 60,
+                };
+            }
+        }
+    }
+
+    return { allowed: true };
 };
 
 /**

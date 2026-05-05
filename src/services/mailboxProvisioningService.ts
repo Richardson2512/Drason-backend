@@ -82,10 +82,17 @@ export async function provisionMailboxForConnectedAccount(
         })();
     }
 
-    // 2. Upsert Mailbox record. Use the ConnectedAccount.id as the Mailbox.id
-    //    so cross-references are stable and we can look up either direction.
+    // 2. Upsert Mailbox record by `connected_account_id` (the @unique linkage
+    //    that always reliably maps 1:1 to a ConnectedAccount), NOT by `id`.
+    //    Earlier code keyed the upsert on `id`, assuming `Mailbox.id ===
+    //    ConnectedAccount.id` always held. That invariant is violated by any
+    //    row whose `id` was generated independently (seed data, older
+    //    provisioning paths, manual fixtures), and the create branch then
+    //    crashed on the separate `connected_account_id @unique` constraint.
+    //    Keying the upsert on the unique linkage makes this idempotent
+    //    regardless of how the existing row was originally created.
     const mailbox = await prisma.mailbox.upsert({
-        where: { id: connectedAccountId },
+        where: { connected_account_id: connectedAccountId },
         create: {
             id: connectedAccountId,
             email: email.toLowerCase(),
@@ -96,9 +103,10 @@ export async function provisionMailboxForConnectedAccount(
             connected_account_id: connectedAccountId,
         },
         update: {
-            // Keep these in sync on re-provisioning (e.g. display_name changed during OAuth)
+            // Keep email in sync on re-provisioning (e.g. display_name changed
+            // during OAuth re-auth). Don't touch the linkage itself — it's our
+            // upsert key.
             email: email.toLowerCase(),
-            connected_account_id: connectedAccountId,
         },
     });
 

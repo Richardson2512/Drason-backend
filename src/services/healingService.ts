@@ -899,6 +899,151 @@ export async function recordCleanSend(
 }
 
 /**
+ * Apply the periodic "stable streak" resilience boost — closes the
+ * one-way ratchet where resilience could only ever decrease (PAUSE −15,
+ * RELAPSE −25) and increase on a one-shot graduation (+10). Without this
+ * tick, mailboxes/domains that have been healthy for weeks accumulate no
+ * positive credit toward the cap.
+ *
+ * Awards RESILIENCE_ADJUSTMENTS.STABLE_7_DAYS (+5) to entities that:
+ *   - Are currently HEALTHY (recovery_phase + status)
+ *   - Have not been paused within the last STABLE_STREAK_DAYS
+ *   - Have shown activity within the last STABLE_STREAK_DAYS (so we don't
+ *     reward dormant inboxes)
+ *   - Are below the RESILIENCE_ADJUSTMENTS.MAX_SCORE ceiling
+ *   - Have not received a stable-streak boost within the same window
+ *     (idempotency via audit log — no schema change required)
+ *
+ * Designed to be called once per warmup-worker tick (every 4h). The audit
+ * log idempotency guard ensures it's safe to invoke more frequently.
+ */
+const STABLE_STREAK_DAYS = 7;
+const STABLE_STREAK_BOOST_ACTION = 'resilience_stable_boost';
+
+export async function applyStableStreakBoosts(orgId?: string): Promise<{
+    boostedMailboxes: number;
+    boostedDomains: number;
+}> {
+    const cutoff = new Date(Date.now() - STABLE_STREAK_DAYS * 24 * 60 * 60 * 1000);
+    let boostedMailboxes = 0;
+    let boostedDomains = 0;
+
+    // ── Mailboxes ──
+    const mailboxes = await prisma.mailbox.findMany({
+        where: {
+            recovery_phase: RecoveryPhase.HEALTHY,
+            status: 'healthy',
+            resilience_score: { lt: RESILIENCE_ADJUSTMENTS.MAX_SCORE },
+            // No pause within the streak window
+            OR: [
+                { last_pause_at: null },
+                { last_pause_at: { lt: cutoff } },
+            ],
+            // Active sender within the window — don't reward dormant mailboxes
+            last_activity_at: { gte: cutoff },
+            ...(orgId ? { organization_id: orgId } : {}),
+        },
+        select: { id: true, organization_id: true, resilience_score: true, email: true },
+    });
+
+    for (const m of mailboxes) {
+        const recentBoost = await prisma.auditLog.findFirst({
+            where: {
+                entity: 'mailbox',
+                entity_id: m.id,
+                action: STABLE_STREAK_BOOST_ACTION,
+                timestamp: { gte: cutoff },
+            },
+            select: { id: true },
+        });
+        if (recentBoost) continue;
+
+        const currentScore = m.resilience_score ?? RESILIENCE_ADJUSTMENTS.DEFAULT_STARTING_SCORE;
+        const adj = adjustResilienceScore(
+            currentScore,
+            RESILIENCE_ADJUSTMENTS.STABLE_7_DAYS,
+            `${STABLE_STREAK_DAYS}-day stable healthy streak`,
+        );
+        if (adj.newScore === currentScore) continue; // already at cap
+
+        await prisma.mailbox.update({
+            where: { id: m.id },
+            data: { resilience_score: adj.newScore },
+        });
+        await auditLogService.logAction({
+            organizationId: m.organization_id,
+            entity: 'mailbox',
+            entityId: m.id,
+            trigger: TriggerType.SCHEDULED,
+            action: STABLE_STREAK_BOOST_ACTION,
+            details: `+${RESILIENCE_ADJUSTMENTS.STABLE_7_DAYS} resilience after ${STABLE_STREAK_DAYS}d stable streak (${currentScore} → ${adj.newScore}) for ${m.email}`,
+        });
+        boostedMailboxes++;
+    }
+
+    // ── Domains ──
+    const domains = await prisma.domain.findMany({
+        where: {
+            recovery_phase: RecoveryPhase.HEALTHY,
+            status: 'healthy',
+            resilience_score: { lt: RESILIENCE_ADJUSTMENTS.MAX_SCORE },
+            OR: [
+                { last_pause_at: null },
+                { last_pause_at: { lt: cutoff } },
+            ],
+            last_sent_at: { gte: cutoff },
+            ...(orgId ? { organization_id: orgId } : {}),
+        },
+        select: { id: true, organization_id: true, resilience_score: true, domain: true },
+    });
+
+    for (const d of domains) {
+        const recentBoost = await prisma.auditLog.findFirst({
+            where: {
+                entity: 'domain',
+                entity_id: d.id,
+                action: STABLE_STREAK_BOOST_ACTION,
+                timestamp: { gte: cutoff },
+            },
+            select: { id: true },
+        });
+        if (recentBoost) continue;
+
+        const currentScore = d.resilience_score ?? RESILIENCE_ADJUSTMENTS.DEFAULT_STARTING_SCORE;
+        const adj = adjustResilienceScore(
+            currentScore,
+            RESILIENCE_ADJUSTMENTS.STABLE_7_DAYS,
+            `${STABLE_STREAK_DAYS}-day stable healthy streak`,
+        );
+        if (adj.newScore === currentScore) continue;
+
+        await prisma.domain.update({
+            where: { id: d.id },
+            data: { resilience_score: adj.newScore },
+        });
+        await auditLogService.logAction({
+            organizationId: d.organization_id,
+            entity: 'domain',
+            entityId: d.id,
+            trigger: TriggerType.SCHEDULED,
+            action: STABLE_STREAK_BOOST_ACTION,
+            details: `+${RESILIENCE_ADJUSTMENTS.STABLE_7_DAYS} resilience after ${STABLE_STREAK_DAYS}d stable streak (${currentScore} → ${adj.newScore}) for ${d.domain}`,
+        });
+        boostedDomains++;
+    }
+
+    if (boostedMailboxes + boostedDomains > 0) {
+        healingLogger.info('[HEALING] Applied stable-streak resilience boosts', {
+            boostedMailboxes,
+            boostedDomains,
+            ...(orgId ? { orgId } : {}),
+        });
+    }
+
+    return { boostedMailboxes, boostedDomains };
+}
+
+/**
  * Reset clean send counter — called when a health-degrading bounce occurs
  * during a recovery phase.
  */

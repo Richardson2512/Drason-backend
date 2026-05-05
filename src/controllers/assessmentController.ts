@@ -32,6 +32,27 @@ export const getReport = async (req: Request, res: Response): Promise<void> => {
 };
 
 /**
+ * GET /api/assessment/reports?days=N
+ * Fetch infrastructure reports over a window for the score-history chart.
+ */
+export const getReports = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const orgId = getOrgId(req);
+        const days = Math.max(1, Math.min(365, parseInt(String(req.query.days ?? '30'), 10) || 30));
+        const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+        const reports = await prisma.infrastructureReport.findMany({
+            where: { organization_id: orgId, created_at: { gte: since } },
+            orderBy: { created_at: 'desc' },
+            select: { id: true, overall_score: true, created_at: true, report_type: true },
+        });
+        res.json({ success: true, data: reports });
+    } catch (e: any) {
+        logger.error('Failed to fetch assessment reports', e);
+        res.status(500).json({ success: false, error: process.env.NODE_ENV === 'production' ? 'Internal server error' : e.message });
+    }
+};
+
+/**
  * POST /api/assessment/run
  * Trigger a manual re-assessment.
  * Used after DNS fixes to verify recovery — DNS-based recovery requires

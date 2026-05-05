@@ -13,6 +13,9 @@ const router = Router();
 // Get latest infrastructure report
 router.get('/report', assessmentController.getReport);
 
+// Get infrastructure reports over a window for score-history chart
+router.get('/reports', assessmentController.getReports);
+
 // Trigger manual re-assessment (required for DNS recovery verification)
 router.post('/run', assessmentController.runAssessment);
 
