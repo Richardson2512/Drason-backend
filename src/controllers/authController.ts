@@ -12,6 +12,7 @@ import { welcomeEmail } from '../services/emailTemplates/welcome';
 import { accountLockedEmail } from '../services/emailTemplates/accountLocked';
 import { passwordChangedEmail } from '../services/emailTemplates/passwordChanged';
 import { summariseRequester, buildFrontendUrl } from '../services/emailTemplates/requesterContext';
+import { uniqueSlug } from '../utils/slug';
 
 // JWT_SECRET is validated at startup in index.ts — crashes if missing in production.
 // In development, a dev-only fallback is used.
@@ -213,14 +214,15 @@ export const register = async (req: Request, res: Response) => {
             return res.status(400).json({ success: false, error: 'Email already registered' });
         }
 
-        // Slugify org name
-        const slug = organizationName.toLowerCase().replace(/[^a-z0-9]/g, '-');
-
-        // Check slug uniqueness
-        const existingOrg = await prisma.organization.findUnique({ where: { slug } });
-        if (existingOrg) {
-            return res.status(400).json({ success: false, error: 'Organization name/slug already taken' });
-        }
+        // Two people from the same company are intentionally allowed to each
+        // hold a fully independent account under the same company name —
+        // e.g. two Scale-tier subscriptions for double the monthly send
+        // budget. Each becomes a separate Organization with its own trial,
+        // billing, mailboxes, leads, etc. The internal `slug` auto-suffixes
+        // on collision (acme, acme-2, acme-3, …); the human-visible `name`
+        // stays as the user typed it for both. Scopes to every tier
+        // including trial — no gating.
+        const slug = await uniqueSlug(organizationName);
 
         const salt = await bcrypt.genSalt(10);
         const passwordHash = await bcrypt.hash(password, salt);

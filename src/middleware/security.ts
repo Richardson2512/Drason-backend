@@ -9,11 +9,25 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
+import jwt from 'jsonwebtoken';
 import { prisma } from '../index';
 import { UserRole, ApiScope } from '../types';
 import { RateLimiterRedis, RateLimiterMemory, RateLimiterAbstract } from 'rate-limiter-flexible';
 import { getRedisClient } from '../utils/redis';
 import { logger } from '../services/observabilityService';
+
+// Local JWT_SECRET resolver — same logic as authController, kept inline so
+// this middleware has no upstream dependency on a shared token service.
+const JWT_SECRET = (() => {
+    const s = process.env.JWT_SECRET;
+    if (!s) {
+        if (process.env.NODE_ENV === 'production') {
+            throw new Error('FATAL: JWT_SECRET is not set in production');
+        }
+        return 'drason_dev_only_secret_DO_NOT_USE_IN_PROD';
+    }
+    return s;
+})();
 
 // ============================================================================
 // RATE LIMITING (Redis-backed with in-memory fallback)
@@ -25,12 +39,20 @@ interface RateLimitTier {
 }
 
 const RATE_LIMIT_TIERS: Record<string, RateLimitTier> = {
-    auth: { points: 10, duration: 60 },   // 10 req/min for login
+    // 60 req/min on /auth gives the legal-versions / refresh / logout / google
+    // endpoints headroom for a SPA that pings them on every nav. Login itself
+    // is bcrypt-bound so it self-throttles; brute-force protection lives in
+    // the per-user failed_login_count counter, not here.
+    auth: { points: 60, duration: 60 },
     register: { points: 5, duration: 300 },  // 5 req/5min for registration (anti-abuse)
     admin: { points: 30, duration: 60 },   // 30 req/min for admin endpoints
     ingest: { points: 200, duration: 60 },   // 200 req/min for webhooks
     sync: { points: 5, duration: 60 },   // 5 req/min for syncs
-    general: { points: 100, duration: 60 },   // 100 req/min default
+    // 600 req/min = 10 req/sec sustained. Real dashboards burst 20–40 reqs
+    // on initial mount (DashboardContext + each page's data fetch). The
+    // identifier below buckets per-user when authenticated so multiple users
+    // behind the same NAT don't cannibalize each other's budget.
+    general: { points: 600, duration: 60 },
     apiKey: { points: 1000, duration: 60 },   // 1000 req/min for API keys
 };
 
@@ -38,18 +60,34 @@ let rateLimiters: Record<string, RateLimiterAbstract> = {};
 
 /**
  * Initialize rate limiters.
- * Uses Redis when available, falls back to in-memory.
+ *
+ * When Redis is available, each tier uses RateLimiterRedis as the primary
+ * store with a RateLimiterMemory `insuranceLimiter` as fallback. The
+ * library transparently delegates to the insurance limiter on Redis errors
+ * — without it, a Redis outage causes every consume() to reject, which
+ * our catch block then treats as "rate limit exceeded" and 429s every
+ * authenticated request. That bricks the API for the duration of the
+ * outage. Insurance keeps things working (with per-process state) until
+ * Redis recovers.
+ *
+ * If Redis is unavailable at init time, we run pure in-memory.
  */
 export function initRateLimiters(): void {
     const redis = getRedisClient();
 
     for (const [tier, config] of Object.entries(RATE_LIMIT_TIERS)) {
         if (redis) {
+            const insuranceLimiter = new RateLimiterMemory({
+                keyPrefix: `rl:insurance:${tier}`,
+                points: config.points,
+                duration: config.duration,
+            });
             rateLimiters[tier] = new RateLimiterRedis({
                 storeClient: redis,
                 keyPrefix: `rl:${tier}`,
                 points: config.points,
                 duration: config.duration,
+                insuranceLimiter,
             });
         } else {
             rateLimiters[tier] = new RateLimiterMemory({
@@ -61,7 +99,7 @@ export function initRateLimiters(): void {
     }
 
     logger.info('Rate limiters initialized', {
-        backend: redis ? 'redis' : 'memory',
+        backend: redis ? 'redis+memory-insurance' : 'memory',
         tiers: Object.keys(RATE_LIMIT_TIERS)
     });
 }
@@ -105,6 +143,22 @@ export async function rateLimit(req: Request, res: Response, next: NextFunction)
 
         next();
     } catch (rejRes: any) {
+        // rate-limiter-flexible distinguishes two reject shapes:
+        //   - RateLimiterRes (real rate-limit hit) — has msBeforeNext + remainingPoints
+        //   - Error (storage/Redis failure) — opaque
+        // Without this check, a Redis outage rejects with an Error; our old
+        // code would interpret that as "rate limit exceeded" and 429 every
+        // request. Fail open for storage errors so the API stays up.
+        const isRateLimitHit = rejRes && typeof rejRes.msBeforeNext === 'number';
+        if (!isRateLimitHit) {
+            logger.warn('[RATE-LIMIT] Limiter store error — failing open', {
+                tier,
+                err: rejRes instanceof Error ? rejRes.message : String(rejRes),
+            });
+            next();
+            return;
+        }
+
         const retryAfter = Math.ceil((rejRes.msBeforeNext || 60000) / 1000);
 
         res.setHeader('Retry-After', retryAfter);
@@ -118,11 +172,37 @@ export async function rateLimit(req: Request, res: Response, next: NextFunction)
     }
 }
 
+/**
+ * Choose a rate-limit bucket key for the request. Priority:
+ *   1. JWT cookie / bearer token  → bucket by userId. Multiple tabs / colleagues
+ *      behind the same NAT each get their own budget.
+ *   2. API key bearer token       → bucket by key prefix.
+ *   3. Anonymous                  → bucket by IP.
+ *
+ * The JWT decode here is verify-then-trust; an invalid/expired token falls
+ * through to the IP path. orgContext middleware does the real auth checks.
+ */
 function getClientIdentifier(req: Request): string {
-    const apiKey = req.headers.authorization?.replace('Bearer ', '');
-    if (apiKey) {
-        return `key:${apiKey.substring(0, 16)}`;
+    // Cookie-auth is the dominant path now (SPA dashboard).
+    const cookieToken = (req as any).cookies?.token as string | undefined;
+    if (cookieToken) {
+        try {
+            const decoded = jwt.verify(cookieToken, JWT_SECRET) as { userId?: string };
+            if (decoded?.userId) return `user:${decoded.userId}`;
+        } catch { /* fall through */ }
     }
+
+    const authHeader = req.headers.authorization;
+    if (authHeader?.startsWith('Bearer ')) {
+        const token = authHeader.substring(7);
+        // Try JWT first (e.g. mobile clients sending Bearer instead of cookie).
+        try {
+            const decoded = jwt.verify(token, JWT_SECRET) as { userId?: string };
+            if (decoded?.userId) return `user:${decoded.userId}`;
+        } catch { /* not a JWT — treat as API key */ }
+        return `key:${token.substring(0, 16)}`;
+    }
+
     return `ip:${req.ip || req.socket.remoteAddress || 'unknown'}`;
 }
 

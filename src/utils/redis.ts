@@ -30,6 +30,13 @@ export function initRedis(): Redis | null {
                 if (times > 10) return null; // Stop retrying after 10 attempts
                 return Math.min(times * 200, 5000);
             },
+            // Fail commands immediately when disconnected instead of queuing
+            // them until reconnect. Required for the rate-limiter's
+            // insuranceLimiter fallback to activate during a Redis outage —
+            // queued commands hang the request thread for the full reconnect
+            // window, which presents to clients as a multi-second timeout
+            // rather than a clean fail-open.
+            enableOfflineQueue: false,
             lazyConnect: false
         });
 
