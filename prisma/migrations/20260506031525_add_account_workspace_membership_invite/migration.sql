@@ -1,4 +1,4 @@
-﻿-- AlterTable
+- AlterTable
 ALTER TABLE "Organization" ADD COLUMN     "account_id" TEXT,
 ADD COLUMN     "client_company_name" TEXT,
 ADD COLUMN     "is_seed" BOOLEAN NOT NULL DEFAULT false;
