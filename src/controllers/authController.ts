@@ -12,54 +12,118 @@ import { welcomeEmail } from '../services/emailTemplates/welcome';
 import { accountLockedEmail } from '../services/emailTemplates/accountLocked';
 import { passwordChangedEmail } from '../services/emailTemplates/passwordChanged';
 import { summariseRequester, buildFrontendUrl } from '../services/emailTemplates/requesterContext';
+import { JWT_SECRET, generateToken, setTokenCookie } from '../services/tokenService';
 import { uniqueSlug } from '../utils/slug';
 
-// JWT_SECRET is validated at startup in index.ts — crashes if missing in production.
-// In development, a dev-only fallback is used.
-function getJwtSecret(): string {
-    const secret = process.env.JWT_SECRET;
-    if (!secret) {
-        if (process.env.NODE_ENV === 'production') {
-            throw new Error('FATAL: JWT_SECRET is not set in production');
+/**
+ * POST /api/auth/login/client
+ * Body: { workspaceSlug: string, email: string, password: string }
+ *
+ * Workspace-scoped client login. Resolves the User by:
+ *   1. Looking up the Organization by `workspaceSlug` (must exist).
+ *   2. Finding a User where `scoped_organization_id = org.id` AND `email`
+ *      matches (case-insensitive).
+ *   3. Verifying password.
+ *
+ * Returns a JWT scoped to that workspace. The client cannot switch — the
+ * `switch-workspace` endpoint enforces that.
+ *
+ * Agency owners attempting this endpoint will fail because their User rows
+ * have `scoped_organization_id = NULL`. Agency owners use the regular
+ * `/api/auth/login` endpoint.
+ */
+export const clientLogin = async (req: Request, res: Response) => {
+    try {
+        const { workspaceSlug, email, password } = req.body as {
+            workspaceSlug?: unknown; email?: unknown; password?: unknown;
+        };
+        const slug = typeof workspaceSlug === 'string' ? workspaceSlug.trim().toLowerCase() : '';
+        const emailLc = typeof email === 'string' ? email.trim().toLowerCase() : '';
+        const pw = typeof password === 'string' ? password : '';
+
+        if (!slug || !emailLc || !pw) {
+            return res.status(400).json({ success: false, error: 'workspaceSlug, email, and password are required' });
         }
-        logger.warn('JWT_SECRET not set — using dev-only fallback. NEVER use this in production.');
-        return 'drason_dev_only_secret_DO_NOT_USE_IN_PROD';
+
+        const org = await prisma.organization.findUnique({
+            where: { slug },
+            select: { id: true, slug: true, name: true },
+        });
+        if (!org) {
+            // Same generic error to avoid revealing which slugs exist.
+            return res.status(401).json({ success: false, error: 'Invalid workspace, email, or password' });
+        }
+
+        // The partial unique on (scoped_organization_id, email) WHERE
+        // scoped_organization_id IS NOT NULL guarantees this lookup hits at
+        // most one row, so findFirst is safe. Email is stored as the user
+        // typed it (no suffix) — see migration 20260506041000.
+        const user = await prisma.user.findFirst({
+            where: {
+                scoped_organization_id: org.id,
+                email: emailLc,
+            },
+            include: { organization: true },
+        });
+        if (!user || !user.password_hash) {
+            return res.status(401).json({ success: false, error: 'Invalid workspace, email, or password' });
+        }
+
+        if (user.locked_until && user.locked_until > new Date()) {
+            const minutesLeft = Math.ceil((user.locked_until.getTime() - Date.now()) / 60000);
+            return res.status(423).json({
+                success: false,
+                error: `Account temporarily locked. Try again in ${minutesLeft} minute${minutesLeft === 1 ? '' : 's'}.`,
+            });
+        }
+
+        const ok = await bcrypt.compare(pw, user.password_hash);
+        if (!ok) {
+            const newCount = (user.failed_login_count || 0) + 1;
+            const lockUntil = newCount >= 10 ? new Date(Date.now() + 15 * 60 * 1000) : null;
+            await prisma.user.update({
+                where: { id: user.id },
+                data: { failed_login_count: newCount, locked_until: lockUntil },
+            });
+            return res.status(401).json({ success: false, error: 'Invalid workspace, email, or password' });
+        }
+
+        const token = generateToken(user);
+        await prisma.user.update({
+            where: { id: user.id },
+            data: { last_login_at: new Date(), failed_login_count: 0, locked_until: null },
+        });
+        // Update WorkspaceMembership last_seen_at as well so the agency can
+        // see "last logged in" stats per client.
+        await prisma.workspaceMembership.updateMany({
+            where: { organization_id: org.id, user_id: user.id },
+            data: { last_seen_at: new Date() },
+        });
+
+        logger.info('Client logged in', { userId: user.id, email: user.email, workspaceSlug: slug });
+
+        setTokenCookie(res, token);
+
+        res.json({
+            token,
+            user: {
+                id: user.id,
+                email: user.email,
+                name: user.name,
+                role: user.role,
+                isClientUser: true,
+                organization: {
+                    id: org.id,
+                    name: org.name,
+                    slug: org.slug,
+                },
+            },
+        });
+    } catch (error: any) {
+        logger.error('Client login error', error);
+        res.status(500).json({ success: false, error: 'Login failed' });
     }
-    return secret;
-}
-
-const JWT_SECRET = getJwtSecret();
-const TOKEN_EXPIRY = '3d'; // 3-day token lifetime
-const COOKIE_MAX_AGE = 3 * 24 * 60 * 60 * 1000; // 3 days in ms
-
-/**
- * Set auth token as httpOnly server-side cookie + return in body for backward compat.
- */
-function setTokenCookie(res: Response, token: string): void {
-    res.cookie('token', token, {
-        httpOnly: true,           // Not accessible via document.cookie — XSS safe
-        secure: process.env.NODE_ENV === 'production', // HTTPS only in production
-        sameSite: 'lax',          // CSRF protection
-        path: '/',
-        maxAge: COOKIE_MAX_AGE,
-    });
-}
-
-/**
- * Generate a JWT for a user.
- */
-function generateToken(user: { id: string; email: string; role: string; organization_id: string }): string {
-    return jwt.sign(
-        {
-            userId: user.id,
-            email: user.email,
-            role: user.role,
-            orgId: user.organization_id,
-        },
-        JWT_SECRET,
-        { expiresIn: TOKEN_EXPIRY }
-    );
-}
+};
 
 export const login = async (req: Request, res: Response) => {
     try {
@@ -69,8 +133,12 @@ export const login = async (req: Request, res: Response) => {
             return res.status(400).json({ success: false, error: 'Email and password are required' });
         }
 
-        const user = await prisma.user.findUnique({
-            where: { email },
+        // Agency-side login. Client logins come through /auth/login/client which
+        // also passes a workspace slug, so we restrict this lookup to non-scoped
+        // users. The new partial unique on (email) WHERE scoped_organization_id IS NULL
+        // makes findFirst safe — at most one row matches.
+        const user = await prisma.user.findFirst({
+            where: { email, scoped_organization_id: null },
             include: { organization: true }
         });
 
@@ -209,7 +277,12 @@ export const register = async (req: Request, res: Response) => {
             });
         }
 
-        const existingUser = await prisma.user.findUnique({ where: { email } });
+        // Agency-side signup — collision check only against the agency-side namespace.
+        // Client users (scoped_organization_id IS NOT NULL) live in a per-workspace namespace.
+        const existingUser = await prisma.user.findFirst({
+            where: { email, scoped_organization_id: null },
+            select: { id: true },
+        });
         if (existingUser) {
             return res.status(400).json({ success: false, error: 'Email already registered' });
         }
@@ -482,8 +555,10 @@ export const forgotPassword = async (req: Request, res: Response): Promise<void>
     try {
         const { email } = req.body as { email: string };
         const emailLower = email.toLowerCase().trim();
-        const user = await prisma.user.findUnique({
-            where: { email: emailLower },
+        // Agency-side reset only. Client users reset via the workspace-scoped
+        // flow (which carries their workspace slug + email).
+        const user = await prisma.user.findFirst({
+            where: { email: emailLower, scoped_organization_id: null },
             select: { id: true, email: true, name: true, password_hash: true },
         });
 

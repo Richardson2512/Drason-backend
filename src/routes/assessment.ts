@@ -7,6 +7,7 @@
 
 import { Router } from 'express';
 import * as assessmentController from '../controllers/assessmentController';
+import { requireCapability } from '../middleware/requireCapability';
 
 const router = Router();
 
@@ -17,7 +18,7 @@ router.get('/report', assessmentController.getReport);
 router.get('/reports', assessmentController.getReports);
 
 // Trigger manual re-assessment (required for DNS recovery verification)
-router.post('/run', assessmentController.runAssessment);
+router.post('/run', requireCapability('run_assessment'), assessmentController.runAssessment);
 
 // Check if assessment is currently in progress
 router.get('/status', assessmentController.getAssessmentStatus);
@@ -27,6 +28,6 @@ router.get('/domain/:domainId/dns', assessmentController.getDomainDNS);
 
 // Manual re-check that PERSISTS the result. Drives the "Check now" button on
 // the Domains DNS Authentication card. Soft-cooldown at 30s.
-router.post('/domain/:domainId/dns/recheck', assessmentController.recheckDomainDNS);
+router.post('/domain/:domainId/dns/recheck', requireCapability('run_assessment'), assessmentController.recheckDomainDNS);
 
 export default router;

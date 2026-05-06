@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import * as authController from '../controllers/authController';
 import * as googleAuthController from '../controllers/googleAuthController';
+import * as inviteController from '../controllers/inviteController';
 import { validateBody, loginSchema, registerSchema, forgotPasswordSchema, resetPasswordSchema } from '../middleware/validation';
 
 const router = Router();
@@ -14,6 +15,8 @@ router.post('/accept-current-terms', authController.acceptCurrentTerms);
 
 // Traditional email/password authentication
 router.post('/login', validateBody(loginSchema), authController.login);
+// Workspace-scoped client login (slug + email + password).
+router.post('/login/client', authController.clientLogin);
 router.post('/register', validateBody(registerSchema), authController.register);
 router.post('/refresh', authController.refreshToken);
 router.post('/logout', authController.logout);
@@ -29,5 +32,11 @@ router.get('/google/callback', googleAuthController.handleGoogleCallback);
 
 // Google OAuth onboarding (personal Gmail users — org name collection)
 router.post('/onboarding/complete', googleAuthController.completeOnboarding);
+
+// Workspace invite magic-link flow (public — no auth required).
+// 1. Validate token (used by /set-password to render the form).
+router.get('/invite', inviteController.validateInviteToken);
+// 2. Complete the invite (set password, create user + membership).
+router.post('/invite/complete', inviteController.completeInvite);
 
 export default router;

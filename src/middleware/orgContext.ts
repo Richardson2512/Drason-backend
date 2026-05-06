@@ -23,6 +23,11 @@ interface JwtPayload {
     email: string;
     role: string;
     orgId: string;
+    // ── Workspaces / Phase 2 ─────────────────────────────────────────────
+    accountId?: string | null;
+    activeOrganizationId?: string;
+    isAgencyOwner?: boolean;
+    scopedOrganizationId?: string | null;
     iat?: number; // JWT issued-at timestamp (seconds since epoch)
 }
 
@@ -101,7 +106,12 @@ export const extractOrgContext = async (
 
         // PUBLIC ROUTES: Skip context check for auth endpoints and webhooks
         // Note: req.path is relative to the mount point ('/api')
-        const publicPaths = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout', '/auth/google', '/auth/onboarding', '/auth/legal-versions', '/auth/forgot-password', '/auth/reset-password', '/ingest/clay', '/billing/polar-webhook', '/sequencer/accounts/google/callback', '/sequencer/accounts/microsoft/callback', '/oauth/callback/postmaster', '/oauth/consent/details', '/oauth/consent/deny', '/consent/cookies', '/integrations/hubspot/callback', '/integrations/salesforce/callback', '/integrations/outreach/callback', '/integrations/hubspot/webhooks'];
+        const publicPaths = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout', '/auth/google', '/auth/onboarding', '/auth/legal-versions', '/auth/forgot-password', '/auth/reset-password',
+            // Workspace invite magic-link flow — pre-auth by design.
+            '/auth/invite',           // GET /auth/invite?token= validates a magic link
+            '/auth/invite/complete',  // POST sets password + creates the User row
+            '/auth/login/client',     // workspace-scoped client login
+            '/ingest/clay', '/billing/polar-webhook', '/sequencer/accounts/google/callback', '/sequencer/accounts/microsoft/callback', '/oauth/callback/postmaster', '/oauth/consent/details', '/oauth/consent/deny', '/consent/cookies', '/integrations/hubspot/callback', '/integrations/salesforce/callback', '/integrations/outreach/callback', '/integrations/hubspot/webhooks'];
         if (publicPaths.some(path => req.path.startsWith(path))) {
             return next();
         }
@@ -134,12 +144,32 @@ export const extractOrgContext = async (
                     select: {
                         id: true,
                         organization_id: true,
+                        account_id: true,
                         password_changed_at: true,
                     },
                 });
                 if (!user) {
                     logger.warn('[ORG_CONTEXT] JWT references unknown user — clearing cookie + 401', {
                         userId: jwtPayload.userId,
+                    });
+                    res.clearCookie('token', { path: '/' });
+                    res.status(401).json({
+                        success: false,
+                        error: 'Session expired',
+                        message: 'Your session is no longer valid. Please log in again.',
+                    });
+                    return;
+                }
+                // Defense-in-depth: if the JWT carries an accountId claim,
+                // it must still match the user's current account_id. An
+                // attacker who got hold of an old JWT after the user was
+                // re-parented to a different agency must not be able to act
+                // against the new agency's resources.
+                if (jwtPayload.accountId !== undefined && jwtPayload.accountId !== user.account_id) {
+                    logger.warn('[ORG_CONTEXT] JWT accountId no longer matches user — clearing cookie + 401', {
+                        userId: jwtPayload.userId,
+                        jwtAccountId: jwtPayload.accountId,
+                        currentAccountId: user.account_id,
                     });
                     res.clearCookie('token', { path: '/' });
                     res.status(401).json({

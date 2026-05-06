@@ -13,25 +13,29 @@ import * as sequencerAnalyticsController from '../controllers/sequencerAnalytics
 import * as signatureController from '../controllers/signatureController';
 import * as recipientPreviewController from '../controllers/recipientPreviewController';
 import * as zapmailController from '../controllers/zapmailController';
+import { requireCapability, requireAgencyOwner } from '../middleware/requireCapability';
 
 const router = Router();
 
-// --- Connected Accounts ---
+// --- Connected Accounts (mailboxes) ---
 const accountRoutes = Router();
 accountRoutes.get('/', connectedAccountController.listAccounts);
-accountRoutes.post('/', connectedAccountController.createAccount);
-accountRoutes.post('/bulk', connectedAccountController.bulkCreateAccounts);
-accountRoutes.delete('/:id', connectedAccountController.deleteAccount);
-accountRoutes.patch('/:id', connectedAccountController.updateAccount);
-accountRoutes.post('/:id/test', connectedAccountController.testConnection);
+accountRoutes.post('/', requireCapability('connect_mailboxes'), connectedAccountController.createAccount);
+accountRoutes.post('/bulk', requireCapability('connect_mailboxes'), connectedAccountController.bulkCreateAccounts);
+accountRoutes.delete('/:id', requireCapability('connect_mailboxes'), connectedAccountController.deleteAccount);
+accountRoutes.patch('/:id', requireCapability('connect_mailboxes'), connectedAccountController.updateAccount);
+accountRoutes.post('/:id/test', requireCapability('connect_mailboxes'), connectedAccountController.testConnection);
 accountRoutes.get('/tracking-domain/check', connectedAccountController.checkTrackingDomainEndpoint);
-accountRoutes.post('/:id/tracking-domain', connectedAccountController.setTrackingDomain);
-accountRoutes.post('/:id/tracking-domain/verify', connectedAccountController.verifyTrackingDomain);
+accountRoutes.post('/:id/tracking-domain', requireCapability('connect_domains'), connectedAccountController.setTrackingDomain);
+accountRoutes.post('/:id/tracking-domain/verify', requireCapability('connect_domains'), connectedAccountController.verifyTrackingDomain);
 
-// OAuth flows (Google + Microsoft)
-accountRoutes.get('/google/authorize', oauthConnectController.googleAuthorize);
+// OAuth flows (Google + Microsoft) — mailbox connection is gated; the OAuth
+// dance itself MUST stay open because the callback URL is hit by the OAuth
+// provider, not the user. The capability check happens at the persist step
+// (createAccount above is what the callback ultimately calls).
+accountRoutes.get('/google/authorize', requireCapability('connect_mailboxes'), oauthConnectController.googleAuthorize);
 accountRoutes.get('/google/callback', oauthConnectController.googleCallback);
-accountRoutes.get('/microsoft/authorize', oauthConnectController.microsoftAuthorize);
+accountRoutes.get('/microsoft/authorize', requireCapability('connect_mailboxes'), oauthConnectController.microsoftAuthorize);
 accountRoutes.get('/microsoft/callback', oauthConnectController.microsoftCallback);
 
 router.use('/accounts', accountRoutes);
@@ -41,16 +45,16 @@ const campaignRoutes = Router();
 campaignRoutes.get('/', campaignController2.listCampaigns);
 campaignRoutes.get('/:id', campaignController2.getCampaign);
 campaignRoutes.get('/:id/leads', campaignController2.listCampaignLeads);
-campaignRoutes.post('/', campaignController2.createCampaign);
-campaignRoutes.patch('/:id', campaignController2.updateCampaign);
-campaignRoutes.delete('/:id', campaignController2.deleteCampaign);
-campaignRoutes.post('/:id/launch', campaignController2.launchCampaign);
-campaignRoutes.post('/:id/pause', campaignController2.pauseCampaign);
-campaignRoutes.post('/:id/resume', campaignController2.resumeCampaign);
+campaignRoutes.post('/', requireCapability('create_campaigns'), campaignController2.createCampaign);
+campaignRoutes.patch('/:id', requireCapability('edit_sequences'), campaignController2.updateCampaign);
+campaignRoutes.delete('/:id', requireCapability('create_campaigns'), campaignController2.deleteCampaign);
+campaignRoutes.post('/:id/launch', requireCapability('launch_pause_campaigns'), campaignController2.launchCampaign);
+campaignRoutes.post('/:id/pause', requireCapability('launch_pause_campaigns'), campaignController2.pauseCampaign);
+campaignRoutes.post('/:id/resume', requireCapability('launch_pause_campaigns'), campaignController2.resumeCampaign);
 // Tags. bulk-tag must come BEFORE /:id/tags so Express doesn't treat
 // 'bulk-tag' as a campaign id. Distinct method+path so they don't collide.
-campaignRoutes.post('/bulk-tag', campaignController2.bulkTagCampaigns);
-campaignRoutes.put('/:id/tags', campaignController2.setCampaignTags);
+campaignRoutes.post('/bulk-tag', requireCapability('edit_sequences'), campaignController2.bulkTagCampaigns);
+campaignRoutes.put('/:id/tags', requireCapability('edit_sequences'), campaignController2.setCampaignTags);
 router.use('/campaigns', campaignRoutes);
 
 // --- Templates ---
@@ -58,10 +62,10 @@ const templateRoutes = Router();
 templateRoutes.get('/categories', templateController.listCategories);
 templateRoutes.get('/', templateController.listTemplates);
 templateRoutes.get('/:id', templateController.getTemplate);
-templateRoutes.post('/', templateController.createTemplate);
-templateRoutes.patch('/:id', templateController.updateTemplate);
-templateRoutes.delete('/:id', templateController.deleteTemplate);
-templateRoutes.post('/:id/duplicate', templateController.duplicateTemplate);
+templateRoutes.post('/', requireCapability('edit_sequences'), templateController.createTemplate);
+templateRoutes.patch('/:id', requireCapability('edit_sequences'), templateController.updateTemplate);
+templateRoutes.delete('/:id', requireCapability('edit_sequences'), templateController.deleteTemplate);
+templateRoutes.post('/:id/duplicate', requireCapability('edit_sequences'), templateController.duplicateTemplate);
 router.use('/templates', templateRoutes);
 
 // --- Mailbox Import (Zapmail / Premium Inboxes / Mission Inbox / Scaled Mail) ---
@@ -69,18 +73,18 @@ router.use('/templates', templateRoutes);
 // mailboxes themselves. See controllers/mailboxImportController.ts.
 const mailboxImportRoutes = Router();
 mailboxImportRoutes.get('/providers', mailboxImportController.listProviders);
-mailboxImportRoutes.post('/:provider/connect', mailboxImportController.connectProvider);
-mailboxImportRoutes.post('/:provider/disconnect', mailboxImportController.disconnectProvider);
+mailboxImportRoutes.post('/:provider/connect', requireCapability('access_integrations'), mailboxImportController.connectProvider);
+mailboxImportRoutes.post('/:provider/disconnect', requireCapability('access_integrations'), mailboxImportController.disconnectProvider);
 mailboxImportRoutes.get('/:provider/mailboxes', mailboxImportController.listProviderMailboxes);
-mailboxImportRoutes.post('/:provider/import', mailboxImportController.bulkImport);
+mailboxImportRoutes.post('/:provider/import', requireCapability('connect_mailboxes'), mailboxImportController.bulkImport);
 router.use('/mailbox-import', mailboxImportRoutes);
 
 // --- Template Folders ---
 const templateFolderRoutes = Router();
 templateFolderRoutes.get('/', templateFolderController.listFolders);
-templateFolderRoutes.post('/', templateFolderController.createFolder);
-templateFolderRoutes.patch('/:id', templateFolderController.renameFolder);
-templateFolderRoutes.delete('/:id', templateFolderController.deleteFolder);
+templateFolderRoutes.post('/', requireCapability('edit_sequences'), templateFolderController.createFolder);
+templateFolderRoutes.patch('/:id', requireCapability('edit_sequences'), templateFolderController.renameFolder);
+templateFolderRoutes.delete('/:id', requireCapability('edit_sequences'), templateFolderController.deleteFolder);
 router.use('/template-folders', templateFolderRoutes);
 
 // --- Infrastructure Providers (for bulk mailbox import) ---
@@ -89,52 +93,55 @@ router.get('/infra-providers', infraProvidersController.listInfraProviders);
 // --- Zapmail integration (server-orchestrated OAuth via Zapmail Custom OAuth) ---
 const zapmailRoutes = Router();
 zapmailRoutes.get('/status', zapmailController.status);
-zapmailRoutes.post('/connect', zapmailController.connect);
-zapmailRoutes.delete('/connect', zapmailController.disconnect);
+zapmailRoutes.post('/connect', requireCapability('access_integrations'), zapmailController.connect);
+zapmailRoutes.delete('/connect', requireCapability('access_integrations'), zapmailController.disconnect);
 zapmailRoutes.get('/mailboxes', zapmailController.listMailboxes);
-zapmailRoutes.post('/import', zapmailController.importMailboxes);
+zapmailRoutes.post('/import', requireCapability('connect_mailboxes'), zapmailController.importMailboxes);
 zapmailRoutes.get('/import/:exportId', zapmailController.importStatus);
 router.use('/integrations/zapmail', zapmailRoutes);
 
-// --- Contacts ---
+// --- Contacts (= leads in the data model) ---
 const contactRoutes = Router();
 contactRoutes.get('/', contactController.listContacts);
 contactRoutes.get('/facets', contactController.getContactFacets);
-contactRoutes.post('/', contactController.createContact);
-contactRoutes.post('/bulk', contactController.bulkCreateContacts);
-contactRoutes.post('/delete', contactController.deleteContacts);
-contactRoutes.post('/validate', contactController.validateContacts);
+contactRoutes.post('/', requireCapability('add_leads'), contactController.createContact);
+contactRoutes.post('/bulk', requireCapability('add_leads'), contactController.bulkCreateContacts);
+contactRoutes.post('/delete', requireCapability('remove_leads'), contactController.deleteContacts);
+contactRoutes.post('/validate', requireCapability('add_leads'), contactController.validateContacts);
 contactRoutes.post('/validate-preview', contactController.validateLeadsPreview);
 contactRoutes.post('/assign-campaign/preview', contactController.previewAssignToCampaign);
-contactRoutes.post('/assign-campaign', contactController.assignToCampaign);
+contactRoutes.post('/assign-campaign', requireCapability('edit_sequences'), contactController.assignToCampaign);
 contactRoutes.get('/export', contactController.exportContacts);
 contactRoutes.get('/:id', contactController.getContact);
-contactRoutes.patch('/:id/notes', contactController.updateContactNotes);
-contactRoutes.patch('/:id', contactController.updateContactDetails);
-contactRoutes.put('/:id/tags', contactController.setContactTags);
-contactRoutes.post('/bulk-tag', contactController.bulkTagContacts);
+contactRoutes.patch('/:id/notes', requireCapability('edit_sequences'), contactController.updateContactNotes);
+contactRoutes.patch('/:id', requireCapability('edit_sequences'), contactController.updateContactDetails);
+contactRoutes.put('/:id/tags', requireCapability('edit_sequences'), contactController.setContactTags);
+contactRoutes.post('/bulk-tag', requireCapability('edit_sequences'), contactController.bulkTagContacts);
 router.use('/contacts', contactRoutes);
 
 // --- Tags ---
 const tagRoutes = Router();
 tagRoutes.get('/', tagController.listTags);
-tagRoutes.post('/', tagController.createTag);
-tagRoutes.patch('/:id', tagController.updateTag);
-tagRoutes.delete('/:id', tagController.deleteTag);
+tagRoutes.post('/', requireCapability('edit_sequences'), tagController.createTag);
+tagRoutes.patch('/:id', requireCapability('edit_sequences'), tagController.updateTag);
+tagRoutes.delete('/:id', requireCapability('edit_sequences'), tagController.deleteTag);
 router.use('/tags', tagRoutes);
 
 // --- Settings ---
+// Sequencer settings are workspace-wide knobs (default sending hours,
+// throttle, etc.) — agency owners only. Clients shouldn't be reaching here
+// even with edit_sequences; that capability is for content (campaigns/templates).
 const settingsRoutes = Router();
 settingsRoutes.get('/', sequencerSettingsController.getSettings);
-settingsRoutes.patch('/', sequencerSettingsController.updateSettings);
+settingsRoutes.patch('/', requireAgencyOwner, sequencerSettingsController.updateSettings);
 router.use('/settings', settingsRoutes);
 
 // --- Signatures ---
 const signatureRoutes = Router();
 signatureRoutes.get('/', signatureController.listSignatures);
-signatureRoutes.post('/', signatureController.createSignature);
-signatureRoutes.patch('/:id', signatureController.updateSignature);
-signatureRoutes.delete('/:id', signatureController.deleteSignature);
+signatureRoutes.post('/', requireCapability('edit_sequences'), signatureController.createSignature);
+signatureRoutes.patch('/:id', requireCapability('edit_sequences'), signatureController.updateSignature);
+signatureRoutes.delete('/:id', requireCapability('edit_sequences'), signatureController.deleteSignature);
 router.use('/signatures', signatureRoutes);
 
 // --- Analytics ---

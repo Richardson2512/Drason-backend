@@ -15,19 +15,7 @@ import { UserRole, ApiScope } from '../types';
 import { RateLimiterRedis, RateLimiterMemory, RateLimiterAbstract } from 'rate-limiter-flexible';
 import { getRedisClient } from '../utils/redis';
 import { logger } from '../services/observabilityService';
-
-// Local JWT_SECRET resolver — same logic as authController, kept inline so
-// this middleware has no upstream dependency on a shared token service.
-const JWT_SECRET = (() => {
-    const s = process.env.JWT_SECRET;
-    if (!s) {
-        if (process.env.NODE_ENV === 'production') {
-            throw new Error('FATAL: JWT_SECRET is not set in production');
-        }
-        return 'drason_dev_only_secret_DO_NOT_USE_IN_PROD';
-    }
-    return s;
-})();
+import { JWT_SECRET } from '../services/tokenService';
 
 // ============================================================================
 // RATE LIMITING (Redis-backed with in-memory fallback)

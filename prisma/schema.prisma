@@ -7,6 +7,106 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/// Agency-level identity. Sits ABOVE Organization in the multi-tenancy
+/// hierarchy. One Account = one paying customer (solo or agency). Each
+/// Account contains 1..N Organizations, one of which is marked is_seed=true
+/// and cannot be deleted.
+///
+/// Subscription/billing identity (Polar fields) lives on Organization today
+/// for backward compatibility — only the seed Organization's subscription_tier
+/// is read for agency-mode eligibility. A future migration will mirror Polar
+/// fields here once the webhook handlers are updated.
+model Account {
+  id         String  @id @default(uuid())
+  name       String
+  legal_name String?
+
+  /// Whether the agency-mode UX is enabled for this Account. Gated by tier:
+  /// only Scale and Enterprise tiers can flip this to true.
+  agency_mode_enabled Boolean @default(false)
+
+  /// Friendly display name surfaced in the sidebar branding stack
+  /// ("[Superkabe] / [Agency name] / [Client name]"). Defaults to `name`.
+  agency_display_name String?
+
+  /// Denormalized pointer to the User who created the account / pays for it.
+  /// Workspace-level admin permissions are still read off WorkspaceMembership
+  /// + User.is_agency_owner.
+  owner_user_id String @unique
+  owner         User   @relation("AccountOwner", fields: [owner_user_id], references: [id])
+
+  organizations Organization[]
+  members       User[]         @relation("AccountMembers")
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+}
+
+/// Capability-based per-workspace access record. Created by:
+///   1. Backfill: each agency owner gets a Membership in every workspace
+///      under their Account with all-capabilities (effectively *).
+///   2. Magic-link invite acceptance: client user gets a Membership scoped to
+///      the workspace named in the invite, with the capability set the
+///      agency picked.
+///
+/// Capability strings match the frontend's CAPABILITY_KEYS list:
+///   view_campaigns | view_analytics | view_leads | view_unibox |
+///   reply_to_messages | launch_pause_campaigns | create_campaigns |
+///   edit_sequences | add_leads | remove_leads | connect_mailboxes |
+///   connect_domains | run_assessment | access_integrations
+///
+/// Special token "*" granted to agency owners means "every capability."
+model WorkspaceMembership {
+  id              String       @id @default(uuid())
+  organization_id String
+  user_id         String
+  capabilities    String[]     @default([])
+  /// 'pending_invite' | 'active' | 'disabled'
+  status          String       @default("active")
+  created_at      DateTime     @default(now())
+  last_seen_at    DateTime?
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  user            User         @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([organization_id, user_id])
+  @@index([user_id])
+  @@index([organization_id, status])
+}
+
+/// Pending magic-link invite from an agency owner to a prospective client
+/// user. Token is stored as SHA-256 hash; the raw token only exists in the
+/// outgoing email body. Once the client lands on /set-password and chooses a
+/// password, we (a) create the User row, (b) flip a WorkspaceMembership to
+/// status='active', (c) set consumed_at on this row.
+///
+/// expires_at is enforced server-side. Cleanup worker prunes consumed and
+/// expired rows older than 30 days.
+model WorkspaceInvite {
+  id                 String       @id @default(uuid())
+  organization_id    String
+  email              String
+  display_name       String?
+  capabilities       String[]     @default([])
+  token_hash         String       @unique
+  expires_at         DateTime
+  created_by_user_id String
+  consumed_at        DateTime?
+  created_at         DateTime     @default(now())
+  // Email delivery tracking — populated by the invite send + Resend webhook
+  // path. last_send_status is one of: 'pending' | 'sent' | 'bounced' | 'failed'.
+  // Lets the agency UI show "delivery failed → resend" rather than silently
+  // never delivering.
+  last_send_status        String?
+  last_send_attempted_at  DateTime?
+  last_send_error         String?
+  organization       Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  created_by         User         @relation("InviteCreator", fields: [created_by_user_id], references: [id])
+
+  @@index([organization_id])
+  @@index([token_hash])
+  @@index([expires_at])
+}
+
 model Organization {
   id                      String    @id @default(uuid())
   name                    String
@@ -79,8 +179,24 @@ model Organization {
   import_source_key_encrypted String? // AES-256-GCM via utils/encryption.ts
   import_key_expires_at       DateTime? // Hard ceiling — sweep nulls all three when past
 
+  /// Agency multi-tenancy: Organization belongs to an Account. Nullable
+  /// during the initial migration; the data-migration backfills every
+  /// existing Org and creates one Account per Org. Future-state: required.
+  account_id          String?
+  /// Marks the first Organization in an Account. Cannot be deleted via
+  /// /api/agency/workspaces/:id (frontend already gates the delete button
+  /// based on this). One per Account.
+  is_seed             Boolean @default(false)
+  /// Workspace-level branding label — the client company this workspace
+  /// represents. Surfaced in the sidebar's third row and on workspace cards.
+  client_company_name String?
+
   created_at             DateTime                 @default(now())
   updated_at             DateTime                 @updatedAt
+  account                Account?                 @relation(fields: [account_id], references: [id], onDelete: SetNull)
+  workspace_memberships  WorkspaceMembership[]
+  workspace_invites      WorkspaceInvite[]
+  scoped_users           User[]                   @relation("UserScope")
   apiKeys                ApiKey[]
   auditLogs              AuditLog[]
   campaigns              Campaign[]
@@ -122,6 +238,7 @@ model Organization {
   @@index([slug])
   @@index([subscription_status])
   @@index([trial_ends_at])
+  @@index([account_id])
 }
 
 /// One row per "batch" of leads added to a campaign — one CSV upload, one
@@ -225,7 +342,11 @@ model BusinessProfile {
 
 model User {
   id                  String    @id @default(uuid())
-  email               String    @unique
+  // Uniqueness is enforced at the DB level by two partial unique indexes:
+  //   User_email_agency_unique     — email globally unique among agency users (scoped_organization_id IS NULL)
+  //   User_email_workspace_unique  — (scoped_organization_id, email) unique for client users
+  // Prisma can't model partial uniques, so no @unique here. See migration 20260506041000.
+  email               String
   password_hash       String? // Made optional for OAuth-only users
   name                String?
   role                String    @default("viewer")
@@ -250,6 +371,36 @@ model User {
   reset_token_hash       String?   @unique
   reset_token_expires_at DateTime?
 
+  // ── Agency / multi-tenancy fields (Phase 1 additive) ─────────────────────
+  /// Account this user belongs to. Backfilled by data migration; future-state
+  /// required. For agency owners: the account they created. For clients:
+  /// the agency's account that invited them.
+  account_id String?
+  account    Account? @relation("AccountMembers", fields: [account_id], references: [id])
+
+  /// True ONLY for the user who owns the Account (created it / pays for it).
+  /// Agency-mode toggle, billing, workspace creation/deletion are all gated
+  /// to this flag. One per Account (Account.owner_user_id is also @unique).
+  is_agency_owner Boolean @default(false)
+
+  /// Hard tenancy lock for client users. When set, the user's session JWT
+  /// is forced to active_organization_id = scoped_organization_id and the
+  /// /api/auth/switch-workspace endpoint will reject any other org. NULL for
+  /// agency owners (they can switch among their Account's workspaces).
+  scoped_organization_id String?
+  scoped_organization    Organization? @relation("UserScope", fields: [scoped_organization_id], references: [id])
+
+  // Account-owner relation (inverse of Account.owner_user_id). Exactly one
+  // Account per owner due to the @unique on Account.owner_user_id.
+  ownedAccount Account? @relation("AccountOwner")
+
+  // Workspace memberships drive per-workspace capabilities for clients.
+  // Agency owners get auto-membership in every Org of their Account with
+  // capabilities=["*"] via backfill.
+  workspaceMemberships WorkspaceMembership[]
+  invitesCreated       WorkspaceInvite[]     @relation("InviteCreator")
+  // ─────────────────────────────────────────────────────────────────────────
+
   organization      Organization       @relation(fields: [organization_id], references: [id], onDelete: Cascade)
   slackIntegrations SlackIntegration[] // Integrations installed by this user
   consents          Consent[] // GDPR/DPDP/PDPA consent audit trail
@@ -257,6 +408,8 @@ model User {
   @@index([organization_id])
   @@index([email])
   @@index([google_id])
+  @@index([account_id])
+  @@index([scoped_organization_id])
 }
 
 model ApiKey {
@@ -337,7 +490,7 @@ model Lead {
   // Free-text notes written by the operator on the contact detail page.
   // Kept on the Lead row (not a separate Notes table) because we don't need
   // history / threading / multi-author — it's a simple scratch field.
-  notes              String?
+  notes String?
 
   created_at   DateTime     @default(now())
   updated_at   DateTime     @updatedAt
@@ -369,7 +522,7 @@ model Tag {
   created_at      DateTime @default(now())
   updated_at      DateTime @updatedAt
 
-  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  organization Organization  @relation(fields: [organization_id], references: [id], onDelete: Cascade)
   leadTags     LeadTag[]
   campaignTags CampaignTag[]
 
@@ -426,22 +579,22 @@ model ValidationAttempt {
 }
 
 model DomainInsight {
-  id                 String   @id @default(uuid())
-  domain             String
-  organization_id    String
-  has_mx             Boolean  @default(false)
-  is_catch_all       Boolean  @default(false)
+  id                String   @id @default(uuid())
+  domain            String
+  organization_id   String
+  has_mx            Boolean  @default(false)
+  is_catch_all      Boolean  @default(false)
   /// True only when catch-all has been verified by MillionVerifier (or
   /// equivalent SMTP-probe). False = unconfirmed (DNS-only). The validator
   /// only awards the "not catch-all" bonus when this is true, so starter/trial
   /// tier domains aren't scored optimistically as if confirmed clean.
-  catch_all_checked  Boolean  @default(false)
-  is_disposable      Boolean  @default(false)
-  esp_bucket         String? // gmail, microsoft, yahoo, other (cached ESP classification)
-  mx_records         Json? // [{ priority, exchange }]
-  checked_at         DateTime @default(now())
-  created_at         DateTime @default(now())
-  updated_at         DateTime @updatedAt
+  catch_all_checked Boolean  @default(false)
+  is_disposable     Boolean  @default(false)
+  esp_bucket        String? // gmail, microsoft, yahoo, other (cached ESP classification)
+  mx_records        Json? // [{ priority, exchange }]
+  checked_at        DateTime @default(now())
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
 
   @@unique([organization_id, domain])
   @@index([domain])
@@ -549,38 +702,38 @@ model CampaignDailyAnalytics {
 }
 
 model Mailbox {
-  id                      String    @id
-  email                   String
-  status                  String    @default("healthy")
-  recovery_phase          String    @default("healthy") // RecoveryPhase: healthy|paused|quarantine|restricted_send|warm_recovery
-  healing_origin          String? // HealingOrigin: rehab|recovery
-  phase_entered_at        DateTime? // When the entity entered its current recovery phase
-  clean_sends_since_phase Int       @default(0) // Clean sends (0 hard bounces) since entering current phase
-  resilience_score        Int       @default(50) // 0-100, drives healing speed multipliers
-  relapse_count           Int       @default(0) // Total relapses for escalating penalties
-  trend_state             String    @default("stable") // TrendState: stable|degrading|accelerating|oscillating|recovering
-  provider_restrictions   Json? // Per-provider restrictions: { gmail: { restricted: true, bounce_rate: 0.15 } }
-  hard_bounce_count       Int       @default(0)
-  delivery_failure_count  Int       @default(0)
-  total_sent_count        Int       @default(0)
-  window_sent_count       Int       @default(0)
-  window_bounce_count     Int       @default(0)
-  window_start_at         DateTime  @default(now())
-  paused_reason           String?
-  paused_at               DateTime?
-  paused_by               String?   @default("system")
-  last_pause_at           DateTime?
-  cooldown_until          DateTime?
-  consecutive_pauses      Int       @default(0)
+  id                            String    @id
+  email                         String
+  status                        String    @default("healthy")
+  recovery_phase                String    @default("healthy") // RecoveryPhase: healthy|paused|quarantine|restricted_send|warm_recovery
+  healing_origin                String? // HealingOrigin: rehab|recovery
+  phase_entered_at              DateTime? // When the entity entered its current recovery phase
+  clean_sends_since_phase       Int       @default(0) // Clean sends (0 hard bounces) since entering current phase
+  resilience_score              Int       @default(50) // 0-100, drives healing speed multipliers
+  relapse_count                 Int       @default(0) // Total relapses for escalating penalties
+  trend_state                   String    @default("stable") // TrendState: stable|degrading|accelerating|oscillating|recovering
+  provider_restrictions         Json? // Per-provider restrictions: { gmail: { restricted: true, bounce_rate: 0.15 } }
+  hard_bounce_count             Int       @default(0)
+  delivery_failure_count        Int       @default(0)
+  total_sent_count              Int       @default(0)
+  window_sent_count             Int       @default(0)
+  window_bounce_count           Int       @default(0)
+  window_start_at               DateTime  @default(now())
+  paused_reason                 String?
+  paused_at                     DateTime?
+  paused_by                     String?   @default("system")
+  last_pause_at                 DateTime?
+  cooldown_until                DateTime?
+  consecutive_pauses            Int       @default(0)
   consecutive_pauses_decayed_at DateTime? // Last time consecutive_pauses was decremented by the 30-day decay tick
-  last_activity_at        DateTime  @default(now())
-  initial_bounce_rate     Float? // Historical bounce rate at import
-  initial_assessment_at   DateTime? // When initial assessment was performed
+  last_activity_at              DateTime  @default(now())
+  initial_bounce_rate           Float? // Historical bounce rate at import
+  initial_assessment_at         DateTime? // When initial assessment was performed
   // Manual intervention gate — set to true on 3rd+ relapse. Blocks automated
   // graduation until an operator clears it via POST /api/healing/clear-manual-intervention.
-  manual_intervention_required Boolean   @default(false)
-  manual_intervention_reason   String?
-  manual_intervention_set_at   DateTime?
+  manual_intervention_required  Boolean   @default(false)
+  manual_intervention_reason    String?
+  manual_intervention_set_at    DateTime?
 
   // Healing Tracking Fields
   phase_clean_sends Int @default(0) // Clean sends in current healing phase (separate from clean_sends_since_phase)
@@ -644,50 +797,50 @@ model Mailbox {
 }
 
 model Domain {
-  id                           String    @id @default(uuid())
-  domain                       String
-  status                       String    @default("healthy")
-  recovery_phase               String    @default("healthy") // RecoveryPhase
-  healing_origin               String? // HealingOrigin: rehab|recovery
-  phase_entered_at             DateTime? // When entered current recovery phase
-  clean_sends_since_phase      Int       @default(0) // Clean sends since entering current phase
-  resilience_score             Int       @default(50) // 0-100, drives healing speed multipliers
-  relapse_count                Int       @default(0) // Total relapses
-  trend_state                  String    @default("stable") // TrendState
-  provider_restrictions        Json? // Per-provider restriction state
-  warning_count                Int       @default(0)
-  aggregated_bounce_rate_trend Float     @default(0.0)
-  paused_reason                String?
-  paused_at                    DateTime?
-  last_pause_at                DateTime?
-  paused_by                    String?   @default("system")
-  cooldown_until               DateTime?
-  consecutive_pauses           Int       @default(0)
+  id                            String    @id @default(uuid())
+  domain                        String
+  status                        String    @default("healthy")
+  recovery_phase                String    @default("healthy") // RecoveryPhase
+  healing_origin                String? // HealingOrigin: rehab|recovery
+  phase_entered_at              DateTime? // When entered current recovery phase
+  clean_sends_since_phase       Int       @default(0) // Clean sends since entering current phase
+  resilience_score              Int       @default(50) // 0-100, drives healing speed multipliers
+  relapse_count                 Int       @default(0) // Total relapses
+  trend_state                   String    @default("stable") // TrendState
+  provider_restrictions         Json? // Per-provider restriction state
+  warning_count                 Int       @default(0)
+  aggregated_bounce_rate_trend  Float     @default(0.0)
+  paused_reason                 String?
+  paused_at                     DateTime?
+  last_pause_at                 DateTime?
+  paused_by                     String?   @default("system")
+  cooldown_until                DateTime?
+  consecutive_pauses            Int       @default(0)
   consecutive_pauses_decayed_at DateTime? // Last time consecutive_pauses was decremented by the 30-day decay tick
   // Manual intervention gate — set to true on 3rd+ relapse. Blocks automated
   // graduation until an operator clears it via the healing API.
-  manual_intervention_required Boolean   @default(false)
-  manual_intervention_reason   String?
-  manual_intervention_set_at   DateTime?
+  manual_intervention_required  Boolean   @default(false)
+  manual_intervention_reason    String?
+  manual_intervention_set_at    DateTime?
   // DNS check failure tracking — used by healingService.checkQuarantineToRestricted
   // to fail-closed when DNS service is unavailable. Counter resets on successful check.
   // After DNS_CHECK_FAILURE_ESCALATE_COUNT failures, the domain is flagged for manual intervention.
-  dns_check_failure_count      Int       @default(0)
-  last_dns_check_attempt_at    DateTime?
-  spf_valid                    Boolean? // SPF record check result
-  dkim_valid                   Boolean? // DKIM record check result
-  dmarc_policy                 String? // DMARC policy: 'none' | 'quarantine' | 'reject'
+  dns_check_failure_count       Int       @default(0)
+  last_dns_check_attempt_at     DateTime?
+  spf_valid                     Boolean? // SPF record check result
+  dkim_valid                    Boolean? // DKIM record check result
+  dmarc_policy                  String? // DMARC policy: 'none' | 'quarantine' | 'reject'
   // Sending domain's MX records — captured during the same DNS sweep as
   // SPF/DKIM/DMARC. Stored as [{ priority, exchange }]. Null until first
   // assessment; empty array means the domain genuinely has no MX records
   // (sending will still work but inbound mail to that domain won't).
-  mx_records                   Json?
-  mx_valid                     Boolean? // True when mx_records is non-empty
-  blacklist_results            Json? // Summary cache: { critical_listed: N, major_listed: N, minor_listed: N, total_checked: N }
-  blacklist_score              Float     @default(0) // Computed weighted blacklist penalty
-  last_full_blacklist_check    DateTime? // When all DNSBL lists were last checked
-  dns_checked_at               DateTime? // When DNS was last checked
-  initial_assessment_score     Float? // REPORT-ONLY. Never use in execution gate logic.
+  mx_records                    Json?
+  mx_valid                      Boolean? // True when mx_records is non-empty
+  blacklist_results             Json? // Summary cache: { critical_listed: N, major_listed: N, minor_listed: N, total_checked: N }
+  blacklist_score               Float     @default(0) // Computed weighted blacklist penalty
+  last_full_blacklist_check     DateTime? // When all DNSBL lists were last checked
+  dns_checked_at                DateTime? // When DNS was last checked
+  initial_assessment_score      Float? // REPORT-ONLY. Never use in execution gate logic.
 
   // Inactivity tracking
   last_sent_at DateTime? // Last time any mailbox under this domain sent an email
@@ -1369,10 +1522,10 @@ model ConnectedAccount {
   // stale-row sweep. oauth_attempts + oauth_first_attempt_at enforce the
   // 3-per-mailbox-per-7-day Custom OAuth quota at our edge so the user
   // gets a typed error instead of a generic 429.
-  zapmail_export_id        Int?
-  oauth_initiated_at       DateTime?
-  oauth_attempts           Int       @default(0)
-  oauth_first_attempt_at   DateTime?
+  zapmail_export_id      Int?
+  oauth_initiated_at     DateTime?
+  oauth_attempts         Int       @default(0)
+  oauth_first_attempt_at DateTime?
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
@@ -1815,23 +1968,23 @@ model ColdCallCustomSnapshot {
 /// /oauth/* endpoints. Each client gets its own client_id; secret is
 /// optional (public clients use PKCE only).
 model OAuthClient {
-  id                          String    @id @default(uuid())
-  client_id                   String    @unique
-  client_secret_hash          String? // bcrypt hash; null for public clients
-  client_name                 String
-  redirect_uris               Json // string[]
-  grant_types                 Json // string[] e.g. ["authorization_code", "refresh_token"]
-  response_types              Json // string[] e.g. ["code"]
-  token_endpoint_auth_method  String    @default("none") // "none" (public) | "client_secret_basic" | "client_secret_post"
-  scope                       String? // space-separated default scopes
-  client_uri                  String?
-  logo_uri                    String?
-  software_id                 String?
-  software_version            String?
-  created_at                  DateTime  @default(now())
-  client_id_issued_at         DateTime  @default(now())
-  client_secret_expires_at    DateTime? // null = never
-  revoked_at                  DateTime?
+  id                         String    @id @default(uuid())
+  client_id                  String    @unique
+  client_secret_hash         String? // bcrypt hash; null for public clients
+  client_name                String
+  redirect_uris              Json // string[]
+  grant_types                Json // string[] e.g. ["authorization_code", "refresh_token"]
+  response_types             Json // string[] e.g. ["code"]
+  token_endpoint_auth_method String    @default("none") // "none" (public) | "client_secret_basic" | "client_secret_post"
+  scope                      String? // space-separated default scopes
+  client_uri                 String?
+  logo_uri                   String?
+  software_id                String?
+  software_version           String?
+  created_at                 DateTime  @default(now())
+  client_id_issued_at        DateTime  @default(now())
+  client_secret_expires_at   DateTime? // null = never
+  revoked_at                 DateTime?
 
   authorization_codes OAuthAuthorizationCode[]
   access_tokens       OAuthAccessToken[]
@@ -1843,20 +1996,20 @@ model OAuthClient {
 /// consent. Single-use — `used_at` is set when exchanged for tokens to
 /// prevent replay. Stores the PKCE challenge for verification.
 model OAuthAuthorizationCode {
-  id                   String   @id @default(uuid())
-  code_hash            String   @unique // SHA-256 of the actual code
-  client_id            String
-  user_id              String
-  organization_id      String
-  redirect_uri         String
-  scope                String? // space-separated granted scopes
-  code_challenge       String
-  code_challenge_method String   @default("S256")
-  resource             String? // RFC 8707 resource indicator
-  state                String?
-  expires_at           DateTime
-  used_at              DateTime?
-  created_at           DateTime @default(now())
+  id                    String    @id @default(uuid())
+  code_hash             String    @unique // SHA-256 of the actual code
+  client_id             String
+  user_id               String
+  organization_id       String
+  redirect_uri          String
+  scope                 String? // space-separated granted scopes
+  code_challenge        String
+  code_challenge_method String    @default("S256")
+  resource              String? // RFC 8707 resource indicator
+  state                 String?
+  expires_at            DateTime
+  used_at               DateTime?
+  created_at            DateTime  @default(now())
 
   client OAuthClient @relation(fields: [client_id], references: [client_id], onDelete: Cascade)
 
@@ -1869,19 +2022,19 @@ model OAuthAuthorizationCode {
 /// token grants the same scopes as a Superkabe API key, scoped to the user's
 /// organization. Refresh tokens are long-lived; access tokens expire in 1h.
 model OAuthAccessToken {
-  id                  String    @id @default(uuid())
-  access_token_hash   String    @unique // SHA-256
-  refresh_token_hash  String?   @unique
-  client_id           String
-  user_id             String
-  organization_id     String
-  scope               String // space-separated
-  resource            String?
-  expires_at          DateTime
-  refresh_expires_at  DateTime?
-  revoked_at          DateTime?
-  created_at          DateTime  @default(now())
-  last_used_at        DateTime?
+  id                 String    @id @default(uuid())
+  access_token_hash  String    @unique // SHA-256
+  refresh_token_hash String?   @unique
+  client_id          String
+  user_id            String
+  organization_id    String
+  scope              String // space-separated
+  resource           String?
+  expires_at         DateTime
+  refresh_expires_at DateTime?
+  revoked_at         DateTime?
+  created_at         DateTime  @default(now())
+  last_used_at       DateTime?
 
   client OAuthClient @relation(fields: [client_id], references: [client_id], onDelete: Cascade)
 
@@ -1895,37 +2048,37 @@ model OAuthAccessToken {
 /// ConnectedAccount mailboxes. `instance_url` is set for Salesforce (each
 /// org has a unique base URL); null for HubSpot.
 model CrmConnection {
-  id                     String    @id @default(uuid())
-  organization_id        String
-  provider               String // "hubspot" | "salesforce"
+  id              String @id @default(uuid())
+  organization_id String
+  provider        String // "hubspot" | "salesforce"
 
   // OAuth tokens — encrypted at rest
-  access_token           String // encrypted
-  refresh_token          String? // encrypted (Salesforce always returns one; HubSpot too with offline_access)
-  token_expires_at       DateTime?
-  scopes                 String? // space-separated granted OAuth scopes
+  access_token     String // encrypted
+  refresh_token    String? // encrypted (Salesforce always returns one; HubSpot too with offline_access)
+  token_expires_at DateTime?
+  scopes           String? // space-separated granted OAuth scopes
 
   // Provider-side identity (so we can show the user which CRM org they connected)
-  external_account_id    String? // HubSpot portal_id, Salesforce organization_id
-  external_account_name  String?
-  instance_url           String? // Salesforce only — every org has a unique base URL
+  external_account_id   String? // HubSpot portal_id, Salesforce organization_id
+  external_account_name String?
+  instance_url          String? // Salesforce only — every org has a unique base URL
 
   // Connection state
-  status                 String    @default("active") // active | error | expired | disconnected
-  last_error             String?
-  connected_at           DateTime  @default(now())
-  connected_by_user_id   String?
-  last_sync_at           DateTime?
-  disconnected_at        DateTime?
+  status               String    @default("active") // active | error | expired | disconnected
+  last_error           String?
+  connected_at         DateTime  @default(now())
+  connected_by_user_id String?
+  last_sync_at         DateTime?
+  disconnected_at      DateTime?
 
-  created_at             DateTime  @default(now())
-  updated_at             DateTime  @updatedAt
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
-  organization     Organization        @relation(fields: [organization_id], references: [id], onDelete: Cascade)
-  fieldMappings    CrmFieldMapping[]
-  syncJobs         CrmSyncJob[]
-  contactLinks     CrmContactLink[]
-  activityPushes   CrmActivityPushItem[]
+  organization   Organization          @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  fieldMappings  CrmFieldMapping[]
+  syncJobs       CrmSyncJob[]
+  contactLinks   CrmContactLink[]
+  activityPushes CrmActivityPushItem[]
 
   @@unique([organization_id, provider]) // one active connection per provider per org
   @@index([organization_id])
@@ -1937,16 +2090,16 @@ model CrmConnection {
 /// Direction lets a single connection have separate import vs. export rules
 /// per field if needed; defaults to "import" (CRM → Superkabe).
 model CrmFieldMapping {
-  id                 String   @id @default(uuid())
-  crm_connection_id  String
+  id                String @id @default(uuid())
+  crm_connection_id String
 
-  superkabe_field    String // "email" | "first_name" | "company" | …
-  crm_field          String // HubSpot internal name or Salesforce field API name
-  direction          String   @default("import") // import | export | bidirectional
-  transform          String? // optional named transform key for value coercion
+  superkabe_field String // "email" | "first_name" | "company" | …
+  crm_field       String // HubSpot internal name or Salesforce field API name
+  direction       String  @default("import") // import | export | bidirectional
+  transform       String? // optional named transform key for value coercion
 
-  created_at         DateTime @default(now())
-  updated_at         DateTime @updatedAt
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
   connection CrmConnection @relation(fields: [crm_connection_id], references: [id], onDelete: Cascade)
 
@@ -1958,35 +2111,35 @@ model CrmFieldMapping {
 /// Activity pushes use CrmActivityPushItem instead because they're per-event,
 /// not per-batch.
 model CrmSyncJob {
-  id                    String    @id @default(uuid())
-  crm_connection_id     String
+  id                String @id @default(uuid())
+  crm_connection_id String
 
-  type                  String // initial_import | incremental_import | suppression_pull
-  state                 String    @default("pending") // pending | running | completed | failed | cancelled
+  type  String // initial_import | incremental_import | suppression_pull
+  state String @default("pending") // pending | running | completed | failed | cancelled
 
   // Source of truth for what to pull (e.g. HubSpot { list_id }, Salesforce { soql } or { list_view_id })
-  source_filter         Json?
+  source_filter Json?
 
   // Counts
-  total_records         Int       @default(0)
-  records_processed     Int       @default(0)
-  records_created       Int       @default(0)
-  records_updated       Int       @default(0)
-  records_skipped       Int       @default(0)
-  records_failed        Int       @default(0)
+  total_records     Int @default(0)
+  records_processed Int @default(0)
+  records_created   Int @default(0)
+  records_updated   Int @default(0)
+  records_skipped   Int @default(0)
+  records_failed    Int @default(0)
 
   // Cursor for incremental — opaque per-provider value (HubSpot offset, Salesforce nextRecordsUrl)
-  cursor                String?
+  cursor String?
 
   // Lifecycle
-  started_at            DateTime?
-  finished_at           DateTime?
-  error_message         String?
-  error_count           Int       @default(0)
-  triggered_by_user_id  String?
+  started_at           DateTime?
+  finished_at          DateTime?
+  error_message        String?
+  error_count          Int       @default(0)
+  triggered_by_user_id String?
 
-  created_at            DateTime  @default(now())
-  updated_at            DateTime  @updatedAt
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
   connection CrmConnection @relation(fields: [crm_connection_id], references: [id], onDelete: Cascade)
 
@@ -1999,16 +2152,16 @@ model CrmSyncJob {
 /// or first activity push that resolves a CRM contact ID. Used by the activity
 /// push worker to skip the email-lookup round-trip on subsequent events.
 model CrmContactLink {
-  id                 String   @id @default(uuid())
-  crm_connection_id  String
-  superkabe_lead_id  String
-  crm_contact_id     String // ID in HubSpot/Salesforce
+  id                String @id @default(uuid())
+  crm_connection_id String
+  superkabe_lead_id String
+  crm_contact_id    String // ID in HubSpot/Salesforce
 
-  last_pulled_at     DateTime?
-  last_pushed_at     DateTime? // last activity successfully pushed
+  last_pulled_at DateTime?
+  last_pushed_at DateTime? // last activity successfully pushed
 
-  created_at         DateTime @default(now())
-  updated_at         DateTime @updatedAt
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
   connection CrmConnection @relation(fields: [crm_connection_id], references: [id], onDelete: Cascade)
 
@@ -2024,23 +2177,23 @@ model CrmContactLink {
 /// to HubSpot timeline / Salesforce Task. Idempotency is enforced via
 /// the unique tuple so event-bus retries don't double-write.
 model CrmActivityPushItem {
-  id                 String    @id @default(uuid())
-  crm_connection_id  String
-  superkabe_lead_id  String
-  crm_contact_id     String? // resolved by worker if not yet linked
+  id                String  @id @default(uuid())
+  crm_connection_id String
+  superkabe_lead_id String
+  crm_contact_id    String? // resolved by worker if not yet linked
 
-  event_type         String // email.sent | email.opened | email.clicked | email.replied | email.bounced
-  event_payload      Json
-  occurred_at        DateTime
+  event_type    String // email.sent | email.opened | email.clicked | email.replied | email.bounced
+  event_payload Json
+  occurred_at   DateTime
 
-  state              String    @default("pending") // pending | pushed | failed | skipped
-  attempts           Int       @default(0)
-  next_attempt_at    DateTime  @default(now())
-  pushed_at          DateTime?
-  last_error         String?
+  state           String    @default("pending") // pending | pushed | failed | skipped
+  attempts        Int       @default(0)
+  next_attempt_at DateTime  @default(now())
+  pushed_at       DateTime?
+  last_error      String?
 
-  created_at         DateTime  @default(now())
-  updated_at         DateTime  @updatedAt
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
   connection CrmConnection @relation(fields: [crm_connection_id], references: [id], onDelete: Cascade)
 
@@ -2056,27 +2209,27 @@ model CrmActivityPushItem {
 /// because the model is read-only (we pull contacts; we don't write
 /// activity back to the lead source).
 model LeadSourceConnection {
-  id                     String    @id @default(uuid())
-  organization_id        String
-  provider               String // "apollo" | "zoominfo"
+  id              String @id @default(uuid())
+  organization_id String
+  provider        String // "apollo" | "zoominfo"
 
-  api_key_encrypted      String
-  status                 String    @default("active") // active | error | expired | disconnected
-  external_account_name  String? // Apollo workspace name / ZoomInfo org name
-  external_account_id    String?
+  api_key_encrypted     String
+  status                String  @default("active") // active | error | expired | disconnected
+  external_account_name String? // Apollo workspace name / ZoomInfo org name
+  external_account_id   String?
 
-  last_validated_at      DateTime?
-  last_used_at           DateTime?
-  last_error             String?
+  last_validated_at DateTime?
+  last_used_at      DateTime?
+  last_error        String?
 
-  connected_at           DateTime  @default(now())
-  connected_by_user_id   String?
-  disconnected_at        DateTime?
+  connected_at         DateTime  @default(now())
+  connected_by_user_id String?
+  disconnected_at      DateTime?
 
-  created_at             DateTime  @default(now())
-  updated_at             DateTime  @updatedAt
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
-  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  organization Organization          @relation(fields: [organization_id], references: [id], onDelete: Cascade)
   importJobs   LeadSourceImportJob[]
 
   @@unique([organization_id, provider])
@@ -2091,43 +2244,43 @@ model LeadSourceConnection {
 /// resumable pagination. Imports are idempotent on email — re-running the
 /// same job is safe.
 model LeadSourceImportJob {
-  id                          String    @id @default(uuid())
-  lead_source_connection_id   String
-  organization_id             String
+  id                        String @id @default(uuid())
+  lead_source_connection_id String
+  organization_id           String
 
-  source_url                  String? // raw URL pasted by the user
-  parsed_filters              Json? // structured search params sent to the provider
-  source_kind                 String? // "people_search" | "saved_list" | "saved_search"
-  source_external_id          String? // Apollo list_id when source_kind=saved_list
+  source_url         String? // raw URL pasted by the user
+  parsed_filters     Json? // structured search params sent to the provider
+  source_kind        String? // "people_search" | "saved_list" | "saved_search"
+  source_external_id String? // Apollo list_id when source_kind=saved_list
 
-  target_campaign_id          String? // optional campaign to enroll into
-  reveal_personal_emails      Boolean   @default(true)
-  cap                         Int? // hard cap on contacts to import; null = no cap
-  total_estimated             Int       @default(0) // count from initial preview
+  target_campaign_id     String? // optional campaign to enroll into
+  reveal_personal_emails Boolean @default(true)
+  cap                    Int? // hard cap on contacts to import; null = no cap
+  total_estimated        Int     @default(0) // count from initial preview
 
-  state                       String    @default("pending") // pending | running | completed | failed | cancelled
+  state String @default("pending") // pending | running | completed | failed | cancelled
 
   // Progress counters
-  total_processed             Int       @default(0)
-  total_created               Int       @default(0)
-  total_updated               Int       @default(0)
-  total_skipped               Int       @default(0)
-  total_failed                Int       @default(0)
-  credits_consumed            Int       @default(0)
+  total_processed  Int @default(0)
+  total_created    Int @default(0)
+  total_updated    Int @default(0)
+  total_skipped    Int @default(0)
+  total_failed     Int @default(0)
+  credits_consumed Int @default(0)
 
   // Resumable cursor — opaque per provider (Apollo page number; ZoomInfo cursor token)
-  cursor                      String?
-  page                        Int       @default(1)
+  cursor String?
+  page   Int     @default(1)
 
   // Lifecycle
-  started_at                  DateTime?
-  finished_at                 DateTime?
-  error_message               String?
-  error_count                 Int       @default(0)
-  triggered_by_user_id        String?
+  started_at           DateTime?
+  finished_at          DateTime?
+  error_message        String?
+  error_count          Int       @default(0)
+  triggered_by_user_id String?
 
-  created_at                  DateTime  @default(now())
-  updated_at                  DateTime  @updatedAt
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
   connection LeadSourceConnection @relation(fields: [lead_source_connection_id], references: [id], onDelete: Cascade)
 
@@ -2141,32 +2294,32 @@ model LeadSourceImportJob {
 /// CrmConnection because the model is purely outbound (we push prospects
 /// + add to sequences; we don't pull contacts back).
 model OutreachConnection {
-  id                       String    @id @default(uuid())
-  organization_id          String
+  id              String @id @default(uuid())
+  organization_id String
 
   // OAuth tokens — encrypted at rest (AES-256-GCM)
-  access_token             String
-  refresh_token            String
-  token_expires_at         DateTime
-  scopes                   String?   // space-separated granted scopes
+  access_token     String
+  refresh_token    String
+  token_expires_at DateTime
+  scopes           String? // space-separated granted scopes
 
   // Provider-side identity
-  outreach_user_id         String?
-  outreach_user_email      String?
-  outreach_org_name        String?
+  outreach_user_id    String?
+  outreach_user_email String?
+  outreach_org_name   String?
 
-  status                   String    @default("active") // active | error | expired | disconnected
-  last_validated_at        DateTime?
-  last_used_at             DateTime?
-  last_error               String?
-  connected_at             DateTime  @default(now())
-  connected_by_user_id     String?
-  disconnected_at          DateTime?
+  status               String    @default("active") // active | error | expired | disconnected
+  last_validated_at    DateTime?
+  last_used_at         DateTime?
+  last_error           String?
+  connected_at         DateTime  @default(now())
+  connected_by_user_id String?
+  disconnected_at      DateTime?
 
-  created_at               DateTime  @default(now())
-  updated_at               DateTime  @updatedAt
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
-  organization Organization         @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  organization Organization        @relation(fields: [organization_id], references: [id], onDelete: Cascade)
   exportJobs   OutreachExportJob[]
 
   @@unique([organization_id])
@@ -2177,41 +2330,41 @@ model OutreachConnection {
 /// Outreach sequence. lead_ids is captured at job-creation time so the
 /// list doesn't drift mid-run if the underlying campaign changes.
 model OutreachExportJob {
-  id                          String   @id @default(uuid())
-  outreach_connection_id      String
-  organization_id             String
+  id                     String @id @default(uuid())
+  outreach_connection_id String
+  organization_id        String
 
   // Source snapshot
-  source_kind                 String   // 'todays_list' | 'custom_list' | 'campaign'
-  source_label                String?
-  prospect_ids                String[] // CampaignLead.id snapshot at queue time
+  source_kind  String // 'todays_list' | 'custom_list' | 'campaign'
+  source_label String?
+  prospect_ids String[] // CampaignLead.id snapshot at queue time
 
   // Sequence target
-  sequence_id                 String   // outreach sequence id
-  sequence_name               String?
-  created_sequence            Boolean  @default(false)
-  add_to_mailbox_id           String?  // outreach mailbox id used for sends
+  sequence_id       String // outreach sequence id
+  sequence_name     String?
+  created_sequence  Boolean @default(false)
+  add_to_mailbox_id String? // outreach mailbox id used for sends
 
   // Counters
-  total                       Int      @default(0)
-  total_processed             Int      @default(0)
-  total_prospects_created     Int      @default(0)
-  total_prospects_updated     Int      @default(0)
-  total_added_to_sequence     Int      @default(0)
-  total_skipped               Int      @default(0)
-  total_failed                Int      @default(0)
-  cursor                      Int      @default(0) // index into lead_ids
+  total                   Int @default(0)
+  total_processed         Int @default(0)
+  total_prospects_created Int @default(0)
+  total_prospects_updated Int @default(0)
+  total_added_to_sequence Int @default(0)
+  total_skipped           Int @default(0)
+  total_failed            Int @default(0)
+  cursor                  Int @default(0) // index into lead_ids
 
   // Lifecycle
-  state                       String   @default("pending") // pending | running | completed | failed | cancelled
-  started_at                  DateTime?
-  finished_at                 DateTime?
-  error_message               String?
-  error_count                 Int      @default(0)
-  triggered_by_user_id        String?
+  state                String    @default("pending") // pending | running | completed | failed | cancelled
+  started_at           DateTime?
+  finished_at          DateTime?
+  error_message        String?
+  error_count          Int       @default(0)
+  triggered_by_user_id String?
 
-  created_at                  DateTime @default(now())
-  updated_at                  DateTime @updatedAt
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
   connection OutreachConnection @relation(fields: [outreach_connection_id], references: [id], onDelete: Cascade)
 
@@ -2225,33 +2378,33 @@ model OutreachExportJob {
 /// org. Both credentials are encrypted at rest (AES-256-GCM, same key used
 /// for OutreachConnection.access_token).
 model JustCallConnection {
-  id                       String    @id @default(uuid())
-  organization_id          String
+  id              String @id @default(uuid())
+  organization_id String
 
   // Credentials — encrypted at rest. JustCall's public API takes them as
   // `Authorization: <api_key>:<api_secret>` (colon-joined, NOT HTTP Basic).
-  api_key                  String
-  api_secret               String
+  api_key    String
+  api_secret String
 
   // Provider-side identity, surfaced in the dashboard so the operator can
   // confirm which JustCall workspace is connected. Captured via a /users
   // probe at connect time.
-  justcall_user_id         String?
-  justcall_user_email      String?
-  justcall_account_name    String?
+  justcall_user_id      String?
+  justcall_user_email   String?
+  justcall_account_name String?
 
-  status                   String    @default("active") // active | error | disconnected
-  last_validated_at        DateTime?
-  last_used_at             DateTime?
-  last_error               String?
-  connected_at             DateTime  @default(now())
-  connected_by_user_id     String?
-  disconnected_at          DateTime?
+  status               String    @default("active") // active | error | disconnected
+  last_validated_at    DateTime?
+  last_used_at         DateTime?
+  last_error           String?
+  connected_at         DateTime  @default(now())
+  connected_by_user_id String?
+  disconnected_at      DateTime?
 
-  created_at               DateTime  @default(now())
-  updated_at               DateTime  @updatedAt
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
-  organization Organization         @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  organization Organization        @relation(fields: [organization_id], references: [id], onDelete: Cascade)
   exportJobs   JustCallExportJob[]
 
   @@unique([organization_id])
@@ -2262,41 +2415,41 @@ model JustCallConnection {
 /// dialer campaign. lead_ids is captured at queue time so the snapshot
 /// doesn't drift mid-run if the source campaign changes.
 model JustCallExportJob {
-  id                          String   @id @default(uuid())
-  justcall_connection_id      String
-  organization_id             String
+  id                     String @id @default(uuid())
+  justcall_connection_id String
+  organization_id        String
 
   // Source snapshot
-  source_kind                 String   // 'todays_list' | 'custom_list' | 'campaign'
-  source_label                String?
-  prospect_ids                String[] // CampaignLead.id snapshot at queue time
+  source_kind  String // 'todays_list' | 'custom_list' | 'campaign'
+  source_label String?
+  prospect_ids String[] // CampaignLead.id snapshot at queue time
 
   // Target — JustCall sales dialer campaign
-  campaign_id                 String   // JustCall sales_dialer campaign id
-  campaign_name               String?
-  created_campaign            Boolean  @default(false)
+  campaign_id      String // JustCall sales_dialer campaign id
+  campaign_name    String?
+  created_campaign Boolean @default(false)
 
   // Counters. JustCall's bulk_import returns aggregate counts per batch
   // rather than per-contact results, so created/updated isn't always
   // disambiguated — when only one number comes back we record it under
   // total_added.
-  total                       Int      @default(0)
-  total_processed             Int      @default(0)
-  total_added                 Int      @default(0)
-  total_skipped               Int      @default(0)
-  total_failed                Int      @default(0)
-  cursor                      Int      @default(0) // index into prospect_ids
+  total           Int @default(0)
+  total_processed Int @default(0)
+  total_added     Int @default(0)
+  total_skipped   Int @default(0)
+  total_failed    Int @default(0)
+  cursor          Int @default(0) // index into prospect_ids
 
   // Lifecycle
-  state                       String   @default("pending") // pending | running | completed | failed | cancelled
-  started_at                  DateTime?
-  finished_at                 DateTime?
-  error_message               String?
-  error_count                 Int      @default(0)
-  triggered_by_user_id        String?
+  state                String    @default("pending") // pending | running | completed | failed | cancelled
+  started_at           DateTime?
+  finished_at          DateTime?
+  error_message        String?
+  error_count          Int       @default(0)
+  triggered_by_user_id String?
 
-  created_at                  DateTime @default(now())
-  updated_at                  DateTime @updatedAt
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
   connection JustCallConnection @relation(fields: [justcall_connection_id], references: [id], onDelete: Cascade)
 

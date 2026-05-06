@@ -11,6 +11,7 @@ import { logger } from '../services/observabilityService';
 import { dispatchEmail } from '../services/emailTemplates/dispatcher';
 import { passwordChangedEmail } from '../services/emailTemplates/passwordChanged';
 import { summariseRequester, buildFrontendUrl } from '../services/emailTemplates/requesterContext';
+import { resolveCapabilities, CAPABILITY_KEYS } from '../middleware/requireCapability';
 
 /**
  * Get current user information.
@@ -35,6 +36,9 @@ export const getCurrentUser = async (req: Request, res: Response): Promise<void>
                 organization_id: true,
                 last_login_at: true,
                 created_at: true,
+                is_agency_owner: true,
+                scoped_organization_id: true,
+                account_id: true,
                 // Surface the org's slug so the dashboard can render the
                 // per-org MCP URL (`/mcp/<slug>`) without an extra round-trip.
                 organization: {
@@ -48,9 +52,20 @@ export const getCurrentUser = async (req: Request, res: Response): Promise<void>
             return;
         }
 
+        // Capability list for the frontend so it can hide write controls the
+        // user can't actually use. Source of truth still lives on the backend
+        // — every gated route checks via requireCapability — but a clean UI
+        // beats a button that 403s on click.
+        //
+        // capabilityKeys is the canonical list of every capability the
+        // backend recognizes. The frontend's invite-creation modal reads
+        // this so adding a new capability is a one-side change (backend
+        // adds it to CAPABILITY_KEYS; frontend renders it automatically).
+        const capabilities = await resolveCapabilities(userId, user.organization_id);
+
         res.json({
             success: true,
-            data: user
+            data: { ...user, capabilities, capabilityKeys: CAPABILITY_KEYS },
         });
     } catch (error) {
         logger.error('[USER] Failed to get current user', error as Error);

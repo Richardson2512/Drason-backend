@@ -66,7 +66,7 @@ async function main() {
       slug: DEMO_ORG_SLUG,
       system_mode: 'enforce',
       assessment_completed: true,
-      subscription_tier: 'growth',
+      subscription_tier: 'scale',
       subscription_status: 'active',
       trial_started_at: daysAgo(60),
       trial_ends_at: daysAgo(46),
