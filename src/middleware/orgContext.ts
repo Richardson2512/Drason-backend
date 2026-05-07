@@ -13,6 +13,7 @@ import jwt from 'jsonwebtoken';
 import { prisma } from '../index';
 import { OrgContext, UserRole } from '../types';
 import { logger } from '../services/observabilityService';
+import { clearTokenCookie } from '../services/tokenService';
 
 // ============================================================================
 // JWT VERIFICATION
@@ -152,7 +153,7 @@ export const extractOrgContext = async (
                     logger.warn('[ORG_CONTEXT] JWT references unknown user — clearing cookie + 401', {
                         userId: jwtPayload.userId,
                     });
-                    res.clearCookie('token', { path: '/' });
+                    clearTokenCookie(res);
                     res.status(401).json({
                         success: false,
                         error: 'Session expired',
@@ -171,7 +172,7 @@ export const extractOrgContext = async (
                         jwtAccountId: jwtPayload.accountId,
                         currentAccountId: user.account_id,
                     });
-                    res.clearCookie('token', { path: '/' });
+                    clearTokenCookie(res);
                     res.status(401).json({
                         success: false,
                         error: 'Session expired',
@@ -185,7 +186,7 @@ export const extractOrgContext = async (
                         jwtOrgId: jwtPayload.orgId,
                         currentOrgId: user.organization_id,
                     });
-                    res.clearCookie('token', { path: '/' });
+                    clearTokenCookie(res);
                     res.status(401).json({
                         success: false,
                         error: 'Session expired',
@@ -199,7 +200,7 @@ export const extractOrgContext = async (
                         logger.warn('[ORG_CONTEXT] JWT issued before password change — rejected', {
                             userId: jwtPayload.userId,
                         });
-                        res.clearCookie('token', { path: '/' });
+                        clearTokenCookie(res);
                         res.status(401).json({
                             success: false,
                             error: 'Session expired',
@@ -268,7 +269,7 @@ export const extractOrgContext = async (
             if (!organizationId) {
                 logger.warn('[ORG_CONTEXT] Token present but unverifiable — clearing cookie + 401');
                 if (req.cookies?.token) {
-                    res.clearCookie('token', { path: '/' });
+                    clearTokenCookie(res);
                 }
                 res.status(401).json({
                     success: false,

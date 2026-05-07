@@ -12,7 +12,7 @@ import { welcomeEmail } from '../services/emailTemplates/welcome';
 import { accountLockedEmail } from '../services/emailTemplates/accountLocked';
 import { passwordChangedEmail } from '../services/emailTemplates/passwordChanged';
 import { summariseRequester, buildFrontendUrl } from '../services/emailTemplates/requesterContext';
-import { JWT_SECRET, generateToken, setTokenCookie } from '../services/tokenService';
+import { JWT_SECRET, generateToken, setTokenCookie, clearTokenCookie } from '../services/tokenService';
 import { uniqueSlug } from '../utils/slug';
 
 /**
@@ -474,7 +474,7 @@ export const refreshToken = async (req: Request, res: Response) => {
         if (user.password_changed_at && decoded.iat) {
             const tokenIssuedAt = new Date(decoded.iat * 1000);
             if (tokenIssuedAt < user.password_changed_at) {
-                res.clearCookie('token', { path: '/' });
+                clearTokenCookie(res);
                 return res.status(401).json({ success: false, error: 'Password was changed. Please log in again.' });
             }
         }
@@ -511,7 +511,7 @@ export const refreshToken = async (req: Request, res: Response) => {
  * Logout — clears the auth cookie.
  */
 export const logout = async (_req: Request, res: Response) => {
-    res.clearCookie('token', { path: '/' });
+    clearTokenCookie(res);
     res.json({ success: true, data: { message: 'Logged out successfully' } });
 };
 
@@ -689,7 +689,7 @@ export const resetPassword = async (req: Request, res: Response): Promise<void> 
 
         // If the user happened to be authenticated in another tab, kill that
         // session too so the new password is effectively a clean slate.
-        res.clearCookie('token', { path: '/' });
+        clearTokenCookie(res);
 
         // Security notification — confirm the change and surface a recovery
         // path if the user wasn't the one who reset it.

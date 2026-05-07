@@ -12,6 +12,7 @@ import { dispatchEmail } from '../services/emailTemplates/dispatcher';
 import { passwordChangedEmail } from '../services/emailTemplates/passwordChanged';
 import { summariseRequester, buildFrontendUrl } from '../services/emailTemplates/requesterContext';
 import { resolveCapabilities, CAPABILITY_KEYS } from '../middleware/requireCapability';
+import { clearTokenCookie } from '../services/tokenService';
 
 /**
  * Get current user information.
@@ -180,7 +181,7 @@ export const changePassword = async (req: Request, res: Response): Promise<void>
         });
 
         // Clear the current session cookie — force re-login
-        res.clearCookie('token', { path: '/' });
+        clearTokenCookie(res);
 
         // Security notification — fire-and-forget. Confirms the change and
         // gives the user a fast recovery path if it wasn't them.

@@ -77,3 +77,18 @@ export function setTokenCookie(res: Response, token: string): void {
         ...(COOKIE_DOMAIN ? { domain: COOKIE_DOMAIN } : {}),
     });
 }
+
+/**
+ * Clear the auth cookie. The browser will only clear a cookie when the
+ * `domain`, `path`, `secure`, and `sameSite` attributes match the ones
+ * used at set-time — so this MUST mirror setTokenCookie.
+ */
+export function clearTokenCookie(res: Response): void {
+    res.clearCookie('token', {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        path: '/',
+        ...(COOKIE_DOMAIN ? { domain: COOKIE_DOMAIN } : {}),
+    });
+}
