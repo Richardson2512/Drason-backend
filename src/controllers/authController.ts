@@ -9,6 +9,7 @@ import { TOS_VERSION, PRIVACY_VERSION, TOS_PATH, PRIVACY_PATH } from '../constan
 import { dispatchEmail } from '../services/emailTemplates/dispatcher';
 import { passwordResetEmail } from '../services/emailTemplates/passwordReset';
 import { welcomeEmail } from '../services/emailTemplates/welcome';
+import { internalNewSignupAlert } from '../services/emailTemplates/internalNewSignupAlert';
 import { accountLockedEmail } from '../services/emailTemplates/accountLocked';
 import { passwordChangedEmail } from '../services/emailTemplates/passwordChanged';
 import { summariseRequester, buildFrontendUrl } from '../services/emailTemplates/requesterContext';
@@ -400,6 +401,24 @@ export const register = async (req: Request, res: Response) => {
             category: 'account_security',
             eventKind: 'welcome',
             idempotencyKey: `welcome:${result.user.id}`,
+        });
+
+        // Internal alert — let the team know about every new signup.
+        const internalAlertTo = process.env.INTERNAL_SIGNUP_ALERT_TO || 'richardson@superkabe.com';
+        void dispatchEmail({
+            rendered: internalNewSignupAlert({
+                userEmail: result.user.email,
+                userName: result.user.name,
+                organizationName: result.org.name,
+                signupSource: 'email_password',
+                ipAddress: req.ip ?? null,
+                userAgent: req.headers['user-agent'] ?? null,
+            }),
+            audience: { kind: 'email', email: internalAlertTo },
+            category: 'system',
+            eventKind: 'internal_new_signup',
+            idempotencyKey: `internal-signup:${result.user.id}`,
+            quiet: true,
         });
 
         // Set httpOnly cookie server-side

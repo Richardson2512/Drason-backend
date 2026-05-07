@@ -7,6 +7,7 @@ import * as googleOAuth from '../services/googleOAuthService';
 import { encrypt } from '../utils/encryption';
 import { dispatchEmail } from '../services/emailTemplates/dispatcher';
 import { welcomeEmail } from '../services/emailTemplates/welcome';
+import { internalNewSignupAlert } from '../services/emailTemplates/internalNewSignupAlert';
 import { buildFrontendUrl } from '../services/emailTemplates/requesterContext';
 
 // JWT_SECRET is validated at startup in index.ts
@@ -339,6 +340,26 @@ export const handleGoogleCallback = async (req: Request, res: Response) => {
             });
 
             setTokenCookie(res, token);
+
+            // Internal alert — Google Workspace auto-org path.
+            const internalAlertTo = process.env.INTERNAL_SIGNUP_ALERT_TO || 'richardson@superkabe.com';
+            void dispatchEmail({
+                rendered: internalNewSignupAlert({
+                    userEmail: result.user.email,
+                    userName: result.user.name,
+                    organizationName: result.org.name,
+                    signupSource: 'google_workspace',
+                    plan: selectedPlan ?? null,
+                    ipAddress: req.ip ?? null,
+                    userAgent: req.headers['user-agent'] ?? null,
+                }),
+                audience: { kind: 'email', email: internalAlertTo },
+                category: 'system',
+                eventKind: 'internal_new_signup',
+                idempotencyKey: `internal-signup:${result.user.id}`,
+                quiet: true,
+            });
+
             return res.redirect(`${appUrl}/dashboard`);
         }
 
@@ -493,6 +514,24 @@ export const completeOnboarding = async (req: Request, res: Response) => {
             category: 'account_security',
             eventKind: 'welcome',
             idempotencyKey: `welcome:${result.user.id}`,
+        });
+
+        // Internal alert — Gmail-onboarded path.
+        const internalAlertTo = process.env.INTERNAL_SIGNUP_ALERT_TO || 'richardson@superkabe.com';
+        void dispatchEmail({
+            rendered: internalNewSignupAlert({
+                userEmail: result.user.email,
+                userName: result.user.name,
+                organizationName: result.org.name,
+                signupSource: 'google_gmail',
+                ipAddress: req.ip ?? null,
+                userAgent: req.headers['user-agent'] ?? null,
+            }),
+            audience: { kind: 'email', email: internalAlertTo },
+            category: 'system',
+            eventKind: 'internal_new_signup',
+            idempotencyKey: `internal-signup:${result.user.id}`,
+            quiet: true,
         });
 
         return res.json({ success: true });
