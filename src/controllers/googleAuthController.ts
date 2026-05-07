@@ -28,6 +28,13 @@ const COOKIE_MAX_AGE = 3 * 24 * 60 * 60 * 1000; // 3 days in ms
 const PENDING_TOKEN_EXPIRY_MS = 10 * 60 * 1000; // 10 minutes
 
 /**
+ * Cookie domain for subdomain-split mode. See tokenService.ts for the
+ * full explanation. Setting this to `.superkabe.com` makes the cookie
+ * visible to both `superkabe.com` and `app.superkabe.com`.
+ */
+const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || undefined;
+
+/**
  * Set auth token as httpOnly server-side cookie
  */
 function setTokenCookie(res: Response, token: string): void {
@@ -37,6 +44,7 @@ function setTokenCookie(res: Response, token: string): void {
         sameSite: 'lax',
         path: '/',
         maxAge: COOKIE_MAX_AGE,
+        ...(COOKIE_DOMAIN ? { domain: COOKIE_DOMAIN } : {}),
     });
 }
 
@@ -51,6 +59,7 @@ function setPendingTokenCookie(res: Response, pendingToken: string): void {
         sameSite: 'lax',
         path: '/',
         maxAge: PENDING_TOKEN_EXPIRY_MS,
+        ...(COOKIE_DOMAIN ? { domain: COOKIE_DOMAIN } : {}),
     });
 }
 
@@ -64,6 +73,7 @@ function clearPendingTokenCookie(res: Response): void {
         sameSite: 'lax',
         path: '/',
         maxAge: 0,
+        ...(COOKIE_DOMAIN ? { domain: COOKIE_DOMAIN } : {}),
     });
 }
 
@@ -213,7 +223,11 @@ export const initiateGoogleAuth = async (req: Request, res: Response) => {
  * - Existing user: Update tokens → redirect to dashboard
  */
 export const handleGoogleCallback = async (req: Request, res: Response) => {
+    // FRONTEND_URL = marketing host (superkabe.com) — used for /signup, /login error redirects
+    // APP_URL = app subdomain host (app.superkabe.com) — used for /dashboard, /onboarding
+    // In single-domain mode just leave APP_URL unset; we fall back to FRONTEND_URL.
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const appUrl = process.env.APP_URL || frontendUrl;
 
     try {
         const { code, state, error: oauthError } = req.query;
@@ -298,7 +312,7 @@ export const handleGoogleCallback = async (req: Request, res: Response) => {
             });
 
             setTokenCookie(res, token);
-            return res.redirect(`${frontendUrl}/dashboard`);
+            return res.redirect(`${appUrl}/dashboard`);
         }
 
         // ─── NEW USER: WORKSPACE ACCOUNT ─────────────────────────────────
@@ -325,7 +339,7 @@ export const handleGoogleCallback = async (req: Request, res: Response) => {
             });
 
             setTokenCookie(res, token);
-            return res.redirect(`${frontendUrl}/dashboard`);
+            return res.redirect(`${appUrl}/dashboard`);
         }
 
         // ─── NEW USER: PERSONAL GMAIL ────────────────────────────────────
@@ -360,7 +374,7 @@ export const handleGoogleCallback = async (req: Request, res: Response) => {
 
         // Set only the opaque token in a lightweight cookie
         setPendingTokenCookie(res, pendingToken);
-        return res.redirect(`${frontendUrl}/onboarding`);
+        return res.redirect(`${appUrl}/onboarding`);
 
     } catch (error: any) {
         logger.error('[GoogleAuth] OAuth callback error', error);

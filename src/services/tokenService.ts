@@ -56,6 +56,16 @@ export function generateToken(user: TokenInput): string {
     );
 }
 
+/**
+ * Optional cookie domain — set in subdomain-split mode so the auth cookie
+ * is visible to BOTH the marketing host (e.g. superkabe.com) and the app
+ * host (app.superkabe.com). When unset (local dev) the cookie stays
+ * host-only, which is the safer default. Always start with a leading dot.
+ *   prod:  COOKIE_DOMAIN=.superkabe.com
+ *   dev:   leave unset
+ */
+const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || undefined;
+
 /** Set the httpOnly auth cookie. */
 export function setTokenCookie(res: Response, token: string): void {
     res.cookie('token', token, {
@@ -64,5 +74,6 @@ export function setTokenCookie(res: Response, token: string): void {
         sameSite: 'lax',
         path: '/',
         maxAge: COOKIE_MAX_AGE_MS,
+        ...(COOKIE_DOMAIN ? { domain: COOKIE_DOMAIN } : {}),
     });
 }

@@ -26,6 +26,10 @@ import {
 } from '../services/microsoftSendService';
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+// In subdomain-split mode, /dashboard/* lives on the app host (e.g.
+// app.superkabe.com) — APP_URL points there. In single-domain mode this
+// falls back to FRONTEND_URL so the build still works.
+const APP_URL = process.env.APP_URL || FRONTEND_URL;
 
 // ─── GOOGLE ──────────────────────────────────────────────────────────────────
 
@@ -37,7 +41,7 @@ export const googleAuthorize = async (req: Request, res: Response): Promise<void
         res.redirect(url);
     } catch (err: any) {
         logger.error('[OAUTH] Google authorize failed', err);
-        res.redirect(`${FRONTEND_URL}/dashboard/sequencer/accounts?error=${encodeURIComponent(err.message || 'OAuth setup failed')}`);
+        res.redirect(`${APP_URL}/dashboard/sequencer/accounts?error=${encodeURIComponent(err.message || 'OAuth setup failed')}`);
     }
 };
 
@@ -46,11 +50,11 @@ export const googleCallback = async (req: Request, res: Response): Promise<void>
 
     if (oauthError) {
         logger.warn('[OAUTH] Google callback returned error', { error: oauthError });
-        return res.redirect(`${FRONTEND_URL}/dashboard/sequencer/accounts?error=${encodeURIComponent(String(oauthError))}`);
+        return res.redirect(`${APP_URL}/dashboard/sequencer/accounts?error=${encodeURIComponent(String(oauthError))}`);
     }
 
     if (!code || !state) {
-        return res.redirect(`${FRONTEND_URL}/dashboard/sequencer/accounts?error=missing_code_or_state`);
+        return res.redirect(`${APP_URL}/dashboard/sequencer/accounts?error=missing_code_or_state`);
     }
 
     // Validate state against the server-side store (CSRF protection). Any
@@ -58,7 +62,7 @@ export const googleCallback = async (req: Request, res: Response): Promise<void>
     const orgId = await consumeSequencerGoogleState(String(state));
     if (!orgId) {
         logger.warn('[OAUTH] Google callback rejected — invalid state');
-        return res.redirect(`${FRONTEND_URL}/dashboard/sequencer/accounts?error=invalid_state`);
+        return res.redirect(`${APP_URL}/dashboard/sequencer/accounts?error=invalid_state`);
     }
     const parsed = { orgId };
 
@@ -160,10 +164,10 @@ export const googleCallback = async (req: Request, res: Response): Promise<void>
         }
 
         logger.info(`[OAUTH] Google account connected: ${email}`, { orgId: parsed.orgId });
-        res.redirect(`${FRONTEND_URL}/dashboard/sequencer/accounts?connected=google&email=${encodeURIComponent(email)}`);
+        res.redirect(`${APP_URL}/dashboard/sequencer/accounts?connected=google&email=${encodeURIComponent(email)}`);
     } catch (err: any) {
         logger.error('[OAUTH] Google callback failed', err);
-        res.redirect(`${FRONTEND_URL}/dashboard/sequencer/accounts?error=${encodeURIComponent(err.message || 'Connection failed')}`);
+        res.redirect(`${APP_URL}/dashboard/sequencer/accounts?error=${encodeURIComponent(err.message || 'Connection failed')}`);
     }
 };
 
@@ -177,7 +181,7 @@ export const microsoftAuthorize = async (req: Request, res: Response): Promise<v
         res.redirect(url);
     } catch (err: any) {
         logger.error('[OAUTH] Microsoft authorize failed', err);
-        res.redirect(`${FRONTEND_URL}/dashboard/sequencer/accounts?error=${encodeURIComponent(err.message || 'OAuth setup failed')}`);
+        res.redirect(`${APP_URL}/dashboard/sequencer/accounts?error=${encodeURIComponent(err.message || 'OAuth setup failed')}`);
     }
 };
 
@@ -186,16 +190,16 @@ export const microsoftCallback = async (req: Request, res: Response): Promise<vo
 
     if (oauthError) {
         logger.warn('[OAUTH] Microsoft callback returned error', { error: oauthError, description: error_description });
-        return res.redirect(`${FRONTEND_URL}/dashboard/sequencer/accounts?error=${encodeURIComponent(String(error_description || oauthError))}`);
+        return res.redirect(`${APP_URL}/dashboard/sequencer/accounts?error=${encodeURIComponent(String(error_description || oauthError))}`);
     }
 
     if (!code || !state) {
-        return res.redirect(`${FRONTEND_URL}/dashboard/sequencer/accounts?error=missing_code_or_state`);
+        return res.redirect(`${APP_URL}/dashboard/sequencer/accounts?error=missing_code_or_state`);
     }
 
     const parsed = parseMicrosoftState(String(state));
     if (!parsed) {
-        return res.redirect(`${FRONTEND_URL}/dashboard/sequencer/accounts?error=invalid_state`);
+        return res.redirect(`${APP_URL}/dashboard/sequencer/accounts?error=invalid_state`);
     }
 
     try {
@@ -292,9 +296,9 @@ export const microsoftCallback = async (req: Request, res: Response): Promise<vo
         }
 
         logger.info(`[OAUTH] Microsoft account connected: ${email}`, { orgId: parsed.orgId });
-        res.redirect(`${FRONTEND_URL}/dashboard/sequencer/accounts?connected=microsoft&email=${encodeURIComponent(email)}`);
+        res.redirect(`${APP_URL}/dashboard/sequencer/accounts?connected=microsoft&email=${encodeURIComponent(email)}`);
     } catch (err: any) {
         logger.error('[OAUTH] Microsoft callback failed', err);
-        res.redirect(`${FRONTEND_URL}/dashboard/sequencer/accounts?error=${encodeURIComponent(err.message || 'Connection failed')}`);
+        res.redirect(`${APP_URL}/dashboard/sequencer/accounts?error=${encodeURIComponent(err.message || 'Connection failed')}`);
     }
 };

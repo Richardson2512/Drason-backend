@@ -57,7 +57,7 @@ export const initiateInstall = async (req: Request, res: Response) => {
     const clientId = process.env.SLACK_CLIENT_ID;
     if (!clientId) {
         logger.error('[Slack] SLACK_CLIENT_ID is not configured');
-        return res.redirect(`${process.env.FRONTEND_URL}/dashboard/settings?slack_error=slack_not_configured`);
+        return res.redirect(`${process.env.APP_URL || process.env.FRONTEND_URL}/dashboard/settings?slack_error=slack_not_configured`);
     }
 
     const redirectUri = `${getPublicBackendUrl()}/slack/oauth/callback`;
@@ -95,7 +95,7 @@ export const handleOAuthCallback = async (req: Request, res: Response) => {
 
     if (error) {
         logger.warn(`[Slack] OAuth flow cancelled or failed: ${error}`);
-        return res.redirect(`${process.env.FRONTEND_URL}/dashboard/settings?slack_error=${error}`);
+        return res.redirect(`${process.env.APP_URL || process.env.FRONTEND_URL}/dashboard/settings?slack_error=${error}`);
     }
 
     if (!code || !state) {
@@ -120,7 +120,7 @@ export const handleOAuthCallback = async (req: Request, res: Response) => {
 
         if (!data.ok) {
             logger.error('[Slack] OAuth exchange failed:', data.error);
-            return res.redirect(`${process.env.FRONTEND_URL}/dashboard/settings?slack_error=${data.error}`);
+            return res.redirect(`${process.env.APP_URL || process.env.FRONTEND_URL}/dashboard/settings?slack_error=${data.error}`);
         }
 
         const teamId = data.team.id;
@@ -169,11 +169,11 @@ export const handleOAuthCallback = async (req: Request, res: Response) => {
         });
 
         logger.info(`[Slack] Integration successfully installed for Org ${orgId} to Workspace ${teamId}`);
-        res.redirect(`${process.env.FRONTEND_URL}/dashboard/settings?slack_success=true`);
+        res.redirect(`${process.env.APP_URL || process.env.FRONTEND_URL}/dashboard/settings?slack_success=true`);
 
     } catch (err) {
         logger.error('[Slack] Unexpected error during OAuth callback', err as Error);
-        res.redirect(`${process.env.FRONTEND_URL}/dashboard/settings?slack_error=internal_server_error`);
+        res.redirect(`${process.env.APP_URL || process.env.FRONTEND_URL}/dashboard/settings?slack_error=internal_server_error`);
     }
 };
 

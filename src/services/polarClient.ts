@@ -314,8 +314,8 @@ export async function createCheckoutSession(
         const response = await polarApi.post('/checkouts', {
             product_id: productId,
             customer_id: customerId,
-            success_url: `${process.env.FRONTEND_URL}/dashboard/settings?checkout=success`,
-            cancel_url: `${process.env.FRONTEND_URL}/dashboard/settings?checkout=canceled`,
+            success_url: `${process.env.APP_URL || process.env.FRONTEND_URL}/dashboard/settings?checkout=success`,
+            cancel_url: `${process.env.APP_URL || process.env.FRONTEND_URL}/dashboard/settings?checkout=canceled`,
             metadata: {
                 organization_id: orgId,
                 tier
