@@ -122,6 +122,16 @@ export async function provisionMailboxForConnectedAccount(
     import('./mailboxIpResolutionService').then(m => m.resolveAndPersistMailboxIp(mailbox.id))
         .catch(err => logger.warn('[PROVISION] IP resolution failed', { mailboxId: mailbox.id, error: err?.message }));
 
+    // Auto-enroll into the warmup pool. Per the user spec, every newly
+    // connected mailbox starts warmup at 5/day → 50/day over 21 days.
+    // The membership row is created enabled, but the worker won't send
+    // until the org owner consents at the workspace level (the Join
+    // Pool toggle on the warmup dashboard). Fire-and-forget — never
+    // block provisioning on this side path.
+    import('./warmup/membershipService').then(m =>
+        m.autoEnrollMailbox({ mailboxId: mailbox.id, organizationId }),
+    ).catch(err => logger.warn('[PROVISION] warmup auto-enroll failed', { mailboxId: mailbox.id, error: err?.message }));
+
     return { mailboxId: mailbox.id, domainId: domain.id };
 }
 

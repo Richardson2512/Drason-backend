@@ -220,6 +220,12 @@ model Organization {
   leadSourceConnections  LeadSourceConnection[]
   outreachConnections    OutreachConnection[]
   justCallConnections    JustCallConnection[]
+  warmupPoolMemberships  WarmupPoolMembership[]
+  /// Workspace-level consent: must be true before any of this org's mailboxes
+  /// participate in the cross-tenant warmup pool. Set during onboarding or
+  /// when the user clicks "Join warmup pool" on the warmup page.
+  warmup_pool_consent    Boolean   @default(false)
+  warmup_pool_consent_at DateTime?
   // SendCampaign was unified into Campaign. Sequencer campaigns now appear in the
   // `campaigns` relation above with source_platform='sequencer'.
   emailThreads           EmailThread[]
@@ -793,6 +799,7 @@ model Mailbox {
   connectedAccount     ConnectedAccount? @relation(fields: [connected_account_id], references: [id], onDelete: SetNull)
   metrics              MailboxMetrics?
   campaigns            Campaign[]        @relation("CampaignToMailbox")
+  warmupMembership     WarmupPoolMembership?
 
   @@unique([organization_id, import_external_id])
   @@index([organization_id, status])
@@ -2501,4 +2508,174 @@ model LeadProfile {
 
   @@index([organization_id])
   @@index([status])
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Warmup Pool — proactive sender-reputation building.
+//
+// Architecturally separate from the existing recovery warmup (which is
+// reactive, runs against real production volume during the healing
+// pipeline). This pool is cross-tenant: any mailbox opted-in to the pool
+// exchanges synthetic templated emails with other opted-in mailboxes
+// across the entire customer base.
+//
+// Hard rules enforced via these tables:
+//   - WarmupExchange rows NEVER turn into EmailThread / EmailMessage rows
+//     (queries for the unibox read EmailThread; warmup is invisible there
+//     by design).
+//   - Warmup sends do NOT increment Mailbox.send counters or trigger
+//     bounce/state-machine logic. The send adapter discriminates on a
+//     `kind: 'production' | 'warmup'` parameter; only 'production' counts.
+// ────────────────────────────────────────────────────────────────────
+
+/// Per-mailbox opt-in record. Created automatically when a new
+/// ConnectedAccount is added (auto-enroll), removable via toggle.
+/// Cross-tenant participation is gated by a separate workspace-level
+/// consent (Organization.warmup_pool_consent).
+model WarmupPoolMembership {
+  id              String   @id @default(uuid())
+  mailbox_id      String   @unique
+  organization_id String
+
+  /// Per-mailbox toggle. When false the worker skips this row (other
+  /// mailboxes may still target it for receive — see receive_enabled).
+  enabled         Boolean  @default(true)
+
+  /// Allow this mailbox to RECEIVE warmup emails. Off-by-default would
+  /// starve the pool, so default true. Disabled if the mailbox is paused
+  /// in the healing pipeline.
+  receive_enabled Boolean  @default(true)
+
+  /// Ramp configuration. Default: 5/day → 50/day over 21 days. The user
+  /// can stretch ramp_days but the daily ceiling is hard-capped at
+  /// MAX_TARGET_DAILY=50 in the service layer regardless of input.
+  start_daily     Int      @default(5)
+  target_daily    Int      @default(50)
+  ramp_days       Int      @default(21)
+
+  /// Current allowed cap for today, recomputed nightly by warmupRampWorker.
+  current_daily   Int      @default(5)
+
+  /// Days into the ramp. >=ramp_days means the mailbox has reached
+  /// target_daily and is now in maintenance mode.
+  ramp_step       Int      @default(0)
+
+  /// Maintenance mode: after ramp completes, drop to maintenance_daily
+  /// indefinitely so the mailbox keeps a baseline reputation pulse.
+  /// User can toggle the entire membership off to stop completely.
+  maintenance_daily Int    @default(10)
+
+  /// Lifetime aggregates — surfaced on the dashboard.
+  total_sent           Int @default(0)
+  total_received       Int @default(0)
+  total_opened         Int @default(0)
+  total_replied        Int @default(0)
+  total_recovered_from_spam Int @default(0)
+
+  /// Rolling 30-day spam-landing rate. Drives adaptive ramp slowdown.
+  spam_rate_30d        Float?
+
+  /// 'warming' | 'maintenance' | 'paused' | 'error'
+  health               String   @default("warming")
+  last_error           String?
+
+  joined_at        DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  mailbox      Mailbox      @relation(fields: [mailbox_id], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id])
+  @@index([health])
+  @@index([enabled, receive_enabled])
+}
+
+/// The corpus that powers 3B+ unique warmup variations. Each row is a
+/// spintax skeleton (e.g. "{Hi|Hey} {there|friend}, {hope|trust} ..."):
+/// the resolver expands per-send so two different recipients receive
+/// lexically distinct emails from the same skeleton.
+///
+/// kind values (str enum; not a Prisma enum so seeding doesn't require
+/// migrations to add new kinds):
+///   'subject'      — subject lines
+///   'body'         — initial-message bodies
+///   'signoff'      — closings (Best/Cheers/etc, with optional name slot)
+///   'thread_reply' — replies to existing warmup threads (depth >= 1)
+model WarmupTemplate {
+  id          String   @id @default(uuid())
+  kind        String   // see header
+  spintax     String
+  /// 'en' default; multi-language seeded post-launch.
+  language    String   @default("en")
+  /// Higher weight → more likely to be picked. Defaults to 1.
+  weight      Int      @default(1)
+  active      Boolean  @default(true)
+  /// Optional grouping tag (e.g. "casual", "formal", "industry-tech")
+  /// — left free-form so the seed corpus can experiment without schema
+  /// changes.
+  tag         String?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@index([kind, active])
+  @@index([language, kind])
+}
+
+/// One row per warmup email. Acts as the audit trail (3B variations
+/// means we MUST be able to verify what was sent if something looks off
+/// upstream) AND the work-queue for downstream actions:
+///
+///   scheduled  — selected by sender worker, not yet sent
+///   sent       — handed to SMTP, awaiting recipient action
+///   delivered  — recipient IMAP confirmed arrival
+///   opened     — recipient marked as read
+///   replied    — recipient generated a reply (queued as a new exchange)
+///   recovered_from_spam — recipient moved from junk → inbox
+///   failed     — non-recoverable send error
+///   bounced    — hard bounce; flagged but does NOT touch sender state
+///                machine (kind=warmup, accounting separate)
+model WarmupExchange {
+  id              String   @id @default(uuid())
+
+  sender_mailbox_id    String
+  sender_membership_id String
+  recipient_mailbox_id    String
+  recipient_membership_id String
+
+  /// RFC 5322 Message-ID assigned at send time. Used by the recipient
+  /// IMAP worker to correlate a polled message back to the exchange row.
+  message_id      String?
+
+  /// Subject + first 200 chars of body. Stored for audit; full body
+  /// regenerated each time so storing it would be wasteful.
+  subject         String
+  body_preview    String
+
+  /// Threading. Initial messages get a fresh thread_id (= their own id).
+  /// Replies share their parent's thread_id and increment thread_depth.
+  thread_id       String
+  /// 0 = initial, 1 = reply, 2 = reply-of-reply, max enforced in service.
+  thread_depth    Int      @default(0)
+
+  state           String   @default("scheduled")
+  scheduled_at    DateTime
+  sent_at         DateTime?
+  delivered_at    DateTime?
+  opened_at       DateTime?
+  replied_at      DateTime?
+  recovered_at    DateTime?
+
+  /// Where the email landed on the recipient side. Detected by the
+  /// recipient IMAP worker (reads the mailbox folder list).
+  /// 'inbox' | 'spam' | 'promotions' | 'unknown'
+  landed_in       String?
+
+  error           String?
+
+  created_at      DateTime @default(now())
+
+  @@index([sender_mailbox_id])
+  @@index([recipient_mailbox_id])
+  @@index([thread_id])
+  @@index([state, scheduled_at])
 }

@@ -990,6 +990,20 @@ const server = app.listen(PORT, () => {
     // signups can't blow the OpenAI quota in a single burst.
     import('./services/aiProfileExtractionQueue').then(m => m.startExtractionWorker());
 
+    // Warmup pool — four cooperating workers + corpus seed.
+    //   sender    — schedules sends across the pool (every 15 min)
+    //   dispatch  — sends scheduled exchanges via SMTP (every 1 min)
+    //   recipient — IMAP-polls for delivered warmup, marks read, recovers from spam (every 5 min)
+    //   ramp      — daily volume cadence + spam-rate adaptation (every 6 hours)
+    // Seed runs once at startup; idempotent so re-deploys don't duplicate.
+    import('./services/warmup/seedCorpus').then(m =>
+        m.seedWarmupCorpus().catch(err => logger.warn('[WARMUP] corpus seed failed (non-fatal)', { err: err?.message })),
+    );
+    import('./workers/warmupSenderWorker').then(m => m.startWarmupSenderWorker());
+    import('./workers/warmupDispatchWorker').then(m => m.startWarmupDispatchWorker());
+    import('./workers/warmupRecipientWorker').then(m => m.startWarmupRecipientWorker());
+    import('./workers/warmupRampWorker').then(m => m.startWarmupRampWorker());
+
     startRetentionJob();
     logger.info('Compliance retention job started');
 

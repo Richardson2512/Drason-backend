@@ -159,4 +159,17 @@ previewRoutes.get('/clients', recipientPreviewController.listClients);
 previewRoutes.post('/', recipientPreviewController.generatePreview);
 router.use('/recipient-preview', previewRoutes);
 
+// --- Warmup Pool ---
+import * as warmupController from '../controllers/warmupController';
+const warmupRoutes = Router();
+warmupRoutes.get('/overview', warmupController.getOverview);
+warmupRoutes.get('/consent', warmupController.getConsent);
+warmupRoutes.post('/consent', warmupController.postConsent);
+warmupRoutes.get('/memberships', warmupController.listMemberships);
+warmupRoutes.patch('/pool-config', warmupController.patchPoolConfig);
+warmupRoutes.post('/memberships/:mid/toggle', warmupController.toggleMembership);
+warmupRoutes.patch('/memberships/:mid', warmupController.patchMembershipConfig);
+warmupRoutes.get('/memberships/:mid/exchanges', warmupController.listExchanges);
+router.use('/warmup', warmupRoutes);
+
 export default router;

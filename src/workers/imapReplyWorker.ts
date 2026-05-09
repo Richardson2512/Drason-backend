@@ -648,6 +648,21 @@ async function fetchRepliesFromAccount(account: {
                     // Skip messages from our own account (outbound that we see in INBOX)
                     if (senderEmail === account.email.toLowerCase()) continue;
 
+                    // ── Warmup-pool isolation guard ────────────────────────
+                    // Messages carrying the signed X-Superkabe-Warmup header
+                    // belong to the warmup pool — they're handled by
+                    // workers/warmupRecipientWorker.ts and MUST NOT enter
+                    // the unibox / reply-classification / bounce pipelines.
+                    // Detection is a header substring scan against the raw
+                    // source; HMAC verification happens in the warmup worker.
+                    if (msg.source) {
+                        const sourceStr = msg.source.toString();
+                        // Cap the search to the first 8 KB — header section
+                        // is always at the top, no need to scan body bytes.
+                        const headerSection = sourceStr.slice(0, 8 * 1024);
+                        if (/^x-superkabe-warmup:/im.test(headerSection)) continue;
+                    }
+
                     const recipientAddr = envelope.to?.[0]?.address || account.email;
 
                     // Parse body from source
