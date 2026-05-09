@@ -39,6 +39,7 @@ interface LeadInput {
     title?: string;
     phone?: string;
     linkedin_url?: string;
+    company_linkedin_url?: string;
     idempotencyKey?: string;
     extraPayload?: Record<string, any>;
 }
@@ -65,7 +66,7 @@ export async function processLead(
     organizationId: string,
     input: LeadInput
 ): Promise<ProcessResult> {
-    const { persona, lead_score, source, first_name, last_name, company, title, phone, linkedin_url } = input;
+    const { persona, lead_score, source, first_name, last_name, company, title, phone, linkedin_url, company_linkedin_url } = input;
     const email = input.email.toLowerCase().trim();
     const logTag = source === 'clay' ? 'INGEST CLAY' : 'INGEST';
 
@@ -133,6 +134,7 @@ export async function processLead(
             ...(title !== undefined ? { title } : {}),
             ...(phone !== undefined ? { phone } : {}),
             ...(linkedin_url !== undefined ? { linkedin_url } : {}),
+            ...(company_linkedin_url !== undefined ? { company_linkedin_url } : {}),
             health_classification: healthResult.classification,
             health_score_calc: healthResult.score,
             health_checks: healthResult.checks,
@@ -156,6 +158,7 @@ export async function processLead(
             title: title ?? null,
             phone: phone ?? null,
             linkedin_url: linkedin_url ?? null,
+            company_linkedin_url: company_linkedin_url ?? null,
             status: initialStatus,
             health_state: 'healthy',
             health_classification: healthResult.classification,
@@ -418,6 +421,7 @@ export const ingestLead = async (req: Request, res: Response) => {
             title: req.body.title,
             phone: req.body.phone,
             linkedin_url: req.body.linkedin_url,
+            company_linkedin_url: req.body.company_linkedin_url,
         });
 
         res.json({ success: true, data: result });
@@ -576,7 +580,8 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
             company: findVal(['company', 'company_name', 'company name', 'organization']),
             title: findVal(['title', 'job_title', 'job title', 'role']),
             phone: findVal(['phone', 'phone_number', 'mobile', 'mobile_number', 'cell', 'cell phone']),
-            linkedin_url: findVal(['linkedin', 'linkedin_url', 'linkedin profile', 'linkedin_profile']),
+            linkedin_url: findVal(['linkedin', 'linkedin_url', 'linkedin profile', 'linkedin_profile', 'personal_linkedin']),
+            company_linkedin_url: findVal(['company_linkedin', 'company_linkedin_url', 'linkedin company', 'linkedin_company', 'company_linkedin_page', 'organization_linkedin', 'org_linkedin', 'company_linkedin_profile']),
             idempotencyKey: `${organizationId}:clay:${externalId}`,
             extraPayload: payload,
         });

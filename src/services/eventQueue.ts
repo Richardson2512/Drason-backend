@@ -60,7 +60,10 @@ interface QueueStatus {
 // QUEUE & WORKER INSTANCES
 // ============================================================================
 
-const QUEUE_NAME = 'drason:events';
+// Queue names cannot contain ':' — BullMQ uses ':' internally to build
+// Redis keys (`bull:<queue>:waiting` etc.) and rejects names that would
+// collide with that delimiter. Using '-' instead.
+const QUEUE_NAME = 'drason-events';
 let eventQueue: Queue | null = null;
 let eventWorker: Worker | null = null;
 let queueStatus: QueueStatus = {

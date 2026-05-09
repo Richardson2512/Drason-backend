@@ -331,6 +331,9 @@ function apolloPersonToContact(p: any): LeadSourceContact {
         title: p?.title || undefined,
         phone: pickFirstPhone(p),
         linkedinUrl: p?.linkedin_url || undefined,
+        // Apollo nests the org on the person record; their company
+        // LinkedIn lives on the organization sub-object.
+        companyLinkedinUrl: org?.linkedin_url || p?.organization?.linkedin_url || undefined,
         customFields: p,
     };
 }

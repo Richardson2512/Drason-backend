@@ -447,6 +447,11 @@ model Lead {
   // dial straight from the export. Both nullable; never required.
   phone                 String?
   linkedin_url          String?
+  // Company LinkedIn page (linkedin.com/company/<slug>). Populated from
+  // imports, manual edit, or enrichment. Used as the preferred source for
+  // per-recipient AI enrichment because Jina Reader can scrape company
+  // pages reliably (personal /in/ profiles are blocked).
+  company_linkedin_url  String?
   status                String    @default("held")
   health_state          String    @default("healthy")
   health_classification String    @default("green") // green, yellow, red
@@ -497,6 +502,7 @@ model Lead {
   deleted_at   DateTime?
   organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
   tags         LeadTag[]
+  leadProfile  LeadProfile?
 
   @@unique([organization_id, email])
   @@unique([organization_id, import_external_id])
@@ -2457,4 +2463,42 @@ model JustCallExportJob {
   @@index([organization_id])
   @@index([state])
   @@index([created_at])
+}
+
+/// Per-lead AI enrichment cache. Mirrors BusinessProfile but keyed on
+/// (lead_id) — one row per recipient. Populated by the
+/// leadEnrichmentWorker when a Lead is added with a company_linkedin_url
+/// or website. The cached profile is spliced into prompts at email
+/// generation time as "RECIPIENT CONTEXT" so the same template emits
+/// per-lead-personalized copy without an extra OpenAI call per send.
+///
+/// Failure mode: if the source URL is unreachable or LinkedIn blocks
+/// the scrape, status flips to 'failed' and the row keeps a short
+/// last_error string — the worker won't retry until the lead's
+/// company_linkedin_url / website changes.
+model LeadProfile {
+  id                String   @id @default(uuid())
+  lead_id           String   @unique
+  organization_id   String
+
+  source_url        String   // The URL we scraped (linkedin company > website)
+  source_kind       String   // 'linkedin_company' | 'website' | 'company_search'
+
+  /// LeadProfileV1 shape: subset of BusinessProfileV1 focused on the
+  /// recipient's company — see leadProfileService.ts.
+  profile_json      Json?
+  scraped_chars     Int      @default(0)
+  model_used        String?
+  prompt_tokens     Int      @default(0)
+  completion_tokens Int      @default(0)
+
+  status            String   @default("pending") // pending | extracting | ready | failed | skipped
+  last_error        String?
+  extracted_at      DateTime?
+  updated_at        DateTime @updatedAt
+
+  lead         Lead         @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id])
+  @@index([status])
 }

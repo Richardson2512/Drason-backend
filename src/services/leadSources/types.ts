@@ -28,6 +28,9 @@ export interface LeadSourceContact {
     title?: string;
     phone?: string;
     linkedinUrl?: string;
+    /** Recipient's company LinkedIn page (linkedin.com/company/<slug>).
+     *  Used as the preferred source for per-recipient AI enrichment. */
+    companyLinkedinUrl?: string;
     /** Anything not folded into the canonical fields above. */
     customFields?: Record<string, unknown>;
 }

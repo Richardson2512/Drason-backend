@@ -980,6 +980,16 @@ const server = app.listen(PORT, () => {
     // JustCall.io export worker — pushes Superkabe leads to a sales-dialer campaign.
     import('./workers/justcallExportWorker').then(m => m.startJustCallExportWorker());
 
+    // Lead enrichment worker — Jina-scrapes each lead's company_linkedin_url
+    // / website and caches a LeadProfileV1 used as RECIPIENT CONTEXT during
+    // AI email generation. Pacing is built-in (one Jina call per ~2s).
+    import('./workers/leadEnrichmentWorker').then(m => m.startLeadEnrichmentWorker());
+
+    // AI profile extraction worker — consumes the BullMQ queue for async
+    // POST /api/ai/profile/jobs. Bounded concurrency so a spike of org
+    // signups can't blow the OpenAI quota in a single burst.
+    import('./services/aiProfileExtractionQueue').then(m => m.startExtractionWorker());
+
     startRetentionJob();
     logger.info('Compliance retention job started');
 

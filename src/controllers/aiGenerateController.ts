@@ -19,6 +19,8 @@ import {
     type GenerateStepInput,
     type GenerateSequenceInput,
 } from '../services/aiCopywritingService';
+import { getCachedLeadProfile } from '../services/leadProfileService';
+import { prisma } from '../index';
 
 // ────────────────────────────────────────────────────────────────────
 // In-memory per-org rate limiter — prevents runaway costs.
@@ -80,6 +82,12 @@ function coerceStepInput(body: any): GenerateStepInput | { error: string } {
     if (customInstructions !== undefined && (typeof customInstructions !== 'string' || customInstructions.length > 2000)) {
         return { error: 'custom_instructions must be a string under 2000 chars' };
     }
+    // Optional lead_id — when present, the controller will look up the
+    // cached LeadProfileV1 and feed it into generation as recipient context.
+    const leadId = body?.lead_id;
+    if (leadId !== undefined && typeof leadId !== 'string') {
+        return { error: 'lead_id must be a string' };
+    }
 
     return {
         step_intent: intent,
@@ -89,7 +97,11 @@ function coerceStepInput(body: any): GenerateStepInput | { error: string } {
         word_budget: wordBudget,
         custom_instructions: customInstructions,
         variant_of: variantOf,
-    };
+        // lead_profile is hydrated by the controller, not passed in by the
+        // client — see generateStep below. The leadId is captured here so
+        // the coerce signature gives the controller a typed surface.
+        ...(leadId ? { _leadId: leadId } : {}),
+    } as GenerateStepInput & { _leadId?: string };
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -119,13 +131,34 @@ export const generateStep = async (req: Request, res: Response): Promise<Respons
         });
     }
 
+    // If the caller passed a lead_id, hydrate per-recipient context from
+    // the cached LeadProfile. We strictly verify the lead belongs to the
+    // calling org before reading the cache so a leaked leadId can't
+    // exfiltrate another tenant's enrichment.
+    let leadProfile: Record<string, unknown> | null = null;
+    const leadId = (input as any)._leadId as string | undefined;
+    if (leadId) {
+        const owned = await prisma.lead.findFirst({
+            where: { id: leadId, organization_id: orgId },
+            select: { id: true },
+        });
+        if (owned) {
+            const cached = await getCachedLeadProfile(leadId);
+            if (cached) leadProfile = cached as unknown as Record<string, unknown>;
+        }
+    }
+
     try {
-        const { email, promptTokens, completionTokens } = await generateEmailStep(profile, input);
+        const { email, promptTokens, completionTokens } = await generateEmailStep(
+            profile,
+            { ...input, lead_profile: leadProfile },
+        );
         return res.json({
             success: true,
             data: {
                 email,
                 usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens },
+                lead_profile_used: !!leadProfile,
             },
         });
     } catch (err) {

@@ -16,8 +16,15 @@ const router = Router();
 router.get('/status', asyncHandler(profile.getStatus));
 router.get('/profile', asyncHandler(profile.getProfile));
 router.post('/profile', asyncHandler(profile.createProfile));
+router.patch('/profile', asyncHandler(profile.patchProfile));
 router.post('/profile/refresh', asyncHandler(profile.refreshProfile));
 router.delete('/profile', asyncHandler(profile.deleteProfile));
+
+// Async extraction — for high-concurrency / spike-load scenarios.
+// Same input as POST /profile, but returns 202 with a job id so the
+// HTTP connection isn't held while Jina + OpenAI run.
+router.post('/profile/jobs', asyncHandler(profile.queueProfile));
+router.get('/profile/jobs/:id', asyncHandler(profile.getProfileJob));
 
 // Copy generation
 router.post('/generate-step', asyncHandler(gen.generateStep));

@@ -19,6 +19,7 @@
 import OpenAI from 'openai';
 import { prisma } from '../index';
 import { logger } from './observabilityService';
+import { safeCompletion } from './openaiClient';
 
 // ────────────────────────────────────────────────────────────────────
 // Types — BusinessProfileV1 contract between extraction and generation
@@ -110,6 +111,58 @@ export async function scrapeUrl(url: string): Promise<{ markdown: string; chars:
     return { markdown, chars: markdown.length };
 }
 
+/**
+ * Scrape multiple URLs in parallel and concatenate them with `## Source: <url>`
+ * headers so the extractor can attribute facts. Per-URL failures are caught and
+ * recorded — we don't fail the whole batch on one bad page.
+ *
+ * Total markdown is capped at MAX_SCRAPE_CHARS across all sources so prompt
+ * cost stays bounded regardless of how many URLs the operator pasted.
+ */
+export async function scrapeUrls(urls: string[]): Promise<{
+    markdown: string;
+    chars: number;
+    failures: Array<{ url: string; error: string }>;
+}> {
+    if (urls.length === 0) {
+        return { markdown: '', chars: 0, failures: [] };
+    }
+
+    const perUrl = await Promise.all(
+        urls.map(async (url) => {
+            try {
+                const r = await scrapeUrl(url);
+                return { url, ok: true as const, markdown: r.markdown, chars: r.chars };
+            } catch (err) {
+                return { url, ok: false as const, error: (err as Error).message };
+            }
+        }),
+    );
+
+    const failures = perUrl.filter(r => !r.ok).map(r => ({ url: r.url, error: (r as any).error }));
+    const successes = perUrl.filter(r => r.ok) as Array<{ url: string; ok: true; markdown: string; chars: number }>;
+
+    if (successes.length === 0) {
+        return { markdown: '', chars: 0, failures };
+    }
+
+    // Per-source chunk so the model can cite which URL a fact came from.
+    // Truncate each source proportionally if total would exceed the cap.
+    const totalChars = successes.reduce((n, s) => n + s.chars, 0);
+    const sources = totalChars > MAX_SCRAPE_CHARS
+        ? successes.map(s => ({
+            ...s,
+            markdown: s.markdown.slice(0, Math.floor(s.chars * MAX_SCRAPE_CHARS / totalChars)),
+        }))
+        : successes;
+
+    const combined = sources
+        .map(s => `## Source: ${s.url}\n\n${s.markdown}`)
+        .join('\n\n---\n\n');
+
+    return { markdown: combined, chars: combined.length, failures };
+}
+
 // ────────────────────────────────────────────────────────────────────
 // Step 2 — extract structured profile via OpenAI JSON mode
 // ────────────────────────────────────────────────────────────────────
@@ -130,26 +183,34 @@ Rules:
 - Only include proof points you can verify from the content (stats, customer names, quantified outcomes). Never fabricate.
 - distinctive_phrases: 3-5 terms this brand uses that a competitor wouldn't.
 - If information is missing, use an empty array — never invent.
+- When multiple sources are provided (separated by "## Source: <url>" headers), synthesize across them:
+    * Prefer the homepage / root URL for company.name, value_prop, voice.
+    * Prefer pricing pages for offering.pricing_model.
+    * Prefer case-study / customer pages for proof_points.
+    * Deduplicate facts; if sources conflict, trust the most recent / most specific.
 - Output MUST be valid JSON matching the schema exactly.`;
 
 export async function extractProfile(
-    url: string,
+    urlOrUrls: string | string[],
     markdown: string
 ): Promise<{ profile: BusinessProfileV1; promptTokens: number; completionTokens: number }> {
-    const client = getClient();
+    const urls = Array.isArray(urlOrUrls) ? urlOrUrls : [urlOrUrls];
+    const urlListing = urls.length === 1
+        ? `Website URL: ${urls[0]}`
+        : `Source URLs (${urls.length}):\n${urls.map((u, i) => `${i + 1}. ${u}`).join('\n')}`;
 
-    const response = await client.chat.completions.create({
+    const response = await safeCompletion({
         model: MODEL,
         messages: [
             { role: 'system', content: PROFILE_SYSTEM_PROMPT },
             {
                 role: 'user',
-                content: `Website URL: ${url}\n\nScraped content:\n\n${markdown}`,
+                content: `${urlListing}\n\nScraped content:\n\n${markdown}`,
             },
         ],
         response_format: { type: 'json_object' },
         temperature: 0.2, // deterministic extraction
-    });
+    }, { tag: 'extractProfile' });
 
     const raw = response.choices[0]?.message?.content || '{}';
     let parsed: BusinessProfileV1;
@@ -160,9 +221,13 @@ export async function extractProfile(
         throw new Error('AI returned invalid JSON for business profile');
     }
 
-    // Best-effort shape fixup — the model occasionally returns legacy keys
+    // Best-effort shape fixup — the model occasionally returns legacy keys.
+    // When multiple URLs were passed, the first one is the canonical "primary".
     if (!parsed.schema_version) parsed.schema_version = 1;
-    if (!parsed.company?.url) parsed.company = { ...(parsed.company || { name: '', one_liner: '' }), url };
+    if (!parsed.company?.url) {
+        const primaryUrl = urls[0];
+        parsed.company = { ...(parsed.company || { name: '', one_liner: '' }), url: primaryUrl };
+    }
 
     return {
         profile: parsed,
@@ -176,24 +241,43 @@ export async function extractProfile(
 // ────────────────────────────────────────────────────────────────────
 
 /**
- * Full pipeline: scrape + extract + upsert into BusinessProfile cache.
- * Returns the freshly extracted profile.
+ * Full pipeline: scrape (one or many URLs) + extract + upsert into
+ * BusinessProfile cache. Returns the freshly extracted profile.
+ *
+ * When multiple URLs are passed, content is concatenated with per-source
+ * headers and the extractor synthesizes across them. The first URL wins
+ * the source_url column (treated as the canonical "primary" URL).
+ *
+ * Throws if every URL fails to scrape — partial failures are kept and
+ * surfaced via the returned `failures` shape on the variant below.
  */
-export async function extractAndCacheProfile(orgId: string, url: string): Promise<BusinessProfileV1> {
-    logger.info(`[AI_COPY] Extracting profile for org=${orgId} url=${url}`);
+export async function extractAndCacheProfile(orgId: string, urlOrUrls: string | string[]): Promise<BusinessProfileV1> {
+    const urls = (Array.isArray(urlOrUrls) ? urlOrUrls : [urlOrUrls]).map(u => u.trim()).filter(Boolean);
+    if (urls.length === 0) throw new Error('At least one URL is required');
 
-    const { markdown, chars } = await scrapeUrl(url);
+    logger.info(`[AI_COPY] Extracting profile for org=${orgId} urls=${urls.length}`, { urls });
+
+    const { markdown, chars, failures } = await scrapeUrls(urls);
     if (!markdown.trim()) {
-        throw new Error('Scraped content was empty — verify the URL is reachable');
+        const detail = failures.map(f => `${f.url}: ${f.error}`).join('; ');
+        throw new Error(`No source URL was reachable. ${detail}`);
+    }
+    if (failures.length > 0) {
+        logger.warn(`[AI_COPY] ${failures.length}/${urls.length} sources failed to scrape`, { failures });
     }
 
-    const { profile, promptTokens, completionTokens } = await extractProfile(url, markdown);
+    const { profile, promptTokens, completionTokens } = await extractProfile(urls, markdown);
+
+    // First URL wins the canonical column. The full set of URLs survives
+    // through the user-provided value being passed back into a re-run via
+    // /api/ai/profile/refresh — the operator can re-paste them then.
+    const primary = urls[0];
 
     await prisma.businessProfile.upsert({
         where: { organization_id: orgId },
         create: {
             organization_id: orgId,
-            source_url: url,
+            source_url: primary,
             profile_json: profile as any,
             scraped_chars: chars,
             model_used: MODEL,
@@ -201,7 +285,7 @@ export async function extractAndCacheProfile(orgId: string, url: string): Promis
             completion_tokens: completionTokens,
         },
         update: {
-            source_url: url,
+            source_url: primary,
             profile_json: profile as any,
             scraped_chars: chars,
             model_used: MODEL,
@@ -211,7 +295,7 @@ export async function extractAndCacheProfile(orgId: string, url: string): Promis
         },
     });
 
-    logger.info(`[AI_COPY] Profile cached for org=${orgId} (${chars} chars in, ${promptTokens}+${completionTokens} tokens)`);
+    logger.info(`[AI_COPY] Profile cached for org=${orgId} (${chars} chars in, ${promptTokens}+${completionTokens} tokens, ${urls.length} sources)`);
     return profile;
 }
 
@@ -253,6 +337,11 @@ export interface GenerateStepInput {
     word_budget?: number;            // Rough target (default 80-120 words)
     custom_instructions?: string;    // Extra guidance from the user
     variant_of?: { subject: string; body_html: string }; // Generate a B variant off an existing A
+    /** Optional per-recipient enrichment (LeadProfileV1 shape from
+     *  leadProfileService). When supplied, the model gets a "RECIPIENT
+     *  CONTEXT" block alongside the sender's profile and is instructed to
+     *  ground specifics in it. Strictly additive — generation works without it. */
+    lead_profile?: Record<string, unknown> | null;
 }
 
 export interface GeneratedEmail {
@@ -309,8 +398,6 @@ export async function generateEmailStep(
     profile: BusinessProfileV1,
     input: GenerateStepInput
 ): Promise<{ email: GeneratedEmail; promptTokens: number; completionTokens: number }> {
-    const client = getClient();
-
     const tone = input.tone || profile.voice?.tone || 'direct';
     const wordBudget = input.word_budget || 100;
 
@@ -322,30 +409,52 @@ export async function generateEmailStep(
             role: 'system',
             content: `SENDER BUSINESS PROFILE (stable context — same across every generation for this org):\n\n${JSON.stringify(profile, null, 2)}`,
         },
-        {
-            role: 'user',
-            content: [
-                `Generate one email.`,
-                `Intent: ${describeIntent(input.step_intent, input.step_number, input.total_steps)}`,
-                `Tone: ${tone}`,
-                `Word budget: ${wordBudget}`,
-                input.custom_instructions ? `Extra instructions from user: ${input.custom_instructions}` : '',
-                input.variant_of
-                    ? `This is a B variant. Write a meaningfully different angle from the A version below. Different hook, different opener, different CTA wording.\n\nA version subject: ${input.variant_of.subject}\nA version body: ${input.variant_of.body_html}`
-                    : '',
-            ]
-                .filter(Boolean)
-                .join('\n\n'),
-        },
     ];
 
-    const response = await client.chat.completions.create({
+    // RECIPIENT CONTEXT — only included when the caller supplies a lead
+    // profile (per-recipient enrichment from leadProfileService). Splicing
+    // a separate system message keeps prompt-cache hits high: the
+    // sender-profile prefix above stays identical across all generations
+    // for the org, only this block varies per lead.
+    if (input.lead_profile && Object.keys(input.lead_profile).length > 0) {
+        messages.push({
+            role: 'system',
+            content: [
+                'RECIPIENT CONTEXT (per-lead enrichment from public sources — use to ground specifics, do not invent beyond it):',
+                '',
+                JSON.stringify(input.lead_profile, null, 2),
+                '',
+                'When using this context:',
+                '- Reference the recipient\'s company by their distinctive_phrases or one_liner — never generic.',
+                '- Tie the hook to a recipient pain_point or industry signal that overlaps with the sender\'s value_prop.',
+                '- If a fact is not in this context or the sender profile, do not state it as fact.',
+            ].join('\n'),
+        });
+    }
+
+    messages.push({
+        role: 'user',
+        content: [
+            `Generate one email.`,
+            `Intent: ${describeIntent(input.step_intent, input.step_number, input.total_steps)}`,
+            `Tone: ${tone}`,
+            `Word budget: ${wordBudget}`,
+            input.custom_instructions ? `Extra instructions from user: ${input.custom_instructions}` : '',
+            input.variant_of
+                ? `This is a B variant. Write a meaningfully different angle from the A version below. Different hook, different opener, different CTA wording.\n\nA version subject: ${input.variant_of.subject}\nA version body: ${input.variant_of.body_html}`
+                : '',
+        ]
+            .filter(Boolean)
+            .join('\n\n'),
+    });
+
+    const response = await safeCompletion({
         model: MODEL,
         messages,
         response_format: { type: 'json_object' },
         temperature: 0.7,
         max_tokens: 800,
-    });
+    }, { tag: 'generateEmailStep' });
 
     const raw = response.choices[0]?.message?.content || '{}';
     let parsed: any;
@@ -439,4 +548,85 @@ function stripHtml(html: string): string {
         .replace(/<[^>]+>/g, '')
         .replace(/\n{3,}/g, '\n\n')
         .trim();
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Manual profile edit — deep-merge a partial BusinessProfileV1 into
+// the cached row. Used by PATCH /api/ai/profile so operators can
+// refine fields the AI got wrong (e.g., add a proof point the
+// homepage didn't mention, fix the company one-liner) without
+// re-scraping.
+//
+// Validation philosophy: accept any subset of valid keys; reject
+// unknown top-level sections. Field-level types are best-effort —
+// the caller is the operator, not arbitrary user input.
+// ────────────────────────────────────────────────────────────────────
+
+const ALLOWED_PROFILE_SECTIONS = new Set([
+    'schema_version', 'company', 'offering', 'icp', 'value_prop', 'voice', 'sample_openers',
+]);
+
+export class ProfilePatchError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'ProfilePatchError';
+    }
+}
+
+/**
+ * Apply a partial patch to the cached BusinessProfileV1 and return the
+ * merged result. Throws ProfilePatchError on validation failure.
+ *
+ * Merge rules:
+ * - Top-level sections (company / offering / icp / value_prop / voice):
+ *   shallow-merge — patched fields overwrite, untouched fields keep their
+ *   value. This lets the operator update a single subfield (e.g. one_liner)
+ *   without re-supplying the whole object.
+ * - Arrays (products, proof_points, distinctive_phrases, sample_openers):
+ *   replaced wholesale. Use the GET → edit → PATCH cycle to add an item.
+ * - schema_version: ignored on patch — pinned to the cached row's value.
+ */
+export async function patchCachedProfile(
+    orgId: string,
+    patch: Partial<BusinessProfileV1>,
+): Promise<BusinessProfileV1> {
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+        throw new ProfilePatchError('Patch body must be a non-array object');
+    }
+
+    for (const key of Object.keys(patch)) {
+        if (!ALLOWED_PROFILE_SECTIONS.has(key)) {
+            throw new ProfilePatchError(`Unknown profile section: ${key}`);
+        }
+    }
+
+    const current = await getCachedProfile(orgId, { allowStale: true });
+    if (!current) {
+        throw new ProfilePatchError('No business profile to patch yet — extract one first via POST /api/ai/profile');
+    }
+
+    const merged: BusinessProfileV1 = {
+        ...current,
+        ...(patch.company   ? { company:   { ...current.company,   ...patch.company   } } : {}),
+        ...(patch.offering  ? { offering:  { ...current.offering,  ...patch.offering  } } : {}),
+        ...(patch.icp       ? { icp:       { ...current.icp,       ...patch.icp       } } : {}),
+        ...(patch.value_prop ? { value_prop: { ...current.value_prop, ...patch.value_prop } } : {}),
+        ...(patch.voice     ? { voice:     { ...current.voice,     ...patch.voice     } } : {}),
+        ...(Array.isArray(patch.sample_openers) ? { sample_openers: patch.sample_openers } : {}),
+        // schema_version stays pinned to whatever's cached
+        schema_version: current.schema_version,
+    };
+
+    await prisma.businessProfile.update({
+        where: { organization_id: orgId },
+        data: {
+            profile_json: merged as any,
+            // updated_at flips automatically; extracted_at stays at the
+            // last AI run so the UI can distinguish "manually edited" from
+            // "freshly extracted"
+        },
+    });
+
+    logger.info(`[AI_COPY] Profile patched for org=${orgId}`, { sections: Object.keys(patch) });
+    return merged;
 }

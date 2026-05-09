@@ -273,6 +273,7 @@ export const getContact = async (req: Request, res: Response): Promise<Response>
                 persona: lead.persona,
                 phone: lead.phone,
                 linkedin_url: lead.linkedin_url,
+                company_linkedin_url: lead.company_linkedin_url,
                 source: lead.source,
                 status: lead.status,
                 health_classification: lead.health_classification,
@@ -313,7 +314,7 @@ export const getContact = async (req: Request, res: Response): Promise<Response>
  * intentionally not editable here — it is the unique identity key for the
  * lead within the org and changing it would orphan campaign history.
  */
-const EDITABLE_FIELDS = ['first_name', 'last_name', 'full_name', 'company', 'website', 'title', 'phone', 'linkedin_url'] as const;
+const EDITABLE_FIELDS = ['first_name', 'last_name', 'full_name', 'company', 'website', 'title', 'phone', 'linkedin_url', 'company_linkedin_url'] as const;
 type EditableField = typeof EDITABLE_FIELDS[number];
 
 export const updateContactDetails = async (req: Request, res: Response): Promise<Response> => {
@@ -494,7 +495,7 @@ export const bulkTagContacts = async (req: Request, res: Response): Promise<Resp
 export const createContact = async (req: Request, res: Response): Promise<Response> => {
     try {
         const orgId = getOrgId(req);
-        const { email, first_name, last_name, full_name, company, website, title, persona, source, phone, linkedin_url } = req.body;
+        const { email, first_name, last_name, full_name, company, website, title, persona, source, phone, linkedin_url, company_linkedin_url } = req.body;
 
         if (!email || typeof email !== 'string' || !email.includes('@')) {
             return res.status(400).json({ success: false, error: 'Valid email address is required' });
@@ -546,6 +547,7 @@ export const createContact = async (req: Request, res: Response): Promise<Respon
                 title: title?.trim() || null,
                 phone: typeof phone === 'string' && phone.trim() ? phone.trim() : null,
                 linkedin_url: typeof linkedin_url === 'string' && linkedin_url.trim() ? linkedin_url.trim() : null,
+                company_linkedin_url: typeof company_linkedin_url === 'string' && company_linkedin_url.trim() ? company_linkedin_url.trim() : null,
                 persona: finalPersona,
                 source: source?.trim() || 'manual',
                 status: 'held',
@@ -670,6 +672,7 @@ export const bulkCreateContacts = async (req: Request, res: Response): Promise<R
                     title: c.title ? String(c.title).trim() : null,
                     phone: c.phone ? String(c.phone).trim() : null,
                     linkedin_url: c.linkedin_url ? String(c.linkedin_url).trim() : null,
+                    company_linkedin_url: c.company_linkedin_url ? String(c.company_linkedin_url).trim() : null,
                     persona: finalPersona,
                     source: c.source ? String(c.source).trim() : 'csv',
                     status: 'held',
@@ -691,6 +694,7 @@ export const bulkCreateContacts = async (req: Request, res: Response): Promise<R
                             title: data.title,
                             phone: data.phone,
                             linkedin_url: data.linkedin_url,
+                            company_linkedin_url: data.company_linkedin_url,
                         },
                     }).catch(() => {});
                     updated++;
