@@ -11,7 +11,7 @@
  *       → OpenAI JSON-mode → BusinessProfileV1
  *       → Postgres cache (BusinessProfile row, unique per org)
  *
- * Model: read from OPENAI_MODEL env (default gpt-5.4-nano). The same model
+ * Model: read from OPENAI_MODEL env (default gpt-4.1-mini). The same model
  * drives extraction AND generation — we split into two models only if a
  * bakeoff later proves generation needs more capability.
  */
@@ -61,7 +61,7 @@ export interface BusinessProfileV1 {
 // Config
 // ────────────────────────────────────────────────────────────────────
 
-const MODEL = process.env.OPENAI_MODEL || 'gpt-5.4-nano';
+const MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 const JINA_READER_BASE = 'https://r.jina.ai/';
 const MAX_SCRAPE_CHARS = 200_000; // ~50k tokens — well under 400k context, leaves room for output + caching
 const CACHE_TTL_DAYS = parseInt(process.env.AI_PROFILE_CACHE_TTL_DAYS || '30', 10);
@@ -268,9 +268,9 @@ export async function extractAndCacheProfile(orgId: string, urlOrUrls: string | 
 
     const { profile, promptTokens, completionTokens } = await extractProfile(urls, markdown);
 
-    // First URL wins the canonical column. The full set of URLs survives
-    // through the user-provided value being passed back into a re-run via
-    // /api/ai/profile/refresh — the operator can re-paste them then.
+    // First URL wins the legacy `source_url` column for backwards-compat;
+    // the full deduped, ordered list lands in `source_urls`. /refresh reads
+    // `source_urls` so re-runs hit every original source — no silent loss.
     const primary = urls[0];
 
     await prisma.businessProfile.upsert({
@@ -278,6 +278,7 @@ export async function extractAndCacheProfile(orgId: string, urlOrUrls: string | 
         create: {
             organization_id: orgId,
             source_url: primary,
+            source_urls: urls,
             profile_json: profile as any,
             scraped_chars: chars,
             model_used: MODEL,
@@ -286,6 +287,7 @@ export async function extractAndCacheProfile(orgId: string, urlOrUrls: string | 
         },
         update: {
             source_url: primary,
+            source_urls: urls,
             profile_json: profile as any,
             scraped_chars: chars,
             model_used: MODEL,

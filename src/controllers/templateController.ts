@@ -105,7 +105,7 @@ export const getTemplate = async (req: Request, res: Response): Promise<Response
 export const createTemplate = async (req: Request, res: Response): Promise<Response> => {
     try {
         const orgId = getOrgId(req);
-        const { name, subject, bodyHtml, bodyText, category, folder_id } = req.body;
+        const { name, subject, preheader, bodyHtml, bodyText, category, folder_id } = req.body;
 
         if (!name || !subject || !bodyHtml) {
             return res.status(400).json({ success: false, error: 'name, subject, and bodyHtml are required' });
@@ -116,6 +116,7 @@ export const createTemplate = async (req: Request, res: Response): Promise<Respo
                 organization_id: orgId,
                 name,
                 subject,
+                preheader: typeof preheader === 'string' ? preheader : '',
                 body_html: bodyHtml,
                 body_text: bodyText || null,
                 category: category || 'general',
@@ -138,7 +139,7 @@ export const updateTemplate = async (req: Request, res: Response): Promise<Respo
     try {
         const orgId = getOrgId(req);
         const templateId = String(req.params.id);
-        const { name, subject, bodyHtml, bodyText, category, folder_id } = req.body;
+        const { name, subject, preheader, bodyHtml, bodyText, category, folder_id } = req.body;
 
         const template = await prisma.emailTemplate.findFirst({
             where: { id: templateId, organization_id: orgId },
@@ -149,6 +150,7 @@ export const updateTemplate = async (req: Request, res: Response): Promise<Respo
         const updateData: any = {};
         if (name !== undefined) updateData.name = name;
         if (subject !== undefined) updateData.subject = subject;
+        if (preheader !== undefined) updateData.preheader = typeof preheader === 'string' ? preheader : '';
         if (bodyHtml !== undefined) updateData.body_html = bodyHtml;
         if (bodyText !== undefined) updateData.body_text = bodyText;
         if (category !== undefined) updateData.category = category;

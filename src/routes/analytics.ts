@@ -23,4 +23,11 @@ router.get('/daily', analyticsController.getDailyAnalytics);
  */
 router.get('/esp-performance', analyticsController.getEspPerformance);
 
+/**
+ * GET /api/analytics/mailbox-comparison
+ * Per-mailbox + provider-bucket comparison for the protection analytics page.
+ * Accepts start_date+end_date or timeRange (default 30d).
+ */
+router.get('/mailbox-comparison', analyticsController.getMailboxComparison);
+
 export default router;

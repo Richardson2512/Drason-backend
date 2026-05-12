@@ -184,24 +184,48 @@ export async function processWebhook(event: WebhookEvent): Promise<void> {
         throw err;
     }
 
+    // Super Sender (dedicated IP) is a separate Polar product from tier
+    // subscriptions. Its events carry `metadata.super_sender = 'true'` so
+    // the router can hand them off to the Super Sender service instead of
+    // treating them as tier upgrades. Events for tier subscriptions flow
+    // through the original handlers below.
+    const isSuperSenderEvent =
+        event.data?.metadata?.super_sender === 'true' ||
+        event.data?.metadata?.super_sender === true;
+
     // Process based on event type. Unknown types log a warn but don't
     // throw — Polar adds new event types over time and we shouldn't 200/
     // -fail every delivery just because of an unhandled kind.
     switch (event.type) {
         case 'subscription.created':
         case 'subscription.active':
-            // Polar fires subscription.active on activation (paid + period
-            // started). Treat it the same as created so a paid customer
-            // gets activated even if .created fires after .active in
-            // delivery order.
-            await handleSubscriptionCreated(event, resolvedOrgId);
+            if (isSuperSenderEvent) {
+                const { handleSuperSenderWebhook } = await import('./superSenderService');
+                await handleSuperSenderWebhook(event as never, resolvedOrgId);
+            } else {
+                // Polar fires subscription.active on activation (paid + period
+                // started). Treat it the same as created so a paid customer
+                // gets activated even if .created fires after .active in
+                // delivery order.
+                await handleSubscriptionCreated(event, resolvedOrgId);
+            }
             break;
         case 'subscription.updated':
-            await handleSubscriptionUpdated(event, resolvedOrgId);
+            // Tier subscription.updated drives plan-change flows. Super
+            // Sender subscriptions don't have a meaningful "updated" path
+            // (quantity is fixed at checkout time), so we skip the dispatch.
+            if (!isSuperSenderEvent) {
+                await handleSubscriptionUpdated(event, resolvedOrgId);
+            }
             break;
         case 'subscription.canceled':
         case 'subscription.revoked':
-            await handleSubscriptionCanceled(event, resolvedOrgId);
+            if (isSuperSenderEvent) {
+                const { handleSuperSenderWebhook } = await import('./superSenderService');
+                await handleSuperSenderWebhook(event as never, resolvedOrgId);
+            } else {
+                await handleSubscriptionCanceled(event, resolvedOrgId);
+            }
             break;
         case 'order.paid':
         case 'order.updated':

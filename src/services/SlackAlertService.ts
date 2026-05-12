@@ -56,12 +56,39 @@ export class SlackAlertService {
         const hashBase = `${params.organizationId}:${params.eventType}:${params.entityId || 'none'}:${bucket}`;
         const eventHash = crypto.createHash('sha256').update(hashBase).digest('hex');
 
+        // 1a. Lookup user preference for this event_type. If suppressed, we
+        //     still write a log row (so operators can audit what they're
+        //     suppressing in the "Notifications" history feed) and return.
+        let suppressedByPref = false;
+        let channelOverride: string | null = null;
+        try {
+            const pref = await prisma.slackNotificationPreference.findUnique({
+                where: {
+                    organization_id_event_type: {
+                        organization_id: params.organizationId,
+                        event_type: params.eventType,
+                    },
+                },
+            });
+            if (pref) {
+                suppressedByPref = !pref.enabled;
+                channelOverride = pref.channel_id_override;
+            }
+        } catch (e: any) {
+            logger.warn(`[SlackAlertService] preference lookup failed: ${e.message}`);
+        }
+
         try {
             await prisma.slackAlertLog.create({
                 data: {
                     organization_id: params.organizationId,
                     event_type: params.eventType,
-                    event_hash: eventHash
+                    event_hash: eventHash,
+                    title: params.title,
+                    message: params.message,
+                    severity: params.severity,
+                    entity_id: params.entityId || null,
+                    suppressed_by_pref: suppressedByPref,
                 }
             });
         } catch (error: any) {
@@ -74,6 +101,11 @@ export class SlackAlertService {
             logger.warn(`[SlackAlertService] Failed to secure idempotency lock: ${error.message}`);
         }
 
+        if (suppressedByPref) {
+            // User opted out of this event_type. Logged above for audit; skip dispatch.
+            return;
+        }
+
         try {
             // 2. Lookup Integration
             const integration = await prisma.slackIntegration.findUnique({
@@ -83,6 +115,9 @@ export class SlackAlertService {
             if (!integration || !integration.alerts_channel_id || integration.alerts_status !== SlackAlertsStatus.active) {
                 return; // Silently skip if Slack is not configured or in an error state
             }
+
+            // Channel resolution: per-event override wins over integration default.
+            const targetChannel = channelOverride || integration.alerts_channel_id;
 
             // 3. Decrypt safely strictly in memory scope
             const botToken = decryptTokenIsolated(integration.bot_token_encrypted);
@@ -113,7 +148,7 @@ export class SlackAlertService {
             }
 
             const payload = {
-                channel: integration.alerts_channel_id,
+                channel: targetChannel,
                 attachments: [
                     {
                         color: SEVERITY_COLORS[params.severity],
@@ -125,6 +160,15 @@ export class SlackAlertService {
 
             // 5. Dispatch with Rate-Limit awareness
             await this.executePostMessageWithBackoff(botToken, payload, params.organizationId);
+
+            // 5a. Record channel actually used (so history can render correctly
+            // even if the user later changes their default channel).
+            try {
+                await prisma.slackAlertLog.updateMany({
+                    where: { event_hash: eventHash },
+                    data: { channel_id: targetChannel },
+                });
+            } catch { /* non-fatal */ }
 
         } catch (error: any) {
             // 6. Non-blocking error containment

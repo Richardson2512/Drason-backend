@@ -19,6 +19,7 @@ export const generatePreview = async (req: Request, res: Response): Promise<Resp
         const {
             subject = '',
             bodyHtml = '',
+            preheader = '',
             senderName = '',
             senderEmail = '',
             clients,
@@ -37,6 +38,7 @@ export const generatePreview = async (req: Request, res: Response): Promise<Resp
         const result = await buildRecipientPreview({
             subject,
             bodyHtml,
+            preheader: typeof preheader === 'string' ? preheader : '',
             senderName,
             senderEmail,
             clients: clientKeys,

@@ -32,6 +32,12 @@ interface ConnectedAccountInput {
     id: string;
     email: string;
     provider: string;
+    /** Set by the send-queue when fetching mailboxes — required for the
+     *  Super Sender routing decision. Optional so legacy callers that
+     *  build a partial input (transactional sends, tests) still type-check;
+     *  routing falls back to native send when missing. */
+    organization_id?: string;
+    display_name?: string | null;
     smtp_host?: string | null;
     smtp_port?: number | null;
     smtp_username?: string | null;
@@ -398,6 +404,45 @@ export async function sendEmail(
     options?: SendOptions
 ): Promise<SendResult> {
     try {
+        // Super Sender routing — if the workspace owns an active dedicated
+        // IP and the mailbox is SES-eligible (SMTP/relay, not OAuth), we
+        // intercept and send through SES with the IP's pool. Daily-cap is
+        // claimed atomically inside resolveRouteForSend; on cap exhaustion
+        // or no IP we fall through to the native transport untouched.
+        // Failure on the SES path refunds the cap claim and falls back to
+        // native — never blocks the send.
+        if (account.organization_id) {
+            const { resolveRouteForSend, refundCapClaim } = await import('./superSenderRouting');
+            const decision = await resolveRouteForSend({
+                organizationId: account.organization_id,
+                provider: account.provider,
+            });
+            if (decision.route === 'ses') {
+                const { sendViaSes } = await import('./sesSenderService');
+                const result = await sendViaSes({
+                    poolName: decision.ip.pool_name,
+                    fromEmail: account.email,
+                    fromName: account.display_name ?? null,
+                    to,
+                    subject,
+                    bodyHtml,
+                    headers: options?.unsubscribeUrl ? {
+                        'List-Unsubscribe': `<${options.unsubscribeUrl}>`,
+                        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+                    } : undefined,
+                });
+                if (!result.success) {
+                    await refundCapClaim(decision.ip.id);
+                    logger.warn('[SEND] SES path failed, falling back to native', {
+                        accountId: account.id, ipId: decision.ip.id, err: result.error,
+                    });
+                    // Fall through to native transport below.
+                } else {
+                    return result;
+                }
+            }
+        }
+
         switch (account.provider) {
             case 'google':
                 return await sendViaGmail(account, to, subject, bodyHtml, options);

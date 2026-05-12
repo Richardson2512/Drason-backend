@@ -112,13 +112,23 @@ export async function getActiveJustCallConnection(
 
 export async function markJustCallConnectionFailed(
     connectionId: string,
+    organizationId: string,
     error: string,
 ): Promise<void> {
-    await prisma.justCallConnection.update({
-        where: { id: connectionId },
+    // Composite filter — `updateMany` instead of `update` so a stale
+    // connection_id pulled from another tenant's queue payload can never
+    // touch this row. Returns count=0 silently in that case.
+    const result = await prisma.justCallConnection.updateMany({
+        where: { id: connectionId, organization_id: organizationId },
         data: { status: 'error', last_error: error.slice(0, 500) },
     });
-    logger.warn('[JUSTCALL] connection marked failed', { connectionId, error: error.slice(0, 200) });
+    if (result.count === 0) {
+        logger.warn('[JUSTCALL] markJustCallConnectionFailed — no row matched (cross-tenant or deleted)', {
+            connectionId, organizationId,
+        });
+        return;
+    }
+    logger.warn('[JUSTCALL] connection marked failed', { connectionId, organizationId, error: error.slice(0, 200) });
 }
 
 export async function disconnectJustCall(

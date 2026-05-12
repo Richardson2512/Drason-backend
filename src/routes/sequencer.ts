@@ -43,8 +43,12 @@ router.use('/accounts', accountRoutes);
 // --- Campaigns ---
 const campaignRoutes = Router();
 campaignRoutes.get('/', campaignController2.listCampaigns);
+// Lead-picker for the suppression modal — MUST come before `/:id` so the
+// literal path doesn't get captured as an id parameter.
+campaignRoutes.get('/lead-picker', campaignController2.listLeadsForSuppression);
 campaignRoutes.get('/:id', campaignController2.getCampaign);
 campaignRoutes.get('/:id/leads', campaignController2.listCampaignLeads);
+campaignRoutes.get('/:id/suppression', campaignController2.getCampaignSuppression);
 campaignRoutes.post('/', requireCapability('create_campaigns'), campaignController2.createCampaign);
 campaignRoutes.patch('/:id', requireCapability('edit_sequences'), campaignController2.updateCampaign);
 campaignRoutes.delete('/:id', requireCapability('create_campaigns'), campaignController2.deleteCampaign);
@@ -148,6 +152,7 @@ router.use('/signatures', signatureRoutes);
 const analyticsRoutes = Router();
 analyticsRoutes.get('/', sequencerAnalyticsController.getOverview);
 analyticsRoutes.get('/campaigns', sequencerAnalyticsController.getCampaignPerformance);
+analyticsRoutes.get('/mailboxes', sequencerAnalyticsController.getMailboxPerformance);
 analyticsRoutes.get('/forecast', sequencerAnalyticsController.getSendVolumeForecast);
 analyticsRoutes.get('/volume', sequencerAnalyticsController.getDailySendVolume);
 analyticsRoutes.get('/reply-quality', sequencerAnalyticsController.getReplyQuality);
@@ -171,5 +176,28 @@ warmupRoutes.post('/memberships/:mid/toggle', warmupController.toggleMembership)
 warmupRoutes.patch('/memberships/:mid', warmupController.patchMembershipConfig);
 warmupRoutes.get('/memberships/:mid/exchanges', warmupController.listExchanges);
 router.use('/warmup', warmupRoutes);
+
+// --- Saved Sequences (reusable multi-step skeletons on the templates page) ---
+import * as sequenceController from '../controllers/sequenceController';
+const sequenceRoutes = Router();
+sequenceRoutes.get('/', sequenceController.list);
+// AI generate — register before /:id so the literal path doesn't get
+// captured as an id parameter.
+sequenceRoutes.post('/generate', requireCapability('edit_sequences'), sequenceController.generate);
+sequenceRoutes.get('/:id', sequenceController.get);
+sequenceRoutes.post('/', requireCapability('edit_sequences'), sequenceController.create);
+sequenceRoutes.patch('/:id', requireCapability('edit_sequences'), sequenceController.update);
+sequenceRoutes.delete('/:id', requireCapability('edit_sequences'), sequenceController.remove);
+sequenceRoutes.post('/:id/duplicate', requireCapability('edit_sequences'), sequenceController.duplicate);
+router.use('/sequences', sequenceRoutes);
+
+// --- Reply Action Configuration ---
+// Per-org mapping from reply quality class → automatic action (suppress /
+// pause / alert). See replyActionService for action semantics and defaults.
+import * as replyActionConfigController from '../controllers/replyActionConfigController';
+const replyActionRoutes = Router();
+replyActionRoutes.get('/', replyActionConfigController.getRules);
+replyActionRoutes.put('/', requireCapability('edit_sequences'), replyActionConfigController.putRule);
+router.use('/reply-actions', replyActionRoutes);
 
 export default router;

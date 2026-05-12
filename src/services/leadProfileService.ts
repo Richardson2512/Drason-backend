@@ -55,7 +55,7 @@ export interface LeadProfileV1 {
 // Config
 // ────────────────────────────────────────────────────────────────────
 
-const MODEL = process.env.OPENAI_MODEL || 'gpt-5.4-nano';
+const MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 /** TTL after which a successfully extracted profile becomes stale and
  *  the worker re-enriches. 60 days = company pages don't change that
  *  fast; the worker won't drown in re-scrapes. */

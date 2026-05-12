@@ -33,6 +33,13 @@ export const listThreads = async (req: Request, res: Response): Promise<Response
         //                        campaign), regardless of whether they replied.
         //   'all'              — no direction discrimination (inbox + sent merged).
         const view = (req.query.view as string) || 'inbox';
+        // Reply-quality filter — comma-separated class names. Shows threads
+        // whose latest inbound message has a quality_class in the set. The
+        // canonical column (quality_class) is kept in sync with the AI verdict
+        // by the worker, so this filter sees the final answer either way.
+        const qualityClassRaw = (req.query.quality_class as string) || '';
+        const qualityClasses = qualityClassRaw
+            .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 
         // Hard rule: Unibox surfaces only campaign-originated conversations. Warmup
         // traffic, vendor broadcasts, newsletter noise, and cold inbound to the mailbox
@@ -64,6 +71,21 @@ export const listThreads = async (req: Request, res: Response): Promise<Response
             where.messages = { some: { direction: 'inbound' } };
         } else if (view === 'sent') {
             where.messages = { some: { direction: 'outbound' } };
+        }
+
+        // Quality-class filter — applies on top of the direction filter so
+        // "Sent" tab never gets accidentally narrowed by it. Empty class list
+        // is a no-op so the unibox renders identically to before for users
+        // who haven't enabled any chips.
+        if (qualityClasses.length > 0) {
+            const inboundQuality = { direction: 'inbound', quality_class: { in: qualityClasses } };
+            // Merge with any existing `some` predicate set by view filter
+            // above. Prisma's `some` accepts AND semantics inside one object.
+            if (where.messages?.some) {
+                where.messages = { some: { ...where.messages.some, ...inboundQuality } };
+            } else {
+                where.messages = { some: inboundQuality };
+            }
         }
 
         const [threads, total] = await Promise.all([

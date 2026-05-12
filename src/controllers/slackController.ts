@@ -501,3 +501,123 @@ async function sendSlackResponse(responseUrl: string, text: string) {
         logger.error('[Slack] Failed to send followup response', err as Error);
     }
 }
+
+// ─── Notification preferences + history ─────────────────────────────────────
+import { getOrgId as resolveOrgId } from '../middleware/orgContext';
+import { SLACK_EVENT_CATALOG, SLACK_EVENT_GROUPS, defaultPreferenceForEvent } from '../services/slackEventCatalog';
+
+/**
+ * GET /api/slack/notifications/catalog
+ * Static catalog of every event_type the platform can emit, grouped for the
+ * preferences UI. Each row also reports the operator's effective preference
+ * (enabled + channel override) so the frontend can render with one call.
+ */
+export const getNotificationCatalog = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const orgId = resolveOrgId(req);
+        const prefs = await prisma.slackNotificationPreference.findMany({
+            where: { organization_id: orgId },
+            select: { event_type: true, enabled: true, channel_id_override: true },
+        });
+        const prefMap = new Map(prefs.map(p => [p.event_type, p]));
+        const events = SLACK_EVENT_CATALOG.map(def => {
+            const stored = prefMap.get(def.event_type);
+            return {
+                event_type: def.event_type,
+                label: def.label,
+                description: def.description,
+                group: def.group,
+                default_enabled: def.default_enabled,
+                enabled: stored ? stored.enabled : def.default_enabled,
+                channel_id_override: stored?.channel_id_override ?? null,
+            };
+        });
+        res.json({ success: true, data: { groups: SLACK_EVENT_GROUPS, events } });
+    } catch (err: any) {
+        logger.error('[Slack] getNotificationCatalog failed', err);
+        res.status(500).json({ success: false, error: err.message || 'Failed to load notification catalog' });
+    }
+};
+
+/**
+ * PUT /api/slack/notifications/preferences
+ * Body: { preferences: [{ event_type, enabled, channel_id_override? }, ...] }
+ * Upserts each provided event_type. Unspecified events keep their existing
+ * pref (or the catalog default).
+ */
+export const updateNotificationPreferences = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const orgId = resolveOrgId(req);
+        const incoming = Array.isArray(req.body?.preferences) ? req.body.preferences : [];
+        for (const p of incoming) {
+            const eventType = String(p?.event_type || '').trim();
+            if (!eventType) continue;
+            await prisma.slackNotificationPreference.upsert({
+                where: {
+                    organization_id_event_type: {
+                        organization_id: orgId,
+                        event_type: eventType,
+                    },
+                },
+                create: {
+                    organization_id: orgId,
+                    event_type: eventType,
+                    enabled: typeof p.enabled === 'boolean' ? p.enabled : defaultPreferenceForEvent(eventType),
+                    channel_id_override: p.channel_id_override || null,
+                },
+                update: {
+                    enabled: typeof p.enabled === 'boolean' ? p.enabled : defaultPreferenceForEvent(eventType),
+                    channel_id_override: p.channel_id_override || null,
+                },
+            });
+        }
+        res.json({ success: true });
+    } catch (err: any) {
+        logger.error('[Slack] updateNotificationPreferences failed', err);
+        res.status(500).json({ success: false, error: err.message || 'Failed to save preferences' });
+    }
+};
+
+/**
+ * GET /api/slack/notifications/history?limit=50&offset=0
+ * Paginated feed of every alert (sent or suppressed) for this org.
+ */
+export const getNotificationHistory = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const orgId = resolveOrgId(req);
+        const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? '50'), 10) || 50, 1), 200);
+        const offset = Math.max(parseInt(String(req.query.offset ?? '0'), 10) || 0, 0);
+
+        const [rows, total] = await Promise.all([
+            prisma.slackAlertLog.findMany({
+                where: { organization_id: orgId },
+                orderBy: { sent_at: 'desc' },
+                skip: offset,
+                take: limit,
+                select: {
+                    id: true,
+                    event_type: true,
+                    title: true,
+                    message: true,
+                    severity: true,
+                    entity_id: true,
+                    channel_id: true,
+                    suppressed_by_pref: true,
+                    sent_at: true,
+                },
+            }),
+            prisma.slackAlertLog.count({ where: { organization_id: orgId } }),
+        ]);
+
+        // Decorate with the human label from the catalog so the UI doesn't
+        // have to keep its own lookup table.
+        const decorated = rows.map(r => {
+            const def = SLACK_EVENT_CATALOG.find(d => d.event_type === r.event_type);
+            return { ...r, label: def?.label ?? r.event_type, group: def?.group ?? null };
+        });
+        res.json({ success: true, data: decorated, meta: { total, limit, offset } });
+    } catch (err: any) {
+        logger.error('[Slack] getNotificationHistory failed', err);
+        res.status(500).json({ success: false, error: err.message || 'Failed to load notification history' });
+    }
+};

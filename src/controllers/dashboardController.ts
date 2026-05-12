@@ -1307,9 +1307,15 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
         const statusFilter = req.query.status as string;
         const campaignIdFilter = req.query.campaign_id as string;
         const domainIdFilter = req.query.domain_id as string;
-        const platformFilter = req.query.platform as string;
 
-        const validTypes = ['leads', 'campaigns', 'mailboxes', 'domains', 'analytics', 'audit_logs', 'load_balancing', 'full'];
+        const validTypes = [
+            'leads', 'campaigns', 'mailboxes', 'domains', 'analytics', 'audit_logs', 'load_balancing',
+            // New report types added 2026-05-12 to cover features built since the
+            // original audit (saved sequences, dedicated IPs, reply intelligence,
+            // suppression lists, warmup pool).
+            'sequences', 'super_sender', 'reply_quality', 'suppression', 'warmup',
+            'full',
+        ];
         if (!reportType || !validTypes.includes(reportType)) {
             res.status(400).json({ success: false, error: `Invalid report_type. Must be one of: ${validTypes.join(', ')}` });
             return;
@@ -1323,7 +1329,10 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
         const statuses = statusFilter ? statusFilter.split(',').filter(Boolean) : [];
         const campaignIds = campaignIdFilter ? campaignIdFilter.split(',').filter(Boolean) : [];
         const domainIds = domainIdFilter ? domainIdFilter.split(',').filter(Boolean) : [];
-        const platforms = platformFilter ? platformFilter.split(',').filter(Boolean) : [];
+        // Engagement-state filter, leads report only. UI guarantees a single
+        // value, but we still split-and-pick-first in case a stray comma is
+        // ever passed by an API consumer.
+        const engagement = ((req.query.engagement as string) || '').split(',').filter(Boolean)[0] || '';
 
         const sections: string[] = [];
 
@@ -1343,6 +1352,44 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
                 if (orConds.length > 0) where.OR = orConds;
             }
             if (campaignIds.length > 0) where.assigned_campaign_id = { in: campaignIds };
+
+            // Engagement filter — narrow to recipients in a specific
+            // post-send state. Translates directly onto Lead.emails_*
+            // counters + the bounced/unsubscribed booleans. Mutually
+            // exclusive states (one value at a time from the UI).
+            switch (engagement) {
+                case 'replied':
+                    where.emails_replied = { gt: 0 };
+                    break;
+                case 'opened':
+                    where.emails_opened = { gt: 0 };
+                    break;
+                case 'clicked':
+                    where.emails_clicked = { gt: 0 };
+                    break;
+                case 'bounced':
+                    where.bounced = true;
+                    break;
+                case 'unsubscribed':
+                    where.unsubscribed_at = { not: null };
+                    break;
+                case 'no_engagement':
+                    where.AND = [
+                        ...(where.AND || []),
+                        { emails_sent: { gt: 0 } },
+                        { emails_opened: 0 },
+                        { emails_clicked: 0 },
+                        { emails_replied: 0 },
+                        { bounced: false },
+                    ];
+                    break;
+                case 'not_sent':
+                    where.emails_sent = 0;
+                    break;
+                default:
+                    // No engagement filter — leave `where` alone.
+                    break;
+            }
 
             const leads = await prisma.lead.findMany({
                 where,
@@ -1370,6 +1417,8 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
                 { key: 'emails_clicked', label: 'Emails Clicked' },
                 { key: 'emails_replied', label: 'Emails Replied' },
                 { key: 'bounced', label: 'Bounced' },
+                { key: 'bounced_at', label: 'Bounced At' },
+                { key: 'unsubscribed_reason', label: 'Unsubscribed Reason' },
                 { key: 'created_at', label: 'Created At' },
                 { key: 'last_activity_at', label: 'Last Activity At' },
             ];
@@ -1378,6 +1427,7 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
                 ...l,
                 campaign_name: l.assigned_campaign_id ? (campaignMap.get(l.assigned_campaign_id) || '') : '',
                 bounced: l.bounced ? 'Yes' : 'No',
+                bounced_at: l.bounced_at?.toISOString() || '',
                 created_at: l.created_at?.toISOString() || '',
                 last_activity_at: l.last_activity_at?.toISOString() || '',
             }));
@@ -1486,13 +1536,17 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
                 const bounceRate = m.total_sent_count > 0
                     ? ((m.hard_bounce_count / m.total_sent_count) * 100).toFixed(1)
                     : '0.0';
+                // Mailbox.engagement_rate is stored as a 0-1 fraction (see
+                // schema comment: "(opens + clicks + replies) / total_sent").
+                // The CSV column header says "%", so multiply before format.
+                // Domain.engagement_rate is already 0-100, so don't change that.
                 return {
                     ...m,
                     domain_name: m.domain?.domain || '',
                     bounce_rate: bounceRate,
                     total_sent: m.total_sent_count,
                     total_opens: m.open_count_lifetime,
-                    engagement_rate: m.engagement_rate.toFixed(1),
+                    engagement_rate: (m.engagement_rate * 100).toFixed(1),
                     campaign_count: m.campaigns.length,
                     created_at: m.created_at?.toISOString() || '',
                 };
@@ -1665,6 +1719,258 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
             else sections.push(toCsv(rows, columns));
         }
 
+        // ---- SEQUENCES (saved sequence library) ----
+        if (reportType === 'sequences' || reportType === 'full') {
+            const where: any = {
+                organization_id: orgId,
+                created_at: { gte: startDate, lte: endDate },
+            };
+            const sequences = await prisma.sequence.findMany({
+                where,
+                include: { _count: { select: { steps: true } } },
+                orderBy: { updated_at: 'desc' },
+                take: 10000,
+            });
+            const columns = [
+                { key: 'name', label: 'Name' },
+                { key: 'description', label: 'Description' },
+                { key: 'category', label: 'Category' },
+                { key: 'step_count', label: 'Steps' },
+                { key: 'ai_generated', label: 'AI Generated' },
+                { key: 'ai_model', label: 'AI Model' },
+                { key: 'source_urls', label: 'AI Source URLs' },
+                { key: 'created_at', label: 'Created At' },
+                { key: 'updated_at', label: 'Updated At' },
+            ];
+            const rows = sequences.map(s => ({
+                name: s.name,
+                description: s.description || '',
+                category: s.category,
+                step_count: s._count.steps,
+                ai_generated: s.ai_model_used ? 'Yes' : 'No',
+                ai_model: s.ai_model_used || '',
+                source_urls: (s.ai_source_urls || []).join(' | '),
+                created_at: s.created_at?.toISOString() || '',
+                updated_at: s.updated_at?.toISOString() || '',
+            }));
+            if (reportType === 'full') sections.push(`\n--- SEQUENCES REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
+        // ---- SUPER SENDER (dedicated IPs) ----
+        if (reportType === 'super_sender' || reportType === 'full') {
+            // Account-scoped — fetch the org's Account first. Single-org users
+            // pre-dating agency mode may not have one; their report is empty.
+            const org = await prisma.organization.findUnique({
+                where: { id: orgId }, select: { account_id: true },
+            });
+            const where: any = org?.account_id
+                ? { account_id: org.account_id, created_at: { gte: startDate, lte: endDate } }
+                : { id: '__none__' }; // matches nothing, returns empty CSV
+            if (statuses.length > 0) where.state = { in: statuses };
+            const ips = await prisma.dedicatedIp.findMany({
+                where,
+                include: { organization: { select: { name: true, slug: true } } },
+                orderBy: { created_at: 'desc' },
+                take: 1000,
+            });
+            const columns = [
+                { key: 'workspace_name', label: 'Workspace' },
+                { key: 'ses_ip_address', label: 'IP Address' },
+                { key: 'state', label: 'State' },
+                { key: 'warmup_day', label: 'Warmup Day' },
+                { key: 'daily_cap', label: 'Daily Cap' },
+                { key: 'sends_today', label: 'Sends Today' },
+                { key: 'delivered_24h', label: 'Delivered (24h)' },
+                { key: 'bounced_24h', label: 'Bounced (24h)' },
+                { key: 'complaints_24h', label: 'Complaints (24h)' },
+                { key: 'paused_reason', label: 'Paused Reason' },
+                { key: 'activated_at', label: 'Activated At' },
+                { key: 'warmup_completed_at', label: 'Warmup Completed' },
+                { key: 'created_at', label: 'Created At' },
+            ];
+            const rows = ips.map(ip => ({
+                workspace_name: ip.organization?.name || '(unassigned)',
+                ses_ip_address: ip.ses_ip_address || '',
+                state: ip.state,
+                warmup_day: ip.warmup_day,
+                daily_cap: ip.daily_cap,
+                sends_today: ip.sends_today,
+                delivered_24h: ip.delivered_count_24h,
+                bounced_24h: ip.bounce_count_24h,
+                complaints_24h: ip.complaint_count_24h,
+                paused_reason: ip.paused_reason || '',
+                activated_at: ip.activated_at?.toISOString() || '',
+                warmup_completed_at: ip.warmup_completed_at?.toISOString() || '',
+                created_at: ip.created_at?.toISOString() || '',
+            }));
+            if (reportType === 'full') sections.push(`\n--- SUPER SENDER REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
+        // ---- REPLY QUALITY (classified inbound replies) ----
+        if (reportType === 'reply_quality' || reportType === 'full') {
+            const where: any = {
+                direction: 'inbound',
+                thread: { organization_id: orgId },
+                created_at: { gte: startDate, lte: endDate },
+            };
+            if (statuses.length > 0) where.quality_class = { in: statuses };
+            // Drill into replies on specific campaigns. Joins through the
+            // EmailThread's campaign_id (set when the thread originated from
+            // a campaign send) so non-campaign replies are excluded too —
+            // which is the right scope for "show me replies on Campaign X".
+            if (campaignIds.length > 0) {
+                where.thread = { ...where.thread, campaign_id: { in: campaignIds } };
+            }
+            const replies = await prisma.emailMessage.findMany({
+                where,
+                select: {
+                    id: true, subject: true, from_email: true, sent_at: true,
+                    quality_class: true, quality_confidence: true,
+                    ai_class: true, ai_confidence: true, ai_reasoning: true, ai_classified_at: true,
+                    ooo_return_date: true,
+                    thread: { select: { campaign_id: true, contact_email: true } },
+                },
+                orderBy: { sent_at: 'desc' },
+                take: 50000,
+            });
+            const cIds = [...new Set(replies.map(r => r.thread?.campaign_id).filter((id): id is string => !!id))];
+            const campMap = await buildCampaignNameMap(orgId, cIds);
+            const columns = [
+                { key: 'received_at', label: 'Received At' },
+                { key: 'from_email', label: 'From' },
+                { key: 'subject', label: 'Subject' },
+                { key: 'campaign_name', label: 'Campaign' },
+                { key: 'quality_class', label: 'Class (final)' },
+                { key: 'quality_confidence', label: 'Confidence' },
+                { key: 'ai_reclassified', label: 'AI Re-classified' },
+                { key: 'ai_reasoning', label: 'AI Reasoning' },
+                { key: 'ooo_return_date', label: 'OOO Return Date' },
+            ];
+            const rows = replies.map(r => ({
+                received_at: r.sent_at?.toISOString() || '',
+                from_email: r.from_email,
+                subject: r.subject,
+                campaign_name: r.thread?.campaign_id ? (campMap.get(r.thread.campaign_id)?.name || '') : '',
+                quality_class: r.quality_class || 'unclassified',
+                quality_confidence: r.quality_confidence || '',
+                ai_reclassified: r.ai_classified_at ? 'Yes' : 'No',
+                ai_reasoning: r.ai_reasoning || '',
+                ooo_return_date: r.ooo_return_date?.toISOString() || '',
+            }));
+            if (reportType === 'full') sections.push(`\n--- REPLY QUALITY REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
+        // ---- SUPPRESSION (org-wide + campaign-scoped) ----
+        if (reportType === 'suppression' || reportType === 'full') {
+            // Two flavors of suppression in the system:
+            //   - OrgReplySuppression: org-wide, driven by reply auto-actions (e.g. hard_no)
+            //   - CampaignSuppression: per-campaign rules set on create / addLeads
+            // Report unions both into one CSV with a `scope` column so the
+            // operator can see every suppression source in one view.
+            const [orgSupp, campaignSupp] = await Promise.all([
+                prisma.orgReplySuppression.findMany({
+                    where: { organization_id: orgId, created_at: { gte: startDate, lte: endDate } },
+                    orderBy: { created_at: 'desc' },
+                    take: 50000,
+                }),
+                prisma.campaignSuppression.findMany({
+                    where: {
+                        campaign: { organization_id: orgId },
+                        created_at: { gte: startDate, lte: endDate },
+                    },
+                    include: {
+                        campaign: { select: { id: true, name: true } },
+                        suppressed_campaign: { select: { name: true } },
+                    },
+                    orderBy: { created_at: 'desc' },
+                    take: 50000,
+                }),
+            ]);
+            const columns = [
+                { key: 'scope', label: 'Scope' },
+                { key: 'campaign_name', label: 'Owner Campaign' },
+                { key: 'kind', label: 'Rule Kind' },
+                { key: 'target', label: 'Target' },
+                { key: 'reason', label: 'Reason' },
+                { key: 'created_at', label: 'Created At' },
+            ];
+            const orgRows = orgSupp.map(s => ({
+                scope: 'org-wide',
+                campaign_name: '',
+                kind: 'email',
+                target: s.email,
+                reason: s.reason || '',
+                created_at: s.created_at?.toISOString() || '',
+            }));
+            const campRows = campaignSupp.map(s => ({
+                scope: 'per-campaign',
+                campaign_name: s.campaign?.name || '',
+                kind: s.kind,
+                target: s.kind === 'campaign'
+                    ? (s.suppressed_campaign?.name || s.suppressed_campaign_id || '')
+                    : (s.suppressed_email || ''),
+                reason: s.kind === 'all_campaigns' ? 'Skip duplicates across all campaigns' : '',
+                created_at: s.created_at?.toISOString() || '',
+            }));
+            const rows = [...orgRows, ...campRows];
+            if (reportType === 'full') sections.push(`\n--- SUPPRESSION REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
+        // ---- WARMUP POOL ----
+        if (reportType === 'warmup' || reportType === 'full') {
+            const where: any = {
+                organization_id: orgId,
+                joined_at: { gte: startDate, lte: endDate },
+            };
+            if (statuses.length > 0) where.health = { in: statuses };
+            const memberships = await prisma.warmupPoolMembership.findMany({
+                where,
+                include: { mailbox: { select: { email: true, status: true } } },
+                orderBy: { joined_at: 'desc' },
+                take: 10000,
+            });
+            const columns = [
+                { key: 'mailbox_email', label: 'Mailbox' },
+                { key: 'mailbox_status', label: 'Mailbox Status' },
+                { key: 'health', label: 'Warmup Health' },
+                { key: 'enabled', label: 'Enabled' },
+                { key: 'ramp_step', label: 'Ramp Day' },
+                { key: 'current_daily', label: 'Current Cap' },
+                { key: 'target_daily', label: 'Target Cap' },
+                { key: 'total_sent', label: 'Total Sent' },
+                { key: 'total_received', label: 'Total Received' },
+                { key: 'total_opened', label: 'Total Opened' },
+                { key: 'total_replied', label: 'Total Replied' },
+                { key: 'total_recovered_from_spam', label: 'Recovered From Spam' },
+                { key: 'spam_rate_30d', label: 'Spam Rate 30d (%)' },
+                { key: 'last_error', label: 'Last Error' },
+                { key: 'joined_at', label: 'Joined At' },
+            ];
+            const rows = memberships.map(m => ({
+                mailbox_email: m.mailbox?.email || '',
+                mailbox_status: m.mailbox?.status || '',
+                health: m.health,
+                enabled: m.enabled ? 'Yes' : 'No',
+                ramp_step: m.ramp_step,
+                current_daily: m.current_daily,
+                target_daily: m.target_daily,
+                total_sent: m.total_sent,
+                total_received: m.total_received,
+                total_opened: m.total_opened,
+                total_replied: m.total_replied,
+                total_recovered_from_spam: m.total_recovered_from_spam,
+                spam_rate_30d: m.spam_rate_30d != null ? (m.spam_rate_30d * 100).toFixed(2) : '',
+                last_error: m.last_error || '',
+                joined_at: m.joined_at?.toISOString() || '',
+            }));
+            if (reportType === 'full') sections.push(`\n--- WARMUP REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
         const csvContent = sections.join('\n');
         const filename = `superkabe-${reportType}-report-${new Date().toISOString().split('T')[0]}.csv`;
 
@@ -1674,7 +1980,7 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
 
         logger.info(`[REPORTS] Generated ${reportType} report for org ${orgId}`, {
             reportType, startDate: startDate.toISOString(), endDate: endDate.toISOString(),
-            filters: { statuses, campaignIds, domainIds, platforms },
+            filters: { statuses, campaignIds, domainIds },
         });
     } catch (error) {
         next(error);

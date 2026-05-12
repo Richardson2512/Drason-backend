@@ -112,7 +112,10 @@ export const extractOrgContext = async (
             '/auth/invite',           // GET /auth/invite?token= validates a magic link
             '/auth/invite/complete',  // POST sets password + creates the User row
             '/auth/login/client',     // workspace-scoped client login
-            '/ingest/clay', '/billing/polar-webhook', '/sequencer/accounts/google/callback', '/sequencer/accounts/microsoft/callback', '/oauth/callback/postmaster', '/oauth/consent/details', '/oauth/consent/deny', '/consent/cookies', '/integrations/hubspot/callback', '/integrations/salesforce/callback', '/integrations/outreach/callback', '/integrations/hubspot/webhooks'];
+            '/ingest/clay', '/billing/polar-webhook', '/sequencer/accounts/google/callback', '/sequencer/accounts/microsoft/callback', '/oauth/callback/postmaster', '/oauth/consent/details', '/oauth/consent/deny', '/consent/cookies', '/integrations/hubspot/callback', '/integrations/salesforce/callback', '/integrations/outreach/callback', '/integrations/hubspot/webhooks',
+            // SES SNS posts to this endpoint without our auth — verified by AWS
+            // signing keys at the controller layer (TODO: add signature check).
+            '/super-sender/ses-notification'];
         if (publicPaths.some(path => req.path.startsWith(path))) {
             return next();
         }

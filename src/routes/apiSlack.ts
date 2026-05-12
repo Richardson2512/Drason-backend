@@ -13,4 +13,9 @@ router.get('/channels', asyncHandler(slackController.getSlackChannels));
 // Save the selected channel (posts a validation message first)
 router.post('/channel', asyncHandler(slackController.saveSlackChannel));
 
+// Notification preferences + history
+router.get('/notifications/catalog',      asyncHandler(slackController.getNotificationCatalog));
+router.put('/notifications/preferences',  asyncHandler(slackController.updateNotificationPreferences));
+router.get('/notifications/history',      asyncHandler(slackController.getNotificationHistory));
+
 export default router;

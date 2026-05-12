@@ -282,6 +282,9 @@ app.use('/api', (req, res, next) => {
     // Anonymous-friendly consent endpoint (cookie banner). Other /consent/* paths
     // are authenticated and DO go through subscription gating.
     if (req.path === '/consent/cookies') return next();
+    // AWS SNS posts SES bounce/complaint events here without our auth — bypass
+    // subscription gating entirely; the controller validates source via SourceArn.
+    if (req.path === '/super-sender/ses-notification') return next();
     checkSubscriptionStatus(req, res, next);
 });
 
@@ -316,6 +319,8 @@ app.use('/api/unibox', uniboxRoutes);
 app.use('/api/sequencer', sequencerRoutes);
 app.use('/api/cold-call-list', coldCallListRoutes);
 app.use('/api/ai', aiRoutes);
+import superSenderRoutes from './routes/superSender';
+app.use('/api/super-sender', superSenderRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/t', trackingRoutes); // public, no auth — tracking pixels + click redirects + unsubscribe
 
@@ -449,13 +454,20 @@ app.get('/api/integrations/outreach/exports/:id', asyncHandler(outreachIntegrati
 
 // JustCall.io — outbound voice/SMS dialer push. API key + secret auth
 // (no OAuth), so there's no /authorize or /callback route.
+//
+// Mutating endpoints are gated by `access_integrations` so client users
+// in a workspace can't reach over to connect/disconnect or push exports
+// against the agency's tenant. Reads (connection details, campaign list,
+// export status) stay open to any authed user in the org so the UI can
+// render the integration card without elevating role.
 import * as justcallIntegrationController from './controllers/justcallIntegrationController';
-app.post('/api/integrations/justcall/connect', asyncHandler(justcallIntegrationController.connect));
+import { requireCapability } from './middleware/requireCapability';
+app.post('/api/integrations/justcall/connect', requireCapability('access_integrations'), asyncHandler(justcallIntegrationController.connect));
 app.get('/api/integrations/justcall/connection', asyncHandler(justcallIntegrationController.getConnection));
-app.post('/api/integrations/justcall/disconnect', asyncHandler(justcallIntegrationController.disconnect));
+app.post('/api/integrations/justcall/disconnect', requireCapability('access_integrations'), asyncHandler(justcallIntegrationController.disconnect));
 app.get('/api/integrations/justcall/campaigns', asyncHandler(justcallIntegrationController.listCampaigns));
-app.post('/api/integrations/justcall/campaigns', asyncHandler(justcallIntegrationController.createCampaign));
-app.post('/api/integrations/justcall/exports', asyncHandler(justcallIntegrationController.startExport));
+app.post('/api/integrations/justcall/campaigns', requireCapability('access_integrations'), asyncHandler(justcallIntegrationController.createCampaign));
+app.post('/api/integrations/justcall/exports', requireCapability('access_integrations'), asyncHandler(justcallIntegrationController.startExport));
 app.get('/api/integrations/justcall/exports/:id', asyncHandler(justcallIntegrationController.getExportJob));
 
 // Public OAuth callback endpoints — must be reachable without an
@@ -1003,6 +1015,11 @@ const server = app.listen(PORT, () => {
     import('./workers/warmupDispatchWorker').then(m => m.startWarmupDispatchWorker());
     import('./workers/warmupRecipientWorker').then(m => m.startWarmupRecipientWorker());
     import('./workers/warmupRampWorker').then(m => m.startWarmupRampWorker());
+
+    // Super Sender — drives DedicatedIp state machine (provisioning + ramp).
+    // Stub-mode in dev/staging cycles a row through the full lifecycle in
+    // ~10s; real-mode polls AWS SES and ramps daily over 30 days.
+    import('./workers/dedicatedIpWorker').then(m => m.startDedicatedIpWorker());
 
     startRetentionJob();
     logger.info('Compliance retention job started');

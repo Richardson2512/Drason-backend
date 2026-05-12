@@ -51,7 +51,12 @@ function checkRateLimit(orgId: string): { ok: boolean; retryAfterSec?: number } 
 const VALID_INTENTS: StepIntent[] = ['intro', 'follow_up', 'value_add', 'social_proof', 'breakup', 'custom'];
 const VALID_TONES = ['casual', 'neutral', 'professional', 'direct'];
 
-function coerceStepInput(body: any): GenerateStepInput | { error: string } {
+interface CoercedStepInput {
+    input: GenerateStepInput;
+    leadId?: string;
+}
+
+function coerceStepInput(body: any): CoercedStepInput | { error: string } {
     const intent = body?.step_intent;
     if (!VALID_INTENTS.includes(intent)) {
         return { error: `step_intent must be one of ${VALID_INTENTS.join(', ')}` };
@@ -89,7 +94,11 @@ function coerceStepInput(body: any): GenerateStepInput | { error: string } {
         return { error: 'lead_id must be a string' };
     }
 
-    return {
+    // lead_profile is hydrated by the controller (see generateStep), not
+    // passed in by the client. We return leadId on a sibling field rather
+    // than smuggling it into the GenerateStepInput shape — keeps the
+    // service-layer type honest.
+    const input: GenerateStepInput = {
         step_intent: intent,
         step_number: stepNumber,
         total_steps: totalSteps,
@@ -97,11 +106,8 @@ function coerceStepInput(body: any): GenerateStepInput | { error: string } {
         word_budget: wordBudget,
         custom_instructions: customInstructions,
         variant_of: variantOf,
-        // lead_profile is hydrated by the controller, not passed in by the
-        // client — see generateStep below. The leadId is captured here so
-        // the coerce signature gives the controller a typed surface.
-        ...(leadId ? { _leadId: leadId } : {}),
-    } as GenerateStepInput & { _leadId?: string };
+    };
+    return leadId ? { input, leadId } : { input };
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -117,10 +123,11 @@ export const generateStep = async (req: Request, res: Response): Promise<Respons
         return res.status(429).json({ success: false, error: `AI generation rate limit exceeded. Retry in ${rate.retryAfterSec}s.` });
     }
 
-    const input = coerceStepInput(req.body);
-    if ('error' in input) {
-        return res.status(400).json({ success: false, error: input.error });
+    const coerced = coerceStepInput(req.body);
+    if ('error' in coerced) {
+        return res.status(400).json({ success: false, error: coerced.error });
     }
+    const { input, leadId } = coerced;
 
     const profile = await getCachedProfile(orgId);
     if (!profile) {
@@ -136,7 +143,6 @@ export const generateStep = async (req: Request, res: Response): Promise<Respons
     // calling org before reading the cache so a leaked leadId can't
     // exfiltrate another tenant's enrichment.
     let leadProfile: Record<string, unknown> | null = null;
-    const leadId = (input as any)._leadId as string | undefined;
     if (leadId) {
         const owned = await prisma.lead.findFirst({
             where: { id: leadId, organization_id: orgId },

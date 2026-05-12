@@ -419,7 +419,10 @@ async function createOrUpdateThread(
             body_html: email.bodyHtml,
         });
 
-        await prisma.emailMessage.create({
+        // Insert the row first with the rule output; AI re-classification +
+        // OOO extraction + action firing run AFTER the row exists so a slow
+        // Gemini call can't block the unibox from showing the new reply.
+        const messageRow = await prisma.emailMessage.create({
             data: {
                 thread_id: thread.id,
                 direction: 'inbound',
@@ -452,6 +455,26 @@ async function createOrUpdateThread(
             contact_name: email.fromName || null,
             subject: email.subject,
             snippet,
+        });
+
+        // Second-pass enrichment — AI re-classification, OOO date extraction,
+        // and auto-action execution. Runs detached from the main code path so
+        // a slow Gemini call (or a missing API key) never blocks the worker
+        // tick. Each branch logs its own failures; nothing here throws.
+        processReplyEnrichment({
+            messageRowId: messageRow.id,
+            ruleQuality: quality,
+            organizationId,
+            threadId: thread.id,
+            campaignId: thread.campaign_id ?? null,
+            contactEmail: email.from,
+            subject: email.subject,
+            bodyText: email.bodyText || '',
+            bodyHtml: email.bodyHtml || '',
+        }).catch(err => {
+            logger.warn(`[${LOG_TAG}] enrichment failed (non-fatal)`, {
+                err: err instanceof Error ? err.message : String(err),
+            });
         });
     } catch (err: any) {
         logger.error(`[${LOG_TAG}] Error creating thread/message for ${email.from}`, err);
@@ -839,6 +862,115 @@ export function scheduleImapPolling(): NodeJS.Timeout {
     }, POLL_INTERVAL_MS);
 
     return interval;
+}
+
+/**
+ * Reply enrichment — runs detached from the IMAP hot path.
+ *
+ *   1. If rule output is unclassified/low, ask Gemini Flash for a
+ *      second opinion. Update the EmailMessage row with the AI verdict.
+ *   2. If the final class is 'auto', try to parse an OOO return date
+ *      (regex first, Gemini fallback). Stamp CampaignLead.ooo_until so
+ *      the dispatcher can hold sends until the contact is back.
+ *   3. Apply per-org auto-actions (suppress/pause/alert) for the
+ *      final class.
+ */
+async function processReplyEnrichment(input: {
+    messageRowId: string;
+    ruleQuality: { class: string; confidence: 'high' | 'medium' | 'low'; signals: string[]; evidence?: string };
+    organizationId: string;
+    threadId: string;
+    campaignId: string | null;
+    contactEmail: string;
+    subject: string;
+    bodyText: string;
+    bodyHtml: string;
+}): Promise<void> {
+    const { shouldAiReclassify, aiReclassify, extractOooDate } = await import('../services/replyIntelligenceService');
+    const { applyReplyActions } = await import('../services/replyActionService');
+
+    // 1. AI re-classification.
+    let finalClass = input.ruleQuality.class;
+    let finalConfidence: 'high' | 'medium' | 'low' = input.ruleQuality.confidence;
+    const rulePass = {
+        class: input.ruleQuality.class as never,
+        confidence: input.ruleQuality.confidence,
+        signals: input.ruleQuality.signals,
+        evidence: input.ruleQuality.evidence,
+    };
+    if (shouldAiReclassify(rulePass)) {
+        const ai = await aiReclassify({
+            subject: input.subject,
+            body: input.bodyText || input.bodyHtml,
+            ruleClass: rulePass.class,
+            ruleConfidence: rulePass.confidence,
+        });
+        if (ai) {
+            // Trust the AI verdict — that's the whole point of escalation —
+            // but keep the original rule signals on the row so we never
+            // lose the audit trail. The 'ai_reclassified' marker signals to
+            // analytics that this row was second-passed.
+            finalClass = ai.class;
+            finalConfidence = ai.confidence;
+            await prisma.emailMessage.update({
+                where: { id: input.messageRowId },
+                data: {
+                    ai_class: ai.class,
+                    ai_confidence: ai.confidence,
+                    ai_reasoning: ai.reasoning,
+                    ai_classified_at: new Date(),
+                    // Mirror the AI verdict into the canonical column so
+                    // downstream queries (unibox filter, analytics) see one
+                    // class field with the best available answer.
+                    quality_class: ai.class,
+                    quality_confidence: ai.confidence,
+                    quality_signals: [...(input.ruleQuality.signals || []), 'ai_reclassified'],
+                },
+            });
+            logger.info('[REPLY_AI] Reclassified', {
+                messageRowId: input.messageRowId,
+                from: input.ruleQuality.class, to: ai.class,
+            });
+        }
+    }
+
+    // 2. OOO date extraction — only when the final class is 'auto'.
+    if (finalClass === 'auto' && input.campaignId) {
+        const oooDate = await extractOooDate({ subject: input.subject, body: input.bodyText || input.bodyHtml });
+        if (oooDate) {
+            await prisma.emailMessage.update({
+                where: { id: input.messageRowId },
+                data: { ooo_return_date: oooDate },
+            });
+            // Mirror onto the CampaignLead so the dispatcher honors the hold.
+            await prisma.campaignLead.updateMany({
+                where: { campaign_id: input.campaignId, email: input.contactEmail },
+                data: { ooo_until: oooDate },
+            });
+            logger.info('[REPLY_AI] OOO hold applied', {
+                campaignId: input.campaignId,
+                email: input.contactEmail,
+                until: oooDate.toISOString(),
+            });
+        }
+    } else if (finalClass !== 'auto' && input.campaignId) {
+        // Non-auto reply clears any stale OOO hold so the dispatcher
+        // resumes after the contact is actually back.
+        await prisma.campaignLead.updateMany({
+            where: { campaign_id: input.campaignId, email: input.contactEmail, ooo_until: { not: null } },
+            data: { ooo_until: null },
+        });
+    }
+    void finalConfidence;
+
+    // 3. Auto-actions.
+    await applyReplyActions({
+        organizationId: input.organizationId,
+        threadId: input.threadId,
+        contactEmail: input.contactEmail,
+        replyClass: finalClass,
+        campaignId: input.campaignId,
+    });
 }
 
 export { processReply };

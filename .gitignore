@@ -1,5 +1,6 @@
 node_modules
 dist
+test-results
 # Keep environment variables out of version control
 .env
 .DS_Store

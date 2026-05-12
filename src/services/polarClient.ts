@@ -146,7 +146,7 @@ const PRODUCT_IDS: Record<string, string> = {
 // POLAR API CLIENT
 // ============================================================================
 
-const polarApi = axios.create({
+export const polarApi = axios.create({
     baseURL: POLAR_API_BASE,
     headers: {
         'Authorization': `Bearer ${POLAR_ACCESS_TOKEN}`,

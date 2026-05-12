@@ -271,7 +271,7 @@ async function processJob(jobId: string): Promise<void> {
                 },
             });
             if (code === 'unauthorized') {
-                await markJustCallConnectionFailed(decrypted.id, message ?? 'JustCall rejected the credentials');
+                await markJustCallConnectionFailed(decrypted.id, decrypted.organizationId, message ?? 'JustCall rejected the credentials');
             }
             logger.error('[JUSTCALL_EXPORT] job failed', err instanceof Error ? err : new Error(String(err)));
         }

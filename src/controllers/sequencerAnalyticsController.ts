@@ -173,6 +173,139 @@ export const getCampaignPerformance = async (req: Request, res: Response): Promi
 };
 
 /**
+ * GET /api/sequencer/analytics/mailboxes
+ *
+ * Per-mailbox performance for the date window. Aggregates SendEvent +
+ * BounceEvent + ReplyEvent rows so the counts respect whichever
+ * timeRange / from-to the user picked (matches every other window-
+ * sensitive endpoint on this controller).
+ *
+ * Joins through ConnectedAccount for metadata (email, display_name,
+ * provider, connection_status, daily_send_limit) and through Mailbox
+ * for healing state (status, recovery_phase). Mailboxes with zero sends
+ * in the window are still surfaced — analytics for a paused mailbox is
+ * useful context, and exclusion would hide it from the operator who
+ * needs to see "this mailbox hasn't sent anything in 7 days".
+ */
+export const getMailboxPerformance = async (req: Request, res: Response): Promise<Response> => {
+    try {
+        const orgId = getOrgId(req);
+        const dateFilter = getDateFilter(req);
+        const eventWhere: any = { organization_id: orgId };
+        if (dateFilter) eventWhere.sent_at = dateFilter;
+
+        // Pull the org's mailboxes first so we can include zero-send rows.
+        // ConnectedAccount is the canonical user-facing record (auth +
+        // limits); Mailbox is the healing-side state. Some legacy accounts
+        // may not have a Mailbox row yet — handled defensively below.
+        const accounts = await prisma.connectedAccount.findMany({
+            where: { organization_id: orgId },
+            select: {
+                id: true,
+                email: true,
+                display_name: true,
+                provider: true,
+                connection_status: true,
+                daily_send_limit: true,
+                sends_today: true,
+            },
+            orderBy: { email: 'asc' },
+        });
+
+        if (accounts.length === 0) {
+            return res.json({ success: true, data: [] });
+        }
+
+        const mailboxIds = accounts.map(a => a.id);
+
+        // Three parallel groupBy queries — one per event type. groupBy is
+        // index-friendly via the (mailbox_id, sent_at) / (mailbox_id, replied_at)
+        // / (mailbox_id, bounced_at) indexes on each table.
+        const [sends, replies, bounces, mailboxStates] = await Promise.all([
+            prisma.sendEvent.groupBy({
+                by: ['mailbox_id'],
+                where: { ...eventWhere, mailbox_id: { in: mailboxIds } },
+                _count: { _all: true },
+            }),
+            prisma.replyEvent.groupBy({
+                by: ['mailbox_id'],
+                where: {
+                    organization_id: orgId,
+                    mailbox_id: { in: mailboxIds },
+                    ...(dateFilter ? { replied_at: dateFilter } : {}),
+                },
+                _count: { _all: true },
+            }),
+            prisma.bounceEvent.groupBy({
+                by: ['mailbox_id'],
+                where: {
+                    organization_id: orgId,
+                    mailbox_id: { in: mailboxIds },
+                    ...(dateFilter ? { bounced_at: dateFilter } : {}),
+                },
+                _count: { _all: true },
+            }),
+            prisma.mailbox.findMany({
+                where: { id: { in: mailboxIds } },
+                select: { id: true, status: true, recovery_phase: true, last_activity_at: true },
+            }),
+        ]);
+
+        const sendCounts = new Map<string, number>();
+        for (const r of sends) if (r.mailbox_id) sendCounts.set(r.mailbox_id, r._count._all);
+        const replyCounts = new Map<string, number>();
+        for (const r of replies) if (r.mailbox_id) replyCounts.set(r.mailbox_id, r._count._all);
+        const bounceCounts = new Map<string, number>();
+        for (const r of bounces) if (r.mailbox_id) bounceCounts.set(r.mailbox_id, r._count._all);
+        const mailboxState = new Map<string, { status: string; recovery_phase: string; last_activity_at: Date }>();
+        for (const m of mailboxStates) mailboxState.set(m.id, m);
+
+        const safe = (n: number, d: number) => (d > 0 ? parseFloat(((n / d) * 100).toFixed(2)) : 0);
+
+        const data = accounts.map(a => {
+            const sent = sendCounts.get(a.id) || 0;
+            const replied = replyCounts.get(a.id) || 0;
+            const bounced = bounceCounts.get(a.id) || 0;
+            const mb = mailboxState.get(a.id);
+            const utilization_pct = a.daily_send_limit > 0
+                ? parseFloat(((a.sends_today / a.daily_send_limit) * 100).toFixed(1))
+                : 0;
+            return {
+                id: a.id,
+                email: a.email,
+                display_name: a.display_name,
+                provider: a.provider,
+                connection_status: a.connection_status,
+                daily_send_limit: a.daily_send_limit,
+                sends_today: a.sends_today,
+                utilization_pct,
+                status: mb?.status || 'healthy',
+                recovery_phase: mb?.recovery_phase || 'healthy',
+                last_activity_at: mb?.last_activity_at ?? null,
+                total_sent: sent,
+                total_replied: replied,
+                total_bounced: bounced,
+                reply_rate: safe(replied, sent),
+                bounce_rate: safe(bounced, sent),
+            };
+        });
+
+        // Sort by send volume desc so the most-active mailboxes lead the
+        // table — that's where the operator's attention is most useful.
+        // Zero-send mailboxes fall to the bottom, alphabetized by email.
+        data.sort((a, b) => {
+            if (b.total_sent !== a.total_sent) return b.total_sent - a.total_sent;
+            return a.email.localeCompare(b.email);
+        });
+
+        return res.json({ success: true, data });
+    } catch (error: any) {
+        logger.error('[SEQ_ANALYTICS] Failed to get mailbox performance', error instanceof Error ? error : new Error(String(error)));
+        return res.status(500).json({ success: false, error: 'Failed to get mailbox performance' });
+    }
+};
+
+/**
  * GET /api/sequencer/analytics/volume
  *
  * Historical daily send count for the org. Backward-looking — answers "how
@@ -464,6 +597,7 @@ export const getReplyQuality = async (req: Request, res: Response): Promise<Resp
         // independently in the future.
         const samples: Record<string, Array<{
             id: string;
+            thread_id: string;
             subject: string;
             from_email: string;
             snippet: string;
@@ -485,6 +619,7 @@ export const getReplyQuality = async (req: Request, res: Response): Promise<Resp
                     take: 5,
                     select: {
                         id: true,
+                        thread_id: true, // enables drill-down → Unibox deep link
                         subject: true,
                         from_email: true,
                         body_text: true,
@@ -496,6 +631,7 @@ export const getReplyQuality = async (req: Request, res: Response): Promise<Resp
                 });
                 samples[cls] = rows.map(r => ({
                     id: r.id,
+                    thread_id: r.thread_id,
                     subject: r.subject,
                     from_email: r.from_email,
                     snippet: snippetFromBody(r.body_text, r.body_html),

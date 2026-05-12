@@ -51,6 +51,7 @@ const WORKER_CONCURRENCY = 10;
 interface StepVariantRow {
     id: string;
     subject: string;
+    preheader: string;
     body_html: string;
     weight: number;
 }
@@ -61,6 +62,7 @@ interface SequenceStepWithVariants {
     delay_days: number;
     delay_hours: number;
     subject: string;
+    preheader: string;
     body_html: string;
     variants: StepVariantRow[];
     /** Subsequence branching — see schema docs on SequenceStep. */
@@ -70,6 +72,7 @@ interface SequenceStepWithVariants {
 
 interface AccountData {
     id: string;
+    organization_id: string;
     email: string;
     display_name: string | null;
     provider: string;
@@ -130,10 +133,15 @@ interface BatchJobData {
 function pickVariant(step: SequenceStepWithVariants): {
     subject: string;
     bodyHtml: string;
+    preheader: string;
     variantId: string | null;
 } {
+    // Variant preheader, when set, overrides the step preheader — same A/B
+    // semantics as subject + body. Empty string at the variant level falls
+    // back to the step-level preheader so users can author once and have
+    // every variant pick it up.
     if (!step.variants || step.variants.length === 0) {
-        return { subject: step.subject, bodyHtml: step.body_html, variantId: null };
+        return { subject: step.subject, bodyHtml: step.body_html, preheader: step.preheader || '', variantId: null };
     }
     const totalWeight = step.variants.reduce((sum, v) => sum + v.weight, 0);
     const rand = Math.random() * totalWeight;
@@ -141,11 +149,54 @@ function pickVariant(step: SequenceStepWithVariants): {
     for (const variant of step.variants) {
         cumulative += variant.weight;
         if (rand < cumulative) {
-            return { subject: variant.subject, bodyHtml: variant.body_html, variantId: variant.id };
+            return {
+                subject: variant.subject,
+                bodyHtml: variant.body_html,
+                preheader: variant.preheader || step.preheader || '',
+                variantId: variant.id,
+            };
         }
     }
     const last = step.variants[step.variants.length - 1];
-    return { subject: last.subject, bodyHtml: last.body_html, variantId: last.id };
+    return {
+        subject: last.subject,
+        bodyHtml: last.body_html,
+        preheader: last.preheader || step.preheader || '',
+        variantId: last.id,
+    };
+}
+
+/**
+ * Inject the inbox preview text as a hidden div at the top of the body.
+ *
+ * Pattern: matches the transactional email templates' preheader injection
+ * (see transactionalEmailTemplates.ts) — display:none + zero-line-height +
+ * mso-hide:all so Outlook on Windows/Mac, Gmail, Apple Mail, and Yahoo all
+ * keep the text out of the rendered body while harvesting it for the
+ * inbox-list snippet. The trailing &nbsp;&zwnj; run consumes additional
+ * snippet space so body content can't bleed into the preview window.
+ *
+ * No-op when preheader is empty so existing campaigns keep their current
+ * behavior (mail clients derive the snippet from the body).
+ */
+function injectPreheader(bodyHtml: string, preheader: string): string {
+    const text = (preheader || '').trim();
+    if (!text) return bodyHtml;
+    const escaped = text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    const filler = '&nbsp;&zwnj;'.repeat(50);
+    const hidden =
+        `<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;color:transparent;opacity:0;">${escaped}</div>` +
+        `<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;">${filler}</div>`;
+    // Insert just inside <body> when present so semantic structure survives;
+    // otherwise prepend. Case-insensitive match, single replace.
+    if (/<body[^>]*>/i.test(bodyHtml)) {
+        return bodyHtml.replace(/<body[^>]*>/i, (m) => m + hidden);
+    }
+    return hidden + bodyHtml;
 }
 
 function personalizeEmail(
@@ -534,9 +585,16 @@ async function dispatch(): Promise<void> {
                     data: { next_send_at: now },
                 });
 
-                // Find due leads
+                // Find due leads. Honor any OOO hold from the reply-intelligence
+                // pipeline: ooo_until > now means we received an autoresponder
+                // and the contact won't be reading mail until that date.
                 const dueLeadsRaw = await prisma.campaignLead.findMany({
-                    where: { campaign_id: campaign.id, status: 'active', next_send_at: { lte: now } },
+                    where: {
+                        campaign_id: campaign.id,
+                        status: 'active',
+                        next_send_at: { lte: now },
+                        OR: [{ ooo_until: null }, { ooo_until: { lte: now } }],
+                    },
                     take: Math.min(remainingCampaignSends, 500),
                     orderBy: { next_send_at: 'asc' },
                 });
@@ -901,7 +959,7 @@ async function dispatch(): Promise<void> {
                     // step and the next dispatch starts from N+1.
                     const deliveredStepNumber = step.step_number;
 
-                    const { subject: rawSubject, bodyHtml: rawBody, variantId } = pickVariant(step);
+                    const { subject: rawSubject, bodyHtml: rawBody, preheader: rawPreheader, variantId } = pickVariant(step);
 
                     // Pipeline: personalize → spintax → tracking.
                     // - Personalize first so {{tokens}} inside spintax options are substituted.
@@ -910,6 +968,11 @@ async function dispatch(): Promise<void> {
                     // - Tracking last so the open pixel + click wrappers see the final URL set.
                     const subject = resolveSpintax(personalizeEmail(rawSubject, lead));
                     const personalizedBody = resolveSpintax(personalizeEmail(rawBody, lead));
+                    // Preheader runs through the same personalize+spintax so authors
+                    // can reference {{first_name}} / spintax in the inbox snippet too.
+                    const personalizedPreheader = rawPreheader
+                        ? resolveSpintax(personalizeEmail(rawPreheader, lead))
+                        : '';
 
                     // Inject open pixel + click wrappers + unsubscribe footer based on campaign settings.
                     // These transforms need the leadId so tracking hits can be attributed back to the
@@ -923,7 +986,7 @@ async function dispatch(): Promise<void> {
                         ? bestAccount.tracking_domain
                         : campaign.tracking_domain;
                     const orgMailingAddress = mailingAddressByOrg.get(campaign.organization_id) || null;
-                    const bodyHtml = applyTracking(personalizedBody, {
+                    const trackedBody = applyTracking(personalizedBody, {
                         leadId: lead.id,
                         trackOpens: campaign.track_opens ?? true,
                         trackClicks: campaign.track_clicks ?? true,
@@ -932,6 +995,12 @@ async function dispatch(): Promise<void> {
                         euComplianceMode: campaign.eu_compliance_mode ?? false,
                         mailingAddress: orgMailingAddress,
                     });
+                    // Preheader injection — invisible-to-render div placed before
+                    // the visible body. Mail clients (Gmail, Outlook, Apple Mail,
+                    // Yahoo) lift the first non-whitespace text as the inbox-list
+                    // snippet; the trailing &zwnj; whitespace hack prevents
+                    // body content bleeding into the preview window.
+                    const bodyHtml = injectPreheader(trackedBody, personalizedPreheader);
                     // RFC 8058 one-click unsubscribe URL — populates List-Unsubscribe
                     // headers in the send services. Always computed when
                     // include_unsubscribe is on (default true).

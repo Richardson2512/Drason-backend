@@ -37,6 +37,7 @@ model Account {
 
   organizations Organization[]
   members       User[]         @relation("AccountMembers")
+  dedicatedIps  DedicatedIp[]
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
@@ -82,25 +83,25 @@ model WorkspaceMembership {
 /// expires_at is enforced server-side. Cleanup worker prunes consumed and
 /// expired rows older than 30 days.
 model WorkspaceInvite {
-  id                 String       @id @default(uuid())
-  organization_id    String
-  email              String
-  display_name       String?
-  capabilities       String[]     @default([])
-  token_hash         String       @unique
-  expires_at         DateTime
-  created_by_user_id String
-  consumed_at        DateTime?
-  created_at         DateTime     @default(now())
+  id                     String       @id @default(uuid())
+  organization_id        String
+  email                  String
+  display_name           String?
+  capabilities           String[]     @default([])
+  token_hash             String       @unique
+  expires_at             DateTime
+  created_by_user_id     String
+  consumed_at            DateTime?
+  created_at             DateTime     @default(now())
   // Email delivery tracking — populated by the invite send + Resend webhook
   // path. last_send_status is one of: 'pending' | 'sent' | 'bounced' | 'failed'.
   // Lets the agency UI show "delivery failed → resend" rather than silently
   // never delivering.
-  last_send_status        String?
-  last_send_attempted_at  DateTime?
-  last_send_error         String?
-  organization       Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
-  created_by         User         @relation("InviteCreator", fields: [created_by_user_id], references: [id])
+  last_send_status       String?
+  last_send_attempted_at DateTime?
+  last_send_error        String?
+  organization           Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  created_by             User         @relation("InviteCreator", fields: [created_by_user_id], references: [id])
 
   @@index([organization_id])
   @@index([token_hash])
@@ -221,16 +222,20 @@ model Organization {
   outreachConnections    OutreachConnection[]
   justCallConnections    JustCallConnection[]
   warmupPoolMemberships  WarmupPoolMembership[]
+  leadScoringConfig      LeadScoringConfig?
+  leadScoreEvents        LeadScoreEvent[]
+  slackNotificationPrefs SlackNotificationPreference[]
   /// Workspace-level consent: must be true before any of this org's mailboxes
   /// participate in the cross-tenant warmup pool. Set during onboarding or
   /// when the user clicks "Join warmup pool" on the warmup page.
-  warmup_pool_consent    Boolean   @default(false)
+  warmup_pool_consent    Boolean                  @default(false)
   warmup_pool_consent_at DateTime?
   // SendCampaign was unified into Campaign. Sequencer campaigns now appear in the
   // `campaigns` relation above with source_platform='sequencer'.
   emailThreads           EmailThread[]
   emailTemplates         EmailTemplate[]
   templateFolders        TemplateFolder[]
+  sequences              Sequence[]
   tags                   Tag[]
   emailSignatures        EmailSignature[]
   sequencerSettings      SequencerSettings?
@@ -240,6 +245,9 @@ model Organization {
   domainReputations      DomainReputation[]
   importJobs             ImportJob[]
   consents               Consent[]
+  dedicatedIps           DedicatedIp[]
+  replyActionConfigs     ReplyActionConfig[]
+  orgReplySuppressions   OrgReplySuppression[]
 
   @@index([slug])
   @@index([subscription_status])
@@ -332,7 +340,12 @@ model WebhookDelivery {
 model BusinessProfile {
   id                String   @id @default(uuid())
   organization_id   String   @unique
+  /// First URL the operator pasted — kept for backwards-compat with older
+  /// clients and migrations. Multi-URL profiles must read source_urls.
   source_url        String
+  /// Full ordered, deduped URL list synthesized into this profile.
+  /// Backfilled from [source_url] for rows that predate the column.
+  source_urls       String[] @default([])
   profile_json      Json // BusinessProfileV1 shape — see aiCopywritingService.ts
   scraped_chars     Int      @default(0)
   model_used        String
@@ -503,12 +516,21 @@ model Lead {
   // history / threading / multi-author — it's a simple scratch field.
   notes String?
 
-  created_at   DateTime     @default(now())
-  updated_at   DateTime     @updatedAt
+  // Running tally of points from custom score events (manual + API).
+  // The final lead_score is built-in engagement (computed from counters
+  // using the org's LeadScoringConfig weights) + this adjustments column.
+  // Bumped when a LeadScoreEvent row is inserted; never recomputed from
+  // history, so changing custom-event point values does NOT retroactively
+  // re-score past events — only future events use the new value.
+  lead_score_adjustments Int @default(0)
+
+  created_at   DateTime         @default(now())
+  updated_at   DateTime         @updatedAt
   deleted_at   DateTime?
-  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  organization Organization     @relation(fields: [organization_id], references: [id], onDelete: Cascade)
   tags         LeadTag[]
   leadProfile  LeadProfile?
+  scoreEvents  LeadScoreEvent[]
 
   @@unique([organization_id, email])
   @@unique([organization_id, import_external_id])
@@ -673,22 +695,70 @@ model Campaign {
   // upserts on retry. Safe to drop 30d post-import.
   import_external_id String?
 
-  organization   Organization             @relation(fields: [organization_id], references: [id], onDelete: Cascade)
-  mailboxes      Mailbox[]                @relation("CampaignToMailbox")
-  routingRules   RoutingRule[]
-  dailyAnalytics CampaignDailyAnalytics[]
-  steps          SequenceStep[]
-  leads          CampaignLead[]
-  accounts       CampaignAccount[]
-  leadImports    CampaignLeadImport[]
+  organization          Organization             @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  mailboxes             Mailbox[]                @relation("CampaignToMailbox")
+  routingRules          RoutingRule[]
+  dailyAnalytics        CampaignDailyAnalytics[]
+  steps                 SequenceStep[]
+  leads                 CampaignLead[]
+  accounts              CampaignAccount[]
+  leadImports           CampaignLeadImport[]
   // Distinct from the legacy `tags` String[] field above — that one was
   // populated by Smartlead imports as free-text labels. `tagLinks` is the
   // proper many-to-many relation backed by the org-level Tag model.
-  tagLinks       CampaignTag[]
+  tagLinks              CampaignTag[]
+  /// Lead-suppression rules — see CampaignSuppression. Two relation arrows
+  /// because a campaign can be either the "owner" of a suppression (the
+  /// new campaign that wants leads dropped) or the "source" (an existing
+  /// campaign whose leads should be skipped).
+  suppressions          CampaignSuppression[]    @relation("CampaignSuppressionOwner")
+  suppressionReferences CampaignSuppression[]    @relation("CampaignSuppressionSource")
 
   @@unique([organization_id, import_external_id])
   @@index([organization_id, status])
   @@index([organization_id])
+}
+
+/// Per-campaign lead suppression. When the wizard collects "don't include
+/// leads from these other campaigns" or "skip these specific leads," each
+/// rule lands here. Applied at every lead-insert (initial import, manual
+/// add, re-import) so suppressions persist for the life of the campaign.
+///
+/// `kind` discriminator picks which of the two source columns is set:
+///   'all_campaigns'   — legacy skipDuplicatesAcrossCampaigns mode. Both
+///                       suppressed_campaign_id and suppressed_email are
+///                       NULL; the resolver scans every campaign in the org.
+///   'campaign'        — suppressed_campaign_id set, suppressed_email NULL.
+///                       Drops leads whose email appears in that specific
+///                       source campaign.
+///   'email'           — suppressed_campaign_id NULL, suppressed_email set.
+///                       Drops a single email regardless of where it lives.
+///
+/// Indexed for the resolver's two read patterns:
+///   (campaign_id) — load all rules for an owner campaign at insert time
+///   (suppressed_campaign_id) — when a source campaign is deleted, cascade.
+model CampaignSuppression {
+  id          String   @id @default(uuid())
+  /// The campaign these rules belong to (the one being filtered).
+  campaign_id String
+  campaign    Campaign @relation("CampaignSuppressionOwner", fields: [campaign_id], references: [id], onDelete: Cascade)
+
+  kind String // 'all_campaigns' | 'campaign' | 'email'
+
+  /// Source campaign for kind='campaign'. NULL for the other kinds.
+  /// onDelete: Cascade — if the source campaign is deleted, drop the rule
+  /// so the suppression list isn't silently broken by dangling references.
+  suppressed_campaign_id String?
+  suppressed_campaign    Campaign? @relation("CampaignSuppressionSource", fields: [suppressed_campaign_id], references: [id], onDelete: Cascade)
+
+  /// Email for kind='email'. Lowercased + trimmed at write time.
+  suppressed_email String?
+
+  created_at DateTime @default(now())
+
+  @@unique([campaign_id, kind, suppressed_campaign_id, suppressed_email])
+  @@index([campaign_id])
+  @@index([suppressed_campaign_id])
 }
 
 model CampaignDailyAnalytics {
@@ -791,14 +861,14 @@ model Mailbox {
   domain_id            String
   organization_id      String
   // 1:1 back-reference to the ConnectedAccount holding OAuth/SMTP credentials.
-  connected_account_id String?           @unique
-  created_at           DateTime          @default(now())
-  updated_at           DateTime          @updatedAt
-  domain               Domain            @relation(fields: [domain_id], references: [id], onDelete: Cascade)
-  organization         Organization      @relation(fields: [organization_id], references: [id], onDelete: Cascade)
-  connectedAccount     ConnectedAccount? @relation(fields: [connected_account_id], references: [id], onDelete: SetNull)
+  connected_account_id String?               @unique
+  created_at           DateTime              @default(now())
+  updated_at           DateTime              @updatedAt
+  domain               Domain                @relation(fields: [domain_id], references: [id], onDelete: Cascade)
+  organization         Organization          @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  connectedAccount     ConnectedAccount?     @relation(fields: [connected_account_id], references: [id], onDelete: SetNull)
   metrics              MailboxMetrics?
-  campaigns            Campaign[]        @relation("CampaignToMailbox")
+  campaigns            Campaign[]            @relation("CampaignToMailbox")
   warmupMembership     WarmupPoolMembership?
 
   @@unique([organization_id, import_external_id])
@@ -1271,7 +1341,38 @@ model SlackAlertLog {
   event_hash      String   @unique
   sent_at         DateTime @default(now())
 
+  // History columns — populated by SlackAlertService so the "Notifications"
+  // tab in the Slack integration card can render a real feed (not just a
+  // dedup hash). Older rows have these null; UI degrades gracefully.
+  title              String?
+  message            String?
+  severity           String? // info | warn | critical
+  entity_id          String?
+  channel_id         String? // Slack channel the alert was actually dispatched to
+  /// True when the org's preference says "do not notify for this event_type".
+  /// We still write a row so operators can audit what they're suppressing.
+  suppressed_by_pref Boolean @default(false)
+
   @@index([organization_id, event_hash])
+  @@index([organization_id, sent_at])
+}
+
+/// Per-event-type Slack preference for an organization. Missing row = use the
+/// default from slackEventCatalog. Channel override lets one event_type land
+/// in a different channel than the primary integration channel.
+model SlackNotificationPreference {
+  id                    String       @id @default(uuid())
+  organization_id       String
+  event_type            String
+  enabled               Boolean      @default(true)
+  /// Slack channel id (e.g. "C01234ABCD"). null = use integration default.
+  channel_id_override   String?
+  updated_at            DateTime     @updatedAt
+  created_at            DateTime     @default(now())
+  organization          Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@unique([organization_id, event_type])
+  @@index([organization_id])
 }
 
 model SupportTicket {
@@ -1585,6 +1686,12 @@ model SequenceStep {
   delay_days  Int     @default(1) // delay after previous step
   delay_hours Int     @default(0)
   subject     String  @default("")
+  /// Inbox preview text — the second-most-read part of an email after the
+  /// subject. Rendered as a hidden div in outbound MIME (mso-hide, font-size:1px)
+  /// so mail clients pick it up for the inbox-list snippet without it ever
+  /// appearing in the opened view. Empty string = let the client derive a
+  /// snippet from the body (default Gmail/Outlook behavior).
+  preheader   String  @default("")
   body_html   String  @default("")
   body_text   String?
 
@@ -1626,6 +1733,9 @@ model StepVariant {
   step_id       String
   variant_label String  @default("A") // A, B, C
   subject       String
+  /// Variant-level preheader override. Falls back to the step's preheader
+  /// when empty so single-variant A/B tests can share inbox snippet copy.
+  preheader     String  @default("")
   body_html     String
   body_text     String?
   weight        Int     @default(50) // percentage weight for split
@@ -1659,6 +1769,11 @@ model CampaignLead {
   validation_score  Int?
   last_sent_at      DateTime?
   next_send_at      DateTime?
+  /// Out-of-office hold — set when the reply classifier detects an
+  /// autoresponder with a parseable return date. The dispatcher refuses
+  /// to schedule sends to this lead until NOW >= ooo_until. NULL = no
+  /// active hold. Cleared on next inbound that isn't an auto-reply.
+  ooo_until         DateTime?
   opened_count      Int       @default(0)
   clicked_count     Int       @default(0)
   replied_at        DateTime?
@@ -1727,6 +1842,10 @@ model EmailTemplate {
   organization_id String
   name            String
   subject         String
+  /// Inbox preview text — see SequenceStep.preheader for the rendering
+  /// contract. When the template is loaded into a campaign step, the
+  /// preheader is copied alongside subject + body.
+  preheader       String   @default("")
   body_html       String
   body_text       String?
   category        String   @default("general") // general, introduction, follow-up, breakup, meeting, referral
@@ -1864,11 +1983,29 @@ model EmailMessage {
   quality_signals       String[]  @default([])
   quality_classified_at DateTime?
 
+  /// AI-assisted reclassification (Gemini Flash). Populated only for replies
+  /// that the rule-based classifier left as `unclassified` or `low` confidence.
+  /// The AI label REPLACES quality_class when present + agreed-confident;
+  /// the original rule output stays auditable via quality_signals (the AI
+  /// adds an 'ai_reclassified' signal so the trail is reconstructable).
+  ai_class         String?
+  ai_confidence    String?
+  ai_reasoning     String? // short human-readable explanation (≤200 chars)
+  ai_classified_at DateTime?
+
+  /// Out-of-office return-date extraction. Only meaningful when
+  /// quality_class='auto'. NULL when no usable date was found. The
+  /// dispatcher reads CampaignLead.ooo_until (mirrored from here at
+  /// classify time) — this column is the source of truth for the
+  /// raw extraction + audit trail.
+  ooo_return_date DateTime?
+
   thread EmailThread @relation(fields: [thread_id], references: [id], onDelete: Cascade)
 
   @@index([thread_id, sent_at])
   @@index([message_id])
   @@index([direction, quality_class])
+  @@index([direction, ai_class])
 }
 
 // ============================================================================
@@ -2484,27 +2621,27 @@ model JustCallExportJob {
 /// last_error string — the worker won't retry until the lead's
 /// company_linkedin_url / website changes.
 model LeadProfile {
-  id                String   @id @default(uuid())
-  lead_id           String   @unique
-  organization_id   String
+  id              String @id @default(uuid())
+  lead_id         String @unique
+  organization_id String
 
-  source_url        String   // The URL we scraped (linkedin company > website)
-  source_kind       String   // 'linkedin_company' | 'website' | 'company_search'
+  source_url  String // The URL we scraped (linkedin company > website)
+  source_kind String // 'linkedin_company' | 'website' | 'company_search'
 
   /// LeadProfileV1 shape: subset of BusinessProfileV1 focused on the
   /// recipient's company — see leadProfileService.ts.
   profile_json      Json?
-  scraped_chars     Int      @default(0)
+  scraped_chars     Int     @default(0)
   model_used        String?
-  prompt_tokens     Int      @default(0)
-  completion_tokens Int      @default(0)
+  prompt_tokens     Int     @default(0)
+  completion_tokens Int     @default(0)
 
-  status            String   @default("pending") // pending | extracting | ready | failed | skipped
-  last_error        String?
-  extracted_at      DateTime?
-  updated_at        DateTime @updatedAt
+  status       String    @default("pending") // pending | extracting | ready | failed | skipped
+  last_error   String?
+  extracted_at DateTime?
+  updated_at   DateTime  @updatedAt
 
-  lead         Lead         @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+  lead Lead @relation(fields: [lead_id], references: [id], onDelete: Cascade)
 
   @@index([organization_id])
   @@index([status])
@@ -2533,54 +2670,54 @@ model LeadProfile {
 /// Cross-tenant participation is gated by a separate workspace-level
 /// consent (Organization.warmup_pool_consent).
 model WarmupPoolMembership {
-  id              String   @id @default(uuid())
-  mailbox_id      String   @unique
+  id              String @id @default(uuid())
+  mailbox_id      String @unique
   organization_id String
 
   /// Per-mailbox toggle. When false the worker skips this row (other
   /// mailboxes may still target it for receive — see receive_enabled).
-  enabled         Boolean  @default(true)
+  enabled Boolean @default(true)
 
   /// Allow this mailbox to RECEIVE warmup emails. Off-by-default would
   /// starve the pool, so default true. Disabled if the mailbox is paused
   /// in the healing pipeline.
-  receive_enabled Boolean  @default(true)
+  receive_enabled Boolean @default(true)
 
   /// Ramp configuration. Default: 5/day → 50/day over 21 days. The user
   /// can stretch ramp_days but the daily ceiling is hard-capped at
   /// MAX_TARGET_DAILY=50 in the service layer regardless of input.
-  start_daily     Int      @default(5)
-  target_daily    Int      @default(50)
-  ramp_days       Int      @default(21)
+  start_daily  Int @default(5)
+  target_daily Int @default(50)
+  ramp_days    Int @default(21)
 
   /// Current allowed cap for today, recomputed nightly by warmupRampWorker.
-  current_daily   Int      @default(5)
+  current_daily Int @default(5)
 
   /// Days into the ramp. >=ramp_days means the mailbox has reached
   /// target_daily and is now in maintenance mode.
-  ramp_step       Int      @default(0)
+  ramp_step Int @default(0)
 
   /// Maintenance mode: after ramp completes, drop to maintenance_daily
   /// indefinitely so the mailbox keeps a baseline reputation pulse.
   /// User can toggle the entire membership off to stop completely.
-  maintenance_daily Int    @default(10)
+  maintenance_daily Int @default(10)
 
   /// Lifetime aggregates — surfaced on the dashboard.
-  total_sent           Int @default(0)
-  total_received       Int @default(0)
-  total_opened         Int @default(0)
-  total_replied        Int @default(0)
+  total_sent                Int @default(0)
+  total_received            Int @default(0)
+  total_opened              Int @default(0)
+  total_replied             Int @default(0)
   total_recovered_from_spam Int @default(0)
 
   /// Rolling 30-day spam-landing rate. Drives adaptive ramp slowdown.
-  spam_rate_30d        Float?
+  spam_rate_30d Float?
 
   /// 'warming' | 'maintenance' | 'paused' | 'error'
-  health               String   @default("warming")
-  last_error           String?
+  health     String  @default("warming")
+  last_error String?
 
-  joined_at        DateTime @default(now())
-  updated_at       DateTime @updatedAt
+  joined_at  DateTime @default(now())
+  updated_at DateTime @updatedAt
 
   mailbox      Mailbox      @relation(fields: [mailbox_id], references: [id], onDelete: Cascade)
   organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
@@ -2602,20 +2739,20 @@ model WarmupPoolMembership {
 ///   'signoff'      — closings (Best/Cheers/etc, with optional name slot)
 ///   'thread_reply' — replies to existing warmup threads (depth >= 1)
 model WarmupTemplate {
-  id          String   @id @default(uuid())
-  kind        String   // see header
-  spintax     String
+  id         String   @id @default(uuid())
+  kind       String // see header
+  spintax    String
   /// 'en' default; multi-language seeded post-launch.
-  language    String   @default("en")
+  language   String   @default("en")
   /// Higher weight → more likely to be picked. Defaults to 1.
-  weight      Int      @default(1)
-  active      Boolean  @default(true)
+  weight     Int      @default(1)
+  active     Boolean  @default(true)
   /// Optional grouping tag (e.g. "casual", "formal", "industry-tech")
   /// — left free-form so the seed corpus can experiment without schema
   /// changes.
-  tag         String?
-  created_at  DateTime @default(now())
-  updated_at  DateTime @updatedAt
+  tag        String?
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
   @@index([kind, active])
   @@index([language, kind])
@@ -2635,47 +2772,377 @@ model WarmupTemplate {
 ///   bounced    — hard bounce; flagged but does NOT touch sender state
 ///                machine (kind=warmup, accounting separate)
 model WarmupExchange {
-  id              String   @id @default(uuid())
+  id String @id @default(uuid())
 
-  sender_mailbox_id    String
-  sender_membership_id String
+  sender_mailbox_id       String
+  sender_membership_id    String
   recipient_mailbox_id    String
   recipient_membership_id String
 
   /// RFC 5322 Message-ID assigned at send time. Used by the recipient
   /// IMAP worker to correlate a polled message back to the exchange row.
-  message_id      String?
+  message_id String?
 
   /// Subject + first 200 chars of body. Stored for audit; full body
   /// regenerated each time so storing it would be wasteful.
-  subject         String
-  body_preview    String
+  subject      String
+  body_preview String
 
   /// Threading. Initial messages get a fresh thread_id (= their own id).
   /// Replies share their parent's thread_id and increment thread_depth.
-  thread_id       String
+  thread_id    String
   /// 0 = initial, 1 = reply, 2 = reply-of-reply, max enforced in service.
-  thread_depth    Int      @default(0)
+  thread_depth Int    @default(0)
 
-  state           String   @default("scheduled")
-  scheduled_at    DateTime
-  sent_at         DateTime?
-  delivered_at    DateTime?
-  opened_at       DateTime?
-  replied_at      DateTime?
-  recovered_at    DateTime?
+  state        String    @default("scheduled")
+  scheduled_at DateTime
+  sent_at      DateTime?
+  delivered_at DateTime?
+  opened_at    DateTime?
+  replied_at   DateTime?
+  recovered_at DateTime?
 
   /// Where the email landed on the recipient side. Detected by the
   /// recipient IMAP worker (reads the mailbox folder list).
   /// 'inbox' | 'spam' | 'promotions' | 'unknown'
-  landed_in       String?
+  landed_in String?
 
-  error           String?
+  error String?
 
-  created_at      DateTime @default(now())
+  created_at DateTime @default(now())
 
   @@index([sender_mailbox_id])
   @@index([recipient_mailbox_id])
   @@index([thread_id])
   @@index([state, scheduled_at])
+}
+
+/// Super Sender — dedicated SES IP purchased through Polar.
+///
+/// Purchase model (v1, "option B" in product spec): the agency owner clicks
+/// Buy and Polar bills `quantity` IPs on a single line item. Our webhook
+/// handler creates `quantity` rows in `pending_payment` keyed to the Account
+/// only (organization_id NULL = unallocated). The agency owner then opens
+/// the Super Sender page and clicks each IP into a workspace from the
+/// "Pending IPs" inbox. Once allocated, the SES provisioning worker takes
+/// over and the row's `state` machine drives the card UI:
+///
+///   pending_payment   → Polar checkout open / webhook not yet received
+///   provisioning      → SES API called, IP requested, polling for active
+///   warming           → IP active in SES, daily-cap ramp running (30 days)
+///   active            → Ramp complete, full send capacity
+///   failed            → SES provisioning error or Polar payment failed
+///   canceled          → Subscription canceled in Polar; mailboxes fall back
+///                       to shared infra. Row kept for billing history.
+///
+/// SES specifics live in `ses_pool_name` (one pool per IP — simplest mental
+/// model for users). When sending from a Superkabe-relay mailbox, the send
+/// path looks up the workspace's assigned IP and routes through that pool.
+/// Gmail/Outlook OAuth mailboxes can't use a dedicated IP — Google/Microsoft
+/// own those IPs — and the card UI surfaces this clearly.
+model DedicatedIp {
+  id String @id @default(uuid())
+
+  /// The agency Account that paid for this IP. Always set — even unassigned
+  /// IPs sit in the Account's pool until allocated to a workspace.
+  account_id String
+  account    Account @relation(fields: [account_id], references: [id], onDelete: Cascade)
+
+  /// The workspace this IP currently routes for. NULL = sitting in the
+  /// account-level pool waiting for allocation. Reassignment moves this
+  /// pointer atomically with a 24h cooldown enforced by the service layer.
+  organization_id String?
+  organization    Organization? @relation(fields: [organization_id], references: [id], onDelete: SetNull)
+
+  /// Polar subscription this IP is billed under. Multiple rows can share a
+  /// subscription_id when the agency bought N IPs in one checkout — Polar
+  /// charges per quantity, our webhook fans the quantity out into N rows.
+  /// Nullable because rows are created in `pending_payment` *before* the
+  /// subscription.created webhook fires; we patch this field when it does.
+  polar_subscription_id String?
+  polar_checkout_id     String? @unique
+
+  /// SES provisioning state. NULL until provisioning starts. ses_pool_name
+  /// is what the sender path uses; ses_ip_address is informational.
+  ses_pool_name  String? @unique
+  ses_ip_address String?
+
+  /// State machine — see model docstring. Indexed for the workers' polling
+  /// queries (provisioning + warming).
+  state String @default("pending_payment")
+
+  /// 30-day warmup ramp counter. 0 on first send, increments daily by the
+  /// dedicatedIpRampWorker. >=30 transitions state → 'active'.
+  warmup_day     Int      @default(0)
+  /// Today's allowed cap, recomputed nightly. Mirrors WarmupPoolMembership
+  /// pattern — caller checks this before scheduling a send.
+  daily_cap      Int      @default(50)
+  /// Sends counted toward today's cap. Reset at sends_reset_at boundary
+  /// by the send-path service. Atomic increments enforce the warmup cap
+  /// without a separate locking table.
+  sends_today    Int      @default(0)
+  sends_reset_at DateTime @default(now())
+
+  /// AWS SES bounce/complaint feedback aggregates over the rolling 24h
+  /// window. AWS' published thresholds are 5% bounce / 0.1% complaint
+  /// before SES itself starts throttling the account; we trip earlier so
+  /// we never let an IP drag the whole AWS account into account-level
+  /// pause. Raw events live in DedicatedIpEvent.
+  bounce_count_24h    Int       @default(0)
+  complaint_count_24h Int       @default(0)
+  delivered_count_24h Int       @default(0)
+  /// 'auto_paused_bounce' | 'auto_paused_complaint' | 'manual' | null.
+  /// When non-null, the send-path skips this IP and falls back to the
+  /// mailbox's native provider so reputation damage stops at the IP, not
+  /// the whole agency.
+  paused_reason       String?
+  paused_at           DateTime?
+
+  /// Activation timestamps. activated_at is the day the IP first became
+  /// usable in SES; warmup_completed_at is when state flipped to active.
+  activated_at        DateTime?
+  warmup_completed_at DateTime?
+  canceled_at         DateTime?
+
+  /// Reassignment cooldown — 24h between workspace moves so warmup doesn't
+  /// thrash. NULL means no cooldown active.
+  last_reassigned_at DateTime?
+
+  /// Last error string from the provisioning or ramp workers. Surface in
+  /// the failed-state card UI.
+  last_error String?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([account_id])
+  @@index([organization_id])
+  @@index([state])
+  @@index([polar_subscription_id])
+}
+
+/// SES feedback events for a DedicatedIp. Populated from the AWS SNS
+/// notification webhook. We keep raw events for forensics + monthly
+/// reputation reporting; the rolling 24h aggregates on DedicatedIp drive
+/// the auto-pause decision.
+///
+/// AWS SES emits five notification kinds we care about: Delivery,
+/// Bounce (Permanent + Transient), Complaint, Reject. The complaint feed
+/// is the gold-standard reputation signal — Gmail/Yahoo postmasters
+/// surface it within hours.
+model DedicatedIpEvent {
+  id              String @id @default(uuid())
+  dedicated_ip_id String
+
+  /// 'delivery' | 'bounce_permanent' | 'bounce_transient' | 'complaint' | 'reject'
+  kind String
+
+  /// Recipient email address that produced the event. Capped at 254 chars
+  /// to fit RFC 5321 max localpart+domain.
+  recipient String?
+
+  /// SES MessageId of the original outbound. Lets us join back to the
+  /// SendEvent row recorded by sendQueueService.
+  ses_message_id String?
+
+  /// Diagnostic the receiver gave (e.g. "smtp; 550 5.7.1 ...").
+  /// Capped at 1024 chars matching BounceEvent.smtp_response.
+  diagnostic String?
+
+  /// Raw SNS payload for forensics — Polar-shaped {data:...} envelope.
+  payload Json?
+
+  created_at DateTime @default(now())
+
+  @@index([dedicated_ip_id, created_at])
+  @@index([kind])
+}
+
+/// Per-organization mapping from reply quality class → automatic action.
+/// Each org gets one row per (class, action) pair. The classifier reads
+/// these on every inbound reply and applies the matching action.
+///
+/// kind discriminator:
+///   'none'       — observational only; no action taken (default for most classes)
+///   'suppress'   — add the lead's email to an org-level reply-suppression list,
+///                  preventing future campaigns from contacting them
+///   'pause_lead' — pause the CampaignLead in the current campaign
+///   'alert'      — emit a notification + (future) slack/email to the operator
+///
+/// We use a flat (org, reply_class, action_kind) shape so a class can have
+/// multiple actions (e.g., 'hard_no' → suppress + alert) without a join table.
+model ReplyActionConfig {
+  id              String       @id @default(uuid())
+  organization_id String
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  /// Reply class this rule fires on. See ReplyClassifierService for the
+  /// enum. Lowercased; stored as String for forward-compat with future
+  /// classes (sub_no, partial_yes, etc.).
+  reply_class String
+
+  /// Action to take. See enum doc above.
+  action_kind String
+
+  /// When false, the rule is configured but inert — useful for staging or
+  /// for temporarily disabling without deleting.
+  enabled Boolean @default(true)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@unique([organization_id, reply_class, action_kind])
+  @@index([organization_id])
+}
+
+/// Per-organization suppression list driven by reply-action automation.
+/// Distinct from CampaignSuppression — that's a per-campaign filter on
+/// the input list. This is global: when a lead replies `hard_no` (or any
+/// class the operator configured for 'suppress'), their email lands here
+/// and no future campaign in the org should contact them.
+///
+/// Sequencer dispatch + campaign-create lead intake both consult this list.
+model OrgReplySuppression {
+  id              String       @id @default(uuid())
+  organization_id String
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  email           String
+
+  /// Why the email was suppressed — for ops debugging + UI display.
+  reason           String? // e.g. 'reply_hard_no', 'reply_angry', 'manual'
+  source_thread_id String? // EmailThread that triggered the add
+  created_at       DateTime @default(now())
+
+  @@unique([organization_id, email])
+  @@index([organization_id])
+}
+
+/// Reusable multi-step email sequence — saved on the templates page and
+/// loaded directly into new campaigns. Distinct from the SequenceStep
+/// table on Campaign in two ways:
+///
+///   1. SavedSequence steps are templates. Loading one into a campaign
+///      CLONES the steps into SequenceStep rows so editing the saved
+///      sequence later doesn't retroactively change launched campaigns.
+///   2. SavedSequence steps don't have variants — A/B testing is a
+///      campaign-side tactical choice, not part of the reusable skeleton.
+///
+/// Signatures attach via the rich-text editor's signature picker, which
+/// bakes the signature HTML into body_html — same pattern as the existing
+/// EmailTemplate model. No separate signature_id column.
+model Sequence {
+  id                     String   @id @default(uuid())
+  organization_id        String
+  name                   String
+  description            String?
+  /// Free-form category for organization. Mirrors EmailTemplate.category
+  /// so the same UI patterns work in both spots ('general', 'introduction',
+  /// 'follow-up', 'breakup', 'meeting', 'referral', ...).
+  category               String   @default("general")
+  /// AI provenance. NULL = built by hand; populated when the AI assist flow
+  /// generated this sequence so we can surface "Generated by AI" in the UI
+  /// and rebuild from the same URLs + instructions later.
+  ai_source_urls         String[] @default([])
+  ai_custom_instructions String?
+  ai_model_used          String?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  organization Organization           @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  steps        SequenceTemplateStep[]
+
+  @@index([organization_id])
+  @@index([organization_id, category])
+}
+
+/// One step of a saved Sequence. Shape mirrors SequenceStep (the campaign-
+/// side model) so loading is a straight field-by-field copy.
+model SequenceTemplateStep {
+  id          String  @id @default(uuid())
+  sequence_id String
+  step_number Int
+  delay_days  Int     @default(1)
+  delay_hours Int     @default(0)
+  subject     String  @default("")
+  /// Inbox preview text — same semantics as SequenceStep.preheader.
+  preheader   String  @default("")
+  body_html   String  @default("")
+  body_text   String?
+
+  /// Subsequence branching — same conditions as SequenceStep.
+  /// Allowed: null | if_no_reply | if_replied | if_opened | if_not_opened |
+  ///          if_clicked | if_not_clicked
+  condition             String?
+  branch_to_step_number Int?
+
+  sequence Sequence @relation(fields: [sequence_id], references: [id], onDelete: Cascade)
+
+  @@unique([sequence_id, step_number])
+  @@index([sequence_id])
+}
+
+/// Per-organization lead-scoring configuration. Single row per org; created
+/// lazily on first read with the platform defaults. Drives the score that
+/// `leadScoringService.recalculateLeadScore` writes to `lead.lead_score`.
+///
+/// `builtin_weights` shape (JSON):
+///   {
+///     base: number,                   // starting points (default 20)
+///     per_open: number,               // points per open (default 2)
+///     max_open: number,               // cap for open contribution (default 10)
+///     per_click: number,              // points per click (default 4)
+///     max_click: number,              // cap for click contribution (default 10)
+///     per_reply: number,              // points per reply (default 5)
+///     max_reply: number,              // cap for reply contribution (default 15)
+///     per_bounce: number,             // points per bounce, NEGATIVE (default -10)
+///     recency_7d: number,             // bonus if last engagement <=7d (default 30)
+///     recency_30d: number,            // bonus if <=30d (default 22)
+///     recency_90d: number,            // bonus if <=90d (default 12)
+///     recency_older: number,          // fallback (default 5)
+///     frequency_high: number,         // bonus for 11+ events (default 20)
+///     frequency_mid: number,          // bonus for 6-10 events (default 15)
+///     frequency_low: number,          // bonus for 3-5 events (default 10)
+///     frequency_min: number,          // bonus for 1-2 events (default 6)
+///   }
+///
+/// `custom_events` shape (JSON array):
+///   [
+///     { key: 'booked_demo', label: 'Booked demo', points: 50, color: '#16A34A' },
+///     ...
+///   ]
+model LeadScoringConfig {
+  id              String       @id @default(uuid())
+  organization_id String       @unique
+  builtin_weights Json
+  custom_events   Json         @default("[]")
+  updated_at      DateTime     @updatedAt
+  created_at      DateTime     @default(now())
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+}
+
+/// Append-only log of custom score events recorded for a lead. Used to show
+/// history on the lead detail row and to bump `lead.lead_score_adjustments`.
+/// Deleting a row reverses the adjustment so operators can undo mistakes.
+model LeadScoreEvent {
+  id                 String       @id @default(uuid())
+  lead_id            String
+  organization_id    String
+  /// References LeadScoringConfig.custom_events[].key — kept as a free
+  /// string so deleting an event type from config doesn't break history.
+  event_key          String
+  /// Snapshot of the label at the time the event was logged.
+  label              String
+  /// Snapshot of the point value applied. Adjustments use this, not the
+  /// current config — that's how we honor "changes apply to upcoming
+  /// engagement only" without rewriting old scores.
+  points             Int
+  created_at         DateTime     @default(now())
+  created_by_user_id String?
+  note               String?
+  lead               Lead         @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+  organization       Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([lead_id, created_at])
+  @@index([organization_id, created_at])
 }

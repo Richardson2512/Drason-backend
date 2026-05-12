@@ -244,6 +244,12 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
         const orgId = getOrgId(req);
         const {
             name, tags, steps, leads, schedule, settings, accountIds, skipDuplicatesAcrossCampaigns,
+            // New unified suppression model — see campaignSuppressionService.
+            // `suppressionRules` is the canonical shape; `skipDuplicatesAcrossCampaigns`
+            // is the legacy boolean preserved for backwards compat. When both are
+            // provided, the boolean is folded into the rules as an 'all_campaigns'
+            // rule so the resolver gets a single source of truth.
+            suppressionRules,
             // Provenance for the initial leads — surfaced in the campaign detail
             // page's "Lead sources" panel. Defaults to 'manual' if the caller
             // doesn't say otherwise (e.g. the legacy wizard before this change).
@@ -313,6 +319,7 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
                             delay_days: delayDays,
                             delay_hours: delayHours,
                             subject: step.subject || '',
+                            preheader: step.preheader ?? '',
                             body_html: bodyHtml,
                         },
                     });
@@ -325,6 +332,7 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
                                     step_id: createdStep.id,
                                     variant_label: variant.label || 'A',
                                     subject: variant.subject,
+                                    preheader: variant.preheader ?? '',
                                     body_html: variant.body_html ?? variant.bodyHtml ?? '',
                                     weight: variant.weight ?? 50,
                                 },
@@ -335,29 +343,50 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
             }
 
             // 3. Create campaign leads — with health gate classification + validation
+            // Persist suppression rules and apply them before lead classification.
+            // The legacy `skipDuplicatesAcrossCampaigns` boolean is folded into the
+            // unified rule set as an 'all_campaigns' rule so the resolver is the
+            // single source of truth — no logic forks below this point.
+            const { setSuppressionRules, getSuppressedEmails, applySuppression } =
+                await import('../services/campaignSuppressionService');
+            const incomingRules = Array.isArray(suppressionRules) ? suppressionRules : [];
+            const foldedRules = [...incomingRules];
+            if (skipDuplicatesAcrossCampaigns && !foldedRules.some((r: any) => r?.kind === 'all_campaigns')) {
+                foldedRules.push({ kind: 'all_campaigns' });
+            }
+            if (foldedRules.length > 0) {
+                await setSuppressionRules({
+                    campaignId: camp.id,
+                    organizationId: orgId,
+                    rules: foldedRules,
+                    client: tx,
+                });
+            }
+
             if (leads && Array.isArray(leads) && leads.length > 0) {
-                // Optional cross-campaign dedupe: strip leads whose email already appears
-                // in any other campaign in the org. Prevents accidentally re-mailing the
-                // same person across multiple sequences.
                 let inputLeads: any[] = leads;
                 let skippedCrossCampaign = 0;
-                if (skipDuplicatesAcrossCampaigns) {
-                    const emails = Array.from(new Set(inputLeads
-                        .map((l: any) => String(l.email || '').toLowerCase().trim())
-                        .filter((e: string) => !!e)));
-                    if (emails.length > 0) {
-                        const existing = await tx.campaignLead.findMany({
-                            where: {
-                                email: { in: emails },
-                                campaign: { organization_id: orgId },
-                            },
-                            select: { email: true },
-                        });
-                        const existingSet = new Set(existing.map((r) => r.email.toLowerCase()));
-                        const before = inputLeads.length;
-                        inputLeads = inputLeads.filter((l: any) => !existingSet.has(String(l.email || '').toLowerCase().trim()));
-                        skippedCrossCampaign = before - inputLeads.length;
-                    }
+                if (foldedRules.length > 0) {
+                    const suppressed = await getSuppressedEmails({ campaignId: camp.id, organizationId: orgId, client: tx });
+                    const { kept, skipped } = applySuppression(inputLeads, suppressed);
+                    inputLeads = kept;
+                    skippedCrossCampaign = skipped;
+                }
+
+                // Org-level reply-suppression — leads who replied 'hard_no' /
+                // 'angry' to any prior campaign should never be re-contacted
+                // unless the operator manually removes them from the list.
+                const { getSuppressedEmailSet } = await import('../services/replyActionService');
+                const orgSuppressed = await getSuppressedEmailSet(
+                    orgId,
+                    inputLeads.map((l: any) => l.email || '').filter(Boolean),
+                );
+                if (orgSuppressed.size > 0) {
+                    const before = inputLeads.length;
+                    inputLeads = inputLeads.filter((l: any) =>
+                        !orgSuppressed.has(String(l.email || '').trim().toLowerCase()),
+                    );
+                    skippedCrossCampaign += before - inputLeads.length;
                 }
 
                 // Classify each lead using validation results as context
@@ -528,6 +557,9 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
         const campaignId = String(req.params.id);
         const {
             name, tags, schedule, settings, steps, accountIds, addLeads, removeLeadIds, skipDuplicatesAcrossCampaigns,
+            // Replace this campaign's suppression rules when provided. Pass null
+            // (or omit) to leave existing rules untouched; pass [] to clear them.
+            suppressionRules,
             // Provenance for the leads being added in this update — defaults to
             // 'manual' (e.g. user added rows directly in the UI). CSV imports
             // pass leadSource='csv' + leadSourceFile=<filename>.
@@ -630,6 +662,7 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
                             delay_days: delayDays,
                             delay_hours: delayHours,
                             subject: step.subject ?? '',
+                            preheader: step.preheader ?? '',
                             body_html: step.body_html ?? step.bodyHtml ?? '',
                         },
                     });
@@ -640,6 +673,7 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
                                     step_id: created.id,
                                     variant_label: variant.variant_label ?? variant.label ?? 'B',
                                     subject: variant.subject ?? '',
+                                    preheader: variant.preheader ?? '',
                                     body_html: variant.body_html ?? variant.bodyHtml ?? '',
                                     weight: variant.weight ?? 50,
                                 },
@@ -669,26 +703,32 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
                 });
             }
 
+            // Replace suppression rules when the caller sent any (an explicit []
+            // clears them, undefined leaves them alone). Legacy boolean folds in.
+            const { setSuppressionRules, getSuppressedEmails, applySuppression } =
+                await import('../services/campaignSuppressionService');
+            if (Array.isArray(suppressionRules) || skipDuplicatesAcrossCampaigns !== undefined) {
+                const folded = Array.isArray(suppressionRules) ? [...suppressionRules] : [];
+                if (skipDuplicatesAcrossCampaigns && !folded.some((r: any) => r?.kind === 'all_campaigns')) {
+                    folded.push({ kind: 'all_campaigns' });
+                }
+                await setSuppressionRules({
+                    campaignId,
+                    organizationId: orgId,
+                    rules: folded,
+                    client: tx,
+                });
+            }
+
             if (addList.length > 0) {
-                // Strip leads already in OTHER campaigns when the flag is set. Same-campaign
-                // duplicates are always skipped via the unique constraint on (campaign_id, email).
+                // Apply this campaign's stored suppression rules to every lead-add.
+                // Same-campaign duplicates are always skipped via the unique
+                // constraint on (campaign_id, email).
                 let effectiveAddList: any[] = addList;
-                if (skipDuplicatesAcrossCampaigns) {
-                    const emails = Array.from(new Set(effectiveAddList
-                        .map((l: any) => String(l.email || '').toLowerCase().trim())
-                        .filter((e: string) => !!e)));
-                    if (emails.length > 0) {
-                        const existing = await tx.campaignLead.findMany({
-                            where: {
-                                email: { in: emails },
-                                campaign_id: { not: campaignId },
-                                campaign: { organization_id: orgId },
-                            },
-                            select: { email: true },
-                        });
-                        const existingSet = new Set(existing.map((r) => r.email.toLowerCase()));
-                        effectiveAddList = effectiveAddList.filter((l: any) => !existingSet.has(String(l.email || '').toLowerCase().trim()));
-                    }
+                const suppressed = await getSuppressedEmails({ campaignId, organizationId: orgId, client: tx });
+                if (suppressed.size > 0) {
+                    const { kept } = applySuppression(effectiveAddList, suppressed);
+                    effectiveAddList = kept;
                 }
 
                 const classifications = await Promise.all(
@@ -1045,5 +1085,126 @@ export const bulkTagCampaigns = async (req: Request, res: Response): Promise<Res
     } catch (err) {
         logger.error('[CAMPAIGNS2] bulkTagCampaigns failed', err instanceof Error ? err : new Error(String(err)));
         return res.status(500).json({ success: false, error: 'Failed to apply tag' });
+    }
+};
+
+// ────────────────────────────────────────────────────────────────────
+// Suppression — GET rules for hydration + lead-picker for the modal
+// ────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/sequencer/campaigns/:id/suppression
+ *
+ * Returns the campaign's current suppression rules so the edit-time
+ * "add leads" flow can pre-populate the picker with what's already
+ * applied. Cross-tenant safe: 404s if the campaign isn't in the caller's
+ * org. The 'all_campaigns' rule has both source columns null; clients
+ * use `kind` as the discriminator.
+ */
+export const getCampaignSuppression = async (req: Request, res: Response): Promise<Response> => {
+    try {
+        const orgId = getOrgId(req);
+        const campaignId = String(req.params.id);
+        const campaign = await prisma.campaign.findFirst({
+            where: { id: campaignId, organization_id: orgId },
+            select: { id: true },
+        });
+        if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
+
+        const { listSuppressionRules } = await import('../services/campaignSuppressionService');
+        const rules = await listSuppressionRules(campaignId);
+        return res.json({ success: true, data: rules });
+    } catch (err) {
+        logger.error('[CAMPAIGNS2] getCampaignSuppression failed', err instanceof Error ? err : new Error(String(err)));
+        return res.status(500).json({ success: false, error: 'Failed to load suppression rules' });
+    }
+};
+
+/**
+ * GET /api/sequencer/campaigns/lead-picker
+ * Query: campaign_ids=csv,uuid,…  [search=]  [offset=0]  [limit=50]
+ *
+ * Lists leads from the named source campaigns so the wizard's "pick
+ * leads" modal can render a scoped, searchable list. The picker is
+ * intentionally scoped to user-selected campaigns (per the product
+ * decision in the design Q&A) — never returns the whole org's leads.
+ *
+ * Cross-tenant safe via the campaign.organization_id join.
+ */
+export const listLeadsForSuppression = async (req: Request, res: Response): Promise<Response> => {
+    try {
+        const orgId = getOrgId(req);
+        const raw = String(req.query.campaign_ids || '').trim();
+        const ids = raw.split(',').map(s => s.trim()).filter(Boolean);
+        if (ids.length === 0) {
+            return res.status(400).json({ success: false, error: 'campaign_ids is required' });
+        }
+        if (ids.length > 50) {
+            return res.status(400).json({ success: false, error: 'At most 50 campaigns at a time' });
+        }
+        const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+        const offset = Math.max(0, Number(req.query.offset || 0) | 0);
+        const limit = Math.min(200, Math.max(1, Number(req.query.limit || 50) | 0));
+
+        const whereBase = {
+            campaign_id: { in: ids },
+            campaign: { organization_id: orgId },
+        };
+
+        // Search across email, first/last/full-name, company. Case-insensitive
+        // via Postgres ILIKE (Prisma mode: 'insensitive'). Index on email is the
+        // primary access path; the other fields are scanned on the campaign
+        // subset only, so latency is bounded by the campaign sizes selected.
+        const where = search
+            ? {
+                ...whereBase,
+                OR: [
+                    { email: { contains: search, mode: 'insensitive' as const } },
+                    { first_name: { contains: search, mode: 'insensitive' as const } },
+                    { last_name: { contains: search, mode: 'insensitive' as const } },
+                    { company: { contains: search, mode: 'insensitive' as const } },
+                ],
+            }
+            : whereBase;
+
+        const [total, rows] = await Promise.all([
+            prisma.campaignLead.count({ where }),
+            prisma.campaignLead.findMany({
+                where,
+                select: {
+                    id: true,
+                    email: true,
+                    first_name: true,
+                    last_name: true,
+                    company: true,
+                    campaign_id: true,
+                    campaign: { select: { id: true, name: true } },
+                },
+                orderBy: [{ email: 'asc' }],
+                skip: offset,
+                take: limit,
+            }),
+        ]);
+
+        return res.json({
+            success: true,
+            data: {
+                total,
+                offset,
+                limit,
+                leads: rows.map(r => ({
+                    id: r.id,
+                    email: r.email,
+                    first_name: r.first_name,
+                    last_name: r.last_name,
+                    company: r.company,
+                    campaign_id: r.campaign_id,
+                    campaign_name: r.campaign?.name ?? null,
+                })),
+            },
+        });
+    } catch (err) {
+        logger.error('[CAMPAIGNS2] listLeadsForSuppression failed', err instanceof Error ? err : new Error(String(err)));
+        return res.status(500).json({ success: false, error: 'Failed to load leads' });
     }
 };

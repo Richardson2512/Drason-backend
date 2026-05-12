@@ -33,10 +33,14 @@ export const getProfile = async (req: Request, res: Response): Promise<Response>
         if (!row) {
             return res.status(404).json({ success: false, error: 'No business profile yet. POST /api/ai/profile to create one.' });
         }
+        // Older rows may pre-date source_urls; fall back to [source_url] so
+        // the FE never has to special-case the legacy shape.
+        const sourceUrls = row.source_urls?.length ? row.source_urls : [row.source_url];
         return res.json({
             success: true,
             data: {
                 source_url: row.source_url,
+                source_urls: sourceUrls,
                 profile: row.profile_json,
                 extracted_at: row.extracted_at,
                 updated_at: row.updated_at,
@@ -228,7 +232,8 @@ export const patchProfile = async (req: Request, res: Response): Promise<Respons
 
 // ────────────────────────────────────────────────────────────────────
 // POST /api/ai/profile/refresh
-// Re-scrape and re-extract, reusing the current source_url.
+// Re-scrape and re-extract, reusing every URL originally synthesized
+// into this profile. Falls back to [source_url] for legacy rows.
 // ────────────────────────────────────────────────────────────────────
 
 export const refreshProfile = async (req: Request, res: Response): Promise<Response> => {
@@ -238,8 +243,9 @@ export const refreshProfile = async (req: Request, res: Response): Promise<Respo
         if (!existing) {
             return res.status(404).json({ success: false, error: 'No profile to refresh. Create one first.' });
         }
-        const profile = await extractAndCacheProfile(orgId, existing.source_url);
-        return res.json({ success: true, data: { source_url: existing.source_url, profile } });
+        const urls = existing.source_urls?.length ? existing.source_urls : [existing.source_url];
+        const profile = await extractAndCacheProfile(orgId, urls);
+        return res.json({ success: true, data: { source_url: urls[0], source_urls: urls, profile } });
     } catch (err) {
         logger.error('[AI_PROFILE] refreshProfile failed', err instanceof Error ? err : new Error(String(err)));
         return res.status(502).json({ success: false, error: 'Failed to refresh profile' });

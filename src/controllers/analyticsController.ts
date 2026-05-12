@@ -519,3 +519,245 @@ export const getEspPerformance = async (req: Request, res: Response) => {
         res.status(500).json({ success: false, error: 'Failed to fetch ESP performance' });
     }
 };
+
+/**
+ * GET /api/analytics/mailbox-comparison
+ *
+ * Side-by-side mailbox health for the protection analytics page. Returns
+ * BOTH per-mailbox rows AND provider-bucket rollups in one payload so the
+ * UI can switch tabs without a re-fetch.
+ *
+ * Per-mailbox row: send / bounce / reply counts over the window,
+ * computed bounce + reply rates, healing state, last-activity timestamp.
+ *
+ * Provider rollup: same shape, summed by `connected_account.provider`
+ * bucket (google / microsoft / smtp). Lets the operator answer "are my
+ * Gmail mailboxes outperforming Outlook?" without per-row arithmetic.
+ *
+ * Window resolution:
+ *   start_date + end_date (preferred — matches the existing analytics page)
+ *   timeRange (7d/30d/90d preset — for shorthand)
+ *   default: last 30 days
+ */
+export const getMailboxComparison = async (req: Request, res: Response) => {
+    try {
+        const orgId = getOrgId(req);
+        const { gte, lte } = resolveWindow(req);
+
+        const accounts = await prisma.connectedAccount.findMany({
+            where: { organization_id: orgId },
+            select: {
+                id: true,
+                email: true,
+                display_name: true,
+                provider: true,
+                connection_status: true,
+                daily_send_limit: true,
+                sends_today: true,
+                warmup_complete: true,
+            },
+            orderBy: { email: 'asc' },
+        });
+
+        if (accounts.length === 0) {
+            return res.json({ success: true, data: { mailboxes: [], providers: [], window: { start: gte, end: lte } } });
+        }
+
+        const mailboxIds = accounts.map(a => a.id);
+        const sendWhere: any = { organization_id: orgId, mailbox_id: { in: mailboxIds }, sent_at: { gte, lte } };
+        const replyWhere: any = { organization_id: orgId, mailbox_id: { in: mailboxIds }, replied_at: { gte, lte } };
+        const bounceWhere: any = { organization_id: orgId, mailbox_id: { in: mailboxIds }, bounced_at: { gte, lte } };
+
+        // Parallel groupBy queries — same pattern as sequencer's
+        // getMailboxPerformance. Index-friendly: each event model has a
+        // (mailbox_id, <time-column>) composite index.
+        const [sends, replies, bounces, mailboxStates] = await Promise.all([
+            prisma.sendEvent.groupBy({
+                by: ['mailbox_id'],
+                where: sendWhere,
+                _count: { _all: true },
+            }),
+            prisma.replyEvent.groupBy({
+                by: ['mailbox_id'],
+                where: replyWhere,
+                _count: { _all: true },
+            }),
+            prisma.bounceEvent.groupBy({
+                by: ['mailbox_id'],
+                where: bounceWhere,
+                _count: { _all: true },
+            }),
+            prisma.mailbox.findMany({
+                where: { id: { in: mailboxIds } },
+                select: {
+                    id: true,
+                    status: true,
+                    recovery_phase: true,
+                    last_activity_at: true,
+                    engagement_rate: true,
+                    spam_count: true,
+                    open_count_lifetime: true,
+                    click_count_lifetime: true,
+                },
+            }),
+        ]);
+
+        const sendCounts = new Map<string, number>();
+        for (const r of sends) if (r.mailbox_id) sendCounts.set(r.mailbox_id, r._count._all);
+        const replyCounts = new Map<string, number>();
+        for (const r of replies) if (r.mailbox_id) replyCounts.set(r.mailbox_id, r._count._all);
+        const bounceCounts = new Map<string, number>();
+        for (const r of bounces) if (r.mailbox_id) bounceCounts.set(r.mailbox_id, r._count._all);
+        const stateById = new Map<string, typeof mailboxStates[number]>();
+        for (const m of mailboxStates) stateById.set(m.id, m);
+
+        const pct = (n: number, d: number) => (d > 0 ? parseFloat(((n / d) * 100).toFixed(2)) : 0);
+
+        // Health score 0-100 — single composite signal for ranking. We use:
+        //   reply_rate * 6   (signal: deliverable + engaged audience)
+        //   delivery_rate * 0.4 (1 - bounce_rate; signal: list quality)
+        //   warmup bonus +10 (mailbox graduated warmup)
+        //   recovery penalty -30 (mailbox in any non-healthy phase)
+        // Clamped to [0, 100]. The weights are tuned to the rough ranges seen
+        // on real campaigns (reply rates of 5–15% are good, bounce rates >2%
+        // are bad). Operators care about the relative ordering more than the
+        // absolute number; rebalance if real-world ranking surfaces issues.
+        const healthScore = (replyRate: number, bounceRate: number, warmupComplete: boolean, recoveryPhase: string): number => {
+            const replyComponent = Math.min(60, replyRate * 6);
+            const deliveryComponent = Math.max(0, (100 - bounceRate)) * 0.4;
+            const warmupBonus = warmupComplete ? 10 : 0;
+            const recoveryPenalty = recoveryPhase && recoveryPhase !== 'healthy' ? -30 : 0;
+            const raw = replyComponent + deliveryComponent + warmupBonus + recoveryPenalty;
+            return Math.max(0, Math.min(100, Math.round(raw)));
+        };
+
+        const perMailbox = accounts.map(a => {
+            const sent = sendCounts.get(a.id) || 0;
+            const replied = replyCounts.get(a.id) || 0;
+            const bounced = bounceCounts.get(a.id) || 0;
+            const state = stateById.get(a.id);
+            const recoveryPhase = state?.recovery_phase || 'healthy';
+            const reply_rate = pct(replied, sent);
+            const bounce_rate = pct(bounced, sent);
+            const delivered = Math.max(0, sent - bounced);
+            return {
+                id: a.id,
+                email: a.email,
+                display_name: a.display_name,
+                provider: a.provider,
+                connection_status: a.connection_status,
+                daily_send_limit: a.daily_send_limit,
+                sends_today: a.sends_today,
+                warmup_complete: a.warmup_complete,
+                status: state?.status || 'healthy',
+                recovery_phase: recoveryPhase,
+                last_activity_at: state?.last_activity_at ?? null,
+                lifetime_engagement_rate: state?.engagement_rate ?? 0,
+                lifetime_spam_count: state?.spam_count ?? 0,
+                total_sent: sent,
+                total_replied: replied,
+                total_bounced: bounced,
+                total_delivered: delivered,
+                reply_rate,
+                bounce_rate,
+                delivery_rate: pct(delivered, sent),
+                health_score: healthScore(reply_rate, bounce_rate, a.warmup_complete, recoveryPhase),
+            };
+        });
+
+        // Provider-bucket rollup. Sum the volume columns; recompute rates on
+        // the sums (NOT an average of rates) so a low-volume mailbox with a
+        // freak 50% bounce rate doesn't drag the bucket-level number.
+        const providerBuckets = new Map<string, {
+            provider: string;
+            mailbox_count: number;
+            total_sent: number;
+            total_replied: number;
+            total_bounced: number;
+            healthy_count: number;
+            in_recovery_count: number;
+            paused_count: number;
+            warmup_complete_count: number;
+            health_score_sum: number;
+        }>();
+        for (const m of perMailbox) {
+            const b = providerBuckets.get(m.provider) || {
+                provider: m.provider, mailbox_count: 0,
+                total_sent: 0, total_replied: 0, total_bounced: 0,
+                healthy_count: 0, in_recovery_count: 0, paused_count: 0,
+                warmup_complete_count: 0, health_score_sum: 0,
+            };
+            b.mailbox_count += 1;
+            b.total_sent += m.total_sent;
+            b.total_replied += m.total_replied;
+            b.total_bounced += m.total_bounced;
+            if (m.recovery_phase === 'paused' || m.status === 'paused') b.paused_count += 1;
+            else if (m.recovery_phase !== 'healthy') b.in_recovery_count += 1;
+            else b.healthy_count += 1;
+            if (m.warmup_complete) b.warmup_complete_count += 1;
+            b.health_score_sum += m.health_score;
+            providerBuckets.set(m.provider, b);
+        }
+
+        const providers = Array.from(providerBuckets.values()).map(b => {
+            const delivered = Math.max(0, b.total_sent - b.total_bounced);
+            return {
+                provider: b.provider,
+                mailbox_count: b.mailbox_count,
+                total_sent: b.total_sent,
+                total_replied: b.total_replied,
+                total_bounced: b.total_bounced,
+                total_delivered: delivered,
+                reply_rate: pct(b.total_replied, b.total_sent),
+                bounce_rate: pct(b.total_bounced, b.total_sent),
+                delivery_rate: pct(delivered, b.total_sent),
+                healthy_count: b.healthy_count,
+                in_recovery_count: b.in_recovery_count,
+                paused_count: b.paused_count,
+                warmup_complete_count: b.warmup_complete_count,
+                avg_health_score: b.mailbox_count > 0
+                    ? Math.round(b.health_score_sum / b.mailbox_count)
+                    : 0,
+            };
+        }).sort((a, b) => b.total_sent - a.total_sent);
+
+        // Sort mailboxes by health_score desc, then volume desc — that's the
+        // "show me my best performers first" answer the operator wants when
+        // the question is "what mailboxes are doing well".
+        perMailbox.sort((a, b) => {
+            if (b.health_score !== a.health_score) return b.health_score - a.health_score;
+            return b.total_sent - a.total_sent;
+        });
+
+        res.json({
+            success: true,
+            data: {
+                mailboxes: perMailbox,
+                providers,
+                window: { start: gte, end: lte },
+            },
+        });
+    } catch (error) {
+        logger.error('[ANALYTICS] Error fetching mailbox comparison', error instanceof Error ? error : new Error(String(error)));
+        res.status(500).json({ success: false, error: 'Failed to fetch mailbox comparison' });
+    }
+};
+
+/** Shared window resolver — accepts `start_date`/`end_date` (analytics-page
+ *  convention) or `timeRange` (sequencer convention) so the same endpoint
+ *  works regardless of which surface calls it. */
+function resolveWindow(req: Request): { gte: Date; lte: Date } {
+    const startStr = (req.query.start_date as string) || (req.query.from as string);
+    const endStr = (req.query.end_date as string) || (req.query.to as string);
+    if (startStr && endStr) {
+        const gte = new Date(startStr);
+        const lte = new Date(endStr);
+        lte.setHours(23, 59, 59, 999);
+        if (!isNaN(gte.getTime()) && !isNaN(lte.getTime())) return { gte, lte };
+    }
+    const tr = (req.query.timeRange as string) || '30d';
+    const days = tr === '7d' ? 7 : tr === '90d' ? 90 : 30;
+    const lte = new Date();
+    const gte = new Date(lte.getTime() - days * 24 * 60 * 60 * 1000);
+    return { gte, lte };
+}
