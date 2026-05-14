@@ -12,7 +12,7 @@
 import { Request, Response } from 'express';
 import { getOrgId } from '../middleware/orgContext';
 import { logger } from '../services/observabilityService';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { recordConsentFromRequest } from '../services/consentService';
 import {
     buildAuthorizeUrl,

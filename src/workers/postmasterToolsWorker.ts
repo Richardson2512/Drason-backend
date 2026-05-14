@@ -13,7 +13,7 @@
  * 100 domains/org × 10 orgs that's well under quota.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { fetchAllForOrg } from '../services/postmasterToolsService';
 

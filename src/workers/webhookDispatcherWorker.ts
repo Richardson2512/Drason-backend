@@ -21,7 +21,7 @@
  */
 
 import { Worker, Queue, Job } from 'bullmq';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { getRedisClient } from '../utils/redis';
 import {

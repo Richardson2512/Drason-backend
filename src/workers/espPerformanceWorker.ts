@@ -9,7 +9,7 @@
  * recipient's ESP bucket.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 
 const RUN_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours

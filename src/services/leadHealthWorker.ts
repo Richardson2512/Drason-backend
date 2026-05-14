@@ -18,7 +18,7 @@
  */
 
 import { Prisma } from '@prisma/client';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import * as leadHealthService from './leadHealthService';
 import * as auditLogService from './auditLogService';

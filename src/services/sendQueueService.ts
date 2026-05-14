@@ -21,7 +21,7 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger, maskEmail } from './observabilityService';
 import { sendEmail, SendResult } from './emailSendAdapters';
 import { buildUnsubscribeUrl } from './trackingService';
@@ -31,6 +31,7 @@ import { provisionMailboxForConnectedAccount } from './mailboxProvisioningServic
 import * as healingService from './healingService';
 import * as bounceProcessingService from './bounceProcessingService';
 import * as executionGateService from './executionGateService';
+import * as campaignHealthService from './campaignHealthService';
 import { updateDomainLastSent } from './inactivityService';
 import * as auditLogService from './auditLogService';
 import { SlackAlertService } from './SlackAlertService';
@@ -201,7 +202,7 @@ function injectPreheader(bodyHtml: string, preheader: string): string {
 
 function personalizeEmail(
     template: string,
-    lead: { first_name: string | null; last_name: string | null; company: string | null; email: string; title: string | null; custom_variables: any }
+    lead: { first_name: string | null; last_name: string | null; company: string | null; email: string; title: string | null; custom_variables: any; signal_icebreaker?: string | null }
 ): string {
     const fullName = [lead.first_name, lead.last_name].filter(Boolean).join(' ');
     const tokens: Record<string, string> = {
@@ -212,6 +213,12 @@ function personalizeEmail(
         email: lead.email || '',
         title: lead.title || '',
         website: '',
+        // AI-generated opener — written by signalIcebreakerService when
+        // the lead was promoted by a LinkedIn engagement signal. Empty
+        // string for CSV / manual imports; the template author should
+        // write the step copy so it still reads cleanly when missing
+        // (e.g. start the body with " " + the static line).
+        signal_icebreaker: lead.signal_icebreaker || '',
     };
     if (lead.custom_variables && typeof lead.custom_variables === 'object') {
         for (const [key, value] of Object.entries(lead.custom_variables as Record<string, any>)) {
@@ -620,6 +627,27 @@ async function dispatch(): Promise<void> {
 
                 const dueLeads = dueLeadsRaw.filter(l => !suppressedEmails.has(l.email));
 
+                // Pull signal-context icebreakers for any lead the supervisor
+                // already generated one for. CampaignLead is the dispatcher's
+                // primary record but signal_icebreaker lives on Lead (it's
+                // workspace-scoped and reused across campaigns), so we
+                // batch-fetch by email here and pass through into the
+                // personalize call below. Empty Map when no leads qualify
+                // — falling back to '' at render time is the right behaviour.
+                const leadIcebreakers = dueLeads.length > 0
+                    ? new Map(
+                        (await prisma.lead.findMany({
+                            where: {
+                                organization_id: campaign.organization_id,
+                                email: { in: dueLeads.map(l => l.email) },
+                            },
+                            select: { email: true, signal_icebreaker: true },
+                        }) as Array<{ email: string; signal_icebreaker: string | null }>)
+                            .filter(r => r.signal_icebreaker)
+                            .map(r => [r.email, r.signal_icebreaker as string]),
+                    )
+                    : new Map<string, string>();
+
                 if (suppressedEmails.size > 0) {
                     // Cascade the suppression onto the CampaignLead rows so future
                     // dispatches don't re-fetch+re-filter the same set every cycle.
@@ -754,13 +782,28 @@ async function dispatch(): Promise<void> {
                 }
 
                 if (accounts.length === 0) {
+                    // Auto-pause the campaign when every configured mailbox is
+                    // paused/recovering/over-capacity AT THE SAME TIME. Without
+                    // this, the campaign stays `status='active'` and the UI lies
+                    // � operators think it's still sending. We only flip the
+                    // status when the campaign actually has senders configured
+                    // (campaign.accounts.length > 0); a draft with no attached
+                    // mailboxes should stay 'active' until the operator attaches
+                    // one. Idempotent via campaignHealthService internal guard.
+                    if (campaign.accounts.length > 0) {
+                        await campaignHealthService.pauseCampaign(
+                            campaign.organization_id,
+                            campaign.id,
+                            'all_mailboxes_unavailable',
+                        ).catch((err) => logger.warn(`[${LOG_TAG}] Auto-pause failed`, { campaignId: campaign.id, error: err?.message }));
+                    }
                     SlackAlertService.sendAlert({
                         organizationId: campaign.organization_id,
                         eventType: 'campaign.send_blocked.no_mailboxes',
                         entityId: campaign.id,
                         severity: 'warning',
-                        title: '🚫 Sending paused: no healthy mailboxes',
-                        message: `Campaign *${campaign.name}* has leads ready to send but every connected mailbox is paused, recovering, or out of daily capacity. Check mailbox health in Settings → Mailboxes.`,
+                        title: '?? Sending paused: no healthy mailboxes',
+                        message: `Campaign *${campaign.name}* has been auto-paused because every connected mailbox is paused, recovering, or out of daily capacity. Check mailbox health in Settings ? Mailboxes, then resume the campaign.`,
                     }).catch((err) => logger.warn(`[${LOG_TAG}] Slack alert failed (no_mailboxes)`, { error: err?.message }));
                     continue;
                 }
@@ -966,12 +1009,16 @@ async function dispatch(): Promise<void> {
                     // - Spintax second so each lead receives a different lexical variant of the
                     //   same template, breaking ISP pattern-fingerprinting on bulk sequence sends.
                     // - Tracking last so the open pixel + click wrappers see the final URL set.
-                    const subject = resolveSpintax(personalizeEmail(rawSubject, lead));
-                    const personalizedBody = resolveSpintax(personalizeEmail(rawBody, lead));
+                    // Augment the CampaignLead row with the Lead-level
+                    // signal_icebreaker (looked up in the batch above)
+                    // so personalizeEmail can resolve {{signal_icebreaker}}.
+                    const leadWithIcebreaker = { ...lead, signal_icebreaker: leadIcebreakers.get(lead.email) ?? null };
+                    const subject = resolveSpintax(personalizeEmail(rawSubject, leadWithIcebreaker));
+                    const personalizedBody = resolveSpintax(personalizeEmail(rawBody, leadWithIcebreaker));
                     // Preheader runs through the same personalize+spintax so authors
                     // can reference {{first_name}} / spintax in the inbox snippet too.
                     const personalizedPreheader = rawPreheader
-                        ? resolveSpintax(personalizeEmail(rawPreheader, lead))
+                        ? resolveSpintax(personalizeEmail(rawPreheader, leadWithIcebreaker))
                         : '';
 
                     // Inject open pixel + click wrappers + unsubscribe footer based on campaign settings.

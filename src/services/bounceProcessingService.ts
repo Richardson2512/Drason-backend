@@ -19,7 +19,7 @@
  * 12. Audit log
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import { classifyBounce } from './bounceClassifier';
 import * as auditLogService from './auditLogService';

@@ -22,7 +22,7 @@
  */
 
 import { promises as dns } from 'dns';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 
 const ACCEPTED_INGRESS_HOSTS = (process.env.SUPERKABE_TRACKING_INGRESS_HOSTNAMES ||

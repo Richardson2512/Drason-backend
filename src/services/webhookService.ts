@@ -31,7 +31,7 @@
 import crypto from 'crypto';
 import { Queue } from 'bullmq';
 import { getRedisClient } from '../utils/redis';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import { sendTransactionalEmail } from './transactionalEmailService';
 import { renderEmailTemplate, renderEmailPlainText } from './transactionalEmailTemplates';

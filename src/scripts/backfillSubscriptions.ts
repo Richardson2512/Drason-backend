@@ -7,7 +7,7 @@
  * Usage: npx ts-node src/scripts/backfillSubscriptions.ts
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 
 async function backfillSubscriptions() {

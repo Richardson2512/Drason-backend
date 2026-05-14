@@ -17,7 +17,7 @@
  *   2. Stamp last_ramp_advance_date so subsequent ticks today are no-ops.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { computeSpamRate, decideNextRamp } from '../services/warmup/membershipService';
 
@@ -49,11 +49,11 @@ async function processMembership(membership: {
     ramp_days: number;
     ramp_step: number;
     maintenance_daily: number;
-    updated_at: Date;
+    last_ramp_advanced_on: Date | null;
 }): Promise<void> {
     const now = new Date();
-    if (isSameUtcDate(membership.updated_at, now)) {
-        // Already advanced today.
+    if (membership.last_ramp_advanced_on && isSameUtcDate(membership.last_ramp_advanced_on, now)) {
+        // Already advanced today — fast path before computing spam rate.
         return;
     }
 
@@ -68,18 +68,39 @@ async function processMembership(membership: {
         enabled: membership.enabled,
     });
 
-    await prisma.warmupPoolMembership.update({
-        where: { id: membership.id },
+    // Atomic advance — the WHERE clause gates `last_ramp_advanced_on`
+    // so two concurrent ticks can't both flip the row. The fast-path
+    // check above is for speed; this updateMany is the correctness
+    // boundary. Postgres serializes the read-modify-write inside one
+    // statement, so the second tick gets count=0 and exits without
+    // double-counting. Prior implementation used `updated_at` which is
+    // bumped by ANY mutation (spam refresh, manual edit), allowing
+    // legitimate ramp advances to be skipped silently.
+    const startOfToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const result = await prisma.warmupPoolMembership.updateMany({
+        where: {
+            id: membership.id,
+            OR: [
+                { last_ramp_advanced_on: null },
+                { last_ramp_advanced_on: { lt: startOfToday } },
+            ],
+        },
         data: {
             ramp_step: decision.nextRampStep,
             current_daily: decision.nextDaily,
             health: decision.nextHealth,
             spam_rate_30d: spamRate,
+            last_ramp_advanced_on: now,
             last_error: decision.nextHealth === 'error'
                 ? `Spam rate ${(spamRate ?? 0).toFixed(3)} exceeded error threshold — operator review required.`
                 : null,
         },
     });
+
+    if (result.count === 0) {
+        // Lost the race to another concurrent tick — fine, nothing to do.
+        return;
+    }
 
     if (decision.rampPaused) {
         logger.info('[WARMUP_RAMP] held ramp due to spam rate', {
@@ -105,7 +126,7 @@ async function tick(): Promise<void> {
                 ramp_days: true,
                 ramp_step: true,
                 maintenance_daily: true,
-                updated_at: true,
+                last_ramp_advanced_on: true,
             },
         });
         if (memberships.length === 0) return;
@@ -114,13 +135,13 @@ async function tick(): Promise<void> {
         for (const m of memberships) {
             if (stopped) break;
             try {
-                const before = m.updated_at.getTime();
+                const before = m.last_ramp_advanced_on?.getTime() ?? 0;
                 await processMembership(m);
                 const fresh = await prisma.warmupPoolMembership.findUnique({
                     where: { id: m.id },
-                    select: { updated_at: true },
+                    select: { last_ramp_advanced_on: true },
                 });
-                if (fresh && fresh.updated_at.getTime() > before) advanced += 1;
+                if (fresh?.last_ramp_advanced_on && fresh.last_ramp_advanced_on.getTime() > before) advanced += 1;
             } catch (err) {
                 logger.warn('[WARMUP_RAMP] processMembership failed', {
                     membershipId: m.id,

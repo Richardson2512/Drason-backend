@@ -15,7 +15,7 @@
  */
 
 import type { Request, Response } from 'express';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import {
     upsertJustCallConnection,

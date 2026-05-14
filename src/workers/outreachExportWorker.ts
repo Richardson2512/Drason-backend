@@ -10,7 +10,7 @@
  * prospect, and re-adding to the same sequence/mailbox is a no-op.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import {
     getOutreachConnection,

@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { getOrgId } from '../middleware/orgContext';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import * as ticketService from '../services/ticketService';
 import { logger } from '../services/observabilityService';
 

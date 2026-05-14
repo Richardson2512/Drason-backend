@@ -6,7 +6,7 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { getOrgId } from '../middleware/orgContext';
 import * as routingService from '../services/routingService';
 import * as leadHealthService from '../services/leadHealthService';
@@ -1314,6 +1314,13 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
             // original audit (saved sequences, dedicated IPs, reply intelligence,
             // suppression lists, warmup pool).
             'sequences', 'super_sender', 'reply_quality', 'suppression', 'warmup',
+            // Email validation — surface ValidationAttempt rows so support
+            // can debug bounced/risky verdicts per lead.
+            'email_validation',
+            // Super LinkedIn — full data export across the LinkedIn module.
+            'linkedin_accounts', 'linkedin_contacts', 'linkedin_campaigns',
+            'linkedin_signals', 'linkedin_unibox', 'linkedin_sequences',
+            'linkedin_enrichment', 'linkedin_agents', 'linkedin_icp',
             'full',
         ];
         if (!reportType || !validTypes.includes(reportType)) {
@@ -1968,6 +1975,404 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
                 joined_at: m.joined_at?.toISOString() || '',
             }));
             if (reportType === 'full') sections.push(`\n--- WARMUP REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
+        // ──────────────────────────────────────────────────────────
+        // EMAIL VALIDATION — per-lead validation attempts
+        // ──────────────────────────────────────────────────────────
+        if (reportType === 'email_validation' || reportType === 'full') {
+            const where: any = {
+                organization_id: orgId,
+                created_at: { gte: startDate, lte: endDate },
+            };
+            if (statuses.length > 0) where.result_status = { in: statuses };
+            const attempts = await prisma.validationAttempt.findMany({
+                where,
+                orderBy: { created_at: 'desc' },
+                take: 50000,
+            });
+            const leadIds = [...new Set(attempts.map(a => a.lead_id))];
+            const leadRows = leadIds.length > 0
+                ? await prisma.lead.findMany({
+                    where: { id: { in: leadIds } },
+                    select: { id: true, email: true },
+                })
+                : [];
+            const leadMap = new Map(leadRows.map(l => [l.id, l.email]));
+            const columns = [
+                { key: 'lead_email', label: 'Lead Email' },
+                { key: 'source', label: 'Source' },
+                { key: 'result_status', label: 'Result' },
+                { key: 'result_score', label: 'Score' },
+                { key: 'duration_ms', label: 'Duration (ms)' },
+                { key: 'error_message', label: 'Error' },
+                { key: 'created_at', label: 'Checked At' },
+            ];
+            const rows = attempts.map(a => ({
+                lead_email: leadMap.get(a.lead_id) || a.lead_id,
+                source: a.source,
+                result_status: a.result_status,
+                result_score: a.result_score,
+                duration_ms: a.duration_ms ?? '',
+                error_message: a.error_message || '',
+                created_at: a.created_at?.toISOString() || '',
+            }));
+            if (reportType === 'full') sections.push(`\n--- EMAIL VALIDATION REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
+        // ──────────────────────────────────────────────────────────
+        // SUPER LINKEDIN — accounts
+        // ──────────────────────────────────────────────────────────
+        if (reportType === 'linkedin_accounts' || reportType === 'full') {
+            const where: any = { organization_id: orgId };
+            if (statuses.length > 0) where.status = { in: statuses };
+            const rowsDb = await prisma.linkedInAccount.findMany({
+                where,
+                orderBy: { connected_at: 'desc' },
+                take: 5000,
+            });
+            const columns = [
+                { key: 'display_name', label: 'Display Name' },
+                { key: 'account_type', label: 'Type' },
+                { key: 'status', label: 'Status' },
+                { key: 'inbox_sync_mode', label: 'Inbox Sync' },
+                { key: 'invites_today', label: 'Invites Today' },
+                { key: 'invites_this_week', label: 'Invites This Week' },
+                { key: 'messages_today', label: 'Messages Today' },
+                { key: 'inmails_today', label: 'InMails Today' },
+                { key: 'max_invites_per_day', label: 'Daily Invite Cap' },
+                { key: 'max_invites_per_week', label: 'Weekly Invite Cap' },
+                { key: 'connected_at', label: 'Connected At' },
+                { key: 'last_status_at', label: 'Last Status At' },
+            ];
+            const rows = rowsDb.map(a => ({
+                display_name: a.display_name,
+                account_type: a.account_type,
+                status: a.status,
+                inbox_sync_mode: a.inbox_sync_mode,
+                invites_today: a.invites_today,
+                invites_this_week: a.invites_this_week,
+                messages_today: a.messages_today,
+                inmails_today: a.inmails_today,
+                max_invites_per_day: a.max_invites_per_day,
+                max_invites_per_week: a.max_invites_per_week,
+                connected_at: a.connected_at?.toISOString() || '',
+                last_status_at: a.last_status_at?.toISOString() || '',
+            }));
+            if (reportType === 'full') sections.push(`\n--- LINKEDIN ACCOUNTS REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
+        // ──────────────────────────────────────────────────────────
+        // SUPER LINKEDIN — contacts (LinkedInProfile cache)
+        // ──────────────────────────────────────────────────────────
+        if (reportType === 'linkedin_contacts' || reportType === 'full') {
+            const profiles = await prisma.linkedInProfile.findMany({
+                where: { organization_id: orgId, created_at: { gte: startDate, lte: endDate } },
+                orderBy: { created_at: 'desc' },
+                take: 50000,
+            });
+            const columns = [
+                { key: 'name', label: 'Name' },
+                { key: 'public_identifier', label: 'LinkedIn Slug' },
+                { key: 'headline', label: 'Headline' },
+                { key: 'company', label: 'Company' },
+                { key: 'position', label: 'Title' },
+                { key: 'location', label: 'Location' },
+                { key: 'industry', label: 'Industry' },
+                { key: 'icp_match_score', label: 'ICP Score' },
+                { key: 'linkedin_auto_tag', label: 'Auto Tag' },
+                { key: 'lead_id', label: 'Lead ID' },
+                { key: 'created_at', label: 'Added' },
+            ];
+            const rows = profiles.map(p => ({
+                name: p.name,
+                public_identifier: p.public_identifier,
+                headline: p.headline || '',
+                company: p.company || '',
+                position: p.position || '',
+                location: p.location || '',
+                industry: p.industry || '',
+                icp_match_score: p.icp_match_score ?? '',
+                linkedin_auto_tag: p.linkedin_auto_tag || '',
+                lead_id: p.lead_id || '',
+                created_at: p.created_at?.toISOString() || '',
+            }));
+            if (reportType === 'full') sections.push(`\n--- LINKEDIN CONTACTS REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
+        // ──────────────────────────────────────────────────────────
+        // SUPER LINKEDIN — campaigns (those with LinkedIn senders)
+        // ──────────────────────────────────────────────────────────
+        if (reportType === 'linkedin_campaigns' || reportType === 'full') {
+            const where: any = {
+                organization_id: orgId,
+                linkedinSenders: { some: {} },
+                created_at: { gte: startDate, lte: endDate },
+            };
+            if (statuses.length > 0) where.status = { in: statuses };
+            const camps = await prisma.campaign.findMany({
+                where,
+                include: { _count: { select: { linkedinSenders: true, leads: true } } },
+                orderBy: { created_at: 'desc' },
+                take: 5000,
+            });
+            const columns = [
+                { key: 'name', label: 'Campaign' },
+                { key: 'status', label: 'Status' },
+                { key: 'sender_count', label: 'Senders' },
+                { key: 'lead_count', label: 'Leads' },
+                { key: 'total_sent', label: 'Sent' },
+                { key: 'reply_count', label: 'Replies' },
+                { key: 'reply_rate', label: 'Reply Rate' },
+                { key: 'created_at', label: 'Created' },
+            ];
+            const rows = camps.map(c => ({
+                name: c.name,
+                status: c.status,
+                sender_count: c._count.linkedinSenders,
+                lead_count: c._count.leads,
+                total_sent: c.total_sent,
+                reply_count: c.reply_count,
+                reply_rate: (c.reply_rate * 100).toFixed(2) + '%',
+                created_at: c.created_at?.toISOString() || '',
+            }));
+            if (reportType === 'full') sections.push(`\n--- LINKEDIN CAMPAIGNS REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
+        // ──────────────────────────────────────────────────────────
+        // SUPER LINKEDIN — signals (engagement events)
+        // ──────────────────────────────────────────────────────────
+        if (reportType === 'linkedin_signals' || reportType === 'full') {
+            const where: any = {
+                organization_id: orgId,
+                occurred_at: { gte: startDate, lte: endDate },
+            };
+            if (statuses.length > 0) where.event_type = { in: statuses };
+            const events = await prisma.engagementEvent.findMany({
+                where,
+                include: { actor: { select: { name: true, public_identifier: true, icp_match_score: true } } },
+                orderBy: { occurred_at: 'desc' },
+                take: 50000,
+            });
+            const columns = [
+                { key: 'occurred_at', label: 'Occurred At' },
+                { key: 'event_type', label: 'Event' },
+                { key: 'reaction_type', label: 'Reaction' },
+                { key: 'actor_name', label: 'Actor' },
+                { key: 'actor_slug', label: 'Actor Slug' },
+                { key: 'actor_icp_score', label: 'ICP Score' },
+                { key: 'processed_at', label: 'Processed' },
+            ];
+            const rows = events.map(e => ({
+                occurred_at: e.occurred_at?.toISOString() || '',
+                event_type: e.event_type,
+                reaction_type: e.reaction_type || '',
+                actor_name: e.actor.name,
+                actor_slug: e.actor.public_identifier,
+                actor_icp_score: e.actor.icp_match_score ?? '',
+                processed_at: e.processed_at?.toISOString() || '',
+            }));
+            if (reportType === 'full') sections.push(`\n--- LINKEDIN SIGNALS REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
+        // ──────────────────────────────────────────────────────────
+        // SUPER LINKEDIN — unibox (auto-tagged profiles)
+        // ──────────────────────────────────────────────────────────
+        if (reportType === 'linkedin_unibox' || reportType === 'full') {
+            const where: any = {
+                organization_id: orgId,
+                linkedin_auto_tag: { not: null },
+                linkedin_auto_tagged_at: { gte: startDate, lte: endDate },
+            };
+            if (statuses.length > 0) where.linkedin_auto_tag = { in: statuses };
+            const tagged = await prisma.linkedInProfile.findMany({
+                where,
+                orderBy: { linkedin_auto_tagged_at: 'desc' },
+                take: 50000,
+            });
+            const columns = [
+                { key: 'name', label: 'Counterparty' },
+                { key: 'public_identifier', label: 'LinkedIn Slug' },
+                { key: 'headline', label: 'Headline' },
+                { key: 'company', label: 'Company' },
+                { key: 'linkedin_auto_tag', label: 'Auto Tag' },
+                { key: 'linkedin_auto_tagged_at', label: 'Tagged At' },
+            ];
+            const rows = tagged.map(p => ({
+                name: p.name,
+                public_identifier: p.public_identifier,
+                headline: p.headline || '',
+                company: p.company || '',
+                linkedin_auto_tag: p.linkedin_auto_tag || '',
+                linkedin_auto_tagged_at: p.linkedin_auto_tagged_at?.toISOString() || '',
+            }));
+            if (reportType === 'full') sections.push(`\n--- LINKEDIN UNIBOX REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
+        // ──────────────────────────────────────────────────────────
+        // SUPER LINKEDIN — step executions
+        // ──────────────────────────────────────────────────────────
+        if (reportType === 'linkedin_sequences' || reportType === 'full') {
+            const where: any = {
+                organization_id: orgId,
+                attempted_at: { gte: startDate, lte: endDate },
+                step_type: { startsWith: 'linkedin_' },
+            };
+            if (statuses.length > 0) where.status = { in: statuses };
+            const execs = await prisma.sequenceStepExecution.findMany({
+                where,
+                orderBy: { attempted_at: 'desc' },
+                take: 100000,
+            });
+            const columns = [
+                { key: 'attempted_at', label: 'Attempted At' },
+                { key: 'campaign_id', label: 'Campaign' },
+                { key: 'campaign_lead_id', label: 'Lead' },
+                { key: 'step_number', label: 'Step #' },
+                { key: 'step_type', label: 'Step Type' },
+                { key: 'status', label: 'Status' },
+                { key: 'skip_reason', label: 'Skip Reason' },
+                { key: 'branched_to_step', label: 'Branched To' },
+                { key: 'sender_ref_id', label: 'Sender' },
+                { key: 'error_message', label: 'Error' },
+                { key: 'completed_at', label: 'Completed At' },
+            ];
+            const rows = execs.map(e => ({
+                attempted_at: e.attempted_at?.toISOString() || '',
+                campaign_id: e.campaign_id,
+                campaign_lead_id: e.campaign_lead_id,
+                step_number: e.step_number,
+                step_type: e.step_type,
+                status: e.status,
+                skip_reason: e.skip_reason || '',
+                branched_to_step: e.branched_to_step ?? '',
+                sender_ref_id: e.sender_ref_id || '',
+                error_message: e.error_message || '',
+                completed_at: e.completed_at?.toISOString() || '',
+            }));
+            if (reportType === 'full') sections.push(`\n--- LINKEDIN STEP EXECUTIONS REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
+        // ──────────────────────────────────────────────────────────
+        // SUPER LINKEDIN — enrichment waterfall attempts
+        // ──────────────────────────────────────────────────────────
+        if (reportType === 'linkedin_enrichment' || reportType === 'full') {
+            const where: any = {
+                organization_id: orgId,
+                attempted_at: { gte: startDate, lte: endDate },
+            };
+            if (statuses.length > 0) where.result = { in: statuses };
+            const attempts = await prisma.enrichmentAttempt.findMany({
+                where,
+                orderBy: { attempted_at: 'desc' },
+                take: 100000,
+            });
+            // Strict BYOK — no cost column. The customer's vendor
+            // dashboard is the source of truth for spend; the CSV here
+            // is just the audit trail of which provider was attempted
+            // for which lead and what fields it filled.
+            const columns = [
+                { key: 'attempted_at', label: 'Attempted At' },
+                { key: 'lead_id', label: 'Lead' },
+                { key: 'provider', label: 'Provider' },
+                { key: 'result', label: 'Result' },
+                { key: 'fields_filled', label: 'Fields Filled' },
+                { key: 'error_message', label: 'Error' },
+            ];
+            const rows = attempts.map(a => ({
+                attempted_at: a.attempted_at?.toISOString() || '',
+                lead_id: a.lead_id,
+                provider: a.provider,
+                result: a.result,
+                fields_filled: (a.fields_filled || []).join(' | '),
+                error_message: a.error_message || '',
+            }));
+            if (reportType === 'full') sections.push(`\n--- LINKEDIN ENRICHMENT REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
+        // ──────────────────────────────────────────────────────────
+        // SUPER LINKEDIN — agent runs (cost + latency telemetry)
+        // ──────────────────────────────────────────────────────────
+        if (reportType === 'linkedin_agents' || reportType === 'full') {
+            const where: any = {
+                organization_id: orgId,
+                created_at: { gte: startDate, lte: endDate },
+            };
+            if (statuses.length > 0) where.agent_name = { in: statuses };
+            const runs = await prisma.agentRun.findMany({
+                where,
+                orderBy: { created_at: 'desc' },
+                take: 100000,
+            });
+            const columns = [
+                { key: 'created_at', label: 'Created At' },
+                { key: 'agent_name', label: 'Agent' },
+                { key: 'model', label: 'Model' },
+                { key: 'trigger', label: 'Trigger' },
+                { key: 'trigger_ref_id', label: 'Trigger Ref' },
+                { key: 'status', label: 'Status' },
+                { key: 'prompt_tokens', label: 'Prompt Tokens' },
+                { key: 'completion_tokens', label: 'Completion Tokens' },
+                { key: 'latency_ms', label: 'Latency (ms)' },
+                { key: 'cost_usd', label: 'Cost (USD)' },
+                { key: 'error_message', label: 'Error' },
+            ];
+            const rows = runs.map(r => ({
+                created_at: r.created_at?.toISOString() || '',
+                agent_name: r.agent_name,
+                model: r.model,
+                trigger: r.trigger,
+                trigger_ref_id: r.trigger_ref_id || '',
+                status: r.status,
+                prompt_tokens: r.prompt_tokens ?? '',
+                completion_tokens: r.completion_tokens ?? '',
+                latency_ms: r.latency_ms,
+                cost_usd: r.cost_usd?.toString() || '',
+                error_message: r.error_message || '',
+            }));
+            if (reportType === 'full') sections.push(`\n--- LINKEDIN AGENT RUNS REPORT ---\n${toCsv(rows, columns)}`);
+            else sections.push(toCsv(rows, columns));
+        }
+
+        // ──────────────────────────────────────────────────────────
+        // SUPER LINKEDIN — ICP profiles
+        // ──────────────────────────────────────────────────────────
+        if (reportType === 'linkedin_icp' || reportType === 'full') {
+            const icps = await prisma.icpProfile.findMany({
+                where: { organization_id: orgId },
+                orderBy: { created_at: 'desc' },
+                take: 5000,
+            });
+            const columns = [
+                { key: 'name', label: 'Name' },
+                { key: 'description', label: 'Description' },
+                { key: 'titles', label: 'Titles' },
+                { key: 'industries', label: 'Industries' },
+                { key: 'company_sizes', label: 'Company Sizes' },
+                { key: 'geos', label: 'Geos' },
+                { key: 'enabled', label: 'Enabled' },
+                { key: 'created_at', label: 'Created' },
+            ];
+            const rows = icps.map(i => ({
+                name: i.name,
+                description: i.description || '',
+                titles: (i.titles || []).join(' | '),
+                industries: (i.industries || []).join(' | '),
+                company_sizes: (i.company_sizes || []).join(' | '),
+                geos: (i.geos || []).join(' | '),
+                enabled: i.enabled ? 'Yes' : 'No',
+                created_at: i.created_at?.toISOString() || '',
+            }));
+            if (reportType === 'full') sections.push(`\n--- LINKEDIN ICP PROFILES REPORT ---\n${toCsv(rows, columns)}`);
             else sections.push(toCsv(rows, columns));
         }
 

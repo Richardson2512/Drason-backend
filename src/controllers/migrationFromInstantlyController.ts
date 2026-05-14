@@ -29,7 +29,7 @@ import * as instantly from '../services/instantlyClient';
 import { InstantlyAuthError, InstantlyPaymentRequiredError } from '../services/instantlyClient';
 import * as importJob from '../services/importJobService';
 import * as importer from '../services/instantlyImportService';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { recordConsentFromRequest } from '../services/consentService';
 
 const isEnabled = (): boolean => process.env.MIGRATION_TOOL_ENABLED === 'true';

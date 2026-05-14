@@ -26,7 +26,7 @@
  * we'd want a Redis-backed weighted index — out of scope today.
  */
 
-import { prisma } from '../../index';
+import { prisma } from '../../prisma';
 import { logger } from '../observabilityService';
 
 const ROTATION_WINDOW_HOURS = 24;

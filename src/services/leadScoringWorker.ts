@@ -5,7 +5,7 @@
  * Should run daily or after major sync operations.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import * as leadScoringService from './leadScoringService';
 

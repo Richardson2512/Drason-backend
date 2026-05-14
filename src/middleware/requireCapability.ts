@@ -25,7 +25,7 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 
 export const CAPABILITY_KEYS = [

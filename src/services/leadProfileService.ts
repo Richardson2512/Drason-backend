@@ -16,7 +16,7 @@
  * copy without an extra OpenAI call per send.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import { scrapeUrl } from './aiCopywritingService';
 import { safeCompletion } from './openaiClient';

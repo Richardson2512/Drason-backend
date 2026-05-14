@@ -5,7 +5,7 @@
  * Used by mailbox creation, campaign defaults, and any flow that needs org-level config.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 
 export interface SequencerSettingsDefaults {
     default_daily_limit: number;

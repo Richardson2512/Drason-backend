@@ -5,7 +5,7 @@
  * Manages the batch lifecycle: create → process → route → export → analytics.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import * as emailValidationService from './emailValidationService';
 import * as espClassifierService from './espClassifierService';

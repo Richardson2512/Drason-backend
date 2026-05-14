@@ -20,7 +20,7 @@ import {
     type GenerateSequenceInput,
 } from '../services/aiCopywritingService';
 import { getCachedLeadProfile } from '../services/leadProfileService';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 
 // ────────────────────────────────────────────────────────────────────
 // In-memory per-org rate limiter — prevents runaway costs.

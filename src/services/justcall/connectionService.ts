@@ -10,7 +10,7 @@
  * api_secret instead of access_token + refresh_token.
  */
 
-import { prisma } from '../../index';
+import { prisma } from '../../prisma';
 import { encrypt, decrypt } from '../../utils/encryption';
 import { logger } from '../observabilityService';
 

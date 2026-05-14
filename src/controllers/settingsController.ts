@@ -7,7 +7,7 @@
 
 import { Request, Response } from 'express';
 import crypto from 'crypto';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { getOrgId } from '../middleware/orgContext';
 import { logger } from '../services/observabilityService';
 import { encrypt, decrypt, isEncrypted } from '../utils/encryption';
@@ -186,6 +186,13 @@ function maskSecret(value: string): string {
 export const disconnectSlack = async (req: Request, res: Response) => {
     try {
         const orgId = getOrgId(req);
+        // Defensive assertion — if middleware fails to populate orgId,
+        // deleteMany({ where: { organization_id: undefined } }) would
+        // become deleteMany() with no scope and nuke every row. Bail loud.
+        if (!orgId || typeof orgId !== 'string') {
+            res.status(400).json({ success: false, error: 'Missing organization context' });
+            return;
+        }
         await prisma.slackIntegration.deleteMany({
             where: { organization_id: orgId }
         });

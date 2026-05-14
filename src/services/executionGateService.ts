@@ -12,7 +12,7 @@
  * - System mode permits enforcement
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import * as auditLogService from './auditLogService';
 import * as healingService from './healingService';
 import * as notificationService from './notificationService';
@@ -55,24 +55,12 @@ export const canExecuteLead = async (
 
     const systemMode = (org?.system_mode as SystemMode) || SystemMode.OBSERVE;
 
-    // ── INVARIANT: No execution before infrastructure assessment completes ──
-    if (!org?.assessment_completed) {
-        return {
-            allowed: false,
-            reason: 'Infrastructure assessment in progress — gate locked until assessment completes',
-            riskScore: 100,
-            mode: systemMode,
-            failureType: FailureType.SYNC_ISSUE,
-            checks: {
-                campaignActive: false,
-                domainHealthy: false,
-                mailboxAvailable: false,
-                belowCapacity: false,
-                riskAcceptable: false
-            },
-            recommendations: ['Wait for infrastructure assessment to complete before executing leads']
-        };
-    }
+    // The infrastructure assessment (DNS / DNSBL / mailbox-health snapshot)
+    // runs in the background and no longer gates execution. Real-time
+    // protection is enforced below + at send time via canSendNow():
+    // mailbox.status, mailbox.recovery_phase, domain.status, bounce rate,
+    // recipient-domain complaints, healing aggregate caps. The assessment
+    // is informational baseline; it shouldn't stop sending.
 
     // ── TRANSITION GATE: Phase 0 → Phase 1 check ──
     const transitionResult = await healingService.checkTransitionGate(organizationId);
@@ -611,6 +599,46 @@ export const canSendNow = async (
     mailboxId: string,
     leadEmail: string,
 ): Promise<SendNowResult> => {
+    // 0. Lead + campaign state re-check (TOCTOU window between dispatch
+    // and send). The dispatcher can enqueue a delayed job up to 60 min in
+    // the future; in that window the lead may have been paused via reply
+    // action OR the campaign may have been soft-deleted/paused. Without
+    // this check the BullMQ worker fires the send anyway because the
+    // state-change happened after the dispatch snapshot.
+    //
+    // Hard skip (non-deferrable) because both are operator-driven
+    // states — there's no value in retrying.
+    const campaignLead = await prisma.campaignLead.findFirst({
+        where: {
+            campaign_id: campaignId,
+            email: { equals: leadEmail, mode: 'insensitive' },
+        },
+        select: {
+            status: true,
+            campaign: { select: { status: true, deleted_at: true } },
+        },
+    });
+    if (!campaignLead) {
+        return { allowed: false, reason: 'CampaignLead not found at send time', deferrable: false };
+    }
+    if (campaignLead.status !== 'active') {
+        return {
+            allowed: false,
+            reason: `Lead state changed to '${campaignLead.status}' since dispatch`,
+            deferrable: false,
+        };
+    }
+    if (campaignLead.campaign.deleted_at) {
+        return { allowed: false, reason: 'Campaign was deleted', deferrable: false };
+    }
+    if (campaignLead.campaign.status !== 'active') {
+        return {
+            allowed: false,
+            reason: `Campaign state changed to '${campaignLead.campaign.status}' since dispatch`,
+            deferrable: false,
+        };
+    }
+
     // 1. Re-fetch mailbox + parent domain state (closes TOCTOU window).
     const mailbox = await prisma.mailbox.findUnique({
         where: { id: mailboxId },

@@ -17,7 +17,7 @@
  * sequencer campaign now works end-to-end.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 
 export interface SequencerEnrollmentInput {

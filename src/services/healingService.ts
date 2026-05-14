@@ -12,7 +12,7 @@
  *   6. Phase 0→1 Transition Gate
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import {
     RecoveryPhase,
     HealingOrigin,

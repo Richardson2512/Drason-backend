@@ -10,7 +10,7 @@
  * a misclick doesn't drain the customer's Apollo credits.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { getLeadSourceFactory } from '../services/leadSources/registry';
 import {

@@ -18,7 +18,7 @@
  * capability, not a metered one.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import * as dnsbl from '../services/dnsblService';
 import { pauseMailbox } from '../services/monitoringService';

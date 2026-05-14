@@ -19,7 +19,7 @@
  * the admin/observability endpoints.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { provisionMailboxForConnectedAccount } from '../services/mailboxProvisioningService';
 

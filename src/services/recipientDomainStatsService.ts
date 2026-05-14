@@ -13,7 +13,7 @@
  * hammering the DB on every gate call.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { MONITORING_THRESHOLDS } from '../types';
 import { logger } from './observabilityService';
 

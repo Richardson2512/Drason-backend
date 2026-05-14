@@ -30,8 +30,11 @@ router.post('/reset-password', validateBody(resetPasswordSchema), authController
 router.get('/google', googleAuthController.initiateGoogleAuth);
 router.get('/google/callback', googleAuthController.handleGoogleCallback);
 
-// Google OAuth onboarding (personal Gmail users — org name collection)
-router.post('/onboarding/complete', googleAuthController.completeOnboarding);
+// The personal-Gmail onboarding route (`POST /onboarding/complete`) was
+// removed when we made Google Workspace the only supported Google signup
+// path. Personal Google accounts are now rejected at the OAuth callback
+// and redirected to the email/password signup form (which has its own
+// work-email gate).
 
 // Workspace invite magic-link flow (public — no auth required).
 // 1. Validate token (used by /set-password to render the form).

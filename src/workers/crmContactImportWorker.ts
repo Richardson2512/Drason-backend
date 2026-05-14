@@ -11,7 +11,7 @@
  */
 
 import { Prisma } from '@prisma/client';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { getFactory } from '../services/crm/registry';
 import { getConnection, updateRefreshedTokens, markConnectionFailed } from '../services/crm/connectionService';

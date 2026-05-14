@@ -31,7 +31,7 @@
  *   - SubscriptionEvent / ApiCallLog (financial/operational records)
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 
 const TOMBSTONE_EMAIL = (uuid: string) => `erased-${uuid}@anonymized.invalid`;

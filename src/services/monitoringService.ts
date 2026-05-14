@@ -13,7 +13,7 @@
  * - Domain aggregation from mailbox health
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import * as auditLogService from './auditLogService';
 import * as eventService from './eventService';
 import { classifyBounce } from './bounceClassifier';

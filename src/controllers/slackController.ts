@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { verifySlackSignature } from '../utils/slackUtils';
 import { logger } from '../services/observabilityService';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import axios from 'axios';
 import crypto from 'crypto';
 import { getPublicBackendUrl } from '../utils/publicBackendUrl';

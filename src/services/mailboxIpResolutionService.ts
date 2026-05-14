@@ -34,7 +34,7 @@
  */
 
 import { promises as dns } from 'dns';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 
 const RESOLUTION_TTL_HOURS = 24;

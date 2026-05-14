@@ -185,7 +185,16 @@ const processHeldLeads = async () => {
     }
 };
 
-// Run on configurable interval (default: 10 seconds)
-setInterval(processHeldLeads, PROCESSOR_INTERVAL_MS);
-
-logger.info('[PROCESSOR] Started.');
+/**
+ * Start the held-lead processor's interval timer.
+ *
+ * Exported (instead of running at module-load) so the SERVICE_ROLE gate
+ * in index.ts can decide whether this process actually owns the work.
+ * On a split deploy, only `worker` and `all` roles call this; the `api`
+ * role imports this module without firing the timer, so the API service
+ * doesn't waste CPU re-scanning held leads every 10s.
+ */
+export function startProcessor(): void {
+    setInterval(processHeldLeads, PROCESSOR_INTERVAL_MS);
+    logger.info('[PROCESSOR] Started.');
+}

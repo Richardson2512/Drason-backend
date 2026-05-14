@@ -13,7 +13,7 @@
  *   3. Underutilized (< 3 campaigns) + not already in target campaign
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import * as auditLogService from './auditLogService';
 import * as notificationService from './notificationService';

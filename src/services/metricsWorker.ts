@@ -11,7 +11,7 @@
  * - Recovery checks for paused entities
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import * as metricsService from './metricsService';
 import * as stateTransitionService from './stateTransitionService';
 import * as inactivityService from './inactivityService';

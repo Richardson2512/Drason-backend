@@ -13,7 +13,7 @@
  * - Warning when majority of mailboxes are degraded
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import * as auditLogService from './auditLogService';
 import * as notificationService from './notificationService';
 import { logger } from './observabilityService';

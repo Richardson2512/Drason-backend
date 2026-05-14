@@ -21,7 +21,7 @@ import { logger } from '../services/observabilityService';
 import * as smartlead from '../services/smartleadClient';
 import * as importJob from '../services/importJobService';
 import * as importer from '../services/smartleadImportService';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { recordConsentFromRequest } from '../services/consentService';
 
 export const isEnabled = (): boolean => process.env.MIGRATION_TOOL_ENABLED === 'true';

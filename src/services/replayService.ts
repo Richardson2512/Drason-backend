@@ -14,7 +14,7 @@
  *   - Dry-run mode is the default to prevent accidental state mutations
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import * as eventService from './eventService';
 import * as monitoringService from './monitoringService';

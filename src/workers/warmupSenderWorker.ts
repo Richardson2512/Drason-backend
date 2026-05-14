@@ -17,7 +17,7 @@
  * starve the scheduling loop.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { pickRecipient } from '../services/warmup/poolService';
 

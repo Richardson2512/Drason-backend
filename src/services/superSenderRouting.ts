@@ -23,7 +23,7 @@
  *   { route: 'native', reason }      → same, but log why we fell back
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 
 export type RoutingDecision =

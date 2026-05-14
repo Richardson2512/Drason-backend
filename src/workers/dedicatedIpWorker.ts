@@ -23,7 +23,7 @@
  * SES rate limits don't matter.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import {
     provisionDedicatedIp,

@@ -1,21 +1,24 @@
 /**
  * Infrastructure Assessment Service
- * 
- * Performs initial health assessment of email infrastructure at onboarding time.
- * Checks domain DNS reputation, imports historical mailbox/campaign data from
- * Smartlead, and generates an Infrastructure Health Report.
- * 
- * This service sets initial states but does NOT bypass the existing healing pipeline.
- * Entities flagged as degraded enter the standard cooldown → recovery flow.
- * 
- * INVARIANT: The execution gate is locked (assessment_completed = false) until
- * this service completes its full assessment. Zero-tolerance race condition.
+ *
+ * Periodic snapshot of email infrastructure health: domain DNS reputation
+ * (SPF/DKIM/DMARC/MX), DNSBL listings, and per-mailbox bounce-rate
+ * baselines. Generates an InfrastructureReport row for the dashboard.
+ *
+ * Drason runs native sending, so historical-data import paths (legacy
+ * Smartlead sync) have been removed. Mailbox SMTP/IMAP status is set by
+ * the platform's own connection monitoring; we just read it here.
+ *
+ * This service flags degraded entities into the standard healing pipeline
+ * (cooldown → recovery) but does NOT block live execution — sending is
+ * gated by real-time checks in executionGateService.canSendNow() at
+ * send time.
  */
 
 import dns from 'dns';
 import { promisify } from 'util';
 import { Prisma } from '@prisma/client';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import * as auditLogService from './auditLogService';
 import * as notificationService from './notificationService';
 import * as entityStateService from './entityStateService';
@@ -725,8 +728,11 @@ export async function assessInfrastructure(
         const mailboxSummary = { total: mailboxes.length, healthy: 0, warning: 0, paused: 0 };
 
         for (const mailbox of mailboxes) {
-            // CRITICAL: Respect connection status from Smartlead sync
-            // Disconnected mailboxes must remain paused regardless of bounce metrics
+            // Respect platform-level connection status. The
+            // mailboxIpBlacklistWorker + healing pipeline flip smtp_status /
+            // imap_status on auth failures or transport errors; we treat
+            // those as the source of truth and pause the mailbox here
+            // regardless of bounce metrics.
             if (mailbox.smtp_status === false || mailbox.imap_status === false) {
                 const connectionError = mailbox.connection_error || 'Unknown connection issue';
                 findings.push({
@@ -738,7 +744,7 @@ export async function assessInfrastructure(
                     title: `Connection Failed: ${mailbox.email}`,
                     details: `SMTP: ${mailbox.smtp_status ? 'OK' : 'FAILED'}, IMAP: ${mailbox.imap_status ? 'OK' : 'FAILED'}. Error: ${connectionError}`,
                     message: `Mailbox ${mailbox.email} has a broken connection and cannot send/receive email.`,
-                    remediation: `Re-authorize this email account in Smartlead → Email Accounts → Reconnect.`,
+                    remediation: `Reconnect this email account from Settings → Mailboxes (or the Mailboxes page).`,
                 });
 
                 // Force paused via state machine — skip bounce rate logic entirely
@@ -759,8 +765,9 @@ export async function assessInfrastructure(
                 continue; // Skip bounce rate assessment for disconnected mailboxes
             }
 
-            // Calculate bounce rate from existing counters
-            // (These are populated by Smartlead sync if getMailboxStats was called)
+            // Bounce rate from on-platform counters maintained by the
+            // native send queue (recordCampaignSent / recordCampaignBounce
+            // / bounceProcessingService). No external sync involved.
             const totalSent = mailbox.total_sent_count;
             const totalBounced = mailbox.hard_bounce_count;
             const bounceRate = totalSent > 0 ? totalBounced / totalSent : 0;

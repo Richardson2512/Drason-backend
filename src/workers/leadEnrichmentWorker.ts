@@ -17,7 +17,7 @@
  *   - 60s tick → at default pacing the worker handles ~10 leads/min.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { enrichLead } from '../services/leadProfileService';
 

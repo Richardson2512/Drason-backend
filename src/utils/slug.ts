@@ -13,7 +13,7 @@
  *   - Last-resort fallback appends a base36 timestamp.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 
 export async function uniqueSlug(name: string): Promise<string> {
     const base = name

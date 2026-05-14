@@ -12,7 +12,7 @@
  *   - Emits warnings for frequent overrides
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import * as auditLogService from './auditLogService';
 import * as eventService from './eventService';
 import * as entityStateService from './entityStateService';

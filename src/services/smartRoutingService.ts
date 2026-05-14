@@ -12,7 +12,7 @@
  * - Historical performance (if available)
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import { Lead } from '@prisma/client';
 

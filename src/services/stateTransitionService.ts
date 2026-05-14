@@ -11,7 +11,7 @@
  * - Transitions are atomic and logged
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import {
     MailboxState,
     DomainState,

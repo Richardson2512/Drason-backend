@@ -17,7 +17,7 @@
  * Fallback: If a mailbox has no send data and is in 0 campaigns, it's underutilized.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import { SlackAlertService } from './SlackAlertService';
 

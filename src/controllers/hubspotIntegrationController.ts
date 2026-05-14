@@ -19,7 +19,7 @@ import {
 } from '../services/crm/hubspot/oauthService';
 import { HubSpotCrmClient } from '../services/crm/hubspot/client';
 import { upsertConnection, getConnection } from '../services/crm/connectionService';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 
 const HUBSPOT_DASHBOARD_RETURN = '/dashboard/integrations/crm';
 

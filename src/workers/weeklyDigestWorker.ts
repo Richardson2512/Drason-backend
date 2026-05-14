@@ -19,7 +19,7 @@
  * next tick.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { dispatchEmail } from '../services/emailTemplates/dispatcher';
 import { weeklyDigestEmail } from '../services/emailTemplates/weeklyDigest';

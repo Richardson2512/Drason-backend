@@ -10,7 +10,7 @@
  */
 
 import { Request, Response } from 'express';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import * as routingService from '../services/routingService';
 import * as auditLogService from '../services/auditLogService';
 import * as eventService from '../services/eventService';

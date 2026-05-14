@@ -1,7 +1,6 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { PrismaClient } from '@prisma/client';
 
 dotenv.config();
 
@@ -41,23 +40,45 @@ function validateEnvironment(): void {
 
 validateEnvironment();
 
+/**
+ * Service role — decides what this Node process actually does at boot:
+ *
+ *   'api'    — Express HTTP server only. Webhooks, REST endpoints,
+ *              auth flows, BullMQ job *producers* (controllers can
+ *              enqueue jobs into Redis — they just don't consume them).
+ *              NO cron-style timers, NO IMAP polling, NO send dispatcher.
+ *
+ *   'worker' — All 20+ background workers + BullMQ *consumers*. Still
+ *              boots Express on PORT so Railway's health-check hits a
+ *              live endpoint, but the public surface is just /health.
+ *
+ *   'all'    — Both. Default for local dev (`npm run dev`) and the
+ *              backward-compatible state before the API/worker split
+ *              shipped. In production, each Railway service should set
+ *              SERVICE_ROLE explicitly.
+ *
+ * Throws on unknown values so a typo in Railway's env config fails fast
+ * rather than booting in some halfway state.
+ */
+export type ServiceRole = 'api' | 'worker' | 'all';
+export const SERVICE_ROLE: ServiceRole = (() => {
+    const raw = (process.env.SERVICE_ROLE || 'all').toLowerCase();
+    if (raw === 'api' || raw === 'worker' || raw === 'all') return raw;
+    throw new Error(
+        `FATAL: Invalid SERVICE_ROLE='${raw}'. Must be 'api', 'worker', or 'all'.`,
+    );
+})();
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Initialize Prisma with query timeout and connection pool limits
-export const prisma = new PrismaClient({
-    datasourceUrl: appendStatementTimeout(process.env.DATABASE_URL || ''),
-});
-
-/**
- * Append statement_timeout to the PostgreSQL connection string.
- * Prevents any single query from running longer than 30 seconds.
- */
-function appendStatementTimeout(url: string): string {
-    if (!url) return url;
-    const separator = url.includes('?') ? '&' : '?';
-    return `${url}${separator}statement_timeout=30000&connect_timeout=10`;
-}
+// Prisma was moved to its own module (./prisma) so importing the DB
+// client doesn't drag in the entire server bootstrap. Imported here
+// for use in this file's own route handlers + re-exported for the
+// handful of remaining `from '../index'` call sites that haven't yet
+// been migrated to import from './prisma' directly.
+import { prisma } from './prisma';
+export { prisma };
 
 // Import middleware
 import { extractOrgContext, enforceOrgSlug } from './middleware/orgContext';
@@ -92,6 +113,8 @@ import apiKeyRoutes from './routes/apiKeys';
 import v1Routes from './routes/v1';
 import aiRoutes from './routes/ai';
 import webhookRoutes from './routes/webhooks';
+import linkedinRoutes from './routes/linkedin';
+import * as unipileWebhookController from './controllers/unipileWebhookController';
 
 import { checkSubscriptionStatus } from './middleware/featureGate';
 import { requireFreshConsent } from './middleware/requireFreshConsent';
@@ -126,10 +149,20 @@ import { scheduleImapPolling } from './workers/imapReplyWorker';
 import { startWebhookDispatcherWorker } from './workers/webhookDispatcherWorker';
 import { scheduleMailboxIpBlacklist } from './workers/mailboxIpBlacklistWorker';
 import { scheduleColdCallListSnapshots } from './workers/coldCallListWorker';
+import { scheduleLinkedInCapacityReset } from './workers/linkedinCapacityResetWorker';
+import { scheduleLinkedInSignalPoller } from './workers/linkedinSignalPollerWorker';
+import { scheduleLinkedInWatchlistRunner } from './workers/linkedinWatchlistRunnerWorker';
+import { scheduleLinkedInAcceptanceWatcher } from './workers/linkedinAcceptanceWatcherWorker';
+import { scheduleAgentSupervisorWorker } from './workers/agentSupervisorWorker';
+import { scheduleLinkedInDispatcher } from './workers/linkedinDispatcherWorker';
+import { scheduleLinkedInReplyTagWorker } from './workers/linkedinReplyTagWorker';
+import { scheduleLinkedInEngagementRollup } from './workers/linkedinEngagementRollupWorker';
 import * as infrastructureAssessmentService from './services/infrastructureAssessmentService';
 
-// Lead Processor — background job that pushes held leads through the execution gate
-import './processor';
+// Lead Processor — background job that pushes held leads through the execution gate.
+// Named import (not side-effect) so the SERVICE_ROLE gate decides whether to actually
+// start the interval timer — the API service imports it without running it.
+import { startProcessor } from './processor';
 
 import cookieParser from 'cookie-parser';
 import compression from 'compression';
@@ -181,7 +214,8 @@ const verifyRawBody = (req: any, res: any, buf: Buffer) => {
     if (
         req.originalUrl.startsWith('/slack') ||
         req.originalUrl.startsWith('/api/billing/polar-webhook') ||
-        req.originalUrl.startsWith('/api/billing/webhook') // legacy alias
+        req.originalUrl.startsWith('/api/billing/webhook') || // legacy alias
+        req.originalUrl.startsWith('/webhooks/unipile')
     ) {
         req.rawBody = buf;
     }
@@ -318,11 +352,18 @@ app.use('/api/validation', validationRoutes);
 app.use('/api/unibox', uniboxRoutes);
 app.use('/api/sequencer', sequencerRoutes);
 app.use('/api/cold-call-list', coldCallListRoutes);
+app.use('/api/linkedin', linkedinRoutes);
 app.use('/api/ai', aiRoutes);
 import superSenderRoutes from './routes/superSender';
 app.use('/api/super-sender', superSenderRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/t', trackingRoutes); // public, no auth — tracking pixels + click redirects + unsubscribe
+
+// Unipile inbound webhooks. Mounted OUTSIDE /api so the orgContext middleware
+// doesn't reject the request — Unipile has no JWT, we authenticate via HMAC
+// signature on the raw body (see verifyRawBody whitelist above + the
+// verifyUnipileWebhook check inside the controller).
+app.post('/webhooks/unipile', asyncHandler(unipileWebhookController.ingest));
 
 // ── MCP OAuth 2.0 / DCR (RFC 7591) ──────────────────────────────────
 // Mounts /.well-known/oauth-authorization-server, /.well-known/oauth-
@@ -965,11 +1006,36 @@ import { registerLeadSourceProvider } from './services/leadSources/registry';
 import { apolloFactory } from './services/leadSources/apollo/factory';
 registerLeadSourceProvider(apolloFactory);
 
-const server = app.listen(PORT, () => {
-    logger.info(`Server started on port ${PORT}`, {
-        port: PORT,
-        env: process.env.NODE_ENV || 'development'
-    });
+// Skip the entire server bootstrap (HTTP listen + worker scheduling +
+// DNSBL seeding + periodic assessments) when this module is being
+// imported as part of a test run. Jest sets NODE_ENV='test' before
+// loading any module, so importing `prisma` (or anything that transitively
+// pulls in index.ts) no longer spins up a full Express server with 20+
+// background timers — which was crashing apolloProvider.test.ts and any
+// other unit test that touched a service depending on prisma.
+//
+// The export of `app` + `prisma` still happens (they live in the
+// module's top-level scope above), so route handlers and DB-touching
+// integration tests can still import what they need.
+/**
+ * Boot every background worker, scheduler, cron, queue consumer, and
+ * BullMQ runner that this codebase ships with. Called from the
+ * `app.listen` callback below ONLY when SERVICE_ROLE is 'worker' or
+ * 'all'. On an API-only service this is a no-op — the HTTP listener
+ * still binds (so Railway health checks pass + webhooks route), but no
+ * cron timers fire and no IMAP polls run.
+ *
+ * Adding a new worker? Add the start() call inside this function, not
+ * at the call-site of app.listen. Resist the urge to top-level
+ * setInterval / setTimeout in any other module — those break the role
+ * split and reintroduce the test-bootstrap problem we fixed with the
+ * NODE_ENV='test' guard.
+ */
+function startWorkerBootstrap(): void {
+    logger.info('[BOOT] Starting background workers', { role: SERVICE_ROLE });
+
+    // Held-lead processor — was a side-effect import before this split.
+    startProcessor();
 
     // Start background workers
     startMetricsWorker();
@@ -1097,6 +1163,19 @@ const server = app.listen(PORT, () => {
     scheduleColdCallListSnapshots();
     logger.info('Cold Call List snapshot worker scheduled (hourly tick, 06:00 workspace-local trigger)');
 
+    // Super LinkedIn — capacity counter reset (30min tick, rolls daily/weekly
+    // counters over at UTC midnight / Monday UTC) + signal poller (4× daily
+    // with jitter, pulls engagement events Unipile doesn't push).
+    scheduleLinkedInCapacityReset();
+    scheduleLinkedInSignalPoller();
+    scheduleLinkedInAcceptanceWatcher();
+    scheduleAgentSupervisorWorker();
+    scheduleLinkedInDispatcher();
+    scheduleLinkedInReplyTagWorker();
+    scheduleLinkedInEngagementRollup();
+    scheduleLinkedInWatchlistRunner();
+    logger.info('Super LinkedIn workers scheduled (8 workers: capacity reset + signal poller + acceptance watcher + agent supervisor + dispatcher + reply-tag + engagement rollup + watchlist runner)');
+
     // Seed DNSBL lists (upserts — safe to run on every startup)
     import('./services/dnsblService').then(dnsblService => {
         dnsblService.seedDnsblLists().catch(err => {
@@ -1106,6 +1185,28 @@ const server = app.listen(PORT, () => {
 
     // Start periodic domain infrastructure assessment
     infrastructureAssessmentService.startPeriodicAssessment();
+
+    logger.info('[BOOT] All background workers scheduled');
+}
+
+const server = process.env.NODE_ENV === 'test' ? null : app.listen(PORT, () => {
+    logger.info(`Server started on port ${PORT}`, {
+        port: PORT,
+        env: process.env.NODE_ENV || 'development',
+        role: SERVICE_ROLE,
+    });
+
+    // Workers boot only when this process is responsible for them.
+    // On a Railway split-deploy (drason-api + drason-worker), the API
+    // service runs with SERVICE_ROLE=api and skips this entirely —
+    // it's pure HTTP. The worker service runs with SERVICE_ROLE=worker.
+    // Local dev defaults to 'all' so `npm run dev` behaves identically
+    // to pre-split.
+    if (SERVICE_ROLE === 'worker' || SERVICE_ROLE === 'all') {
+        startWorkerBootstrap();
+    } else {
+        logger.info('[BOOT] SERVICE_ROLE=api — background workers skipped (this process serves HTTP only)');
+    }
 });
 
 // ============================================================================
@@ -1151,13 +1252,16 @@ async function gracefulShutdown(signal: string): Promise<void> {
     infrastructureAssessmentService.stopPeriodicAssessment();
     logger.info('Periodic assessment worker stopped');
 
-    // Stop accepting new connections and wait for in-flight requests to finish
-    await new Promise<void>((resolve) => {
-        server.close(() => {
-            logger.info('HTTP server closed (all in-flight requests completed)');
-            resolve();
+    // Stop accepting new connections and wait for in-flight requests to finish.
+    // `server` is null in test mode (bootstrap skipped), so guard the close call.
+    if (server) {
+        await new Promise<void>((resolve) => {
+            server.close(() => {
+                logger.info('HTTP server closed (all in-flight requests completed)');
+                resolve();
+            });
         });
-    });
+    }
 
     // Disconnect services
     try {

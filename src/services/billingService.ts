@@ -5,7 +5,7 @@
  * Implements idempotent webhook processing and usage-based feature gates.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import * as notificationService from './notificationService';
 import * as auditLogService from './auditLogService';
@@ -193,6 +193,12 @@ export async function processWebhook(event: WebhookEvent): Promise<void> {
         event.data?.metadata?.super_sender === 'true' ||
         event.data?.metadata?.super_sender === true;
 
+    // Super LinkedIn account-slot add-on — separate Polar product. Routed
+    // away from the tier-subscription handler the same way Super Sender is.
+    const isLinkedInAddonEvent =
+        event.data?.metadata?.linkedin_addon === 'true' ||
+        event.data?.metadata?.linkedin_addon === true;
+
     // Process based on event type. Unknown types log a warn but don't
     // throw — Polar adds new event types over time and we shouldn't 200/
     // -fail every delivery just because of an unhandled kind.
@@ -202,6 +208,9 @@ export async function processWebhook(event: WebhookEvent): Promise<void> {
             if (isSuperSenderEvent) {
                 const { handleSuperSenderWebhook } = await import('./superSenderService');
                 await handleSuperSenderWebhook(event as never, resolvedOrgId);
+            } else if (isLinkedInAddonEvent) {
+                const { handleLinkedInAddonWebhook } = await import('./linkedin/polarAddonWebhookHandler');
+                await handleLinkedInAddonWebhook(event as never, resolvedOrgId);
             } else {
                 // Polar fires subscription.active on activation (paid + period
                 // started). Treat it the same as created so a paid customer
@@ -223,6 +232,9 @@ export async function processWebhook(event: WebhookEvent): Promise<void> {
             if (isSuperSenderEvent) {
                 const { handleSuperSenderWebhook } = await import('./superSenderService');
                 await handleSuperSenderWebhook(event as never, resolvedOrgId);
+            } else if (isLinkedInAddonEvent) {
+                const { handleLinkedInAddonWebhook } = await import('./linkedin/polarAddonWebhookHandler');
+                await handleLinkedInAddonWebhook(event as never, resolvedOrgId);
             } else {
                 await handleSubscriptionCanceled(event, resolvedOrgId);
             }
@@ -260,7 +272,26 @@ async function handleSubscriptionCreated(event: WebhookEvent, orgId: string): Pr
     const subscriptionId = event.data?.id;
     const metadata = event.data?.metadata || {};
 
-    const validTiers = ['trial', 'starter', 'pro', 'growth', 'scale', 'enterprise'];
+    // Tier list must mirror every SKU configured in polarClient.PRODUCT_IDS
+    // — `pro_80k` through `pro_250k` are the volume-tier Pro variants. If
+    // any of those land here and the metadata tier isn't on this list, the
+    // customer was silently downgraded to 'starter' (a $40/mo loss-per-row
+    // bug). Adding a new SKU MUST also add it here.
+    const validTiers = [
+        'trial', 'starter',
+        'pro', 'pro_80k', 'pro_100k', 'pro_150k', 'pro_200k', 'pro_250k',
+        'growth', 'scale', 'enterprise',
+    ];
+    if (metadata.tier && !validTiers.includes(metadata.tier)) {
+        // Log loudly so unknown SKUs are caught at intake rather than
+        // silently downgraded. Operators can reconcile via Polar's
+        // dashboard while we patch the validTiers list.
+        logger.warn('[BILLING] Unknown tier on subscription.created — falling back to starter', {
+            tier: metadata.tier,
+            subscriptionId,
+            orgId,
+        });
+    }
     const tier = validTiers.includes(metadata.tier) ? metadata.tier : 'starter';
     const periodEnd = event.data?.current_period_end;
     const nextBillingDate = periodEnd ? new Date(periodEnd) : null;

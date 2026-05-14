@@ -21,7 +21,7 @@
  * which bypasses transition validation but still logs the action.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import {
     MailboxState,
     DomainState,

@@ -4,7 +4,7 @@
  * Handles CRUD operations for user notifications.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 
 interface CreateNotificationParams {
     type: 'INFO' | 'SUCCESS' | 'WARNING' | 'ERROR' | 'SYSTEM';

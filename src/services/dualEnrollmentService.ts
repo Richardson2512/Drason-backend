@@ -19,7 +19,7 @@
  * separately reported — they should not be enrolled in any campaign.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 
 // ============================================================================

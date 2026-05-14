@@ -4,7 +4,7 @@
 // ─────────────────────────────────────────────────────────────────────
 
 import * as dns from 'dns';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import type { DnsblList } from '@prisma/client';
 
 // ─── Types ───────────────────────────────────────────────────────────

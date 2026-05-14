@@ -22,7 +22,7 @@
  */
 
 import crypto from 'crypto';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 
 const DEFAULT_TTL_MS = 10 * 60 * 1000; // 10 minutes

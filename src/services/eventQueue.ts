@@ -24,7 +24,7 @@ import * as auditLogService from './auditLogService';
 import * as entityStateService from './entityStateService';
 import { recalculateLeadScore } from './leadScoringService';
 import { EventType, LeadState, TriggerType, MONITORING_THRESHOLDS } from '../types';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 
 const { ROLLING_WINDOW_SIZE } = MONITORING_THRESHOLDS;
 

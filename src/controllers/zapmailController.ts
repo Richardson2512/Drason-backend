@@ -22,7 +22,7 @@
 
 import { Request, Response } from 'express';
 import { getOrgId } from '../middleware/orgContext';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { encrypt, decrypt } from '../utils/encryption';
 import { getSequencerSettings } from '../services/sequencerSettingsService';

@@ -8,7 +8,7 @@
  * capacity checks and assignments are atomic.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import * as auditLogService from './auditLogService';
 

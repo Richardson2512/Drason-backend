@@ -21,7 +21,7 @@
  */
 
 import * as crypto from 'crypto';
-import { prisma } from '../../index';
+import { prisma } from '../../prisma';
 import { resolveSpintax } from '../../utils/spintax';
 import type { WarmupTemplateKind } from './types';
 

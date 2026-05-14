@@ -6,7 +6,7 @@
  * 3. Provider Volume Caps — enforces Gmail/Microsoft/Yahoo daily sending limits
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import * as entityStateService from './entityStateService';
 import * as notificationService from './notificationService';
 import * as auditLogService from './auditLogService';

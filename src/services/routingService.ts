@@ -8,7 +8,7 @@
  * Matching is based on persona (case-insensitive) and minimum lead score.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { Lead } from '@prisma/client';
 import * as auditLogService from './auditLogService';
 import { logger } from './observabilityService';

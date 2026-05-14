@@ -8,7 +8,7 @@
  */
 
 import { Request, Response } from 'express';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import * as monitoringService from '../services/monitoringService';
 import { getOrgId } from '../middleware/orgContext';
 import { logger } from '../services/observabilityService';

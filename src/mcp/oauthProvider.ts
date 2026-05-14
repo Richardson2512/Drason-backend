@@ -34,7 +34,7 @@ import type {
     OAuthTokenRevocationRequest,
 } from '@modelcontextprotocol/sdk/shared/auth.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 
 // ────────────────────────────────────────────────────────────────────

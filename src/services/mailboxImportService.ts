@@ -20,7 +20,7 @@
  *   - Provisioning is itself idempotent — re-running creates no duplicates.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import { encrypt } from '../utils/encryption';
 import { provisionMailboxForConnectedAccount } from './mailboxProvisioningService';

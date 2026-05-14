@@ -5,7 +5,7 @@
  * Reads from the existing DomainInsight cache — zero additional DNS lookups.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 
 interface MxRecord {
     exchange: string;

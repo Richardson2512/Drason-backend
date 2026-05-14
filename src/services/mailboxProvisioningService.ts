@@ -13,7 +13,7 @@
  *   (Mailbox.id has no DB default for historical reasons).
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 
 interface ProvisionInput {
@@ -140,10 +140,22 @@ export async function provisionMailboxForConnectedAccount(
  * We don't cascade-delete because SendEvent/BounceEvent history should be preserved
  * for analytics. Instead mark the Mailbox as disconnected.
  */
-export async function deprovisionMailboxForConnectedAccount(connectedAccountId: string): Promise<void> {
+export async function deprovisionMailboxForConnectedAccount(
+    connectedAccountId: string,
+    organizationId?: string,
+): Promise<void> {
     try {
+        // Defense-in-depth org scope. Callers ALREADY verify the account
+        // belongs to the requesting org before reaching this function, but
+        // the previous signature accepted only the FK and would have
+        // happily marked any matching row regardless of tenant. Adding the
+        // optional orgId narrows the WHERE so a future caller can't bypass
+        // the existing guard without an explicit code change.
         await prisma.mailbox.updateMany({
-            where: { connected_account_id: connectedAccountId },
+            where: {
+                connected_account_id: connectedAccountId,
+                ...(organizationId ? { organization_id: organizationId } : {}),
+            },
             data: {
                 status: 'disconnected',
                 connected_account_id: null,

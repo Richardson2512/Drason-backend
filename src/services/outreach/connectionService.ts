@@ -5,7 +5,7 @@
  *   - Active connection lookup for the worker
  */
 
-import { prisma } from '../../index';
+import { prisma } from '../../prisma';
 import { encrypt, decrypt } from '../../utils/encryption';
 import { logger } from '../observabilityService';
 

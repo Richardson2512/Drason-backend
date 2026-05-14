@@ -31,7 +31,7 @@
 
 import { randomUUID } from 'crypto';
 import { Prisma } from '@prisma/client';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import * as instantly from './instantlyClient';
 import * as importJob from './importJobService';

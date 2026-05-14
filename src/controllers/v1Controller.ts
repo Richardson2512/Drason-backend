@@ -7,7 +7,7 @@
 
 import { Request, Response } from 'express';
 import crypto from 'crypto';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { getOrgId } from '../middleware/orgContext';
 import { TIER_LIMITS } from '../services/polarClient';

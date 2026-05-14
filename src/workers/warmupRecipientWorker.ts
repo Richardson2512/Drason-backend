@@ -23,7 +23,7 @@
  * EmailMessage rows. The unibox is unaware of warmup activity.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { signWarmupHeader } from '../services/warmup/contentService';
 import { processIncomingWarmup, type RecipientCredentials } from '../services/warmup/engagementService';

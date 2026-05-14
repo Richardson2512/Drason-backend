@@ -8,7 +8,7 @@
  * - Clean up expired trial organizations
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import * as notificationService from './notificationService';
 import * as auditLogService from './auditLogService';

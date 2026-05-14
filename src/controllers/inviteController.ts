@@ -25,7 +25,7 @@
 import { Request, Response } from 'express';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { dispatchEmail } from '../services/emailTemplates/dispatcher';
 import { workspaceInviteEmail } from '../services/emailTemplates/workspaceInvite';

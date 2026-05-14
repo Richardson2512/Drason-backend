@@ -10,7 +10,7 @@
  * - Complete with context (trigger, action, details)
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 
 interface LogActionParams {

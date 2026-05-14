@@ -7,7 +7,7 @@
  * - Audit log immutability guarantees
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import * as auditLogService from './auditLogService';
 import * as entityStateService from './entityStateService';
 import { MailboxState, TriggerType } from '../types';

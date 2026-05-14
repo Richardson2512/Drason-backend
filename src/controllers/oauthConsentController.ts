@@ -10,7 +10,7 @@
 
 import type { Request, Response } from 'express';
 import { logger } from '../services/observabilityService';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { oauthProvider, verifyConsentSession, SUPPORTED_SCOPES } from '../mcp/oauthProvider';
 import { recordConsentFromRequest } from '../services/consentService';
 

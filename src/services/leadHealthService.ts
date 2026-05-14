@@ -11,7 +11,7 @@
  * - New/suspicious domain detection
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import * as auditLogService from './auditLogService';
 import * as notificationService from './notificationService';
 

@@ -9,7 +9,7 @@
  * structured N-step sequence ready to persist.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import { scrapeUrls } from './aiCopywritingService';
 import { safeGeminiCompletion, isGeminiConfigured } from './geminiClient';

@@ -6,8 +6,9 @@
 
 import { Request, Response } from 'express';
 import { getOrgId } from '../middleware/orgContext';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
+import { getSuppressionMode, setSuppressionMode, type SuppressionMode } from '../services/crossChannelSuppressionService';
 
 /**
  * GET /api/sequencer/settings
@@ -89,5 +90,44 @@ export const updateSettings = async (req: Request, res: Response): Promise<Respo
     } catch (error: any) {
         logger.error('[SEQ_SETTINGS] Failed to update settings', error instanceof Error ? error : new Error(String(error)));
         return res.status(500).json({ success: false, error: 'Failed to update settings' });
+    }
+};
+
+// ────────────────────────────────────────────────────────────────────
+// Cross-channel suppression mode
+// ────────────────────────────────────────────────────────────────────
+//
+// Org-level toggle for how email replies pause LinkedIn campaigns and
+// vice-versa. Lives on Organization.cross_channel_suppression_mode and is
+// read by both reply handlers (replyActionService + linkedinReplyTagWorker).
+
+const VALID_MODES: SuppressionMode[] = ['OFF', 'HARD', 'CLASSIFIED', 'ASYMMETRIC'];
+
+export const getSuppressionModeHandler = async (req: Request, res: Response): Promise<Response> => {
+    try {
+        const orgId = getOrgId(req);
+        const mode = await getSuppressionMode(orgId);
+        return res.json({ success: true, data: { mode } });
+    } catch (error: any) {
+        logger.error('[SEQ_SETTINGS] Failed to read suppression mode', error instanceof Error ? error : new Error(String(error)));
+        return res.status(500).json({ success: false, error: 'Failed to read suppression mode' });
+    }
+};
+
+export const updateSuppressionModeHandler = async (req: Request, res: Response): Promise<Response> => {
+    try {
+        const orgId = getOrgId(req);
+        const requested = (req.body?.mode ?? '').toString().toUpperCase() as SuppressionMode;
+        if (!VALID_MODES.includes(requested)) {
+            return res.status(400).json({
+                success: false,
+                error: `mode must be one of ${VALID_MODES.join(', ')}`,
+            });
+        }
+        await setSuppressionMode(orgId, requested);
+        return res.json({ success: true, data: { mode: requested } });
+    } catch (error: any) {
+        logger.error('[SEQ_SETTINGS] Failed to update suppression mode', error instanceof Error ? error : new Error(String(error)));
+        return res.status(500).json({ success: false, error: 'Failed to update suppression mode' });
     }
 };

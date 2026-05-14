@@ -12,7 +12,7 @@
  */
 
 import type { Request, Response } from 'express';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { ApolloLeadSourceClient } from '../services/leadSources/apollo/client';
 import { parseApolloUrl, summarizeFilter } from '../services/leadSources/apollo/urlParser';

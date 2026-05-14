@@ -23,7 +23,7 @@
  * the Account has agency_mode_enabled and >1 workspace).
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import { polarApi, ensurePolarCustomer } from './polarClient';
 

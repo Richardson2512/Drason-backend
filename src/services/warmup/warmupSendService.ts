@@ -26,7 +26,7 @@
 
 import * as crypto from 'crypto';
 import nodemailer, { type Transporter } from 'nodemailer';
-import { prisma } from '../../index';
+import { prisma } from '../../prisma';
 import { logger } from '../observabilityService';
 import { decrypt, isEncrypted } from '../../utils/encryption';
 import { refreshGoogleAccessToken } from '../gmailSendService';

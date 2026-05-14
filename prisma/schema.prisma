@@ -163,6 +163,25 @@ model Organization {
   postmaster_last_fetch_at    DateTime?
   postmaster_last_error       String?
 
+  // Cross-channel suppression — when a lead replies on one channel (email
+  // or LinkedIn), this controls whether the OTHER channel's active
+  // enrollments for the same lead get paused.
+  //
+  //   'OFF'          — never pause cross-channel; each channel handles its own
+  //   'HARD'         — any reply on any channel pauses all active enrollments
+  //                    for that lead (most conservative, prevents multi-channel
+  //                    pestering after engagement of any kind)
+  //   'CLASSIFIED'   — only pause cross-channel when the reply is classified
+  //                    as positive / qualified / hard_no / angry — generic
+  //                    or auto replies stay channel-scoped
+  //   'ASYMMETRIC'   — email replies always pause LinkedIn (formal commitment
+  //                    signal); LinkedIn replies only pause email when the
+  //                    LinkedIn reply is classified per CLASSIFIED rules
+  //
+  // Default 'CLASSIFIED' — preserves multi-channel nurture while honoring
+  // explicit yes/no signals.
+  cross_channel_suppression_mode String @default("CLASSIFIED")
+
   // CAN-SPAM § 5(a)(5) requires every commercial email to carry the sender's
   // valid physical postal address. This is the single source of truth — the
   // dispatcher injects it into every send's unsubscribe footer, and the
@@ -248,6 +267,27 @@ model Organization {
   dedicatedIps           DedicatedIp[]
   replyActionConfigs     ReplyActionConfig[]
   orgReplySuppressions   OrgReplySuppression[]
+
+  // Super LinkedIn — added 2026-05-13. See linkedin_outreach_foundation
+  // migration for the table definitions.
+  //
+  // Account-slot cap = baseLimitForTier(subscription_tier) + linkedin_account_addon_count.
+  // Add-on slots are sold at $15/account/month; each purchase increments the
+  // counter and writes a LinkedInAccountAddonPurchase row for audit.
+  linkedin_account_addon_count Int @default(0)
+  linkedinAccounts         LinkedInAccount[]
+  linkedinAddonPurchases   LinkedInAccountAddonPurchase[]
+  linkedinProfiles         LinkedInProfile[]
+  customers                Customer[]
+  engagementEvents         EngagementEvent[]
+  icpProfiles              IcpProfile[]
+  signalMonitoringRules    SignalMonitoringRule[]
+  signalWatchlists         SignalWatchlist[]
+  signalWatchlistMatches   SignalWatchlistMatch[]
+  agentRuns                AgentRun[]
+  enrichmentProviders      EnrichmentProvider[]
+  enrichmentAttempts       EnrichmentAttempt[]
+  stepExecutions           SequenceStepExecution[]
 
   @@index([slug])
   @@index([subscription_status])
@@ -524,6 +564,27 @@ model Lead {
   // re-score past events — only future events use the new value.
   lead_score_adjustments Int @default(0)
 
+  /// AI-generated opener seeded by the signal that promoted this lead —
+  /// e.g. when a LinkedIn engagement signal pushes a prospect into a
+  /// campaign, signalIcebreakerService runs OpenAI against the captured
+  /// engagement context (post body, comment text, interaction type) and
+  /// writes the 1-3 sentence opener here. The Sequencer email renderer
+  /// substitutes {{signal_icebreaker}} with this value at send time.
+  /// NULL when the lead wasn't signal-promoted, or when generation
+  /// failed / was disabled.
+  signal_icebreaker             String?
+  signal_icebreaker_generated_at DateTime?
+  /// Trace for the icebreaker — which engagement event it was seeded
+  /// from. Cheap audit so an operator can sanity-check "why does this
+  /// opener mention that post?" without spelunking through tables.
+  signal_icebreaker_event_id    String?
+  /// When generation was attempted but skipped, this records WHY. Values:
+  /// 'openai_not_configured' | 'no_grounding_context' | 'event_not_found'
+  /// | 'rate_limited' | 'classifier_error' | etc. Surfaces in the Lead-
+  /// detail icebreaker panel so the operator sees "Couldn't auto-generate
+  /// because X — write one manually?" instead of a silent null.
+  signal_icebreaker_skip_reason String?
+
   created_at   DateTime         @default(now())
   updated_at   DateTime         @updatedAt
   deleted_at   DateTime?
@@ -691,6 +752,20 @@ model Campaign {
   created_at      DateTime @default(now())
   updated_at      DateTime @updatedAt
 
+  /// Soft-delete tombstone. NULL = live campaign; non-null = the operator
+  /// deleted it on this timestamp. Soft-delete lets us:
+  ///   - retain analytics + reply history for GDPR audit requests
+  ///   - allow a 30-day undo window
+  ///   - keep cross-campaign suppression references (CampaignSuppression)
+  ///     intact so an undeleted campaign isn't suddenly unblocked
+  /// Every read path filters `deleted_at: null` unless explicitly opting
+  /// into the archive view. The campaign-purge worker (future) will hard-
+  /// delete rows older than the org's retention window.
+  deleted_at      DateTime?
+  /// User who triggered the soft-delete. NULL when deleted by a system
+  /// process (cascade, agent, retention policy).
+  deleted_by_user_id String?
+
   // One-time-import provenance (Smartlead campaign id, etc.). Drives idempotent
   // upserts on retry. Safe to drop 30d post-import.
   import_external_id String?
@@ -702,6 +777,7 @@ model Campaign {
   steps                 SequenceStep[]
   leads                 CampaignLead[]
   accounts              CampaignAccount[]
+  linkedinSenders       CampaignLinkedInSender[]
   leadImports           CampaignLeadImport[]
   // Distinct from the legacy `tags` String[] field above — that one was
   // populated by Smartlead imports as free-text labels. `tagLinks` is the
@@ -717,6 +793,9 @@ model Campaign {
   @@unique([organization_id, import_external_id])
   @@index([organization_id, status])
   @@index([organization_id])
+  // List/detail queries always filter `deleted_at IS NULL`. Compound with
+  // organization_id so a workspace's live-campaign listing stays index-only.
+  @@index([organization_id, deleted_at])
 }
 
 /// Per-campaign lead suppression. When the wizard collects "don't include
@@ -1224,10 +1303,25 @@ model Notification {
   user_id         String? // Optional: Specific user targeting
   organization_id String
   created_at      DateTime     @default(now())
+
+  /// Optional deep-link the FE renders as the notification's primary
+  /// action — when set, clicking the notification routes the operator
+  /// straight to the relevant page (e.g. `/dashboard/sequencer/unibox?thread=<id>`).
+  /// Without it, "Reply classified as hard_no" is a dead-end toast.
+  action_url String?
+
+  /// Polymorphic ref pair — what this notification is *about*. The
+  /// FE uses (entity_type, entity_id) to dedupe & badge unread counts
+  /// per entity (e.g. show a red dot next to a thread that has any
+  /// unread notifications attached). Both NULL = org-level notification.
+  entity_type String?
+  entity_id   String?
+
   organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
 
   @@index([organization_id, created_at])
   @@index([organization_id, is_read])
+  @@index([entity_type, entity_id])
 }
 
 model SystemSetting {
@@ -1392,24 +1486,6 @@ model SupportTicket {
   @@index([organization_id, created_at])
   @@index([ticket_id])
   @@index([status])
-}
-
-model PendingRegistration {
-  id                      String    @id @default(uuid())
-  token                   String    @unique // Opaque one-time-use token sent to client
-  google_id               String // Google user ID (sub claim)
-  email                   String // Google email
-  name                    String? // Google display name
-  avatar_url              String? // Google profile picture
-  google_access_token     String // Encrypted access token (server-side only)
-  google_refresh_token    String? // Encrypted refresh token (server-side only)
-  google_token_expires_at DateTime? // Token expiry timestamp
-  selected_plan           String? // Plan selected on pricing page (starter/growth/scale)
-  expires_at              DateTime // Hard expiry — 10 minutes from creation
-  created_at              DateTime  @default(now())
-
-  @@index([token])
-  @@index([expires_at])
 }
 
 /// Server-side store for OAuth `state` nonces. Created on /authorize, deleted
@@ -1716,6 +1792,28 @@ model SequenceStep {
   condition             String?
   branch_to_step_number Int?
 
+  // ── Channel + step-type (Phase 3) ──────────────────────────────────
+  // step_type vocabulary (see services/sequencer/stepTypeRegistry.ts):
+  //   'email'                         — uses subject/preheader/body_html
+  //   'linkedin_message'              — DM via Unipile (1st-degree only)
+  //   'linkedin_connection_request'   — CR via Unipile (non-connections only)
+  //   'linkedin_inmail'               — InMail (Sales Nav / Recruiter only)
+  //   'linkedin_view_profile'         — visit
+  //   'linkedin_follow'               — follow
+  //   'linkedin_like_post'            — like a recent post (reaction in config)
+  //   'find_email'                    — one-shot enrichment via waterfall
+  //   'end'                           — terminal node
+  //
+  // step_config holds per-type payload (note template, reaction type,
+  // sender_pool_id, etc.). Validated by stepTypeRegistry at write time.
+  step_type   String @default("email")
+  step_config Json   @default("{}")
+
+  // New condition predicates added in Phase 3:
+  //   'if_connection' | 'if_not_connection' — 1st-degree check vs sender
+  //   'if_email_found' | 'if_not_email_found' — lead.has_email check
+  // Existing email predicates (if_no_reply, if_replied, ...) still apply.
+
   // One-time-import provenance (Smartlead sequence step id, etc.).
   import_external_id String?
 
@@ -1726,6 +1824,7 @@ model SequenceStep {
   @@unique([campaign_id, step_number])
   @@unique([campaign_id, import_external_id])
   @@index([campaign_id])
+  @@index([step_type])
 }
 
 model StepVariant {
@@ -1809,6 +1908,12 @@ model CampaignLead {
   @@index([campaign_id, status])
   @@index([campaign_id, next_send_at])
   @@index([campaign_id, current_step])
+  // Dispatcher hot path — every cycle filters `campaign_id + status='active'
+  // + next_send_at <= now` for each active LinkedIn campaign. A standalone
+  // index on each column lets Postgres pick one; a compound index lets the
+  // planner use equality + range in a single seek. At 100k leads/campaign
+  // the difference is 10ms vs 800ms.
+  @@index([campaign_id, status, next_send_at])
   @@index([import_id])
   // Used by the dispatcher to look up sticky leads when an account is paused/recovered.
   @@index([assigned_account_id])
@@ -1953,6 +2058,13 @@ model EmailThread {
   @@index([organization_id, account_id])
   @@index([organization_id, contact_email])
   @@index([campaign_id])
+  // Unibox list endpoint filters on (org, campaign, status) frequently
+  // when an operator opens a campaign and clicks "View replies". Without
+  // this index the planner falls back to the per-org scan.
+  @@index([organization_id, campaign_id, status])
+  // Default sort path — newest threads first across the whole org. The
+  // status-scoped index above doesn't cover the "all statuses" view.
+  @@index([organization_id, last_message_at(sort: Desc)])
 }
 
 model EmailMessage {
@@ -2000,12 +2112,24 @@ model EmailMessage {
   /// raw extraction + audit trail.
   ooo_return_date DateTime?
 
+  /// Outbound-only send tracking. Set to 'pending' when the operator
+  /// clicks Send in Unibox (before SMTP), flipped to 'sent' on provider
+  /// ack, or 'failed' with `send_error` on SMTP error. NULL on inbound
+  /// rows and on outbound rows created before this column was added —
+  /// readers should treat NULL || 'sent' as success for back-compat.
+  send_status String?
+  send_error  String?
+
   thread EmailThread @relation(fields: [thread_id], references: [id], onDelete: Cascade)
 
   @@index([thread_id, sent_at])
-  @@index([message_id])
+  @@unique([message_id])
   @@index([direction, quality_class])
   @@index([direction, ai_class])
+  // The send-reply path queries the latest inbound message per thread
+  // to build In-Reply-To/References. Without (thread_id, direction) the
+  // planner scans every message in the thread.
+  @@index([thread_id, direction, sent_at(sort: Desc)])
 }
 
 // ============================================================================
@@ -2697,6 +2821,15 @@ model WarmupPoolMembership {
   /// target_daily and is now in maintenance mode.
   ramp_step Int @default(0)
 
+  /// UTC date (truncated to day) of the last ramp advance. The ramp
+  /// worker uses this as an atomic idempotency guard — included in the
+  /// updateMany WHERE so two concurrent ticks can't both advance a
+  /// membership in the same day. Prior implementation used the auto-
+  /// updated `updated_at` which is bumped by *any* mutation (spam-rate
+  /// refresh, manual edit, etc.), causing days when the spam-rate
+  /// worker touched a row to skip the ramp advance entirely.
+  last_ramp_advanced_on DateTime?
+
   /// Maintenance mode: after ramp completes, drop to maintenance_daily
   /// indefinitely so the mailbox keeps a baseline reputation pulse.
   /// User can toggle the entire membership off to stop completely.
@@ -2756,6 +2889,717 @@ model WarmupTemplate {
 
   @@index([kind, active])
   @@index([language, kind])
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Super LinkedIn module — foundation tables (added 2026-05-13).
+// ────────────────────────────────────────────────────────────────────
+
+/// LinkedIn account connected via Unipile. One row per LinkedIn login per
+/// organization. Sender capacity (daily/weekly caps) is SHARED across all
+/// campaigns this account participates in — over-spreading an account
+/// across too many concurrent campaigns is a common setup mistake.
+model LinkedInAccount {
+  id                 String   @id @default(uuid())
+  organization_id    String
+  unipile_account_id String   @unique
+  display_name       String
+
+  /// 'CLASSIC' | 'PREMIUM' | 'SALES_NAV' | 'RECRUITER'
+  account_type String @default("CLASSIC")
+
+  /// Mirrors Unipile's account-status webhook taxonomy:
+  /// 'OK' | 'CREDENTIALS' | 'ERROR' | 'CONNECTING' | 'SYNC_SUCCESS' | 'DELETED'
+  status        String  @default("CONNECTING")
+  status_detail String?
+
+  /// 'all' (last 30d + future) | 'sequence_only' (only sequence-initiated
+  /// threads). Picked at connect time.
+  inbox_sync_mode String @default("all")
+
+  // Live cap counters maintained by the send worker. Reset on the
+  // daily/weekly boundaries below.
+  invites_today     Int @default(0)
+  invites_this_week Int @default(0)
+  messages_today    Int @default(0)
+  inmails_today     Int @default(0)
+  profile_views_today Int @default(0)
+
+  /// Total Unipile read+write actions performed against this account
+  /// today (across signal poller, watchlist runner, dispatcher). LinkedIn
+  /// rate-limits broadly at ~100 distinct actions/day per account before
+  /// triggering soft blocks. We track this separately from the granular
+  /// invites/messages/inmails counters above because background scans
+  /// (watchlist hydration, profile fetches) burn the same budget without
+  /// counting against any send-specific cap. Reset daily by the
+  /// linkedinCapacityResetWorker alongside the other *_today counters.
+  unipile_actions_today Int @default(0)
+  /// Conservative ceiling on `unipile_actions_today`. Set below the
+  /// LinkedIn-rumored 100/day so we stop before the platform's soft
+  /// block triggers. Operator-tunable per account if they have a
+  /// well-warmed-up sender.
+  max_unipile_actions_per_day Int @default(80)
+
+  daily_reset_at  DateTime @default(now())
+  weekly_reset_at DateTime @default(now())
+
+  // Configurable per-account caps. Defaults:
+  // 20-25 CR/day for new accounts; 100/day for messages/InMails.
+  max_invites_per_day  Int @default(25)
+  max_invites_per_week Int @default(200)
+  max_messages_per_day Int @default(100)
+  max_inmails_per_day  Int @default(50)
+  max_profile_views_per_day Int @default(100)
+
+  connected_at   DateTime  @default(now())
+  last_status_at DateTime?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  organization        Organization              @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  posts               LinkedInPost[]
+  connections         LinkedInConnectionEdge[]
+  campaign_senders    CampaignLinkedInSender[]
+
+  @@index([organization_id])
+  @@index([status])
+  // Accounts list sorts by connected_at desc within an org. A compound
+  // index makes that query index-only — the previous single-column
+  // (organization_id) index forced a sort after the seek.
+  @@index([organization_id, connected_at])
+}
+
+/// Per-campaign per-LinkedIn-account membership. The LinkedIn analog of
+/// CampaignAccount (which is email-only). Carries the working-hours
+/// override and per-campaign cap overrides so the dispatcher can run
+/// the rotation algorithm without joining back to LinkedInAccount on
+/// every send decision.
+///
+/// Same account can be in multiple campaigns with different working
+/// hours per campaign. Daily cap is SHARED across all campaigns
+/// (enforced at the LinkedInAccount-level counter, not here).
+model CampaignLinkedInSender {
+  id                  String  @id @default(uuid())
+  campaign_id         String
+  linkedin_account_id String
+
+  /// Per-campaign cap overrides. NULL = use the account default.
+  max_invites_per_day  Int?
+  max_messages_per_day Int?
+  max_inmails_per_day  Int?
+
+  /// Working-hours window for this account on this campaign.
+  /// Shape: { tz: 'America/New_York', days: [1..7 monday-sunday],
+  ///          start: '09:00', end: '18:00' }
+  /// NULL = no per-campaign window (24/7 within account cap).
+  working_hours Json?
+
+  rotation_priority Int     @default(0)
+  enabled           Boolean @default(true)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  campaign         Campaign        @relation(fields: [campaign_id], references: [id], onDelete: Cascade)
+  linkedin_account LinkedInAccount @relation(fields: [linkedin_account_id], references: [id], onDelete: Cascade)
+
+  @@unique([campaign_id, linkedin_account_id])
+  @@index([campaign_id, enabled])
+  // Reverse lookup — the pre-launch validator + capacity analytics need
+  // "which campaigns is this LinkedIn account attached to". Without this
+  // index the FK column is scanned for every account row.
+  @@index([linkedin_account_id])
+}
+
+/// LinkedIn profile (a person on LinkedIn). Shared at the organization
+/// level — many campaigns and leads can reference the same profile.
+/// Populated from: (a) profile fetches by the signal-monitoring agent,
+/// (b) campaign lead imports that supply LinkedIn URLs, (c) inbox
+/// conversation hydration.
+model LinkedInProfile {
+  id                String  @id @default(uuid())
+  organization_id   String
+  /// LinkedIn slug from /in/<slug> — the stable public identifier.
+  public_identifier String
+  /// Full LinkedIn URN (member URN). Unipile surfaces this in API responses.
+  member_urn        String?
+
+  name                String
+  headline            String?
+  company             String?
+  position            String?
+  location            String?
+  industry            String?
+  profile_picture_url String?
+
+  /// Most-recent ICP match decision snapshot. NULL = never evaluated.
+  icp_matched_at  DateTime?
+  icp_match_score Float?
+
+  /// Auto-Tag — latest reply classification. Workspace-wide, one tag per
+  /// profile, latest-wins. NULL = never tagged.
+  /// Values: 'Interested' | 'Not Interested' | 'Generic'
+  linkedin_auto_tag        String?
+  linkedin_auto_tagged_at  DateTime?
+
+  /// Pending classification queue — set when a reply lands but the 15-min
+  /// Auto-Tag delay hasn't elapsed. Cleared by the reply-tag worker after
+  /// classifyReply() runs. Shape:
+  ///   { text, sender_name?, thread_id? }
+  auto_tag_pending      Json?
+  auto_tag_pending_at   DateTime?
+
+  /// FK to the Lead row created when the profile is promoted into the CRM.
+  /// NULL while the profile is monitored but not yet ingested as a lead.
+  lead_id String?
+
+  /// Timestamp of the most recent profile snapshot refresh — written every
+  /// time the signal poller or webhook upserts profile fields. Used by the
+  /// nightly maintenance worker to decide which profiles need re-fetching.
+  last_profile_fetch DateTime?
+
+  /// Engagement rollup — cached counters refreshed by the signal poller on
+  /// every new EngagementEvent write, and decayed nightly by the rollup
+  /// maintenance worker. Keeps "who engaged how much" queries cheap.
+  last_engaged_at              DateTime?
+  engagement_count_30d         Int       @default(0)
+  distinct_posts_engaged_30d   Int       @default(0)
+  /// Composite signal: recency-weighted frequency, range 0-100. Higher =
+  /// more interested. Used by the engagement-based auto-tag classifier and
+  /// surfaced in the analytics UI as "engagement score".
+  engagement_score             Float?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  organization     Organization             @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  connection_edges LinkedInConnectionEdge[]
+  engagements      EngagementEvent[]
+
+  @@unique([organization_id, public_identifier])
+  @@index([organization_id, member_urn])
+  @@index([organization_id, linkedin_auto_tag])
+  @@index([organization_id, last_engaged_at])
+  @@index([lead_id])
+}
+
+/// Connection state between a specific LinkedIn account and a specific
+/// profile. Updated by (a) the acceptance-watcher worker (poll backstop
+/// for Unipile's 8h-delayed invitation_accepted webhook) and (b) the
+/// message-received webhook (fast-path when the invite carried a note).
+model LinkedInConnectionEdge {
+  linkedin_account_id String
+  linkedin_profile_id String
+
+  /// 'CONNECTED' | 'INVITE_SENT' | 'INVITE_ACCEPTED' | 'INVITE_WITHDRAWN' |
+  /// 'INVITE_REJECTED' | 'NOT_CONNECTED' | 'NOT_DETERMINED'
+  status String @default("NOT_DETERMINED")
+
+  invite_has_note Boolean   @default(false)
+  invited_at      DateTime?
+  accepted_at     DateTime?
+  withdrawn_at    DateTime?
+  last_polled_at  DateTime?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  account LinkedInAccount @relation(fields: [linkedin_account_id], references: [id], onDelete: Cascade)
+  profile LinkedInProfile @relation(fields: [linkedin_profile_id], references: [id], onDelete: Cascade)
+
+  @@id([linkedin_account_id, linkedin_profile_id])
+  @@index([linkedin_account_id, status])
+}
+
+/// LinkedIn post authored by one of our connected accounts. Populated by
+/// the signal-monitoring poller from Unipile's post-listing endpoint. We
+/// don't store post body content long-term — only ID + timestamps +
+/// last-seen engagement counts so the poller can diff cycles.
+model LinkedInPost {
+  id                  String   @id @default(uuid())
+  linkedin_account_id String
+  unipile_post_id     String   @unique
+  posted_at           DateTime
+
+  /// Cached post body. Captured during the signal poll so the
+  /// AI-icebreaker generator can reference what the post actually said
+  /// when crafting an opener for engagers ("commenting on your post
+  /// about X..."). NULL when the post body hasn't been fetched yet —
+  /// the icebreaker generator skips signal-context-rich prompts in
+  /// that case and falls back to a generic opener.
+  text                String?
+  /// 'post' | 'article' | 'repost' — derived from the post URN at
+  /// poll time. Lets the icebreaker generator tone the opener
+  /// differently for articles vs short posts.
+  post_kind           String?
+  /// Article title when post_kind = 'article'.
+  article_title       String?
+
+  last_polled_at      DateTime?
+  last_reaction_count Int       @default(0)
+  last_comment_count  Int       @default(0)
+  last_share_count    Int       @default(0)
+
+  /// When TRUE, the poller stops scanning this post (too old / archived).
+  archived Boolean @default(false)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  account     LinkedInAccount   @relation(fields: [linkedin_account_id], references: [id], onDelete: Cascade)
+  engagements EngagementEvent[]
+
+  @@index([linkedin_account_id, archived])
+  @@index([posted_at])
+}
+
+/// Customer registry — org-scoped list of companies that are already
+/// our customers. Company-level by design (B2B): a "customer" is an
+/// account/company, not an individual person. The engager-relationship
+/// resolver consults this table to label LinkedIn engagers as Customer
+/// vs Active prospect / Past lead / New by matching the engager's
+/// current company against this registry.
+///
+/// Populated from:
+///   - CRM sync (HubSpot Company lifecycle_stage = customer;
+///     Salesforce Account Type = Customer) — source='hubspot' | 'salesforce'
+///   - CSV upload for orgs without a CRM — source='csv'
+///   - Manual flag from the operator on an engager card — source='manual'
+///
+/// Match keys are company_name (primary, case-insensitive) and the
+/// company LinkedIn slug (secondary, when we know the engager's
+/// company URL). At least company_name must be set on every row.
+model Customer {
+  id                                  String   @id @default(uuid())
+  organization_id                     String
+  /// Company name — primary match key. Lowercased on write.
+  company_name                        String
+  /// Company LinkedIn slug from linkedin.com/company/<slug>. Lowercased
+  /// on write. Optional but recommended — disambiguates "Acme Corp"
+  /// matches when multiple unrelated companies share a name.
+  company_linkedin_public_identifier  String?
+  /// Optional canonical website hostname (e.g. "acme.com") for future
+  /// email-domain-based matching against engagers we've enriched.
+  domain                              String?
+  /// Where the row came from. Drives the "matched via" trace shown to
+  /// the operator and lets a re-sync de-dup against the same source.
+  source                              String
+  /// CRM record id (HubSpot company id, Salesforce account id) — used
+  /// for source-scoped de-dup on re-sync. NULL for CSV/manual rows.
+  external_id                         String?
+  /// Lifecycle stage mirrored from the CRM when available
+  /// (customer / opportunity / evangelist / etc.). NULL for CSV/manual
+  /// rows — the presence of the row is treated as is_customer=true.
+  lifecycle_stage                     String?
+  imported_at                         DateTime @default(now())
+  updated_at                          DateTime @updatedAt
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id, company_name])
+  @@index([organization_id, company_linkedin_public_identifier])
+  @@unique([organization_id, source, external_id])
+}
+
+/// Single observed engagement event — one row per (actor, post, event,
+/// reaction) combination detected by the poller. The composite uniqueness
+/// constraint prevents re-ingesting the same reaction across polling cycles.
+model EngagementEvent {
+  id               String @id @default(uuid())
+  organization_id  String
+  linkedin_post_id String
+  actor_profile_id String
+
+  /// 'REACTION' | 'COMMENT' | 'SHARE' | 'REPOST'
+  event_type String
+
+  /// LinkedIn reaction taxonomy when event_type = 'REACTION':
+  /// 'LIKE' | 'PRAISE' | 'EMPATHY' | 'INTEREST' | 'APPRECIATION' | 'MAYBE' | 'FUNNY'
+  reaction_type String?
+
+  /// Captured comment text when event_type = 'COMMENT'. Surfaced to the
+  /// AI-icebreaker generator so the opener can reference the engager's
+  /// actual words ("loved your point about X"). Truncated to 1000 chars
+  /// at write — anything longer is signal we don't need to quote back.
+  comment_text  String?
+
+  occurred_at  DateTime
+  ingested_at  DateTime  @default(now())
+  processed_at DateTime?
+  agent_run_id String?
+
+  organization Organization    @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  post         LinkedInPost    @relation(fields: [linkedin_post_id], references: [id], onDelete: Cascade)
+  actor        LinkedInProfile @relation(fields: [actor_profile_id], references: [id], onDelete: Cascade)
+
+  @@unique([linkedin_post_id, actor_profile_id, event_type, reaction_type])
+  @@index([organization_id, processed_at])
+  @@index([occurred_at])
+}
+
+/// User-defined ICP filter set. Structured-only in v1 — multi-select
+/// dropdowns for titles, industries, company-size ranges, geos.
+/// Evaluation is DETERMINISTIC (rule engine, no LLM) in v1; ICPMatcher
+/// becomes a true LLM agent in v2 when fuzzy / natural-language ICPs land.
+model IcpProfile {
+  id              String  @id @default(uuid())
+  organization_id String
+  name            String
+  description     String?
+
+  titles     String[] @default([])
+  industries String[] @default([])
+  /// Allowed: '1-10' | '11-50' | '51-200' | '201-500' | '501-1000' |
+  /// '1001-5000' | '5000+'
+  company_sizes String[] @default([])
+  geos          String[] @default([])
+
+  enabled Boolean @default(true)
+
+  /// Soft-delete tombstone. Hard-deleting an ICP cascade-deletes every
+  /// AgentRunIcpMatch row that referenced it, which silently wipes the
+  /// audit trail of "which ICPs were considered for this signal". Soft-
+  /// delete keeps the row visible to historical queries while filtering
+  /// it out of the operator-facing list + the matcher's "enabled ICPs"
+  /// query. Future hard-purge worker can sweep tombstoned rows older
+  /// than the org's retention window.
+  deleted_at DateTime?
+  deleted_by_user_id String?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  organization      Organization        @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  agent_run_matches AgentRunIcpMatch[]
+
+  /// Names should be unique within an org so operators can search by
+  /// name reliably without disambiguation. Allows duplicate names
+  /// across orgs since they're separate workspaces.
+  @@unique([organization_id, name])
+  @@index([organization_id, enabled])
+  @@index([organization_id, deleted_at])
+}
+
+/// Signal-monitoring rule. Three scope levels in a stackable hierarchy:
+/// most-specific (POST) overrides ACCOUNT overrides WORKSPACE. Multi-select
+/// supported within one level (scope_targets is an array of account or
+/// post IDs depending on scope_level).
+model SignalMonitoringRule {
+  id              String @id @default(uuid())
+  organization_id String
+
+  /// 'WORKSPACE' | 'ACCOUNT' | 'POST'
+  scope_level String
+
+  /// Empty for WORKSPACE; account_ids[] for ACCOUNT; post_ids[] for POST.
+  scope_targets String[] @default([])
+
+  /// Mirrors the protection-mode taxonomy:
+  /// 'OBSERVE' (log + notify) | 'SUGGEST' (queue for approval) |
+  /// 'ENFORCE' (auto-route to list / campaign).
+  mode String @default("OBSERVE")
+
+  /// Which ICP profiles can trigger this rule. Empty = no ICP filter
+  /// (any engaging profile qualifies).
+  icp_profile_ids String[] @default([])
+
+  // ENFORCE-mode action targets — text refs (not FKs) so deleting a
+  // referenced list or campaign doesn't cascade into the rule. The
+  // service layer treats dangling refs as "skip action, log warning."
+  add_to_cold_call_list_id String?
+  add_to_campaign_id       String?
+  notify_user_ids          String[] @default([])
+
+  enabled Boolean @default(true)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id, scope_level, enabled])
+}
+
+/// Topics watchlist — monitor LinkedIn-wide for posts matching keywords
+/// the operator cares about, hydrate engagers, ICP-filter them, and
+/// route into a LinkedIn campaign. Inspired by lemlist's Signals.
+///
+/// Hard ceilings baked in to keep us inside Unipile's ~100/day per
+/// account LinkedIn action budget:
+///   - max 5 keywords per watchlist
+///   - min_reaction_count threshold filters posts BEFORE we hydrate
+///     engagers (cheaper than fetching reactions on dud posts)
+///   - daily_signal_budget caps how many matches we'll record per day
+///   - cache_until on each match prevents re-hydrating the same post
+///     within 24-48h
+///
+/// One watchlist = one scan unit. The worker distributes its API calls
+/// across the workspace's active LinkedIn accounts, picking one in
+/// rotation so no single account exceeds its per-day ceiling.
+model SignalWatchlist {
+  id              String   @id @default(uuid())
+  organization_id String
+
+  name            String
+  /// 'TOPICS' (keyword-driven) for v1. 'PROFILE_ENGAGEMENT' (watch
+  /// specific profile URLs) is a planned future kind.
+  kind            String   @default("TOPICS")
+
+  /// Up to 5 keywords for TOPICS watchlists. Each one runs a separate
+  /// Unipile search query per scan cycle.
+  keywords        String[] @default([])
+
+  /// Optional ICP filter — when set, only engagers matching this ICP
+  /// move past the filter. NULL = no ICP gate (accept any engager).
+  icp_profile_id  String?
+
+  /// Profile slugs to exclude (employees, partners, current customers
+  /// when not already covered by Customer registry).
+  excluded_profile_slugs String[] @default([])
+  /// Company names / linkedin company slugs to exclude.
+  excluded_company_terms String[] @default([])
+
+  /// Skip hydrating engagers for posts under this reaction threshold —
+  /// keeps us out of the long tail of dud posts that would burn the
+  /// API budget without producing useful signals.
+  min_reaction_count Int @default(20)
+
+  /// How many signal matches the worker is allowed to record per day,
+  /// total across all keywords. Capped at 100 server-side to protect
+  /// the LinkedIn account budget.
+  daily_signal_budget Int @default(50)
+
+  /// 'manual_review' — matches land in pending_review, operator clicks
+  /// to push into a campaign.
+  /// 'auto_push' — matches push directly to target_campaign_id.
+  routing_mode String @default("manual_review")
+
+  /// Required when routing_mode='auto_push'. Refs Campaign.id; the
+  /// worker upserts a CampaignLead per match. Must be channel='linkedin'.
+  target_campaign_id String?
+
+  enabled Boolean @default(true)
+
+  last_run_at      DateTime?
+  last_run_summary Json?
+  next_run_at      DateTime?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  organization Organization           @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  matches      SignalWatchlistMatch[]
+
+  @@index([organization_id, enabled])
+  @@index([next_run_at, enabled])
+}
+
+/// One row per (post, engager) detected by a watchlist scan. Always
+/// inserted; pushed_at + reviewed_by_user_id are set when the operator
+/// or the auto-push path commits the match into a campaign.
+model SignalWatchlistMatch {
+  id              String   @id @default(uuid())
+  organization_id String
+  watchlist_id    String
+
+  /// Which keyword the matched post was discovered through.
+  matched_keyword String
+
+  /// Source post — Unipile id + display URL. We don't FK to
+  /// LinkedInPost because most watched posts are NOT authored by the
+  /// workspace's own accounts; they're external posts we scraped.
+  source_post_unipile_id String
+  source_post_url        String?
+  /// Post body snippet — first 280 chars. Stored for the matches table
+  /// preview without re-fetching from Unipile.
+  source_post_preview    String?
+
+  /// Engager — refs LinkedInProfile.id, which the worker upserts at
+  /// detection time. The icp_match_score column on that profile holds
+  /// the gating decision.
+  engager_profile_id     String
+
+  /// 'REACTION' / 'COMMENT' / 'SHARE' / 'REPOST'
+  engagement_type        String
+  /// Reaction taxonomy when engagement_type='REACTION'.
+  reaction_type          String?
+  /// Comment text when engagement_type='COMMENT' (capped 1000).
+  comment_text           String?
+
+  /// Lifecycle:
+  ///   'pending_review' — landed; awaiting operator decision (manual_review mode)
+  ///   'pushed'         — pushed into target campaign (auto or manual)
+  ///   'skipped_icp'    — engager failed the ICP filter
+  ///   'skipped_dup'    — same engager already pushed via this watchlist
+  ///   'manual_skipped' — operator explicitly dismissed
+  status String @default("pending_review")
+
+  pushed_campaign_id   String?
+  pushed_at            DateTime?
+  reviewed_by_user_id  String?
+  reviewed_at          DateTime?
+
+  created_at DateTime @default(now())
+
+  organization Organization     @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  watchlist    SignalWatchlist  @relation(fields: [watchlist_id], references: [id], onDelete: Cascade)
+
+  @@index([watchlist_id, status, created_at])
+  @@index([organization_id, status])
+  @@unique([watchlist_id, source_post_unipile_id, engager_profile_id])
+}
+
+/// Audit row for every agent invocation — supervisor routing, signal-poll
+/// cycle, ICP match, enrichment attempt, reply classification. Replay-able
+/// and cost-trackable. One row per logical agent call; multi-step agent
+/// runs that loop over tools write multiple rows.
+model AgentRun {
+  id              String @id @default(uuid())
+  organization_id String
+
+  /// What kicked this run off — 'engagement_event' | 'reply_received' |
+  /// 'campaign_launch' | 'manual_trigger' | etc.
+  trigger        String
+  trigger_ref_id String?
+
+  /// 'supervisor' | 'signal_monitoring' | 'icp_matcher' | 'enrichment' |
+  /// 'reply_classifier'
+  agent_name String
+
+  /// 'kimi-k2-5' | 'gpt-5' | 'gemini-2.0-flash' | 'rule-engine'
+  model String
+
+  prompt_tokens     Int?
+  completion_tokens Int?
+  latency_ms        Int
+
+  /// Structured decision output, per-agent schema, validated at write.
+  decision Json?
+
+  cost_usd Decimal? @db.Decimal(10, 6)
+
+  /// 'SUCCESS' | 'ERROR' | 'SKIPPED'
+  status        String  @default("SUCCESS")
+  error_message String?
+
+  created_at DateTime @default(now())
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  icp_matches  AgentRunIcpMatch[]
+
+  @@index([organization_id, agent_name, created_at])
+  @@index([trigger, trigger_ref_id])
+}
+
+/// Per-ICP match audit row — written by the ICP matcher each time a
+/// profile is evaluated. Lets the UI render "this lead matched ICP A
+/// (score 0.85) AND ICP C (score 0.72)" without round-tripping through
+/// the rule evaluator. Previously only the top_score was preserved in
+/// AgentRun.decision JSON; with multiple ICPs in play (and the SUGGEST
+/// review queue rendering "which ICPs matched?") we need the granular
+/// breakdown.
+///
+/// One row per (agent_run, icp_profile) — composite PK prevents
+/// duplicate writes for the same evaluation. Cascade on AgentRun
+/// delete is fine; IcpProfile delete also cascades (matches were
+/// scored against a now-deleted ICP and there's nothing to refer back
+/// to).
+model AgentRunIcpMatch {
+  agent_run_id   String
+  icp_profile_id String
+  /// Match score 0..1; 1.0 = matched every populated category, 0.0 = none.
+  score          Float
+  /// Human-readable rationale snapshot from icpMatcher (e.g. "title
+  /// contains 'CTO'; industry in [Software, B2B SaaS]"). Drives the
+  /// "why did this match?" hover on the review queue.
+  rationale      String?
+  created_at     DateTime @default(now())
+
+  agent_run   AgentRun   @relation(fields: [agent_run_id], references: [id], onDelete: Cascade)
+  icp_profile IcpProfile @relation(fields: [icp_profile_id], references: [id], onDelete: Cascade)
+
+  @@id([agent_run_id, icp_profile_id])
+  @@index([icp_profile_id])
+}
+
+/// Per-organization enrichment provider config. Multiple providers can be
+/// connected; the waterfall runs them in order_index sequence until each
+/// required field is filled (or the list is exhausted). User approves the
+/// order in Settings → Enrichment.
+model EnrichmentProvider {
+  id              String @id @default(uuid())
+  organization_id String
+
+  /// 'APOLLO' | 'CLAY' | 'SURFE' | 'LUSHA' | 'HUNTER' | 'ZOOMINFO'
+  provider String
+
+  enabled Boolean @default(true)
+
+  /// Waterfall ordinal — 0 = first. Ascending order is attempted in turn.
+  order_index Int @default(0)
+
+  /// Encrypted secret(s) reference. Actual credentials live in the secrets
+  /// store; this is an opaque pointer.
+  credentials_ref String?
+
+  /// Optional per-org overrides (rate limits, search filters, etc.)
+  config Json @default("{}")
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@unique([organization_id, provider])
+  @@index([organization_id, enabled, order_index])
+}
+
+/// Per-purchase audit row for LinkedIn account-slot add-ons ($15/account).
+/// Created whenever an org buys additional capacity above its tier default.
+/// Status transitions are driven by Polar webhook callbacks.
+model LinkedInAccountAddonPurchase {
+  id                    String   @id @default(uuid())
+  organization_id       String
+  user_id               String
+  quantity              Int      @default(1)
+  unit_price_usd        Decimal  @default(15.00) @db.Decimal(10, 2)
+  /// 'pending' | 'completed' | 'refunded' | 'failed'
+  status                String   @default("completed")
+  polar_checkout_id     String?
+  polar_subscription_id String?
+  purchased_at          DateTime @default(now())
+  refunded_at           DateTime?
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id, purchased_at])
+}
+
+/// Single waterfall attempt log. One row per (lead, provider) try, written
+/// even on EMPTY or ERROR results so we can audit waterfall behavior and
+/// reconcile cost.
+model EnrichmentAttempt {
+  id              String @id @default(uuid())
+  organization_id String
+  lead_id         String
+
+  /// Same provider code as EnrichmentProvider.provider.
+  provider String
+
+  /// 'HIT' | 'EMPTY' | 'ERROR' | 'RATE_LIMITED' | 'SKIPPED_HAS_FIELD'
+  result String
+
+  /// Fields successfully filled by this attempt — e.g. ['email', 'phone'].
+  fields_filled String[] @default([])
+
+  cost_usd      Decimal? @db.Decimal(10, 6)
+  error_message String?
+  attempted_at  DateTime @default(now())
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id, lead_id, attempted_at])
 }
 
 /// One row per warmup email. Acts as the audit trail (3B variations
@@ -3072,14 +3916,61 @@ model SequenceTemplateStep {
 
   /// Subsequence branching — same conditions as SequenceStep.
   /// Allowed: null | if_no_reply | if_replied | if_opened | if_not_opened |
-  ///          if_clicked | if_not_clicked
+  ///          if_clicked | if_not_clicked | if_connection | if_not_connection |
+  ///          if_email_found | if_not_email_found
   condition             String?
   branch_to_step_number Int?
+
+  // Channel + step-type (Phase 3) — see SequenceStep.step_type for the
+  // full vocabulary and services/sequencer/stepTypeRegistry.ts for the
+  // step_config schema per type.
+  step_type   String @default("email")
+  step_config Json   @default("{}")
 
   sequence Sequence @relation(fields: [sequence_id], references: [id], onDelete: Cascade)
 
   @@unique([sequence_id, step_number])
   @@index([sequence_id])
+  @@index([step_type])
+}
+
+/// Per-step-per-lead execution audit (Phase 3). One row per scheduled
+/// execution attempt — including SKIPPED (precondition failed) and
+/// BRANCHED (condition routed to branch_to_step_number) outcomes — so
+/// Lead Analytics can answer "why didn't step 3 fire for this lead?".
+///
+/// Status values:
+///   'SCHEDULED' — placed in queue, not yet dispatched
+///   'SENT'      — successfully dispatched
+///   'FAILED'    — dispatcher tried and errored (retry path)
+///   'SKIPPED'   — precondition false; carry skip_reason
+///   'BRANCHED'  — condition false; carry branched_to_step
+model SequenceStepExecution {
+  id                String   @id @default(uuid())
+  organization_id   String
+  campaign_id       String
+  campaign_lead_id  String
+  sequence_step_id  String
+  step_number       Int
+  step_type         String
+  status            String
+  skip_reason       String?
+  branched_to_step  Int?
+  /// Polymorphic sender reference — Mailbox id for email steps,
+  /// LinkedInAccount id for linkedin_* steps. Type held separately to
+  /// avoid a NOT NULL across both FK tables.
+  sender_ref_id     String?
+  sender_ref_type   String?
+  attempted_at      DateTime @default(now())
+  completed_at      DateTime?
+  error_message     String?
+
+  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id, campaign_id])
+  @@index([campaign_lead_id, attempted_at])
+  @@index([sequence_step_id])
+  @@index([status])
 }
 
 /// Per-organization lead-scoring configuration. Single row per org; created

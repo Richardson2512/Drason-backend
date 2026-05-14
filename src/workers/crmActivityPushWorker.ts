@@ -11,7 +11,7 @@
  * `failed` and surfaces in the dashboard's failed counter.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { CrmPushError } from '../services/crm/types';
 import { getFactory } from '../services/crm/registry';

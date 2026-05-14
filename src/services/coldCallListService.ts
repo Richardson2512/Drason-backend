@@ -17,7 +17,7 @@
  * filter rules differ between system + custom.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 
 // ─── Types ───────────────────────────────────────────────────────────────────

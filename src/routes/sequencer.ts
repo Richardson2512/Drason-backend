@@ -47,6 +47,8 @@ campaignRoutes.get('/', campaignController2.listCampaigns);
 // literal path doesn't get captured as an id parameter.
 campaignRoutes.get('/lead-picker', campaignController2.listLeadsForSuppression);
 campaignRoutes.get('/:id', campaignController2.getCampaign);
+campaignRoutes.get('/:id/health', campaignController2.getCampaignHealth);
+campaignRoutes.get('/:id/skip-stats', campaignController2.getCampaignSkipStats);
 campaignRoutes.get('/:id/leads', campaignController2.listCampaignLeads);
 campaignRoutes.get('/:id/suppression', campaignController2.getCampaignSuppression);
 campaignRoutes.post('/', requireCapability('create_campaigns'), campaignController2.createCampaign);
@@ -62,10 +64,14 @@ campaignRoutes.put('/:id/tags', requireCapability('edit_sequences'), campaignCon
 router.use('/campaigns', campaignRoutes);
 
 // --- Templates ---
+// All read + write endpoints gated on edit_sequences. Templates contain
+// copy-paste-ready sales copy; a read-only viewer (e.g. workspace client
+// guest in agency mode) shouldn't be able to exfiltrate the marketing
+// team's playbook.
 const templateRoutes = Router();
-templateRoutes.get('/categories', templateController.listCategories);
-templateRoutes.get('/', templateController.listTemplates);
-templateRoutes.get('/:id', templateController.getTemplate);
+templateRoutes.get('/categories', requireCapability('edit_sequences'), templateController.listCategories);
+templateRoutes.get('/', requireCapability('edit_sequences'), templateController.listTemplates);
+templateRoutes.get('/:id', requireCapability('edit_sequences'), templateController.getTemplate);
 templateRoutes.post('/', requireCapability('edit_sequences'), templateController.createTemplate);
 templateRoutes.patch('/:id', requireCapability('edit_sequences'), templateController.updateTemplate);
 templateRoutes.delete('/:id', requireCapability('edit_sequences'), templateController.deleteTemplate);
@@ -93,6 +99,10 @@ router.use('/template-folders', templateFolderRoutes);
 
 // --- Infrastructure Providers (for bulk mailbox import) ---
 router.get('/infra-providers', infraProvidersController.listInfraProviders);
+
+// --- Enrichment provider status (lightweight; powers the wizard
+//     warning when adding find_linkedin_url / find_email steps). ---
+router.get('/enrichment-providers/status', campaignController2.getEnrichmentProviderStatus);
 
 // --- Zapmail integration (server-orchestrated OAuth via Zapmail Custom OAuth) ---
 const zapmailRoutes = Router();
@@ -138,6 +148,9 @@ router.use('/tags', tagRoutes);
 const settingsRoutes = Router();
 settingsRoutes.get('/', sequencerSettingsController.getSettings);
 settingsRoutes.patch('/', requireAgencyOwner, sequencerSettingsController.updateSettings);
+// Cross-channel suppression mode — agency-owner write, anyone in org reads.
+settingsRoutes.get('/suppression-mode', sequencerSettingsController.getSuppressionModeHandler);
+settingsRoutes.patch('/suppression-mode', requireAgencyOwner, sequencerSettingsController.updateSuppressionModeHandler);
 router.use('/settings', settingsRoutes);
 
 // --- Signatures ---
@@ -184,7 +197,7 @@ sequenceRoutes.get('/', sequenceController.list);
 // AI generate — register before /:id so the literal path doesn't get
 // captured as an id parameter.
 sequenceRoutes.post('/generate', requireCapability('edit_sequences'), sequenceController.generate);
-sequenceRoutes.get('/:id', sequenceController.get);
+sequenceRoutes.get('/:id', requireCapability('edit_sequences'), sequenceController.get);
 sequenceRoutes.post('/', requireCapability('edit_sequences'), sequenceController.create);
 sequenceRoutes.patch('/:id', requireCapability('edit_sequences'), sequenceController.update);
 sequenceRoutes.delete('/:id', requireCapability('edit_sequences'), sequenceController.remove);

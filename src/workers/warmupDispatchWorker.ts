@@ -21,7 +21,7 @@
  * and the schedule jitter spreading sends across many ticks.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { generateInitialMessage, generateThreadReply } from '../services/warmup/contentService';
 import { sendWarmupEmail } from '../services/warmup/warmupSendService';

@@ -12,7 +12,7 @@
  * - Mailboxes entering cooldown
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import * as notificationService from './notificationService';
 import { SlackAlertService } from './SlackAlertService';

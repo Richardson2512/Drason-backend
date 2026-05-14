@@ -5,7 +5,7 @@
  * Uses fire-and-forget DB writes — never blocks the actual API call.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 
 let writeQueue: Array<{

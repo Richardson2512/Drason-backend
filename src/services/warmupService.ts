@@ -24,7 +24,7 @@
  * still work; reputation regeneration is slower than the platform path was.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import * as notificationService from './notificationService';
 import { RecoveryPhase, GRADUATION_CRITERIA, MONITORING_THRESHOLDS } from '../types';

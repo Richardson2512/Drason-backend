@@ -7,7 +7,7 @@
  * Run frequency: Every 4 hours (or can be triggered manually)
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import * as warmupService from '../services/warmupService';
 import * as healingService from '../services/healingService';

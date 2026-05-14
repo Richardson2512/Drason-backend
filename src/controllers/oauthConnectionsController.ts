@@ -9,7 +9,7 @@
  */
 
 import type { Request, Response } from 'express';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 
 export async function listOAuthConnections(req: Request, res: Response): Promise<Response> {
     if (!req.orgContext) {

@@ -13,7 +13,7 @@
  * org+eventType+entityId, so repeat ticks while the spike persists won't
  * re-alert until the bucket rolls over.
  */
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { SlackAlertService } from '../services/SlackAlertService';
 

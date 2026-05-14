@@ -7,14 +7,24 @@
 
 import { Request, Response } from 'express';
 import crypto from 'crypto';
+import { Prisma } from '@prisma/client';
 import { getOrgId } from '../middleware/orgContext';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { classifyLeadHealth } from '../services/leadHealthService';
 import * as entityStateService from '../services/entityStateService';
 import * as webhookBus from '../services/webhookEventBus';
 import { SlackAlertService } from '../services/SlackAlertService';
 import { LeadState, TriggerType } from '../types';
+import {
+    STEP_TYPES,
+    validateStepConfig,
+    validateSequenceShape,
+    isLinkedInStepType,
+    type FullStepLite,
+} from '../services/sequencer/stepTypeRegistry';
+import { runPreLaunchValidation } from '../services/linkedin/preLaunchValidator';
+import * as auditLogService from '../services/auditLogService';
 
 /**
  * GET /api/sequencer/campaigns
@@ -23,8 +33,13 @@ import { LeadState, TriggerType } from '../types';
 export const listCampaigns = async (req: Request, res: Response): Promise<Response> => {
     try {
         const orgId = getOrgId(req);
-        const page = parseInt(req.query.page as string) || 1;
-        const limit = parseInt(req.query.limit as string) || 25;
+        const page = Math.max(1, parseInt(req.query.page as string) || 1);
+        // Hard cap on page size. The detail-row payload includes `_count`
+        // joins on steps/leads/accounts plus tag relations — an unbounded
+        // limit lets a single request load every campaign in the org with
+        // their counts into memory, which we've seen OOM on dev DBs at a
+        // few thousand rows. 200 is enough for any practical UI surface.
+        const limit = Math.min(200, Math.max(1, parseInt(req.query.limit as string) || 25));
         const status = (req.query.status as string) || undefined;
         // Filter by org-level tag IDs (OR semantics — any tag matches).
         const tagIdsRaw = (req.query.tag_ids as string) || '';
@@ -32,8 +47,16 @@ export const listCampaigns = async (req: Request, res: Response): Promise<Respon
 
         // List all of the org's campaigns. Campaign table is unified post-Phase-B
         // (2026-04-26) — every row is a native sequencer campaign.
+        // Channel filter — when present, narrows to a single channel. The
+        // Super LinkedIn campaigns list calls this with channel='linkedin'
+        // so it only renders LinkedIn-only campaigns (mixed + email-only
+        // are owned by the Sequencer surface).
+        const channel = (req.query.channel as string) || undefined;
+        const includeDeleted = req.query.include_deleted === 'true';
         const where: any = { organization_id: orgId };
+        if (!includeDeleted) where.deleted_at = null;
         if (status && status !== 'all') where.status = status;
+        if (channel && channel !== 'all') where.channel = channel;
         if (tagIds.length > 0) {
             where.tagLinks = { some: { tag_id: { in: tagIds } } };
         }
@@ -62,6 +85,7 @@ export const listCampaigns = async (req: Request, res: Response): Promise<Respon
             id: c.id,
             name: c.name,
             status: c.status,
+            channel: c.channel,
             // Org-level tag relation — objects with { id, name, color }.
             // Used for the new tag UI on the campaigns list.
             tags: c.tagLinks.map(tl => ({ id: tl.tag.id, name: tl.tag.name, color: tl.tag.color })),
@@ -106,47 +130,64 @@ export const getCampaign = async (req: Request, res: Response): Promise<Response
         const orgId = getOrgId(req);
         const campaignId = String(req.params.id);
 
-        const campaign = await prisma.campaign.findFirst({
-            where: { id: campaignId, organization_id: orgId },
-            include: {
-                steps: {
-                    orderBy: { step_number: 'asc' },
-                    include: { variants: true },
-                },
-                accounts: {
-                    include: {
-                        account: {
-                            select: { id: true, email: true, display_name: true, provider: true, connection_status: true },
+        // Three independent reads — the main campaign row + relations,
+        // the per-status lead count (groupBy), and the lead-import
+        // provenance list. None depend on each other's data, only on
+        // the campaign_id. Running them sequentially was a P1 — the
+        // page paid for round-trip latency three times. Parallel reads
+        // cap wall-clock at the slowest query (the big include).
+        const [campaign, leadsByStatus, leadImports] = await Promise.all([
+            prisma.campaign.findFirst({
+                where: { id: campaignId, organization_id: orgId, deleted_at: null },
+                include: {
+                    steps: {
+                        orderBy: { step_number: 'asc' },
+                        include: { variants: true },
+                    },
+                    accounts: {
+                        include: {
+                            account: {
+                                select: { id: true, email: true, display_name: true, provider: true, connection_status: true },
+                            },
                         },
                     },
+                    // LinkedIn sender pool — only populated on mixed-channel
+                    // campaigns. The wizard reads this to pre-fill the sender
+                    // picker in edit mode.
+                    linkedinSenders: {
+                        include: {
+                            linkedin_account: {
+                                select: { id: true, display_name: true, account_type: true, status: true },
+                            },
+                        },
+                        orderBy: { rotation_priority: 'asc' },
+                    },
+                    tagLinks: { include: { tag: { select: { id: true, name: true, color: true } } } },
+                    _count: { select: { leads: true } },
                 },
-                tagLinks: { include: { tag: { select: { id: true, name: true, color: true } } } },
-                _count: { select: { leads: true } },
-            },
-        });
+            }),
+            prisma.campaignLead.groupBy({
+                by: ['status'],
+                where: { campaign_id: campaignId, campaign: { organization_id: orgId } },
+                _count: true,
+            }),
+            // Lead-source provenance — every CSV upload / Clay ingest / manual
+            // add is its own CampaignLeadImport row. Surface them so the
+            // detail page can render a "Lead sources" panel with filenames +
+            // counts + dates.
+            prisma.campaignLeadImport.findMany({
+                where: { campaign_id: campaignId, campaign: { organization_id: orgId } },
+                orderBy: { created_at: 'desc' },
+                take: 50,
+            }),
+        ]);
 
         if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
-
-        // Leads summary: breakdown by status
-        const leadsByStatus = await prisma.campaignLead.groupBy({
-            by: ['status'],
-            where: { campaign_id: campaignId },
-            _count: true,
-        });
 
         const leadsSummary = leadsByStatus.reduce((acc: Record<string, number>, g) => {
             acc[g.status] = g._count;
             return acc;
         }, {});
-
-        // Lead-source provenance — every CSV upload / Clay ingest / manual add
-        // is its own CampaignLeadImport row. Surface them so the detail page
-        // can render a "Lead sources" panel with filenames + counts + dates.
-        const leadImports = await prisma.campaignLeadImport.findMany({
-            where: { campaign_id: campaignId },
-            orderBy: { created_at: 'desc' },
-            take: 50,
-        });
 
         // Map sequencer-internal column names to the legacy `total_*` API shape
         // the frontend expects. Mirrors the mapping in listCampaigns so detail
@@ -173,11 +214,199 @@ export const getCampaign = async (req: Request, res: Response): Promise<Response
                 lead_count: campaign._count.leads,
                 leads_summary: leadsSummary,
                 lead_imports: leadImports,
+                // Flatten linkedinSenders into the linkedin_senders key the
+                // wizard / detail page expect.
+                linkedin_senders: campaign.linkedinSenders.map(s => ({
+                    id: s.id,
+                    linkedin_account_id: s.linkedin_account_id,
+                    display_name: s.linkedin_account.display_name,
+                    account_type: s.linkedin_account.account_type,
+                    status: s.linkedin_account.status,
+                    rotation_priority: s.rotation_priority,
+                    enabled: s.enabled,
+                })),
+                linkedinSenders: undefined,
             },
         });
     } catch (error: any) {
         logger.error('[CAMPAIGNS2] Failed to get campaign', error instanceof Error ? error : new Error(String(error)));
         return res.status(500).json({ success: false, error: 'Failed to get campaign' });
+    }
+};
+
+/**
+ * GET /api/sequencer/campaigns/:id/health
+ *
+ * Lightweight live status — the detail page polls this every 30s while the
+ * campaign is active so operators see the auto-pause flip the moment the
+ * dispatcher trips it. Returns just the operationally-important bits:
+ * current status, paused reason, mailbox tally. No expensive includes.
+ */
+export const getCampaignHealth = async (req: Request, res: Response): Promise<Response> => {
+    try {
+        const orgId = getOrgId(req);
+        const campaignId = String(req.params.id);
+
+        const campaign = await prisma.campaign.findFirst({
+            where: { id: campaignId, organization_id: orgId, deleted_at: null },
+            select: {
+                id: true,
+                status: true,
+                paused_reason: true,
+                paused_at: true,
+                paused_by: true,
+                accounts: {
+                    select: {
+                        account: {
+                            select: {
+                                connection_status: true,
+                                mailbox: {
+                                    select: { status: true, recovery_phase: true, domain: { select: { status: true } } },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        });
+
+        if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
+
+        const total = campaign.accounts.length;
+        let healthy = 0;
+        let paused = 0;
+        let recovering = 0;
+        for (const ca of campaign.accounts) {
+            const acct = ca.account as any;
+            if (acct.connection_status !== 'active') { paused++; continue; }
+            const mbStatus = acct.mailbox?.status;
+            const mbPhase = acct.mailbox?.recovery_phase;
+            const domainStatus = acct.mailbox?.domain?.status;
+            if (mbStatus === 'paused' || domainStatus === 'paused' || mbPhase === 'paused' || mbPhase === 'quarantine') {
+                paused++;
+            } else if (mbPhase === 'restricted_send' || mbPhase === 'warm_recovery') {
+                recovering++;
+            } else {
+                healthy++;
+            }
+        }
+
+        return res.json({
+            success: true,
+            data: {
+                status: campaign.status,
+                paused_reason: campaign.paused_reason,
+                paused_at: campaign.paused_at,
+                paused_by: campaign.paused_by,
+                auto_paused: campaign.paused_by === 'system',
+                mailboxes: { total, healthy, paused, recovering },
+            },
+        });
+    } catch (error: any) {
+        logger.error('[CAMPAIGNS2] Failed to get campaign health', error instanceof Error ? error : new Error(String(error)));
+        return res.status(500).json({ success: false, error: 'Failed to get campaign health' });
+    }
+};
+
+/**
+ * GET /api/sequencer/enrichment-providers/status
+ *
+ * Lightweight read used by the campaign wizard to gate the
+ * `find_linkedin_url` / `find_email` step types. Returns the count of
+ * configured providers + their codes so the wizard can show:
+ *   - "No enrichment providers connected — connect one in Settings → Enrichment"
+ *   - "Waterfall: Apollo → Clay → ..." when 2+ are wired
+ */
+export const getEnrichmentProviderStatus = async (req: Request, res: Response): Promise<Response> => {
+    try {
+        const orgId = getOrgId(req);
+        const providers = await prisma.enrichmentProvider.findMany({
+            where: { organization_id: orgId, enabled: true },
+            orderBy: { order_index: 'asc' },
+            select: { id: true, provider: true, order_index: true },
+        });
+        return res.json({
+            success: true,
+            data: {
+                count: providers.length,
+                providers: providers.map(p => ({ id: p.id, code: p.provider, order_index: p.order_index })),
+            },
+        });
+    } catch (error: any) {
+        logger.error('[CAMPAIGNS2] Failed to get enrichment provider status', error instanceof Error ? error : new Error(String(error)));
+        return res.status(500).json({ success: false, error: 'Failed to get enrichment provider status' });
+    }
+};
+
+/**
+ * GET /api/sequencer/campaigns/:id/skip-stats
+ *
+ * Aggregates SequenceStepExecution rows by skip_reason for the detail
+ * page's "Why steps were skipped" widget. Lets operators see at a glance
+ * that, say, 400 leads bypassed every LinkedIn step because they had no
+ * profile URL on file — informs whether to add a find_linkedin_url step
+ * or fix the import.
+ */
+export const getCampaignSkipStats = async (req: Request, res: Response): Promise<Response> => {
+    try {
+        const orgId = getOrgId(req);
+        const campaignId = String(req.params.id);
+
+        const campaign = await prisma.campaign.findFirst({
+            where: { id: campaignId, organization_id: orgId, deleted_at: null },
+            select: { id: true },
+        });
+        if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
+
+        // Group SKIPPED + FAILED-with-skip-prefix executions by skip_reason.
+        // The dispatcher writes "skipped:<reason>" into error_message when a
+        // step flips an already-scheduled row to a skip outcome, so we
+        // surface both shapes under the same bucket.
+        const grouped = await prisma.sequenceStepExecution.groupBy({
+            by: ['skip_reason', 'step_type'],
+            where: {
+                campaign_id: campaignId,
+                status: 'SKIPPED',
+                skip_reason: { not: null },
+            },
+            _count: { _all: true },
+        });
+
+        // Human-readable labels for the front-end. Keys match the reason
+        // strings the dispatcher emits.
+        const REASON_LABELS: Record<string, string> = {
+            lead_has_linkedin_profile: 'Lead has no LinkedIn URL on file',
+            lead_has_email: 'Lead has no email on file',
+            sender_is_first_degree: 'Lead is not a 1st-degree connection yet',
+            sender_is_not_first_degree: 'Lead is already a 1st-degree connection',
+            sender_supports_inmail: 'Sender account tier does not support InMail',
+            sender_has_inmail_credits_or_open_profile: 'No InMail credits and lead profile is closed',
+            lead_has_recent_post: 'Lead has no post within the configured timespan',
+            lead_already_has_linkedin_url: 'Lead already has a LinkedIn URL (find step no-op)',
+            no_enrichment_provider_configured: 'No enrichment provider connected — connect one in Settings → Enrichment',
+            linkedin_url_not_found_by_any_provider: 'Waterfall ran but no provider returned a LinkedIn URL',
+            no_sender_capacity_or_out_of_hours: 'Sender out of daily budget or outside working hours',
+        };
+
+        const reasons = grouped.map(g => ({
+            skip_reason: g.skip_reason,
+            label: REASON_LABELS[g.skip_reason || ''] || (g.skip_reason || 'unknown'),
+            step_type: g.step_type,
+            count: g._count._all,
+        }));
+
+        const totalSkipped = reasons.reduce((n, r) => n + r.count, 0);
+
+        return res.json({
+            success: true,
+            data: {
+                total_skipped: totalSkipped,
+                reasons: reasons.sort((a, b) => b.count - a.count),
+            },
+        });
+    } catch (error: any) {
+        logger.error('[CAMPAIGNS2] Failed to get skip stats', error instanceof Error ? error : new Error(String(error)));
+        return res.status(500).json({ success: false, error: 'Failed to get skip stats' });
     }
 };
 
@@ -194,7 +423,7 @@ export const listCampaignLeads = async (req: Request, res: Response): Promise<Re
         const search = (req.query.search as string) || undefined;
 
         const campaign = await prisma.campaign.findFirst({
-            where: { id: campaignId, organization_id: orgId },
+            where: { id: campaignId, organization_id: orgId, deleted_at: null },
             select: { id: true },
         });
         if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
@@ -256,9 +485,100 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
             leadSource = 'manual',
             leadSourceFile,
             leadSourceLabel,
+            // Mixed-channel support — attach LinkedIn senders when any
+            // linkedin_* step is present in the sequence. Shape mirrors the
+            // LinkedIn-only campaign controller so the wizard can reuse types.
+            linkedinSenders,
         } = req.body;
 
         if (!name) return res.status(400).json({ success: false, error: 'Campaign name is required' });
+
+        // ── Multi-channel preflight ──────────────────────────────────────
+        // Normalize step_type (default 'email' for legacy callers), reject
+        // unknown step types, and detect whether the sequence requires a
+        // LinkedIn sender pool. The detail validation (config_schema +
+        // cross-step shape) runs through validateStepConfig +
+        // validateSequenceShape before we hit the transaction.
+        const incomingSteps: any[] = Array.isArray(steps) ? steps : [];
+        const normalizedSteps = incomingSteps.map((s: any, idx: number) => ({
+            step_number: s.step_number ?? s.stepNumber ?? idx + 1,
+            step_type: (s.step_type ?? s.stepType ?? 'email') as string,
+            delay_days: s.delay_days ?? s.delayDays ?? (idx === 0 ? 0 : 1),
+            delay_hours: s.delay_hours ?? s.delayHours ?? 0,
+            subject: s.subject ?? '',
+            preheader: s.preheader ?? '',
+            body_html: s.body_html ?? s.bodyHtml ?? '',
+            body_text: s.body_text ?? s.bodyText ?? null,
+            condition: (s.condition ?? null) as string | null,
+            branch_to_step_number: s.branch_to_step_number ?? s.branchToStepNumber ?? null,
+            step_config: (s.step_config ?? s.stepConfig ?? {}) as Record<string, unknown>,
+            variants: Array.isArray(s.variants) ? s.variants : [],
+        }));
+
+        for (const s of normalizedSteps) {
+            if (!STEP_TYPES[s.step_type]) {
+                return res.status(400).json({
+                    success: false,
+                    error: `Unknown step_type "${s.step_type}" on step ${s.step_number}`,
+                });
+            }
+            const cfgIssues = validateStepConfig(s.step_type, s.step_config);
+            if (cfgIssues.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    error: `Invalid step_config on step ${s.step_number}: ${cfgIssues.map(i => i.message).join('; ')}`,
+                });
+            }
+        }
+
+        const requiresLinkedIn = normalizedSteps.some(s => isLinkedInStepType(s.step_type));
+        const senderAttachments: Array<{
+            linkedin_account_id: string;
+            max_invites_per_day?: number | null;
+            max_messages_per_day?: number | null;
+            max_inmails_per_day?: number | null;
+            rotation_priority?: number;
+        }> = Array.isArray(linkedinSenders) ? linkedinSenders : [];
+
+        if (requiresLinkedIn && senderAttachments.length === 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'Sequence includes LinkedIn step(s) but no LinkedIn sender pool was attached. Pick at least one LinkedIn account.',
+            });
+        }
+
+        if (senderAttachments.length > 0) {
+            const ids = senderAttachments.map(s => s.linkedin_account_id).filter(Boolean);
+            const owned = await prisma.linkedInAccount.findMany({
+                where: { id: { in: ids }, organization_id: orgId },
+                select: { id: true },
+            });
+            if (owned.length !== ids.length) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'One or more LinkedIn sender accounts are not owned by this organisation',
+                });
+            }
+        }
+
+        const shapeIssues = validateSequenceShape(normalizedSteps as FullStepLite[]);
+        if (shapeIssues.length > 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'Sequence shape validation failed',
+                issues: shapeIssues,
+            });
+        }
+
+        // Derive the campaign-level channel column from the actual step mix.
+        // 'email' = email-only (legacy); 'linkedin' = LinkedIn-only; 'multi'
+        // = the mixed case introduced by Phase 3. The dispatcher / workers
+        // already key off step_type per row, so this column is mostly an
+        // editorial label for the UI + analytics filters.
+        const hasEmailStep = normalizedSteps.some(s => s.step_type === 'email');
+        const campaignChannel: 'email' | 'linkedin' | 'multi' = requiresLinkedIn
+            ? (hasEmailStep ? 'multi' : 'linkedin')
+            : 'email';
 
         // No automatic validation pass. Users pre-validate their leads via the
         // "Verify Emails" button in the Leads step of the wizard before launch —
@@ -281,7 +601,7 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
                     organization_id: orgId,
                     name,
                     status: 'draft',
-                                        channel: 'email',
+                    channel: campaignChannel,
                     tags: tags || [],
                     // Schedule
                     schedule_timezone: schedule?.timezone || 'UTC',
@@ -303,43 +623,58 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
                 },
             });
 
-            // 2. Create sequence steps + variants
-            if (steps && Array.isArray(steps)) {
-                for (const step of steps) {
-                    // Accept both snake_case (v1 API / MCP) and camelCase (frontend wizard)
-                    const stepNumber = step.step_number ?? step.stepNumber;
-                    const delayDays = step.delay_days ?? step.delayDays ?? 1;
-                    const delayHours = step.delay_hours ?? step.delayHours ?? 0;
-                    const bodyHtml = step.body_html ?? step.bodyHtml ?? '';
+            // 2. Create sequence steps + variants. step_type / step_config /
+            //    condition / branch_to_step_number come through the
+            //    normalized array — defaults for legacy callers were already
+            //    applied in the preflight above.
+            for (const step of normalizedSteps) {
+                const createdStep = await tx.sequenceStep.create({
+                    data: {
+                        campaign_id: camp.id,
+                        step_number: step.step_number,
+                        step_type: step.step_type,
+                        step_config: step.step_config as Prisma.InputJsonValue,
+                        delay_days: step.delay_days,
+                        delay_hours: step.delay_hours,
+                        subject: step.subject,
+                        preheader: step.preheader,
+                        body_html: step.body_html,
+                        body_text: step.body_text,
+                        condition: step.condition,
+                        branch_to_step_number: step.branch_to_step_number,
+                    },
+                });
 
-                    const createdStep = await tx.sequenceStep.create({
-                        data: {
-                            campaign_id: camp.id,
-                            step_number: stepNumber,
-                            delay_days: delayDays,
-                            delay_hours: delayHours,
-                            subject: step.subject || '',
-                            preheader: step.preheader ?? '',
-                            body_html: bodyHtml,
-                        },
-                    });
-
-                    // Create variants if provided
-                    if (step.variants && Array.isArray(step.variants)) {
-                        for (const variant of step.variants) {
-                            await tx.stepVariant.create({
-                                data: {
-                                    step_id: createdStep.id,
-                                    variant_label: variant.label || 'A',
-                                    subject: variant.subject,
-                                    preheader: variant.preheader ?? '',
-                                    body_html: variant.body_html ?? variant.bodyHtml ?? '',
-                                    weight: variant.weight ?? 50,
-                                },
-                            });
-                        }
+                if (step.variants && Array.isArray(step.variants)) {
+                    for (const variant of step.variants) {
+                        await tx.stepVariant.create({
+                            data: {
+                                step_id: createdStep.id,
+                                variant_label: variant.label || 'A',
+                                subject: variant.subject,
+                                preheader: variant.preheader ?? '',
+                                body_html: variant.body_html ?? variant.bodyHtml ?? '',
+                                weight: variant.weight ?? 50,
+                            },
+                        });
                     }
                 }
+            }
+
+            // 2b. Attach LinkedIn sender pool when the sequence has any
+            //     linkedin_* steps. Mirrors the LinkedIn-only campaign create.
+            if (senderAttachments.length > 0) {
+                await tx.campaignLinkedInSender.createMany({
+                    data: senderAttachments.map((s, idx) => ({
+                        campaign_id: camp.id,
+                        linkedin_account_id: s.linkedin_account_id,
+                        max_invites_per_day: s.max_invites_per_day ?? null,
+                        max_messages_per_day: s.max_messages_per_day ?? null,
+                        max_inmails_per_day: s.max_inmails_per_day ?? null,
+                        rotation_priority: s.rotation_priority ?? idx,
+                        enabled: true,
+                    })),
+                });
             }
 
             // 3. Create campaign leads — with health gate classification + validation
@@ -389,24 +724,36 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
                     skippedCrossCampaign += before - inputLeads.length;
                 }
 
-                // Classify each lead using validation results as context
-                const classifications = await Promise.all(
-                    inputLeads.map(async (lead: any) => {
-                        const validation = leadValidations.get(lead.email.toLowerCase());
-                        const result = await classifyLeadHealth(
-                            lead.email,
-                            validation ? {
-                                validationScore: validation.score,
-                                isDisposable: validation.isDisposable,
-                                isCatchAll: validation.isCatchAll,
-                            } : undefined
-                        ).catch(() => ({
-                            classification: 'yellow' as const,
-                            reasons: ['Health check failed'],
-                        }));
-                        return { lead, result, validation };
-                    })
-                );
+                // Classify each lead using validation results as context.
+                // Chunked Promise.all so a 100k-lead import doesn't materialize
+                // 100k pending microtasks inside the transaction — that bloats
+                // the Node heap and holds DB row locks for the full duration.
+                // classifyLeadHealth is pure (no DB) so chunking just paces
+                // the in-process CPU work; each chunk runs in parallel, the
+                // outer loop pauses between chunks.
+                const CLASSIFY_CHUNK = 500;
+                const classifications: Array<{ lead: any; result: any; validation: any }> = [];
+                for (let i = 0; i < inputLeads.length; i += CLASSIFY_CHUNK) {
+                    const slice = inputLeads.slice(i, i + CLASSIFY_CHUNK);
+                    const chunkResults = await Promise.all(
+                        slice.map(async (lead: any) => {
+                            const validation = leadValidations.get(lead.email.toLowerCase());
+                            const result = await classifyLeadHealth(
+                                lead.email,
+                                validation ? {
+                                    validationScore: validation.score,
+                                    isDisposable: validation.isDisposable,
+                                    isCatchAll: validation.isCatchAll,
+                                } : undefined
+                            ).catch(() => ({
+                                classification: 'yellow' as const,
+                                reasons: ['Health check failed'],
+                            }));
+                            return { lead, result, validation };
+                        })
+                    );
+                    classifications.push(...chunkResults);
+                }
 
                 const accepted = classifications.filter(({ result }) => result.classification !== 'red');
                 const rejected = classifications.filter(({ result }) => result.classification === 'red');
@@ -426,6 +773,7 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
                             added_count: accepted.length,
                             blocked_count: rejected.length,
                             duplicate_count: skippedCrossCampaign,
+                            created_by_user_id: req.orgContext?.userId ?? null,
                         },
                     });
                     importBatchId = importBatch.id;
@@ -574,7 +922,7 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
         let acceptedEmails: string[] = [];
 
         const campaign = await prisma.campaign.findFirst({
-            where: { id: campaignId, organization_id: orgId },
+            where: { id: campaignId, organization_id: orgId, deleted_at: null },
         });
 
         if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
@@ -649,6 +997,39 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
             }
 
             if (wantsStepReplace) {
+                // Active-campaign step-replace audit. Comment at the top of
+                // this controller says leads past the new last step are
+                // "effectively done" (dispatcher's resolveDeliverableStep
+                // returns null → marks them completed). That's intentional
+                // but invisible to the operator — log a structured warning
+                // with the count so support has a trail when a customer
+                // asks "why did 200 leads suddenly complete?".
+                if (campaign.status === 'active' && Array.isArray(steps) && steps.length > 0) {
+                    const newMaxStep = Math.max(...(steps as any[]).map(s => (s.step_number ?? s.stepNumber ?? 0) | 0));
+                    const orphanedCount = await tx.campaignLead.count({
+                        where: {
+                            campaign_id: campaignId,
+                            status: 'active',
+                            current_step: { gte: newMaxStep },
+                        },
+                    });
+                    if (orphanedCount > 0) {
+                        logger.warn('[CAMPAIGNS2] Step-replace on active campaign will orphan leads', {
+                            campaignId,
+                            orphanedCount,
+                            newMaxStep,
+                        });
+                        auditLogService.logAction({
+                            organizationId: orgId,
+                            entity: 'campaign',
+                            entityId: campaignId,
+                            trigger: 'user',
+                            action: 'step_replace_orphans_leads',
+                            details: JSON.stringify({ orphanedCount, newMaxStep }),
+                        }).catch(err => logger.warn('[CAMPAIGNS2] audit log failed on step-replace', { campaignId, error: err?.message }));
+                    }
+                }
+
                 // Delete existing steps — variants cascade via SequenceStepVariant relation
                 await tx.sequenceStep.deleteMany({ where: { campaign_id: campaignId } });
                 for (const step of steps as any[]) {
@@ -769,6 +1150,7 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
                             added_count: accepted.length,
                             blocked_count: rejected.length,
                             duplicate_count: 0, // updateCampaign doesn't filter dupes pre-classify; counted via skipDuplicates downstream
+                            created_by_user_id: req.orgContext?.userId ?? null,
                         },
                     });
                     importBatchId = importBatch.id;
@@ -851,22 +1233,70 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
 
 /**
  * DELETE /api/sequencer/campaigns/:id
- * Delete campaign + cascade.
+ *
+ * Soft-delete. We DO NOT cascade-drop the row anymore — that took analytics,
+ * reply history, lead sources, and cross-campaign suppression references
+ * with it, and a GDPR / audit request had nothing to show. Instead we
+ * tombstone the row (`deleted_at`, `deleted_by_user_id`) and every read
+ * path filters tombstoned rows out by default.
+ *
+ * Side effects:
+ *   - Pause the dispatcher: status flips to 'paused' so the LinkedIn
+ *     dispatcher and email dispatcher stop sending. Without this a
+ *     tombstoned campaign would still be active until the read filter
+ *     kicked in, and there's a window where the dispatcher's own query
+ *     might not include the filter (defense-in-depth).
+ *   - Mark all active CampaignLeads as 'paused' so cross-channel
+ *     suppression already-in-flight stays consistent.
+ *   - Write an AuditLog entry — entity='campaign', action='delete' — so
+ *     the compliance team can prove the deletion happened and by whom.
+ *
+ * Hard-delete is a separate operation (future endpoint or retention
+ * worker) that runs N days after soft-delete.
  */
 export const deleteCampaign = async (req: Request, res: Response): Promise<Response> => {
     try {
         const orgId = getOrgId(req);
+        const userId = req.orgContext?.userId;
         const campaignId = String(req.params.id);
 
         const campaign = await prisma.campaign.findFirst({
-            where: { id: campaignId, organization_id: orgId },
+            where: { id: campaignId, organization_id: orgId, deleted_at: null },
+            select: { id: true, name: true, status: true },
         });
 
         if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
 
-        await prisma.campaign.delete({ where: { id: campaignId } });
+        const deletedAt = new Date();
+        await prisma.$transaction([
+            prisma.campaign.update({
+                where: { id: campaignId },
+                data: {
+                    deleted_at: deletedAt,
+                    deleted_by_user_id: userId ?? null,
+                    status: 'paused',
+                    paused_reason: 'campaign_deleted',
+                    paused_at: deletedAt,
+                    paused_by: userId ? 'user' : 'system',
+                },
+            }),
+            prisma.campaignLead.updateMany({
+                where: { campaign_id: campaignId, status: 'active' },
+                data: { status: 'paused', next_send_at: null },
+            }),
+        ]);
 
-        return res.json({ success: true, message: 'Campaign deleted' });
+        auditLogService.logAction({
+            organizationId: orgId,
+            entity: 'campaign',
+            entityId: campaignId,
+            trigger: userId ? 'user' : 'system',
+            action: 'delete',
+            details: JSON.stringify({ name: campaign.name, prior_status: campaign.status, deleted_at: deletedAt.toISOString() }),
+            userId,
+        }).catch(err => logger.warn('[CAMPAIGNS2] audit log failed on delete', { campaignId, error: err?.message }));
+
+        return res.json({ success: true, message: 'Campaign deleted', deleted_at: deletedAt.toISOString() });
     } catch (error: any) {
         logger.error('[CAMPAIGNS2] Failed to delete campaign', error instanceof Error ? error : new Error(String(error)));
         return res.status(500).json({ success: false, error: 'Failed to delete campaign' });
@@ -875,7 +1305,27 @@ export const deleteCampaign = async (req: Request, res: Response): Promise<Respo
 
 /**
  * POST /api/sequencer/campaigns/:id/launch
- * Set status to 'active', set launched_at.
+ *
+ * Unified launch entry point — used by both the email-side Sequencer UI
+ * and (indirectly) any caller that doesn't know about channel. We
+ * dispatch on `channel` to validate per-channel preconditions:
+ *
+ *   - 'email'    → at least one CampaignAccount (mailbox) attached.
+ *   - 'linkedin' → at least one CampaignLinkedInSender, AND the full
+ *                  LinkedIn pre-launch validator must return can_launch.
+ *                  This is the same gate the /api/linkedin route uses;
+ *                  consolidating it here closes the bypass where a
+ *                  caller hit this URL instead of the LinkedIn-specific
+ *                  one and skipped capacity / tier / connection-state
+ *                  checks.
+ *   - 'multi'    → both channel checks. The LinkedIn validator runs as
+ *                  long as the campaign has any linkedin_* steps; if it
+ *                  has none, we skip it (a multi-channel campaign with
+ *                  only email steps is operationally an email campaign).
+ *
+ * Idempotent: returns 400 if the campaign is already active. The status
+ * read + update happen in one transaction so concurrent launches don't
+ * both flip the flag.
  */
 export const launchCampaign = async (req: Request, res: Response): Promise<Response> => {
     try {
@@ -883,27 +1333,103 @@ export const launchCampaign = async (req: Request, res: Response): Promise<Respo
         const campaignId = String(req.params.id);
 
         const campaign = await prisma.campaign.findFirst({
-            where: { id: campaignId, organization_id: orgId },
+            where: { id: campaignId, organization_id: orgId, deleted_at: null },
+            select: { id: true, name: true, status: true, channel: true, launched_at: true },
         });
 
         if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
         if (campaign.status === 'active') return res.status(400).json({ success: false, error: 'Campaign is already active' });
 
-        // Validate campaign has steps and accounts
-        const [stepCount, accountCount] = await Promise.all([
+        const channel = (campaign.channel || 'email').toLowerCase();
+        const hasEmail = channel === 'email' || channel === 'multi';
+        const hasLinkedIn = channel === 'linkedin' || channel === 'multi';
+
+        // Step + account counts up front. For LinkedIn we count the
+        // LinkedIn sender pool (CampaignLinkedInSender), not the email
+        // CampaignAccount table — they're separate attachments.
+        const [stepCount, emailAccountCount, linkedInSenderCount, linkedInStepCount] = await Promise.all([
             prisma.sequenceStep.count({ where: { campaign_id: campaignId } }),
-            prisma.campaignAccount.count({ where: { campaign_id: campaignId } }),
+            hasEmail ? prisma.campaignAccount.count({ where: { campaign_id: campaignId } }) : Promise.resolve(0),
+            hasLinkedIn ? prisma.campaignLinkedInSender.count({ where: { campaign_id: campaignId } }) : Promise.resolve(0),
+            hasLinkedIn ? prisma.sequenceStep.count({
+                where: { campaign_id: campaignId, step_type: { startsWith: 'linkedin_' } },
+            }) : Promise.resolve(0),
         ]);
 
         if (stepCount === 0) return res.status(400).json({ success: false, error: 'Campaign has no sequence steps' });
-        if (accountCount === 0) return res.status(400).json({ success: false, error: 'Campaign has no connected accounts' });
+        if (hasEmail && emailAccountCount === 0) {
+            return res.status(400).json({ success: false, error: 'Campaign has no connected email accounts' });
+        }
+        if (hasLinkedIn && linkedInStepCount > 0 && linkedInSenderCount === 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'Campaign has LinkedIn steps but no LinkedIn senders attached. Attach a sender from /dashboard/linkedin/accounts before launching.',
+            });
+        }
 
-        const updated = await prisma.campaign.update({
-            where: { id: campaignId },
-            data: {
-                status: 'active',
-                launched_at: campaign.launched_at || new Date(),
-            },
+        // Connected-state re-check for LinkedIn senders. The count above
+        // can pass while every attached account is in ERROR/CREDENTIALS
+        // (re-auth required) — the dispatcher would then no-op every
+        // tick and the campaign would silently sit "active" with no
+        // sends. Block launch and tell the operator which accounts need
+        // attention.
+        if (hasLinkedIn && linkedInStepCount > 0) {
+            const senders = await prisma.campaignLinkedInSender.findMany({
+                where: { campaign_id: campaignId, enabled: true },
+                select: {
+                    linkedin_account: { select: { id: true, display_name: true, status: true } },
+                },
+            });
+            const okSenders = senders.filter(s => s.linkedin_account?.status === 'OK');
+            if (okSenders.length === 0) {
+                const broken = senders
+                    .map(s => `${s.linkedin_account?.display_name ?? 'unknown'} (${s.linkedin_account?.status ?? 'missing'})`)
+                    .join(', ');
+                return res.status(400).json({
+                    success: false,
+                    error: `No LinkedIn senders in a healthy state. Reconnect: ${broken || '(no enabled senders)'}.`,
+                });
+            }
+        }
+
+        // Full LinkedIn pre-launch validation — capacity ladder, tier
+        // gates for InMail, degree-of-connection state, working-hours,
+        // sequence-shape rules. Only runs when the campaign actually has
+        // LinkedIn steps; a multi-channel campaign with email-only steps
+        // doesn't need it.
+        if (hasLinkedIn && linkedInStepCount > 0) {
+            const report = await runPreLaunchValidation({
+                organizationId: orgId,
+                campaignId,
+            });
+            if (!report.can_launch) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Pre-launch validation failed',
+                    data: report,
+                });
+            }
+        }
+
+        // Status flip + launched_at stamp in one transaction so two
+        // concurrent launches can't both pass the "is active?" check
+        // and double-seed leads.
+        const updated = await prisma.$transaction(async (tx) => {
+            const current = await tx.campaign.findUnique({
+                where: { id: campaignId },
+                select: { status: true, launched_at: true },
+            });
+            if (!current) throw new Error('Campaign disappeared during launch');
+            if (current.status === 'active') {
+                throw Object.assign(new Error('Campaign is already active'), { http: 400 });
+            }
+            return tx.campaign.update({
+                where: { id: campaignId },
+                data: {
+                    status: 'active',
+                    launched_at: current.launched_at || new Date(),
+                },
+            });
         });
 
         // Seed next_send_at for first-time leads so the dispatcher picks them up.
@@ -935,6 +1461,12 @@ export const launchCampaign = async (req: Request, res: Response): Promise<Respo
 
         return res.json({ success: true, data: updated });
     } catch (error: any) {
+        // The launch transaction throws a 400-tagged error when a
+        // concurrent launch already flipped status. Forward that as the
+        // user-visible 400 instead of masking it as a 500.
+        if (error?.http === 400) {
+            return res.status(400).json({ success: false, error: error.message });
+        }
         logger.error('[CAMPAIGNS2] Failed to launch campaign', error instanceof Error ? error : new Error(String(error)));
         return res.status(500).json({ success: false, error: 'Failed to launch campaign' });
     }
@@ -947,18 +1479,27 @@ export const launchCampaign = async (req: Request, res: Response): Promise<Respo
 export const pauseCampaign = async (req: Request, res: Response): Promise<Response> => {
     try {
         const orgId = getOrgId(req);
+        const userId = req.orgContext?.userId;
         const campaignId = String(req.params.id);
 
         const campaign = await prisma.campaign.findFirst({
-            where: { id: campaignId, organization_id: orgId },
+            where: { id: campaignId, organization_id: orgId, deleted_at: null },
         });
 
         if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
         if (campaign.status !== 'active') return res.status(400).json({ success: false, error: 'Campaign is not active' });
 
+        // Stamp the pause with metadata so the detail page can distinguish
+        // a manual pause from a system auto-pause (healing pipeline). The
+        // health endpoint's `auto_paused` derives from `paused_by`.
         const updated = await prisma.campaign.update({
             where: { id: campaignId },
-            data: { status: 'paused' },
+            data: {
+                status: 'paused',
+                paused_reason: 'manual_pause',
+                paused_at: new Date(),
+                paused_by: userId ? 'user' : 'system',
+            },
         });
 
         webhookBus.emitCampaignPaused(orgId, { id: updated.id, name: updated.name }, 'manual_pause');
@@ -980,15 +1521,24 @@ export const resumeCampaign = async (req: Request, res: Response): Promise<Respo
         const campaignId = String(req.params.id);
 
         const campaign = await prisma.campaign.findFirst({
-            where: { id: campaignId, organization_id: orgId },
+            where: { id: campaignId, organization_id: orgId, deleted_at: null },
         });
 
         if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
         if (campaign.status !== 'paused') return res.status(400).json({ success: false, error: 'Campaign is not paused' });
 
+        // Clear the pause metadata on resume so a follow-up pause doesn't
+        // inherit stale auto-pause attribution (e.g. campaign was
+        // system-paused, operator resumed, then manually paused — without
+        // clearing here the UI would still show `paused_by='system'`).
         const updated = await prisma.campaign.update({
             where: { id: campaignId },
-            data: { status: 'active' },
+            data: {
+                status: 'active',
+                paused_reason: null,
+                paused_at: null,
+                paused_by: null,
+            },
         });
 
         return res.json({ success: true, data: updated });
@@ -1014,7 +1564,7 @@ export const setCampaignTags = async (req: Request, res: Response): Promise<Resp
         if (!tagIds) return res.status(400).json({ success: false, error: 'tagIds array is required' });
 
         const campaign = await prisma.campaign.findFirst({
-            where: { id: campaignId, organization_id: orgId },
+            where: { id: campaignId, organization_id: orgId, deleted_at: null },
             select: { id: true },
         });
         if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
@@ -1106,7 +1656,7 @@ export const getCampaignSuppression = async (req: Request, res: Response): Promi
         const orgId = getOrgId(req);
         const campaignId = String(req.params.id);
         const campaign = await prisma.campaign.findFirst({
-            where: { id: campaignId, organization_id: orgId },
+            where: { id: campaignId, organization_id: orgId, deleted_at: null },
             select: { id: true },
         });
         if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });

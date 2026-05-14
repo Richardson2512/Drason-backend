@@ -16,7 +16,7 @@ import * as polarClient from '../services/polarClient';
 import { TIER_LIMITS } from '../services/polarClient';
 import { recordConsentFromRequest } from '../services/consentService';
 import { getOrgId } from '../middleware/orgContext';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 
 // ============================================================================
 // WEBHOOK HANDLER

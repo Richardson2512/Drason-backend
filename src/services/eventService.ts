@@ -10,7 +10,7 @@
  * - Events can be replayed to reconstruct state
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { EventType } from '../types';
 import { logger } from './observabilityService';
 

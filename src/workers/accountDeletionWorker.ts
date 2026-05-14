@@ -12,7 +12,7 @@
  * requests would queue forever and we'd be in violation.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { eraseOrganization } from '../services/piiErasureService';
 import { dispatchEmail } from '../services/emailTemplates/dispatcher';

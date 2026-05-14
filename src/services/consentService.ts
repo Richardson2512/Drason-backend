@@ -16,7 +16,7 @@
  */
 
 import type { Request } from 'express';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import { TOS_VERSION, PRIVACY_VERSION, COOKIE_POLICY_VERSION } from '../constants/legalDocVersions';
 

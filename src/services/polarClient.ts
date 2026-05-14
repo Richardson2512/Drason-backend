@@ -7,7 +7,7 @@
 
 import axios from 'axios';
 import { logger } from './observabilityService';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 
 // ============================================================================
 // TYPES

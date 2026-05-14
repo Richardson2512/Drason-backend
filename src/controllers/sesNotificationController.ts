@@ -24,7 +24,7 @@
 
 import { Request, Response } from 'express';
 import axios from 'axios';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 
 const BOUNCE_PAUSE_THRESHOLD = 0.04;     // 4%

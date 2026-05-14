@@ -21,7 +21,7 @@
  */
 
 import axios from 'axios';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import { encrypt, decrypt, isEncrypted } from '../utils/encryption';
 import { revokeGoogleToken, verifyGrantedScopes } from '../utils/googleOAuth';

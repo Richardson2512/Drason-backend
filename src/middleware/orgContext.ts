@@ -10,7 +10,7 @@
 import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { OrgContext, UserRole } from '../types';
 import { logger } from '../services/observabilityService';
 import { clearTokenCookie } from '../services/tokenService';

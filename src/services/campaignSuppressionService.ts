@@ -16,7 +16,7 @@
  * enforced uniformly without per-call-site logic drift.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import type { Prisma, PrismaClient } from '@prisma/client';
 
 export interface SuppressionInput {
@@ -68,6 +68,37 @@ export async function setSuppressionRules(opts: {
         const orphan = sourceCampaignIds.find(id => !ownedSet.has(id));
         if (orphan) {
             throw new Error(`Suppression references campaign ${orphan} which is not in this organization`);
+        }
+
+        // Cycle detection. The 'campaign' rule references the source's
+        // CampaignLead set, not its rules — so a true infinite loop is
+        // impossible. But a graph where A→B and B→A is still a smell
+        // (operator probably meant exclusive list, not mutual suppression)
+        // and during getSuppressedEmails the all_campaigns mode silently
+        // includes both sides anyway. Reject cycles at write time so the
+        // wizard catches the misconfiguration before it ships.
+        const incomingEdges = new Map<string, string[]>();
+        incomingEdges.set(opts.campaignId, sourceCampaignIds);
+        const visited = new Set<string>([opts.campaignId]);
+        const queue = [...sourceCampaignIds];
+        while (queue.length > 0) {
+            const next = queue.shift()!;
+            if (visited.has(next)) {
+                throw new Error(
+                    `Suppression rule would create a cycle: campaign ${next} is reachable from this campaign and references back to it. Remove the reciprocal rule.`,
+                );
+            }
+            visited.add(next);
+            if (incomingEdges.has(next)) continue;
+            const downstream = await db.campaignSuppression.findMany({
+                where: { campaign_id: next, kind: 'campaign' },
+                select: { suppressed_campaign_id: true },
+            });
+            const ids = downstream
+                .map(d => d.suppressed_campaign_id)
+                .filter((s): s is string => Boolean(s));
+            incomingEdges.set(next, ids);
+            queue.push(...ids);
         }
     }
 

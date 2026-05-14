@@ -2,10 +2,11 @@ import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { recordConsent, extractClientIp, extractUserAgent } from '../services/consentService';
 import { TOS_VERSION, PRIVACY_VERSION, TOS_PATH, PRIVACY_PATH } from '../constants/legalDocVersions';
+import { isFreeEmailDomain } from '../constants/freeEmailDomains';
 import { dispatchEmail } from '../services/emailTemplates/dispatcher';
 import { passwordResetEmail } from '../services/emailTemplates/passwordReset';
 import { welcomeEmail } from '../services/emailTemplates/welcome';
@@ -258,6 +259,20 @@ export const register = async (req: Request, res: Response) => {
 
         if (!email || !password || !organizationName) {
             return res.status(400).json({ success: false, error: 'Missing required fields' });
+        }
+
+        // Business-email gate. Superkabe is B2B and the Organization the
+        // account creates needs to map back to a verifiable company —
+        // consumer addresses (Gmail / Yahoo / Outlook.com / iCloud / etc.)
+        // muddy that identity and break legal-doc-consent traceability.
+        // The denylist lives in src/constants/freeEmailDomains.ts; extend
+        // it there if a new consumer provider crops up.
+        if (isFreeEmailDomain(email)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Please use your work email to create an account. Personal email providers (Gmail, Yahoo, Outlook, iCloud, etc.) aren\'t supported for signup — Superkabe is a B2B platform and your organisation needs to be tied to a verifiable business domain.',
+                code: 'FREE_EMAIL_DOMAIN_NOT_ALLOWED',
+            });
         }
 
         // Required ToS + Privacy consent. We block signup outright if either

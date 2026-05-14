@@ -21,7 +21,7 @@
  *   - 5xx     → keep job `running`, increment error_count, retry next tick
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import {
     getJustCallConnection,

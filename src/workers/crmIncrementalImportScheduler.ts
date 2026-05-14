@@ -12,7 +12,7 @@
  * anything missed by webhook delivery failures.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 
 const POLL_INTERVAL_MS = 60 * 60 * 1000;            // 1 hour

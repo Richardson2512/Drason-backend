@@ -26,7 +26,7 @@ function readSmtpPassword(stored: string | null | undefined): string | null {
 import { sendEmailViaGmailApi, refreshGoogleAccessToken } from './gmailSendService';
 import { sendEmailViaGraph, refreshMicrosoftAccessToken } from './microsoftSendService';
 import { appendToSentFolder } from './imapSentAppendService';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 
 interface ConnectedAccountInput {
     id: string;
@@ -202,6 +202,12 @@ export interface SendOptions {
      *  required by Gmail's bulk-sender requirements (Feb 2024) and Yahoo's
      *  parallel rules. Null/undefined = no headers (transactional mail). */
     unsubscribeUrl?: string | null;
+    /** Pre-generated RFC 5322 Message-ID. When set, the adapter uses this
+     *  header verbatim instead of letting the provider auto-generate one.
+     *  Used by the Unibox reply flow so the DB row written BEFORE the SMTP
+     *  send and the outbound MIME header agree, enabling safe retries
+     *  without duplicate sends. */
+    messageId?: string | null;
 }
 
 export async function sendViaSMTP(
@@ -219,7 +225,11 @@ export async function sendViaSMTP(
         finalHtml += `<br/><div style="margin-top:16px;border-top:1px solid #e5e5e5;padding-top:12px">${account.signature_html}</div>`;
     }
 
-    const messageId = `<${crypto.randomUUID()}@superkabe.com>`;
+    // Honor a caller-provided Message-ID (Unibox reply flow generates one
+    // upfront so the DB row and the outbound header agree, enabling safe
+    // retries without duplicate sends). Falls back to auto-generation for
+    // sequence sends that don't need pre-coordination.
+    const messageId = options?.messageId || `<${crypto.randomUUID()}@superkabe.com>`;
 
     // Build the MIME message ONCE so we can both (a) send it via SMTP and
     // (b) APPEND the byte-identical message to the operator's Sent folder

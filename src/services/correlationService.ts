@@ -15,7 +15,7 @@
  * This prevents over-pausing and creates accurate audit trails.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { EmailProvider, BounceFailureType } from '../types';
 import logger from '../utils/logger';
 

@@ -7,7 +7,7 @@
 
 import { Request, Response } from 'express';
 import { getOrgId } from '../middleware/orgContext';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import * as healingService from '../services/healingService';
 import * as operatorProtection from '../services/operatorProtectionService';
 import { logger } from '../services/observabilityService';

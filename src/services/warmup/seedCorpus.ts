@@ -26,7 +26,7 @@
  */
 
 import * as crypto from 'crypto';
-import { prisma } from '../../index';
+import { prisma } from '../../prisma';
 import { logger } from '../observabilityService';
 import { invalidateContentCache } from './contentService';
 

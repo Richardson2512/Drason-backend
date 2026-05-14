@@ -7,7 +7,7 @@
 
 import crypto from 'crypto';
 import { Request, Response } from 'express';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { getOrgId } from '../middleware/orgContext';
 

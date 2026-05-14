@@ -6,7 +6,7 @@
 
 import { Request, Response } from 'express';
 import { getOrgId } from '../middleware/orgContext';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { getSequencerSettings } from '../services/sequencerSettingsService';
 import { provisionMailboxForConnectedAccount, deprovisionMailboxForConnectedAccount } from '../services/mailboxProvisioningService';
@@ -409,8 +409,11 @@ export const deleteAccount = async (req: Request, res: Response): Promise<Respon
             }
         }
 
-        // Soft-disconnect shadow mailbox first (preserves SendEvent history)
-        await deprovisionMailboxForConnectedAccount(accountId);
+        // Soft-disconnect shadow mailbox first (preserves SendEvent history).
+        // Pass orgId so the service-layer org scope guard fires — the caller
+        // already verified the account belongs to this tenant above, this is
+        // defense-in-depth.
+        await deprovisionMailboxForConnectedAccount(accountId, orgId);
 
         await prisma.connectedAccount.delete({ where: { id: accountId } });
 

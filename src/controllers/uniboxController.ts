@@ -6,8 +6,9 @@
  */
 
 import { Request, Response } from 'express';
+import crypto from 'crypto';
 import { getOrgId } from '../middleware/orgContext';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { sendEmail } from '../services/emailSendAdapters';
 
@@ -37,9 +38,18 @@ export const listThreads = async (req: Request, res: Response): Promise<Response
         // whose latest inbound message has a quality_class in the set. The
         // canonical column (quality_class) is kept in sync with the AI verdict
         // by the worker, so this filter sees the final answer either way.
+        // Allowlist to the known classes so a crafted query param (e.g.
+        // `__proto__`) can't reach the Prisma query and so a typo doesn't
+        // silently return zero rows without a hint to the operator.
+        const VALID_QUALITY_CLASSES = new Set([
+            'positive', 'qualified', 'objection', 'referral',
+            'soft_no', 'hard_no', 'angry', 'auto', 'unclassified',
+        ]);
         const qualityClassRaw = (req.query.quality_class as string) || '';
         const qualityClasses = qualityClassRaw
-            .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+            .split(',')
+            .map(s => s.trim().toLowerCase())
+            .filter(s => s && VALID_QUALITY_CLASSES.has(s));
 
         // Hard rule: Unibox surfaces only campaign-originated conversations. Warmup
         // traffic, vendor broadcasts, newsletter noise, and cold inbound to the mailbox
@@ -208,35 +218,69 @@ export const sendReply = async (req: Request, res: Response): Promise<Response> 
             return res.status(400).json({ success: false, error: 'Mailbox is not active. Reconnect it before sending.' });
         }
 
-        // Get the last inbound message's Message-ID for proper threading
-        const lastInbound = await prisma.emailMessage.findFirst({
-            where: { thread_id: threadId, direction: 'inbound' },
-            orderBy: { sent_at: 'desc' },
-            select: { message_id: true, references: true },
-        });
+        // Threading headers per RFC 5322 §3.6.4:
+        //   In-Reply-To = the immediate parent message's Message-ID
+        //   References  = the full chain root → ... → parent
+        //
+        // Reading the latest inbound for In-Reply-To is correct (parent =
+        // what the operator is replying to). But the prior References
+        // implementation just concatenated `[lastInbound.references,
+        // lastInbound.message_id]` which (a) trusts the inbound mailer to
+        // have set References correctly (often empty or malformed), and
+        // (b) can create circular chains on multi-fork threads.
+        //
+        // We anchor References on the ORIGINAL outbound (oldest message in
+        // the thread) so even a corrupted inbound chain still threads back
+        // to the campaign-side starting point. Cap the chain at 10 entries
+        // per RFC 5322 §3.6.4 guidance.
+        const [lastInbound, firstOutbound] = await Promise.all([
+            prisma.emailMessage.findFirst({
+                where: { thread_id: threadId, direction: 'inbound' },
+                orderBy: { sent_at: 'desc' },
+                select: { message_id: true, references: true },
+            }),
+            prisma.emailMessage.findFirst({
+                where: { thread_id: threadId, direction: 'outbound' },
+                orderBy: { sent_at: 'asc' },
+                select: { message_id: true },
+            }),
+        ]);
 
         const subjectBase = thread.subject.replace(/^Re:\s*/i, '');
         const subject = `Re: ${subjectBase}`;
 
-        // Build threading headers so the recipient's client clusters the reply
-        // into the same conversation. Without these, the email appears as new.
         const inReplyTo = lastInbound?.message_id || null;
-        const references = [lastInbound?.references, lastInbound?.message_id].filter(Boolean).join(' ') || null;
-
-        // Send the email — provider adapter injects In-Reply-To / References into the
-        // outgoing MIME (SMTP via nodemailer, Gmail via MIME headers + threadId lookup,
-        // Graph via internetMessageHeaders).
-        const sendResult = await sendEmail(account, thread.contact_email, subject, bodyHtml, {
-            inReplyTo,
-            references,
-        });
-
-        if (!sendResult.success) {
-            logger.error('[UNIBOX] Send failed', new Error(`${sendResult.error} (thread: ${threadId})`));
-            return res.status(502).json({ success: false, error: `Failed to send email: ${sendResult.error}` });
+        const chainSeen = new Set<string>();
+        const chain: string[] = [];
+        const pushId = (id: string | null | undefined) => {
+            if (!id || chainSeen.has(id)) return;
+            chainSeen.add(id);
+            chain.push(id);
+        };
+        pushId(firstOutbound?.message_id);
+        // Splice inbound's References (whitespace-separated message-ids) into
+        // the chain so any intermediate parties' clients have the same
+        // reference graph as the recipient.
+        for (const ref of (lastInbound?.references || '').split(/\s+/)) {
+            pushId(ref.trim() || null);
         }
+        pushId(lastInbound?.message_id);
+        const references = chain.length > 0 ? chain.slice(-10).join(' ') : null;
 
-        // Record the message in the database
+        // Pre-generate a stable RFC 5322 Message-ID so the DB row written
+        // BEFORE the SMTP send and the outbound MIME header agree. This
+        // fixes the lost-reply-after-SMTP-success-but-DB-fail race where
+        // operators would resend the same message after a 500. The header
+        // domain mirrors the sender's address so DKIM alignment isn't
+        // disturbed.
+        const domainPart = account.email.split('@')[1] || 'drason.local';
+        const stableMessageId = `<${crypto.randomUUID()}@${domainPart}>`;
+
+        // Insert a 'pending' message row BEFORE the SMTP send so we have
+        // durable proof the operator clicked Send. If SMTP succeeds but the
+        // DB write below fails, we still have a record of the message and
+        // its Message-ID — re-submitting won't fire a duplicate because the
+        // unique-on-message_id constraint kicks in.
         const message = await prisma.emailMessage.create({
             data: {
                 thread_id: threadId,
@@ -248,10 +292,42 @@ export const sendReply = async (req: Request, res: Response): Promise<Response> 
                 subject,
                 body_html: bodyHtml,
                 body_text: bodyText || '',
-                message_id: sendResult.messageId || null,
+                message_id: stableMessageId,
                 in_reply_to: inReplyTo,
                 references,
+                send_status: 'pending',
             },
+        });
+
+        // Send the email — provider adapter injects In-Reply-To / References into the
+        // outgoing MIME (SMTP via nodemailer, Gmail via MIME headers + threadId lookup,
+        // Graph via internetMessageHeaders).
+        const sendResult = await sendEmail(account, thread.contact_email, subject, bodyHtml, {
+            inReplyTo,
+            references,
+            messageId: stableMessageId,
+        });
+
+        if (!sendResult.success) {
+            // Mark the row as failed so the FE can show a retry affordance
+            // and so the unique Message-ID is still reserved for the
+            // eventual successful send.
+            await prisma.emailMessage.update({
+                where: { id: message.id },
+                data: { send_status: 'failed', send_error: sendResult.error?.slice(0, 500) || 'unknown' },
+            }).catch(() => {});
+            logger.error('[UNIBOX] Send failed', new Error(`${sendResult.error} (thread: ${threadId})`));
+            return res.status(502).json({ success: false, error: `Failed to send email: ${sendResult.error}` });
+        }
+
+        // Flip the row to 'sent' now that the provider confirmed delivery.
+        // If this update fails the message still exists with status='pending'
+        // — a retention worker / manual reconcile can correct it later.
+        await prisma.emailMessage.update({
+            where: { id: message.id },
+            data: { send_status: 'sent' },
+        }).catch((err) => {
+            logger.warn('[UNIBOX] Failed to flip send_status to sent', { messageId: message.id, error: err?.message });
         });
 
         // Update thread metadata
@@ -363,12 +439,17 @@ export const bulkUpdateThreads = async (req: Request, res: Response): Promise<Re
         if (typeof is_starred === 'boolean') data.is_starred = is_starred;
         if (status) data.status = status;
 
-        await prisma.emailThread.updateMany({
+        // updateMany returns the actual affected row count — surface it so
+        // the FE can detect partial success (e.g. some threadIds didn't
+        // belong to this org and were silently filtered out by the
+        // organization_id scope). The old `updated: threadIds.length` lied
+        // about success even when zero rows changed.
+        const result = await prisma.emailThread.updateMany({
             where: { id: { in: threadIds }, organization_id: orgId },
             data,
         });
 
-        return res.json({ success: true, updated: threadIds.length });
+        return res.json({ success: true, updated: result.count, requested: threadIds.length });
     } catch (error: any) {
         logger.error('[UNIBOX] Bulk update failed', error instanceof Error ? error : new Error(String(error)));
         return res.status(500).json({ success: false, error: 'Bulk update failed' });

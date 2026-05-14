@@ -6,7 +6,7 @@
 
 import { Request, Response } from 'express';
 import { getOrgId } from '../middleware/orgContext';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 
 /**
@@ -51,6 +51,13 @@ export const listTemplates = async (req: Request, res: Response): Promise<Respon
         // Folder filter: 'all' (default) → no filter; 'uncategorized' → folder_id is null;
         // any other string → folder_id matches.
         const folder = (req.query.folder as string) || undefined;
+        // Pagination — list payload includes the full body_html column,
+        // which for image-rich templates can be hundreds of KB per row. An
+        // org with 10k templates and no `take` cap would pull tens of MB
+        // into memory and time out the request. 200 is the practical UI
+        // cap; callers requesting more get clamped.
+        const limit = Math.min(200, Math.max(1, parseInt(req.query.limit as string) || 50));
+        const skip = Math.max(0, parseInt(req.query.skip as string) || 0);
 
         const where: any = { organization_id: orgId };
         if (category && category !== 'all') where.category = category;
@@ -64,12 +71,17 @@ export const listTemplates = async (req: Request, res: Response): Promise<Respon
             ];
         }
 
-        const templates = await prisma.emailTemplate.findMany({
-            where,
-            orderBy: { created_at: 'desc' },
-        });
+        const [templates, total] = await Promise.all([
+            prisma.emailTemplate.findMany({
+                where,
+                orderBy: { created_at: 'desc' },
+                take: limit,
+                skip,
+            }),
+            prisma.emailTemplate.count({ where }),
+        ]);
 
-        return res.json({ success: true, data: templates });
+        return res.json({ success: true, data: templates, meta: { total, limit, skip } });
     } catch (error: any) {
         logger.error('[TEMPLATES] Failed to list templates', error instanceof Error ? error : new Error(String(error)));
         return res.status(500).json({ success: false, error: 'Failed to list templates' });
@@ -102,6 +114,14 @@ export const getTemplate = async (req: Request, res: Response): Promise<Response
  * POST /api/sequencer/templates
  * Create a new template.
  */
+// Hard cap on template body size — Postgres TEXT has no inherent limit,
+// but loading a 50 MB body into the editor every time the operator opens
+// the template would brick the UI and tank the dispatcher (templates are
+// loaded per-send for variable substitution). 1 MB is generous for any
+// real email template; bigger almost always means embedded base64 images
+// (and those should be hosted, not inlined).
+const TEMPLATE_BODY_HTML_MAX_BYTES = 1_000_000;
+
 export const createTemplate = async (req: Request, res: Response): Promise<Response> => {
     try {
         const orgId = getOrgId(req);
@@ -109,6 +129,12 @@ export const createTemplate = async (req: Request, res: Response): Promise<Respo
 
         if (!name || !subject || !bodyHtml) {
             return res.status(400).json({ success: false, error: 'name, subject, and bodyHtml are required' });
+        }
+        if (typeof bodyHtml === 'string' && bodyHtml.length > TEMPLATE_BODY_HTML_MAX_BYTES) {
+            return res.status(413).json({
+                success: false,
+                error: `Template body exceeds ${TEMPLATE_BODY_HTML_MAX_BYTES} byte limit. Inline images? Host them externally and reference by URL instead.`,
+            });
         }
 
         const template = await prisma.emailTemplate.create({
@@ -146,6 +172,12 @@ export const updateTemplate = async (req: Request, res: Response): Promise<Respo
         });
 
         if (!template) return res.status(404).json({ success: false, error: 'Template not found' });
+        if (typeof bodyHtml === 'string' && bodyHtml.length > TEMPLATE_BODY_HTML_MAX_BYTES) {
+            return res.status(413).json({
+                success: false,
+                error: `Template body exceeds ${TEMPLATE_BODY_HTML_MAX_BYTES} byte limit. Inline images? Host them externally and reference by URL instead.`,
+            });
+        }
 
         const updateData: any = {};
         if (name !== undefined) updateData.name = name;
@@ -216,6 +248,10 @@ export const duplicateTemplate = async (req: Request, res: Response): Promise<Re
                 body_html: template.body_html,
                 body_text: template.body_text,
                 category: template.category,
+                // Preserve folder so operators don't lose organizational
+                // structure when duplicating — the original behaviour was
+                // to drop everything into Uncategorized.
+                folder_id: template.folder_id,
             },
         });
 

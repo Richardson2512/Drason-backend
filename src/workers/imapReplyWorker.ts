@@ -15,7 +15,7 @@
  */
 
 import { ImapFlow } from 'imapflow';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { decrypt, encrypt, isEncrypted } from '../utils/encryption';
 import { fetchGmailReplies, refreshGoogleAccessToken } from '../services/gmailSendService';
@@ -219,6 +219,13 @@ async function processReply(
             return;
         }
 
+        // Update each matching CampaignLead's status + per-lead counters.
+        // The thread + EmailMessage are created ONCE per inbound message
+        // (outside this loop) — same person in multiple campaigns lands
+        // in one shared thread, and message_count must only bump once.
+        // Before this refactor, createOrUpdateThread fired per-lead which
+        // double-incremented EmailThread.message_count whenever the same
+        // address replied to two simultaneous campaigns.
         for (const lead of matchingLeads) {
             const wasFirstReply = !lead.replied_at;
 
@@ -264,7 +271,9 @@ async function processReply(
                 logger.warn(`[${LOG_TAG}] Failed to increment Mailbox.reply_count_lifetime`, { accountId, error: err?.message });
             });
 
-            // 4. Create ReplyEvent for analytics (one row per reply message)
+            // 4. Create ReplyEvent for analytics (one row per reply message
+            //    per campaign — multi-campaign replies create one event per
+            //    campaign so per-campaign reply analytics stay accurate).
             await prisma.replyEvent.create({
                 data: {
                     organization_id: organizationId,
@@ -274,15 +283,6 @@ async function processReply(
                     replied_at: email.receivedAt,
                 },
             });
-
-            // 5. Create/update EmailThread + EmailMessage
-            await createOrUpdateThread(
-                accountId,
-                organizationId,
-                email,
-                lead.campaign_id,
-                lead.id
-            );
 
             if (lead.campaign.stop_on_reply) {
                 logger.info(`[${LOG_TAG}] Stopped sequence for lead ${lead.id} (stop_on_reply=true)`);
@@ -314,6 +314,24 @@ async function processReply(
                 }).catch((err) => logger.warn(`[${LOG_TAG}] Slack alert failed (campaign.first_reply)`, { error: err?.message }));
             }
         }
+
+        // 5. Create/update EmailThread + EmailMessage — ONCE per inbound
+        //    message regardless of how many campaigns the sender is in.
+        //    Pick the first matching lead's (campaign_id, lead_id) for
+        //    thread attribution; subsequent multi-campaign matches are
+        //    visible via ReplyEvent rows + CampaignLead status updates above.
+        //    Awaited (not fire-and-forget) so enrichment + auto-actions
+        //    complete before the worker tick ends. Without the await, a
+        //    worker shutdown mid-flight orphaned the AI classification +
+        //    cross-channel suppression.
+        const primaryLead = matchingLeads[0];
+        await createOrUpdateThread(
+            accountId,
+            organizationId,
+            email,
+            primaryLead.campaign_id,
+            primaryLead.id,
+        );
     } catch (err: any) {
         logger.error(`[${LOG_TAG}] Error processing reply from ${senderEmail}`, err);
     }
@@ -458,24 +476,30 @@ async function createOrUpdateThread(
         });
 
         // Second-pass enrichment — AI re-classification, OOO date extraction,
-        // and auto-action execution. Runs detached from the main code path so
-        // a slow Gemini call (or a missing API key) never blocks the worker
-        // tick. Each branch logs its own failures; nothing here throws.
-        processReplyEnrichment({
-            messageRowId: messageRow.id,
-            ruleQuality: quality,
-            organizationId,
-            threadId: thread.id,
-            campaignId: thread.campaign_id ?? null,
-            contactEmail: email.from,
-            subject: email.subject,
-            bodyText: email.bodyText || '',
-            bodyHtml: email.bodyHtml || '',
-        }).catch(err => {
+        // and auto-action execution. AWAITED (the prior fire-and-forget
+        // pattern orphaned the AI verdict + cross-channel suppression when
+        // the worker shut down mid-flight; replies that should have paused
+        // LinkedIn enrollments silently didn't). Per-account batching upstream
+        // means one ~500ms Gemini call per reply doesn't block other accounts.
+        // Errors are caught so a Gemini outage / missing API key doesn't
+        // break the thread/message creation that already succeeded.
+        try {
+            await processReplyEnrichment({
+                messageRowId: messageRow.id,
+                ruleQuality: quality,
+                organizationId,
+                threadId: thread.id,
+                campaignId: thread.campaign_id ?? null,
+                contactEmail: email.from,
+                subject: email.subject,
+                bodyText: email.bodyText || '',
+                bodyHtml: email.bodyHtml || '',
+            });
+        } catch (err) {
             logger.warn(`[${LOG_TAG}] enrichment failed (non-fatal)`, {
                 err: err instanceof Error ? err.message : String(err),
             });
-        });
+        }
     } catch (err: any) {
         logger.error(`[${LOG_TAG}] Error creating thread/message for ${email.from}`, err);
     }
@@ -953,13 +977,28 @@ async function processReplyEnrichment(input: {
                 until: oooDate.toISOString(),
             });
         }
-    } else if (finalClass !== 'auto' && input.campaignId) {
-        // Non-auto reply clears any stale OOO hold so the dispatcher
-        // resumes after the contact is actually back.
-        await prisma.campaignLead.updateMany({
-            where: { campaign_id: input.campaignId, email: input.contactEmail, ooo_until: { not: null } },
-            data: { ooo_until: null },
-        });
+    } else if (input.campaignId) {
+        // Only clear an active OOO hold when the new reply is a clear,
+        // confident signal that the contact is back at the desk. The
+        // prior implementation cleared on EVERY non-auto class, which
+        // included things like "objection" / "soft_no" — those can fire
+        // from an auto-responder's footer ("I'm out of office until Friday,
+        // but please contact my colleague who handles outsourcing pitches
+        // — no thanks for now"). Treating that as "they're back" resumed
+        // sequence sends mid-OOO and burned cold-call goodwill.
+        //
+        // Whitelist of classes that DEFINITELY came from a human:
+        //   positive / qualified / hard_no / angry / referral
+        // 'objection' / 'soft_no' / 'unclassified' stay conservative —
+        // we preserve the OOO hold until the configured ooo_until passes
+        // on its own.
+        const HUMAN_REPLY_CLASSES = new Set(['positive', 'qualified', 'hard_no', 'angry', 'referral']);
+        if (HUMAN_REPLY_CLASSES.has(finalClass)) {
+            await prisma.campaignLead.updateMany({
+                where: { campaign_id: input.campaignId, email: input.contactEmail, ooo_until: { not: null } },
+                data: { ooo_until: null },
+            });
+        }
     }
     void finalConfidence;
 

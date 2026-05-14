@@ -16,8 +16,9 @@
  *   'alert'      — create a Notification row for the org owner.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
+import { pauseCrossChannelForLead } from './crossChannelSuppressionService';
 
 export interface ReplyActionContext {
     organizationId: string;
@@ -28,6 +29,10 @@ export interface ReplyActionContext {
     replyClass: string;
     /** Optional — when present we'll also pause the lead in this campaign. */
     campaignId?: string | null;
+    /** Optional — when present, we fan into cross-channel suppression so
+     *  the lead's LinkedIn-side enrollments are paused per the org's
+     *  configured mode (OFF / HARD / CLASSIFIED / ASYMMETRIC). */
+    leadId?: string | null;
 }
 
 /** Default ruleset used the first time an organization receives a reply.
@@ -156,12 +161,20 @@ export async function applyReplyActions(ctx: ReplyActionContext): Promise<void> 
                     break;
 
                 case 'alert':
+                    // Deep-link the notification to the exact thread so the
+                    // operator can click through instead of searching the
+                    // Unibox. action_url is consumed by the notification
+                    // dropdown component; entity_type/entity_id let the
+                    // Unibox row badge unread alerts per-thread.
                     await prisma.notification.create({
                         data: {
                             organization_id: ctx.organizationId,
                             type: ctx.replyClass === 'angry' ? 'WARNING' : 'INFO',
                             title: `Reply classified as ${ctx.replyClass}`,
                             message: `${ctx.contactEmail} replied with a "${ctx.replyClass}" reply. Review in Unibox.`,
+                            action_url: `/dashboard/sequencer/unibox?thread=${ctx.threadId}`,
+                            entity_type: 'email_thread',
+                            entity_id: ctx.threadId,
                         },
                     });
                     break;
@@ -176,6 +189,35 @@ export async function applyReplyActions(ctx: ReplyActionContext): Promise<void> 
                 err: err instanceof Error ? err.message : String(err),
             });
         }
+    }
+
+    // Cross-channel fan-out — pause LinkedIn enrollments for this lead if
+    // the org's suppression mode says so. Per-mode policy lives in the
+    // service. Email is the canonical key for CampaignLead so we always
+    // pass it through; lead_id is optional context for the audit log.
+    try {
+        let leadId = ctx.leadId ?? null;
+        if (!leadId && ctx.contactEmail) {
+            const lead = await prisma.lead.findFirst({
+                where: { organization_id: ctx.organizationId, email: ctx.contactEmail.toLowerCase() },
+                select: { id: true },
+            });
+            leadId = lead?.id ?? null;
+        }
+        if (leadId || ctx.contactEmail) {
+            await pauseCrossChannelForLead({
+                organizationId: ctx.organizationId,
+                leadId: leadId ?? '', // can be empty when email is provided
+                contactEmail: ctx.contactEmail,
+                source: 'email',
+                replyClass: ctx.replyClass,
+                reason: `email reply: ${ctx.replyClass}`,
+            });
+        }
+    } catch (err) {
+        logger.warn('[REPLY_ACTION] cross-channel suppression skipped (non-fatal)', {
+            err: err instanceof Error ? err.message : String(err),
+        });
     }
 }
 

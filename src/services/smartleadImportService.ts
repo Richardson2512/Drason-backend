@@ -26,7 +26,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import * as smartlead from './smartleadClient';
 import * as importJob from './importJobService';

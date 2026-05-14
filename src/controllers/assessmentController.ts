@@ -8,7 +8,7 @@
 
 import { Request, Response } from 'express';
 import { getOrgId } from '../middleware/orgContext';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import * as assessmentService from '../services/infrastructureAssessmentService';
 import { logger } from '../services/observabilityService';
 

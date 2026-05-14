@@ -4,7 +4,7 @@
  * Core lead creation and management logic.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import * as routingService from './routingService';
 import { LeadState } from '../types';
 

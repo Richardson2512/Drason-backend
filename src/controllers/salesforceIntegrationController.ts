@@ -21,7 +21,7 @@ import {
 } from '../services/crm/salesforce/oauthService';
 import { SalesforceCrmClient } from '../services/crm/salesforce/client';
 import { upsertConnection, getConnection } from '../services/crm/connectionService';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 
 const DASHBOARD_RETURN = '/dashboard/integrations/crm';
 

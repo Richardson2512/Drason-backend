@@ -23,7 +23,7 @@
  * plus an `EmailEvent` shape and drives delivery.
  */
 
-import { prisma } from '../../index';
+import { prisma } from '../../prisma';
 import { logger } from '../observabilityService';
 import { sendTransactionalEmail } from '../transactionalEmailService';
 

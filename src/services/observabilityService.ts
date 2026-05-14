@@ -10,7 +10,7 @@
 
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 
 // ============================================================================
 // CORRELATION IDS

@@ -11,7 +11,7 @@
  * - Score = Engagement + Recency + Frequency (capped 0-100)
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 // Platform adapter now handles lead operations via PlatformAdapter interface
 

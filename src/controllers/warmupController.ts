@@ -13,7 +13,7 @@
  */
 
 import type { Request, Response } from 'express';
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { getOrgId } from '../middleware/orgContext';
 import { logger } from '../services/observabilityService';
 import {

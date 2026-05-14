@@ -14,7 +14,7 @@
  *   - Pair selection (poolService)
  */
 
-import { prisma } from '../../index';
+import { prisma } from '../../prisma';
 import { logger } from '../observabilityService';
 import {
     MAX_TARGET_DAILY,

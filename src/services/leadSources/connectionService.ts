@@ -10,7 +10,7 @@
  * Provider-blind — nothing about Apollo/ZoomInfo specifics leaks here.
  */
 
-import { prisma } from '../../index';
+import { prisma } from '../../prisma';
 import { encrypt, decrypt } from '../../utils/encryption';
 import { logger } from '../observabilityService';
 import type {

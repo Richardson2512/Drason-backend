@@ -12,7 +12,7 @@
  * inbox and the reply worker picks them up.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import * as monitoringService from './monitoringService';
 

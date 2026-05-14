@@ -11,7 +11,7 @@
  * One worker, one interval, all orgs. Same shape as scheduleWarmupTracking.
  */
 
-import { prisma } from '../index';
+import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import {
     generateDailySnapshot,
