@@ -184,9 +184,12 @@ app.use(cors({
             process.env.FRONTEND_URL,
             process.env.FRONTEND_URL?.replace('https://', 'https://www.'),
             process.env.FRONTEND_URL?.replace('https://www.', 'https://'),
+            process.env.APP_URL,
             'https://superkabe.com',
             'https://www.superkabe.com',
             'https://app.superkabe.com',
+            'https://staging.superkabe.com',
+            'https://app.staging.superkabe.com',
             'https://claude.ai',
             'https://www.claude.ai'
         ].filter(Boolean);
