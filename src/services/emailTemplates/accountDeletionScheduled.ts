@@ -1,5 +1,5 @@
 /**
- * Account-deletion-scheduled email — sent when a user (or admin) starts
+ * Account-deletion-scheduled email - sent when a user (or admin) starts
  * the GDPR Article 17 right-to-erasure flow. Hard-deletes happen 30 days
  * after the request; this email confirms the request and surfaces the
  * cancellation token so the user can abort if they change their mind.
@@ -29,20 +29,20 @@ export function accountDeletionScheduledEmail(params: AccountDeletionScheduledEm
         preheader,
         eyebrow: 'Compliance · GDPR Art. 17',
         heading: 'Account deletion scheduled',
-        intro: `${greeting} We received a request to delete ${params.organizationName ? `<strong>${escapeHtml(params.organizationName)}</strong>` : 'your account'}. The hard-delete is scheduled for <strong>${params.executesAt.toUTCString()}</strong> — ${days} day${days === 1 ? '' : 's'} from today.`,
+        intro: `${greeting} We received a request to delete ${params.organizationName ? `<strong>${escapeHtml(params.organizationName)}</strong>` : 'your account'}. The hard-delete is scheduled for <strong>${params.executesAt.toUTCString()}</strong> - ${days} day${days === 1 ? '' : 's'} from today.`,
         facts: [
             { label: 'Executes at', value: params.executesAt.toUTCString() },
             { label: 'Cancellation token', value: params.cancellationToken, mono: true },
         ],
         body:
-            `Until then, your account is read-only — campaigns are paused, ` +
+            `Until then, your account is read-only - campaigns are paused, ` +
             `mailboxes will not send, and integrations stop syncing. We keep ` +
             `your data intact during this grace period in case you change ` +
             `your mind.` +
             `<br/><br/>` +
             `<strong style="color:#111827;">After the grace period</strong>, all ` +
-            `personal data — leads, mailboxes, sequence content, audit history ` +
-            `— is irreversibly removed within 24 hours. Anonymized aggregate ` +
+            `personal data - leads, mailboxes, sequence content, audit history ` +
+            `- is irreversibly removed within 24 hours. Anonymized aggregate ` +
             `metrics may be retained per our Privacy Policy.` +
             `<br/><br/>` +
             `If you didn't request this deletion, contact ` +

@@ -1,5 +1,5 @@
 /**
- * Gemini Flash client — single canonical wrapper for Google's Generative AI.
+ * Gemini Flash client - single canonical wrapper for Google's Generative AI.
  *
  * Mirrors the openaiClient.ts design so failure modes are consistent:
  *
@@ -7,7 +7,7 @@
  *      exponential backoff + full jitter. 4xx validation errors short-circuit.
  *
  *   2. SEMAPHORE on concurrent in-flight calls. Per-process cap configurable
- *      via GEMINI_MAX_CONCURRENT (default 15 — sized smaller than OpenAI's
+ *      via GEMINI_MAX_CONCURRENT (default 15 - sized smaller than OpenAI's
  *      25 because Gemini Flash's free + paid quotas are tighter than
  *      OpenAI's at small payload sizes).
  *
@@ -35,7 +35,7 @@ export function isGeminiConfigured(): boolean {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Semaphore — per-process concurrency cap, FIFO wait queue
+// Semaphore - per-process concurrency cap, FIFO wait queue
 // ────────────────────────────────────────────────────────────────────
 
 const MAX_CONCURRENT = parseInt(process.env.GEMINI_MAX_CONCURRENT || '15', 10);
@@ -86,7 +86,7 @@ function jitter(baseMs: number): number {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// SDK loader — same indirect dynamic-import trick as SES, so the dev
+// SDK loader - same indirect dynamic-import trick as SES, so the dev
 // box doesn't need @google/generative-ai installed when stub mode is fine.
 // ────────────────────────────────────────────────────────────────────
 
@@ -110,7 +110,7 @@ async function callRealGemini(prompt: string, opts: { temperature?: number; maxT
             temperature: opts.temperature ?? 0.2,
             maxOutputTokens: opts.maxTokens ?? 256,
             // Force JSON-only output when the caller is parsing structured
-            // responses — Gemini honors responseMimeType for strict modes.
+            // responses - Gemini honors responseMimeType for strict modes.
             ...(opts.jsonMode ? { responseMimeType: 'application/json' } : {}),
         },
     });
@@ -133,7 +133,7 @@ export interface SafeGeminiInput {
     prompt: string;
     /** 0–1; defaults to 0.2 for classification work where we want determinism. */
     temperature?: number;
-    /** Max output tokens. Defaults to 256 — enough for a single-line label
+    /** Max output tokens. Defaults to 256 - enough for a single-line label
      *  + short reasoning, which is what every caller here needs. */
     maxTokens?: number;
     /** When true, Gemini is constrained to emit valid JSON. */
@@ -148,9 +148,9 @@ export interface SafeGeminiInput {
  */
 export async function safeGeminiCompletion(input: SafeGeminiInput): Promise<GeminiResponse> {
     if (!isGeminiConfigured()) {
-        logger.info('[GEMINI] Stub mode — returning placeholder response', { tag: input.tag });
+        logger.info('[GEMINI] Stub mode - returning placeholder response', { tag: input.tag });
         // jsonMode callers expect parseable JSON. Empty object is a
-        // safe sentinel — downstream sees "no AI verdict" and proceeds
+        // safe sentinel - downstream sees "no AI verdict" and proceeds
         // with the rule-based label.
         return {
             text: input.jsonMode ? '{}' : '',
@@ -174,7 +174,7 @@ export async function safeGeminiCompletion(input: SafeGeminiInput): Promise<Gemi
                 if (!isRetryable(err) || attempt === RETRY_DELAYS_MS.length) throw err;
                 const wait = jitter(RETRY_DELAYS_MS[attempt]);
                 const e = err as { status?: number; code?: string; message?: string };
-                logger.warn('[GEMINI] Retryable failure — backing off', {
+                logger.warn('[GEMINI] Retryable failure - backing off', {
                     tag: input.tag,
                     attempt: attempt + 1,
                     of: RETRY_DELAYS_MS.length + 1,

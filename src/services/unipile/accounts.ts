@@ -1,5 +1,5 @@
 /**
- * Unipile Accounts API — typed wrappers around the connected-accounts surface.
+ * Unipile Accounts API - typed wrappers around the connected-accounts surface.
  * Hosted-auth flow + lifecycle calls for LinkedIn accounts specifically.
  *
  * See https://developer.unipile.com/reference/accountscontroller_listaccounts
@@ -9,7 +9,7 @@
 import { unipileRequest } from './client';
 
 // ────────────────────────────────────────────────────────────────────
-// Shapes — narrow to the fields we actually consume
+// Shapes - narrow to the fields we actually consume
 // ────────────────────────────────────────────────────────────────────
 
 export interface UnipileAccount {
@@ -18,9 +18,9 @@ export interface UnipileAccount {
     provider: string;
     /** Display name picked at connect time; falls back to the LinkedIn profile name */
     name?: string;
-    /** Account status — mirrors the webhook event taxonomy */
+    /** Account status - mirrors the webhook event taxonomy */
     status?: 'OK' | 'CREDENTIALS' | 'ERROR' | 'CONNECTING' | 'SYNC_SUCCESS' | 'DELETED';
-    /** LinkedIn-specific account class — 'CLASSIC' | 'PREMIUM' | 'SALES_NAV' | 'RECRUITER' */
+    /** LinkedIn-specific account class - 'CLASSIC' | 'PREMIUM' | 'SALES_NAV' | 'RECRUITER' */
     type?: string;
     /** ISO timestamp */
     created_at?: string;
@@ -42,13 +42,13 @@ export interface HostedAuthLinkRequest {
     /** Where Unipile redirects the user on success / failure */
     success_redirect_url: string;
     failure_redirect_url: string;
-    /** Opaque string echoed back to our callbacks — we use it to find the org */
+    /** Opaque string echoed back to our callbacks - we use it to find the org */
     name?: string;
     /** Server-to-server callback (in addition to redirect) */
     notify_url?: string;
     /** Unix-ms expiration of the auth link */
     expiresOn?: number;
-    /** For 'reconnect' — the account_id whose session to refresh */
+    /** For 'reconnect' - the account_id whose session to refresh */
     reconnect_account?: string;
 }
 
@@ -63,7 +63,7 @@ export interface HostedAuthLinkResponse {
 
 /**
  * List all connected accounts under the workspace's API key.
- * Filter to LinkedIn on the call site — Unipile mixes providers in one list.
+ * Filter to LinkedIn on the call site - Unipile mixes providers in one list.
  */
 export async function listAccounts(): Promise<ListAccountsResponse> {
     return unipileRequest<ListAccountsResponse>({
@@ -99,7 +99,7 @@ export async function createHostedAuthLink(req: HostedAuthLinkRequest): Promise<
 }
 
 /**
- * Disconnect an account — Unipile invalidates the session + stops sync.
+ * Disconnect an account - Unipile invalidates the session + stops sync.
  * Idempotent: returns success even if the account is already gone.
  */
 export async function deleteAccount(accountId: string): Promise<void> {

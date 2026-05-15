@@ -1,5 +1,5 @@
 /**
- * Send Queue Service — Production Sending Engine for Superkabe Sequencer
+ * Send Queue Service - Production Sending Engine for Superkabe Sequencer
  *
  * Optimized architecture:
  *
@@ -15,7 +15,7 @@
  *    accounts aren't starved by large ones.
  *
  * 4. DELAYED JOBS: Follow-up emails are scheduled as delayed jobs at the
- *    exact timestamp they're due — no polling needed.
+ *    exact timestamp they're due - no polling needed.
  *
  * Falls back to in-process mode when Redis is unavailable (dev).
  */
@@ -66,7 +66,7 @@ interface SequenceStepWithVariants {
     preheader: string;
     body_html: string;
     variants: StepVariantRow[];
-    /** Subsequence branching — see schema docs on SequenceStep. */
+    /** Subsequence branching - see schema docs on SequenceStep. */
     condition?: string | null;
     branch_to_step_number?: number | null;
 }
@@ -108,7 +108,7 @@ interface EmailInBatch {
     };
     subject: string;       // already personalized
     bodyHtml: string;      // already personalized
-    /** Pre-computed RFC 8058 unsubscribe URL — passed verbatim into List-Unsubscribe
+    /** Pre-computed RFC 8058 unsubscribe URL - passed verbatim into List-Unsubscribe
      *  headers by the send services. Required by Gmail's bulk-sender policy. */
     unsubscribeUrl: string;
     stepNumber: number;
@@ -137,7 +137,7 @@ function pickVariant(step: SequenceStepWithVariants): {
     preheader: string;
     variantId: string | null;
 } {
-    // Variant preheader, when set, overrides the step preheader — same A/B
+    // Variant preheader, when set, overrides the step preheader - same A/B
     // semantics as subject + body. Empty string at the variant level falls
     // back to the step-level preheader so users can author once and have
     // every variant pick it up.
@@ -171,7 +171,7 @@ function pickVariant(step: SequenceStepWithVariants): {
  * Inject the inbox preview text as a hidden div at the top of the body.
  *
  * Pattern: matches the transactional email templates' preheader injection
- * (see transactionalEmailTemplates.ts) — display:none + zero-line-height +
+ * (see transactionalEmailTemplates.ts) - display:none + zero-line-height +
  * mso-hide:all so Outlook on Windows/Mac, Gmail, Apple Mail, and Yahoo all
  * keep the text out of the rendered body while harvesting it for the
  * inbox-list snippet. The trailing &nbsp;&zwnj; run consumes additional
@@ -213,7 +213,7 @@ function personalizeEmail(
         email: lead.email || '',
         title: lead.title || '',
         website: '',
-        // AI-generated opener — written by signalIcebreakerService when
+        // AI-generated opener - written by signalIcebreakerService when
         // the lead was promoted by a LinkedIn engagement signal. Empty
         // string for CSV / manual imports; the template author should
         // write the step copy so it still reads cleanly when missing
@@ -261,7 +261,7 @@ function isWithinSendingWindow(campaign: {
         hour = Number(parts.find(p => p.type === 'hour')?.value || '0');
         minute = Number(parts.find(p => p.type === 'minute')?.value || '0');
     } catch {
-        // Invalid timezone string — fall back to UTC
+        // Invalid timezone string - fall back to UTC
         const days = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
         currentDay = days[now.getUTCDay()];
         hour = now.getUTCHours();
@@ -309,7 +309,7 @@ function stepConditionMatches(
 /**
  * Walk the sequence from `startNumber`, honoring per-step `condition` and
  * `branch_to_step_number` until we find a deliverable step or exhaust the
- * branch chain. Returns null when no step in the chain is eligible — caller
+ * branch chain. Returns null when no step in the chain is eligible - caller
  * should mark the lead completed.
  *
  * Safety: capped at 10 hops to defang accidental loops (a step that branches
@@ -329,7 +329,7 @@ function resolveDeliverableStep(
         } | undefined;
         if (!step) return null;
         if (stepConditionMatches(step.condition, lead)) return step;
-        // Condition failed — try the branch if defined and not self-pointing.
+        // Condition failed - try the branch if defined and not self-pointing.
         const branch = step.branch_to_step_number;
         if (branch == null || branch === current) return null;
         current = branch;
@@ -359,13 +359,13 @@ async function resetDailySendsIfNeeded(accountId: string, sendsResetAt: Date): P
 }
 
 /**
- * Handle a send failure — delegates to bounceProcessingService.processBounce
+ * Handle a send failure - delegates to bounceProcessingService.processBounce
  * which runs the unified Protection pipeline: bounce classification, threshold
  * check, percentage-rate guard, correlation, auto-pause (Observe/Suggest/
  * Enforce modes), Slack alert, state transition.
  *
  * This ensures sequencer-originated SMTP bounces flow through the *exact same*
- * pipeline as Smartlead/Instantly/EmailBison/Reply.io webhook bounces — no
+ * pipeline as Smartlead/Instantly/EmailBison/Reply.io webhook bounces - no
  * split-brain between sequencer and webhook bounce counters.
  */
 async function handleSendFailure(
@@ -377,7 +377,7 @@ async function handleSendFailure(
     smtpCode?: string,
     smtpResponse?: string,
 ): Promise<void> {
-    // Prefer SMTP code (RFC 5321 / 3463) when available — it's authoritative.
+    // Prefer SMTP code (RFC 5321 / 3463) when available - it's authoritative.
     // Synchronous 5xx = hard, 4xx = soft. Only fall back to keyword-matching
     // when no SMTP code was captured (e.g. provider returned a generic API error).
     const numericCode = smtpCode ? parseInt(smtpCode.split('.')[0], 10) : NaN;
@@ -391,7 +391,7 @@ async function handleSendFailure(
     }
 
     if (!isHardBounce && !isSoftBounce) {
-        // Auth / connection / config error — not a bounce. Log but don't pollute bounce stats.
+        // Auth / connection / config error - not a bounce. Log but don't pollute bounce stats.
         await prisma.mailbox.update({
             where: { id: mailboxId },
             data: { delivery_failure_count: { increment: 1 }, connection_error: errorMsg.slice(0, 255) },
@@ -447,7 +447,7 @@ async function handleSendFailure(
 }
 
 // ════════════════════════════════════════════════════════════════════
-// DISPATCHER — scans campaigns, assigns leads to mailboxes, creates batch jobs
+// DISPATCHER - scans campaigns, assigns leads to mailboxes, creates batch jobs
 // ════════════════════════════════════════════════════════════���═══════
 
 let sendQueue: Queue | null = null;
@@ -460,7 +460,7 @@ async function dispatch(): Promise<void> {
         const now = new Date();
 
         // 1. Load all active campaigns with steps + accounts. Campaign table is
-        // unified post-Phase-B (2026-04-26) — every active row dispatches through
+        // unified post-Phase-B (2026-04-26) - every active row dispatches through
         // the native send path.
         const activeCampaigns = await prisma.campaign.findMany({
             where: { status: 'active' },
@@ -470,7 +470,7 @@ async function dispatch(): Promise<void> {
                     include: {
                         account: {
                             include: {
-                                // 1:1 shadow Mailbox — used to honor warmup_limit
+                                // 1:1 shadow Mailbox - used to honor warmup_limit
                                 // during 5-phase recovery and to defend against a
                                 // partially-cascaded domain pause: if the parent
                                 // domain is paused, every child mailbox MUST stop
@@ -533,7 +533,7 @@ async function dispatch(): Promise<void> {
 
         // Cross-campaign load-balancing tracker. Persists across the per-campaign
         // for-loop so a mailbox shared between three campaigns can't be assigned
-        // its full daily quota inside ONE campaign during this tick — every
+        // its full daily quota inside ONE campaign during this tick - every
         // assignment in any campaign decrements the same per-account budget.
         // Resets each dispatch tick (60s).
         const globalAccountAssignedThisTick = new Map<string, number>();
@@ -542,7 +542,7 @@ async function dispatch(): Promise<void> {
 
         for (const campaign of activeCampaigns) {
             try {
-                // CAN-SPAM § 5(a)(5) gate — every commercial email must carry a
+                // CAN-SPAM § 5(a)(5) gate - every commercial email must carry a
                 // valid postal address. If the org hasn't configured one, skip
                 // the campaign for this cycle and log a warning. The customer
                 // sees a banner in the dashboard prompting them to configure it.
@@ -551,7 +551,7 @@ async function dispatch(): Promise<void> {
                 const includeUnsub = campaign.include_unsubscribe ?? true;
                 const orgMailingAddress = mailingAddressByOrg.get(campaign.organization_id) || null;
                 if (includeUnsub && !orgMailingAddress) {
-                    logger.warn(`[${LOG_TAG}] Skipping campaign ${campaign.id} — mailing_address not configured (CAN-SPAM § 5(a)(5))`);
+                    logger.warn(`[${LOG_TAG}] Skipping campaign ${campaign.id} - mailing_address not configured (CAN-SPAM § 5(a)(5))`);
                     SlackAlertService.sendAlert({
                         organizationId: campaign.organization_id,
                         eventType: 'campaign.send_blocked.postal_address',
@@ -580,7 +580,7 @@ async function dispatch(): Promise<void> {
                 const remainingCampaignSends = dailyLimit - dailySent;
 
                 // Seed first-step leads that never got a next_send_at (e.g. imported or
-                // launched before the seeding fix). Idempotent — only targets current_step=0
+                // launched before the seeding fix). Idempotent - only targets current_step=0
                 // with null next_send_at. Future dispatches won't re-touch them.
                 await prisma.campaignLead.updateMany({
                     where: {
@@ -608,7 +608,7 @@ async function dispatch(): Promise<void> {
 
                 if (dueLeadsRaw.length === 0) continue;
 
-                // Org-wide suppression check (defense in depth) — required for
+                // Org-wide suppression check (defense in depth) - required for
                 // CAN-SPAM § 5(a)(4)(A), CASL § 11(3), GDPR Art. 21. The
                 // CampaignLead.status='unsubscribed' cascade catches the click-
                 // unsubscribe path, and the per-row suppression catches anything
@@ -633,7 +633,7 @@ async function dispatch(): Promise<void> {
                 // workspace-scoped and reused across campaigns), so we
                 // batch-fetch by email here and pass through into the
                 // personalize call below. Empty Map when no leads qualify
-                // — falling back to '' at render time is the right behaviour.
+                // - falling back to '' at render time is the right behaviour.
                 const leadIcebreakers = dueLeads.length > 0
                     ? new Map(
                         (await prisma.lead.findMany({
@@ -658,7 +658,7 @@ async function dispatch(): Promise<void> {
                         where: { id: { in: suppressedIds } },
                         data: { status: 'unsubscribed', next_send_at: null },
                     });
-                    logger.info('[SEND-QUEUE] Suppressed dispatch — org-wide lead status', {
+                    logger.info('[SEND-QUEUE] Suppressed dispatch - org-wide lead status', {
                         campaignId: campaign.id,
                         suppressedCount: suppressedEmails.size,
                     });
@@ -738,7 +738,7 @@ async function dispatch(): Promise<void> {
                     const resetResult = await resetDailySendsIfNeeded(acct.id, acct.sends_reset_at);
                     const mailboxSendsToday = resetResult === 0 ? 0 : acct.sends_today;
 
-                    // Mailbox-wide daily cap — normally ConnectedAccount.daily_send_limit,
+                    // Mailbox-wide daily cap - normally ConnectedAccount.daily_send_limit,
                     // but the 5-phase recovery pipeline lowers it via Mailbox.warmup_limit
                     // during RESTRICTED_SEND / WARM_RECOVERY phases. The smaller of the
                     // two takes effect so recovering mailboxes don't dispatch at full
@@ -785,7 +785,7 @@ async function dispatch(): Promise<void> {
                     // Auto-pause the campaign when every configured mailbox is
                     // paused/recovering/over-capacity AT THE SAME TIME. Without
                     // this, the campaign stays `status='active'` and the UI lies
-                    // � operators think it's still sending. We only flip the
+                    // � operators think it's still sending. We only flip the
                     // status when the campaign actually has senders configured
                     // (campaign.accounts.length > 0); a draft with no attached
                     // mailboxes should stay 'active' until the operator attaches
@@ -837,7 +837,7 @@ async function dispatch(): Promise<void> {
                 //   - If sticky mailbox is in `accounts` but at-capacity for this tick:
                 //     skip lead, advance next_send_at by 1 hour, retry next tick.
                 //   - If sticky mailbox is excluded (paused / quarantine / restricted /
-                //     temporarily disconnected): same as above — wait for it.
+                //     temporarily disconnected): same as above - wait for it.
                 //   - If sticky mailbox is permanently disconnected (campaign no longer
                 //     has the account at all OR account.connection_status = 'disconnected'
                 //     and not 'error'/'expired'): re-assign by picking best fresh mailbox
@@ -913,12 +913,12 @@ async function dispatch(): Promise<void> {
                     const stickyId: string | null = (lead as any).assigned_account_id ?? null;
 
                     if (stickyId) {
-                        // Lead has a sticky mailbox — try to honor it.
+                        // Lead has a sticky mailbox - try to honor it.
                         const sticky = accounts.find(a => a.id === stickyId);
                         if (sticky && (accountCounts.get(sticky.id) || 0) < sticky.remainingCapacity) {
                             chosenAccount = sticky;
                         } else if (permanentlyDisconnected.has(stickyId) || !allCampaignAccountIds.has(stickyId)) {
-                            // Sticky mailbox is permanently gone — re-assign to a fresh
+                            // Sticky mailbox is permanently gone - re-assign to a fresh
                             // best-scored mailbox and update the sticky binding. Threading
                             // continuity is broken here; this is the lesser-of-two-evils
                             // fallback (better than indefinitely stalling the lead).
@@ -930,7 +930,7 @@ async function dispatch(): Promise<void> {
                         } else {
                             // Sticky mailbox is temporarily unavailable. Push next_send_at
                             // out by 1 hour so we retry on a future tick when capacity
-                            // refreshes or the mailbox recovers — DON'T reassign.
+                            // refreshes or the mailbox recovers - DON'T reassign.
                             const retryAt = new Date(now.getTime() + 60 * 60 * 1000);
                             await prisma.campaignLead.update({
                                 where: { id: lead.id },
@@ -939,7 +939,7 @@ async function dispatch(): Promise<void> {
                             continue;
                         }
                     } else {
-                        // First send for this lead — pick best mailbox + bind sticky.
+                        // First send for this lead - pick best mailbox + bind sticky.
                         chosenAccount = pickBestByScore(lead);
                         stickyOverride = !!chosenAccount;
                     }
@@ -1042,13 +1042,13 @@ async function dispatch(): Promise<void> {
                         euComplianceMode: campaign.eu_compliance_mode ?? false,
                         mailingAddress: orgMailingAddress,
                     });
-                    // Preheader injection — invisible-to-render div placed before
+                    // Preheader injection - invisible-to-render div placed before
                     // the visible body. Mail clients (Gmail, Outlook, Apple Mail,
                     // Yahoo) lift the first non-whitespace text as the inbox-list
                     // snippet; the trailing &zwnj; whitespace hack prevents
                     // body content bleeding into the preview window.
                     const bodyHtml = injectPreheader(trackedBody, personalizedPreheader);
-                    // RFC 8058 one-click unsubscribe URL — populates List-Unsubscribe
+                    // RFC 8058 one-click unsubscribe URL - populates List-Unsubscribe
                     // headers in the send services. Always computed when
                     // include_unsubscribe is on (default true).
                     const unsubscribeUrl = (campaign.include_unsubscribe ?? true)
@@ -1098,7 +1098,7 @@ async function dispatch(): Promise<void> {
 
                 // Persist sticky-mailbox bindings outside the per-lead loop so we
                 // batch the writes. updateMany with composite OR can't bind per-row,
-                // so use a small Promise.all of single updates — usually <50 rows.
+                // so use a small Promise.all of single updates - usually <50 rows.
                 if (leadsToBindStickyAccount.length > 0) {
                     await Promise.all(
                         leadsToBindStickyAccount.map(({ leadId, accountId }) =>
@@ -1158,7 +1158,7 @@ async function dispatch(): Promise<void> {
                         where: { id: campaign.id },
                         data: { status: 'completed' },
                     });
-                    logger.info(`[${LOG_TAG}] Campaign "${campaign.name}" completed — no more active leads`);
+                    logger.info(`[${LOG_TAG}] Campaign "${campaign.name}" completed - no more active leads`);
 
                     SlackAlertService.sendAlert({
                         organizationId: campaign.organization_id,
@@ -1166,7 +1166,7 @@ async function dispatch(): Promise<void> {
                         entityId: campaign.id,
                         severity: 'info',
                         title: '✅ Campaign completed',
-                        message: `*${campaign.name}* finished — every lead has been worked through the full sequence. Reply count: ${campaign.reply_count ?? 0}.`,
+                        message: `*${campaign.name}* finished - every lead has been worked through the full sequence. Reply count: ${campaign.reply_count ?? 0}.`,
                     }).catch((err) => logger.warn(`[${LOG_TAG}] Slack alert failed (campaign.completed)`, { error: err?.message }));
                 }
             } catch (err: any) {
@@ -1185,7 +1185,7 @@ async function dispatch(): Promise<void> {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// WORKER — processes a batch of emails through one SMTP connection
+// WORKER - processes a batch of emails through one SMTP connection
 // ════════════════════════════════════════════════════════════════════
 
 async function processBatchJob(data: BatchJobData): Promise<void> {
@@ -1193,7 +1193,7 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
     const gapMs = sendGapMinutes * 60 * 1000;
     const jitterMs = Math.min(gapMs * 0.15, 120_000); // ±15% jitter, max 2 min
 
-    // Ensure shadow Mailbox exists — Protection layer requires it for SendEvent FK integrity,
+    // Ensure shadow Mailbox exists - Protection layer requires it for SendEvent FK integrity,
     // healing pipeline, ESP performance tracking, etc. Idempotent for already-provisioned accounts.
     let mailboxId = account.id;
     try {
@@ -1204,17 +1204,17 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
         });
         mailboxId = provisionedId;
     } catch (err: any) {
-        logger.error(`[${LOG_TAG}] Failed to ensure mailbox for ${account.email} — skipping batch`, err);
+        logger.error(`[${LOG_TAG}] Failed to ensure mailbox for ${account.email} - skipping batch`, err);
         return;
     }
 
-    // Check if mailbox is currently paused/quarantined by Protection layer — skip if so
+    // Check if mailbox is currently paused/quarantined by Protection layer - skip if so
     const mailboxState = await prisma.mailbox.findUnique({
         where: { id: mailboxId },
         select: { recovery_phase: true, status: true },
     });
     if (mailboxState && (mailboxState.status === 'paused' || mailboxState.recovery_phase === 'paused' || mailboxState.recovery_phase === 'quarantine')) {
-        logger.warn(`[${LOG_TAG}] Mailbox ${account.email} is ${mailboxState.recovery_phase} — skipping batch of ${emails.length}`);
+        logger.warn(`[${LOG_TAG}] Mailbox ${account.email} is ${mailboxState.recovery_phase} - skipping batch of ${emails.length}`);
         return;
     }
 
@@ -1246,7 +1246,7 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                 continue;
             }
 
-            // ── PROTECTION GATE — re-check at SEND TIME ──
+            // ── PROTECTION GATE - re-check at SEND TIME ──
             // The dispatcher snapshot (~60s ago) and BullMQ worker pickup can
             // span >60 minutes for batches with high send_gap_minutes, so a
             // mailbox/domain pause that fires mid-batch must be re-checked
@@ -1269,7 +1269,7 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                     });
                     logger.info(`[${LOG_TAG}] Send deferred ${deferMinutes}m for ${maskEmail(email.leadEmail)}: ${gate.reason}`);
                 } else {
-                    // Hard block — pause the lead in this campaign so it stops
+                    // Hard block - pause the lead in this campaign so it stops
                     // looping. Operator action (or YELLOW reclassification)
                     // will release it.
                     await prisma.campaignLead.update({
@@ -1330,7 +1330,7 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                 // Per-(campaign, mailbox) usage counter. Upsert so the row is
                 // created on first send and incremented atomically thereafter.
                 // sends_reset_at carries the boundary at which this counter is
-                // considered stale — at-load-time the dispatcher checks if it's
+                // considered stale - at-load-time the dispatcher checks if it's
                 // before today UTC midnight and treats it as 0 if so.
                 prisma.campaignAccountUsage.upsert({
                     where: {
@@ -1368,7 +1368,7 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                     : []),
             ]);
 
-            // Outbound webhook fan-out — fires email.sent for any subscribers.
+            // Outbound webhook fan-out - fires email.sent for any subscribers.
             // Send-event volume can be high; subscribers should filter their
             // event allowlist if they only care about replies / bounces.
             webhookBus.emitEmailSent(
@@ -1393,7 +1393,7 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
             //      graduation (only counts in RESTRICTED_SEND / WARM_RECOVERY).
             //   2. Domain.last_sent_at refresh for inactivity tracking.
             //   3. Sliding-window roll once we cross ROLLING_WINDOW_SIZE so
-            //      bounce/send ratios stay representative — keep half the
+            //      bounce/send ratios stay representative - keep half the
             //      stats per the original design.
             (async () => {
                 try {
@@ -1518,7 +1518,7 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
         }
     }
 
-    logger.info(`[${LOG_TAG}] Batch complete: ${account.email} — ${sentCount} sent, ${failedCount} failed`);
+    logger.info(`[${LOG_TAG}] Batch complete: ${account.email} - ${sentCount} sent, ${failedCount} failed`);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1544,7 +1544,7 @@ export function scheduleSendQueue(): NodeJS.Timeout {
             {
                 connection,
                 concurrency: WORKER_CONCURRENCY,
-                // No global rate limiter here — the send_gap_minutes inside each batch
+                // No global rate limiter here - the send_gap_minutes inside each batch
                 // handles the pacing per mailbox. Concurrency handles parallelism across mailboxes.
             }
         );
@@ -1563,7 +1563,7 @@ export function scheduleSendQueue(): NodeJS.Timeout {
 
         logger.info(`[${LOG_TAG}] BullMQ started (concurrency: ${WORKER_CONCURRENCY}, batch-per-mailbox)`);
     } else {
-        logger.warn(`[${LOG_TAG}] No Redis — in-process sequential fallback`);
+        logger.warn(`[${LOG_TAG}] No Redis - in-process sequential fallback`);
     }
 
     // Dispatcher

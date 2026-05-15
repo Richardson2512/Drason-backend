@@ -1,5 +1,5 @@
 /**
- * Webhook Service — outbound delivery fan-out.
+ * Webhook Service - outbound delivery fan-out.
  *
  * Public API:
  *   dispatchEvent(orgId, eventType, payload)
@@ -16,7 +16,7 @@
  *     Re-enqueues an existing delivery row. Used by the customer-facing
  *     "Replay" button in Slice 4.
  *
- * Note on SlackAlertService — the legacy `SlackAlertService` (chat.postMessage
+ * Note on SlackAlertService - the legacy `SlackAlertService` (chat.postMessage
  * with org bot tokens) is intentionally NOT migrated onto this plumbing.
  * It uses a different auth model (OAuth bot token + channel ID) from a
  * generic webhook URL, and forcing both into one WebhookEndpoint row
@@ -37,7 +37,7 @@ import { sendTransactionalEmail } from './transactionalEmailService';
 import { renderEmailTemplate, renderEmailPlainText } from './transactionalEmailTemplates';
 
 // ────────────────────────────────────────────────────────────────────
-// Event taxonomy — single source of truth for valid event types.
+// Event taxonomy - single source of truth for valid event types.
 // Slice 2 will instrument the codebase to emit these. Keeping the list
 // here lets the API + UI validate against it without drift.
 // ────────────────────────────────────────────────────────────────────
@@ -106,7 +106,7 @@ function getQueue(): Queue | null {
     if (_queue) return _queue;
     const redis = getRedisClient();
     if (!redis) {
-        logger.warn('[WEBHOOK] No Redis — webhook deliveries will not be enqueued');
+        logger.warn('[WEBHOOK] No Redis - webhook deliveries will not be enqueued');
         return null;
     }
     _queue = new Queue(WEBHOOK_QUEUE_NAME, {
@@ -130,7 +130,7 @@ interface DeliveryJobData {
 // Customer-configured webhook endpoints are fanned out via the DB +
 // BullMQ pipeline below. Some integrations (CRM activity push, future
 // in-process side effects) need the same events synchronously inside
-// the backend — they register here and dispatchEvent calls them in
+// the backend - they register here and dispatchEvent calls them in
 // addition to the DB fan-out. Subscribers must never throw; failures
 // are logged and swallowed so customer webhooks aren't blocked.
 
@@ -167,7 +167,7 @@ async function fanOutInternalSubscribers(
 
 /**
  * Fan out an event to every matching active endpoint in the org.
- * Idempotent on the (org, eventId) pair — callers can pass eventId to
+ * Idempotent on the (org, eventId) pair - callers can pass eventId to
  * dedupe retries from upstream.
  *
  * Returns the count of deliveries created (0 = no subscribers).
@@ -241,7 +241,7 @@ export async function dispatchEvent(
                     // BullMQ will pick this up immediately.
                     // The retry schedule is enforced by us (re-adding the job
                     // with a `delay` after a failure), not by BullMQ's
-                    // backoff config — gives us per-attempt control.
+                    // backoff config - gives us per-attempt control.
                     jobId: id, // dedupe re-enqueues
                     removeOnComplete: { count: 100 },
                     removeOnFail: { count: 500 },
@@ -249,7 +249,7 @@ export async function dispatchEvent(
             );
         }
     } else {
-        logger.warn(`[WEBHOOK] Created ${deliveryIds.length} pending deliveries but Redis is offline — they will fire when worker reconnects via the next-attempt scan.`);
+        logger.warn(`[WEBHOOK] Created ${deliveryIds.length} pending deliveries but Redis is offline - they will fire when worker reconnects via the next-attempt scan.`);
     }
 
     logger.info(`[WEBHOOK] Dispatched ${eventType} to ${endpoints.length} endpoints (org=${orgId} eventId=${eventId})`);
@@ -316,7 +316,7 @@ export async function markDeliveryAttempt(
         return { status: 'success', nextAttemptAt: null };
     }
 
-    // Failed attempt — decide between retry and dead-letter.
+    // Failed attempt - decide between retry and dead-letter.
     const shouldRetry = newAttemptCount < MAX_DELIVERY_ATTEMPTS;
     const delaySec = shouldRetry ? RETRY_DELAYS_SEC[newAttemptCount] : null;
     const nextAttemptAt = delaySec ? new Date(Date.now() + delaySec * 1000) : null;

@@ -1,7 +1,7 @@
 /**
  * Compares Prisma schema model field names against actual DB columns and
  * prints all columns the schema expects but the DB is missing. Does NOT
- * modify anything — read-only diagnostic.
+ * modify anything - read-only diagnostic.
  */
 import { PrismaClient } from '@prisma/client';
 import fs from 'fs';
@@ -31,7 +31,7 @@ function parseSchema(): Map<string, FieldDef[]> {
             const fname = parts[0];
             let ftype = parts[1];
             if (!/^[a-zA-Z_]/.test(fname)) continue;
-            // Skip relation fields (uppercase first letter typically) — we
+            // Skip relation fields (uppercase first letter typically) - we
             // only care about scalar columns. Heuristic: skip if type starts
             // with uppercase AND has no relation marker (not perfect).
             const isRelation = /^[A-Z]/.test(ftype) && !['String', 'Int', 'BigInt', 'Float', 'Decimal', 'Boolean', 'DateTime', 'Json', 'Bytes'].includes(ftype.replace(/[?\[\]]/g, ''));
@@ -74,7 +74,7 @@ async function main() {
         for (const f of fields) {
             if (!dbColSet.has(f.name)) {
                 const pgType = PRISMA_TO_PG[f.type];
-                if (!pgType) continue; // enum or unknown — skip
+                if (!pgType) continue; // enum or unknown - skip
                 missing.push({ table: model, column: f.name, type: pgType, optional: f.optional });
             }
         }

@@ -1,5 +1,5 @@
 /**
- * Agent supervisor worker — consumes unprocessed EngagementEvent rows
+ * Agent supervisor worker - consumes unprocessed EngagementEvent rows
  * and routes them through the signal→action loop in supervisor.ts.
  *
  * Ticks every 30 seconds. Batches up to 50 events per cycle so the

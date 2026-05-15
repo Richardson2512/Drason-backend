@@ -1,16 +1,16 @@
 /**
- * Generic stub provider — used as the impl for SURFE / LUSHA / HUNTER /
+ * Generic stub provider - used as the impl for SURFE / LUSHA / HUNTER /
  * ZOOMINFO until each gets its own dedicated module. Always reports EMPTY
  * so the waterfall moves through the configured order without burning
  * cost on no-op calls.
  *
  * Each real provider should replace these with a dedicated file under
  * services/enrichment/providers/ that implements ProviderImpl. Like the
- * real providers, all stubs are strict BYOK — they check the customer-
+ * real providers, all stubs are strict BYOK - they check the customer-
  * supplied credentials, never read process.env.
  *
  * When implementing a real version, make sure `enrich()` populates the
- * `linkedin_url` field on EnrichedFields when the provider returns one —
+ * `linkedin_url` field on EnrichedFields when the provider returns one -
  * the `find_linkedin_url` sequencer step depends on it. SURFE / LUSHA /
  * ZOOMINFO all expose LinkedIn URLs in their /person responses; HUNTER
  * is email-only and should leave linkedin_url null.

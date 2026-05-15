@@ -1,5 +1,5 @@
 /**
- * Topics watchlist scan engine â€” runs one watchlist's scan cycle.
+ * Topics watchlist scan engine - runs one watchlist's scan cycle.
  *
  * Pipeline per cycle:
  *   1. For each keyword (capped at 5): Unipile `searchClassicPosts`,
@@ -23,7 +23,7 @@
  * + hydrate calls.
  *
  * Cost: ZERO incremental. Unipile pricing is flat per linked account,
- * so we don't pay per call â€” we just have to stay under LinkedIn's
+ * so we don't pay per call - we just have to stay under LinkedIn's
  * action ceilings to avoid an account block.
  */
 
@@ -69,7 +69,7 @@ interface ScanSummary {
 }
 
 /**
- * Run one scan of one watchlist. Idempotent enough â€” the (watchlist,
+ * Run one scan of one watchlist. Idempotent enough - the (watchlist,
  * post, engager) unique index prevents duplicate match rows even if the
  * scan re-runs the same window.
  */
@@ -105,7 +105,7 @@ export async function runWatchlistScan(watchlistId: string): Promise<ScanSummary
 
     // Pick a LinkedIn account in the workspace to make calls through.
     // Rotate by least-recent usage AND lowest action burn so a workspace
-    // with multiple connected accounts spreads load — protecting any
+    // with multiple connected accounts spreads load ï¿½ protecting any
     // single account from hitting LinkedIn's daily action ceiling and
     // triggering a soft block.
     const account = await prisma.linkedInAccount.findFirst({
@@ -113,7 +113,7 @@ export async function runWatchlistScan(watchlistId: string): Promise<ScanSummary
             organization_id: wl.organization_id,
             status: 'OK',
             // Only consider accounts with headroom on the daily action
-            // budget — others will eventually be picked up tomorrow.
+            // budget ï¿½ others will eventually be picked up tomorrow.
             unipile_actions_today: { lt: prisma.linkedInAccount.fields.max_unipile_actions_per_day },
         },
         orderBy: [
@@ -143,7 +143,7 @@ export async function runWatchlistScan(watchlistId: string): Promise<ScanSummary
 
     // In-memory action-budget tracker. The schema's
     // `unipile_actions_today` is updated periodically (every 10 actions
-    // and at scan end) — between flushes we count in memory so we don't
+    // and at scan end) ï¿½ between flushes we count in memory so we don't
     // burn one DB write per Unipile call. The watchlist scan stops as
     // soon as `actionsUsed + actionsBurnedThisScan >= max`, which
     // happens well below LinkedIn's true 100/day ceiling because of the
@@ -174,7 +174,7 @@ export async function runWatchlistScan(watchlistId: string): Promise<ScanSummary
     const excludedSlugSet = new Set(wl.excluded_profile_slugs.map(s => s.toLowerCase()));
     const excludedCompanyTerms = wl.excluded_company_terms.map(s => s.toLowerCase());
 
-    // ICP filter â€” when an icp_profile_id is configured, we delegate to
+    // ICP filter - when an icp_profile_id is configured, we delegate to
     // the canonical icpMatcher.matchProfile() service rather than
     // reimplementing the heuristic. Two reasons:
     //   1. Consistency: an engager that passes the ICP gate in the
@@ -183,7 +183,7 @@ export async function runWatchlistScan(watchlistId: string): Promise<ScanSummary
     //   2. Future-proofing: when v2 lands the LLM-backed matcher, this
     //      path picks up the upgrade for free.
     // matchProfile is pure (no AgentRun audit) and rule-engine in v1, so
-    // cost stays at zero tokens â€” preserving the watchlist's
+    // cost stays at zero tokens - preserving the watchlist's
     // no-incremental-spend promise.
     const watchlistIcpId = wl.icp_profile_id || null;
 
@@ -242,7 +242,7 @@ export async function runWatchlistScan(watchlistId: string): Promise<ScanSummary
             }
 
             // Hydrate the engagers. Reactions cap at 100/call, comments
-            // at 100/call — sufficient for v1. Each call burns 1 action,
+            // at 100/call ï¿½ sufficient for v1. Each call burns 1 action,
             // so we account for 2 actions before issuing the hydrate
             // request pair. If we can't afford both, halt the scan
             // cleanly rather than partially fetch.
@@ -310,7 +310,7 @@ export async function runWatchlistScan(watchlistId: string): Promise<ScanSummary
             for (const eng of engagers) {
                 if (remaining <= 0) break;
 
-                // Exclusions â€” operator-curated slug list + free-text
+                // Exclusions - operator-curated slug list + free-text
                 // company keyword exclusion (e.g. "Acme", "Boltgrid").
                 if (excludedSlugSet.has(eng.actor_slug)) {
                     summary.engagers_skipped_excluded += 1;
@@ -342,7 +342,7 @@ export async function runWatchlistScan(watchlistId: string): Promise<ScanSummary
                 });
                 summary.engagers_hydrated += 1;
 
-                // ICP gate â€” delegate to icpMatcher.matchProfile() so this
+                // ICP gate - delegate to icpMatcher.matchProfile() so this
                 // path stays bit-for-bit consistent with supervisor's
                 // signal-monitoring filter. matchProfile returns the full
                 // set of matched ICP ids; we only require that the
@@ -372,7 +372,7 @@ export async function runWatchlistScan(watchlistId: string): Promise<ScanSummary
                                 comment_text: eng.comment_text,
                                 status: 'skipped_icp',
                             } as any,
-                        }).catch(() => { /* unique-index dup â€” fine */ });
+                        }).catch(() => { /* unique-index dup - fine */ });
                         summary.engagers_skipped_icp += 1;
                         continue;
                     }
@@ -433,7 +433,7 @@ export async function runWatchlistScan(watchlistId: string): Promise<ScanSummary
         }
     }
 
-    // Final action-counter flush before we return — captures any
+    // Final action-counter flush before we return ï¿½ captures any
     // burned actions since the last 10-action flush so the DB reflects
     // the full scan's spend.
     await flushActions();
@@ -460,19 +460,19 @@ export async function runWatchlistScan(watchlistId: string): Promise<ScanSummary
  * promotion flow.
  *
  * Previously this function did a direct `CampaignLead.upsert` with a
- * placeholder email and called it a day — that bypassed enrichment,
+ * placeholder email and called it a day ï¿½ that bypassed enrichment,
  * icebreaker generation, the post-enrichment routing (phone?cold-call,
  * email?Sequencer source=signal), and the AgentRun audit trail. Auto-
  * pushed leads stayed at `lin_<slug>@unresolved.local` forever.
  *
- * Now we delegate to `promoteProfileToCampaign` — the same function the
+ * Now we delegate to `promoteProfileToCampaign` ï¿½ the same function the
  * supervisor's ENFORCE path uses for engagement-event-triggered
  * enrollments. Watchlist auto-pushes and rule-driven enrollments
  * produce identical artifacts: enriched Lead row, AI opener, routing
  * tags, AgentRun audit, CampaignLead enrollment.
  *
  * No engagement_event id is passed (watchlist matches don't always have
- * one — the post may not be in our LinkedInPost table yet) so the
+ * one ï¿½ the post may not be in our LinkedInPost table yet) so the
  * icebreaker step is skipped. A nightly worker can revisit watchlist-
  * enrolled leads and generate openers when the poller's later cycle
  * captures the post text.

@@ -1,5 +1,5 @@
 /**
- * Precondition evaluator — called by the dispatcher before executing a
+ * Precondition evaluator - called by the dispatcher before executing a
  * sequence step, returns whether the step is executable and (if not) a
  * skip_reason that gets written to SequenceStepExecution.
  *
@@ -8,7 +8,7 @@
  * unit-test and avoids surprise DB reads inside the scheduler loop.
  *
  * Skip reasons are short, stable strings (used both for analytics
- * aggregation and as cache keys) — see SKIP_REASON_LABELS for the
+ * aggregation and as cache keys) - see SKIP_REASON_LABELS for the
  * human-friendly mapping the UI uses.
  */
 
@@ -16,7 +16,7 @@ import { STEP_TYPES, type PreconditionKey } from './stepTypeRegistry';
 
 /**
  * The dispatcher resolves these facts once per (lead, step, sender) tuple
- * and passes them in. NULL values mean "unknown" — the evaluator treats
+ * and passes them in. NULL values mean "unknown" - the evaluator treats
  * unknown as a failing precondition rather than guessing.
  */
 export interface PreconditionContext {
@@ -27,17 +27,17 @@ export interface PreconditionContext {
     lead_has_linkedin_profile: boolean;
     /** True if the lead's LinkedIn profile is a 1st-degree connection of the
      *  sending account. NULL when unknown (e.g. we haven't fetched the edge
-     *  yet) — treated as a failing precondition. */
+     *  yet) - treated as a failing precondition. */
     sender_is_first_degree: boolean | null;
 
     /** Sender capability facts */
     sender_account_type?: 'CLASSIC' | 'PREMIUM' | 'SALES_NAV' | 'RECRUITER' | null;
     sender_has_inmail_credits: boolean | null;
-    /** Lead's LinkedIn profile is Open (in Sales Nav's sense) — when true,
+    /** Lead's LinkedIn profile is Open (in Sales Nav's sense) - when true,
      *  InMail does NOT consume a credit. */
     lead_profile_is_open: boolean | null;
 
-    /** For linkedin_like_post — has the lead posted within the configured timespan? */
+    /** For linkedin_like_post - has the lead posted within the configured timespan? */
     lead_has_recent_post: boolean | null;
 }
 
@@ -48,14 +48,14 @@ export type EvalResult =
 /**
  * Account tiers that have InMail capability at all.
  *
- *   CLASSIC   — Free account. No InMail. Even to Open-Profile recipients,
- *               we don't attempt — LinkedIn's free tier doesn't expose the
+ *   CLASSIC   - Free account. No InMail. Even to Open-Profile recipients,
+ *               we don't attempt - LinkedIn's free tier doesn't expose the
  *               InMail send button at all in most UI surfaces.
- *   PREMIUM   — Premium Career (5/month) and Premium Business (15/month)
+ *   PREMIUM   - Premium Career (5/month) and Premium Business (15/month)
  *               both ship with InMail credits. We collapse both into the
  *               PREMIUM enum; the per-account daily cap handles throttling.
- *   SALES_NAV — Sales Navigator (Core / Advanced) — ~50/month.
- *   RECRUITER — Recruiter / Recruiter Lite — 30/month (Lite) up to 150+
+ *   SALES_NAV - Sales Navigator (Core / Advanced) - ~50/month.
+ *   RECRUITER - Recruiter / Recruiter Lite - 30/month (Lite) up to 150+
  *               (full Recruiter). Daily cap handles the spread.
  */
 const SUPPORTS_INMAIL = new Set(['PREMIUM', 'SALES_NAV', 'RECRUITER']);
@@ -94,7 +94,7 @@ function check(pk: PreconditionKey, ctx: PreconditionContext): boolean {
         case 'sender_has_inmail_credits_or_open_profile': {
             // Optimistic when we don't yet have credit data: assume tiered
             // accounts have credits available. The actual credit balance
-            // is enforced at Unipile send time — Unipile returns an
+            // is enforced at Unipile send time - Unipile returns an
             // "insufficient credits" error which the dispatcher catches
             // and converts to a per-step failure (NOT a global skip). The
             // alternative (pessimistic null) would block 100% of InMail
@@ -102,13 +102,13 @@ function check(pk: PreconditionKey, ctx: PreconditionContext): boolean {
             if (ctx.lead_profile_is_open === true) return true;
             if (ctx.sender_has_inmail_credits === true) return true;
             if (ctx.sender_has_inmail_credits === false) return false;
-            // Credit balance unknown — fall through to tier-based gate.
+            // Credit balance unknown - fall through to tier-based gate.
             return Boolean(ctx.sender_account_type && SUPPORTS_INMAIL.has(ctx.sender_account_type));
         }
         case 'lead_has_recent_post':
             return ctx.lead_has_recent_post === true;
         default:
-            // Exhaustive — TypeScript will surface unhandled keys
+            // Exhaustive - TypeScript will surface unhandled keys
             return false;
     }
 }
@@ -121,9 +121,9 @@ export const SKIP_REASON_LABELS: Record<string, string> = {
     lead_has_linkedin_profile: 'Lead has no LinkedIn profile on file',
     sender_is_first_degree: 'Lead is not yet a 1st-degree connection',
     sender_is_not_first_degree: 'Lead is already a 1st-degree connection',
-    sender_supports_inmail: 'Sender account tier does not support InMail (Classic / free accounts) — upgrade to Premium, Sales Navigator, or Recruiter',
+    sender_supports_inmail: 'Sender account tier does not support InMail (Classic / free accounts) - upgrade to Premium, Sales Navigator, or Recruiter',
     sender_has_inmail_credits_or_open_profile: 'No InMail credits and lead profile is closed',
     lead_has_recent_post: 'Lead has no post within the configured timespan',
-    lead_already_has_email: 'Lead already has an enriched email — find_email skipped',
+    lead_already_has_email: 'Lead already has an enriched email - find_email skipped',
     unknown_step_type: 'Step type is not registered',
 };

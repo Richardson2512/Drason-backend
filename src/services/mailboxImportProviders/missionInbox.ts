@@ -1,7 +1,7 @@
 /**
  * Mission Inbox mailbox-import provider.
  *
- * STUB — Mission Inbox does not publish API documentation publicly.
+ * STUB - Mission Inbox does not publish API documentation publicly.
  * Implementation pattern matches Zapmail when their docs are obtained.
  *
  * Expected fields in their mailbox response:

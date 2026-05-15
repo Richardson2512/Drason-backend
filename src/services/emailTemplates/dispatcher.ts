@@ -1,5 +1,5 @@
 /**
- * Email dispatcher — the single send-site every transactional email goes
+ * Email dispatcher - the single send-site every transactional email goes
  * through.
  *
  * Handles the cross-cutting concerns that every individual email needs but
@@ -12,7 +12,7 @@
  *   3. Tagging. Resend's analytics dashboard groups by tags; we always
  *      attach `category` and `event_kind`.
  *   4. Fail-safe. Email send failures must never crash the worker / request
- *      that triggered them — they're side effects, not gates. We log and
+ *      that triggered them - they're side effects, not gates. We log and
  *      swallow non-throw paths from sendTransactionalEmail.
  *   5. Dev-mode logging. When RESEND_API_KEY is unset we want a clear log
  *      of what would have been sent, with subject + recipient.
@@ -38,7 +38,7 @@ export interface RenderedEmail {
     subject: string;
     html: string;
     text: string;
-    /** Inbox preview snippet — for logger / observability, never delivered. */
+    /** Inbox preview snippet - for logger / observability, never delivered. */
     preheader: string;
 }
 
@@ -56,12 +56,12 @@ export interface DispatchEmailParams {
     audience: Audience;
     /** Stable category for Resend analytics + log filtering. */
     category: EmailCategory;
-    /** Concrete event kind — tighter grouping than category. */
+    /** Concrete event kind - tighter grouping than category. */
     eventKind: string;
     /**
      * Stable per-event identifier so a retry doesn't double-send. Combine
      * the entity id with the event timestamp / counter that uniquely names
-     * THIS occurrence (not just "this user got a reset link" — that would
+     * THIS occurrence (not just "this user got a reset link" - that would
      * dedupe the *next* request hour). Examples:
      *   - `pwreset:${userId}:${tokenHash[:16]}`
      *   - `mailbox-paused:${mailboxId}:${pausedAt.getTime()}`
@@ -70,7 +70,7 @@ export interface DispatchEmailParams {
     idempotencyKey: string;
     /**
      * Skip the "no API key configured" warning when we're intentionally
-     * in dev mode. Default false — most callers want to know when sends
+     * in dev mode. Default false - most callers want to know when sends
      * are silently dropped.
      */
     quiet?: boolean;
@@ -78,7 +78,7 @@ export interface DispatchEmailParams {
 
 /**
  * High-level taxonomy for Resend analytics + internal log filtering.
- * Keep stable — these strings flow into the Resend dashboard's tag filter.
+ * Keep stable - these strings flow into the Resend dashboard's tag filter.
  */
 export type EmailCategory =
     | 'account_security'
@@ -101,14 +101,14 @@ export interface DispatchResult {
 }
 
 /**
- * The one entry point. Every wire-up site calls this — they don't import
+ * The one entry point. Every wire-up site calls this - they don't import
  * sendTransactionalEmail directly.
  */
 export async function dispatchEmail(params: DispatchEmailParams): Promise<DispatchResult> {
     const recipients = await resolveAudience(params.audience);
 
     if (recipients.length === 0) {
-        logger.info('[EMAIL_DISPATCH] No recipients resolved — skipped', {
+        logger.info('[EMAIL_DISPATCH] No recipients resolved - skipped', {
             eventKind: params.eventKind,
             audience: params.audience,
         });
@@ -130,7 +130,7 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
 
         if (!result.sent) {
             // sendTransactionalEmail returns sent:false on missing API key or
-            // resend rejection — both are non-fatal but worth logging.
+            // resend rejection - both are non-fatal but worth logging.
             if (!params.quiet) {
                 logger.warn('[EMAIL_DISPATCH] Send returned not-sent', {
                     eventKind: params.eventKind,

@@ -1,9 +1,9 @@
 /**
- * Apollo enrichment provider — strict BYOK (customer supplies api_key).
+ * Apollo enrichment provider - strict BYOK (customer supplies api_key).
  *
  * POSTs to Apollo's /v1/people/match endpoint with the lead's LinkedIn URL +
  * name + company. The response carries email, phone numbers, company size,
- * industry, title, location, AND the canonical LinkedIn URL — Apollo
+ * industry, title, location, AND the canonical LinkedIn URL - Apollo
  * resolves a profile URL from name + company even when the caller didn't
  * pass one in. This is the path the `find_linkedin_url` sequencer step
  * uses to discover URLs for contacts that were imported without one.
@@ -14,7 +14,7 @@
  *   Body: { linkedin_url, first_name, last_name, organization_name }
  *
  * Strict BYOK: customer pays Apollo directly out of their own Apollo
- * account. We don't track or surface per-hit cost — the customer's
+ * account. We don't track or surface per-hit cost - the customer's
  * Apollo dashboard is the source of truth for spend.
  *
  * Credentials shape: { api_key: string }
@@ -40,7 +40,7 @@ interface ApolloMatchResponse {
         country?: string | null;
         /** Canonical LinkedIn profile URL. Apollo populates this when it
          *  resolves a person from name + company even if the request
-         *  didn't include a URL — that's what makes Apollo useful as the
+         *  didn't include a URL - that's what makes Apollo useful as the
          *  source for the `find_linkedin_url` sequencer step. */
         linkedin_url?: string | null;
         organization?: {

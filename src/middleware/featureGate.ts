@@ -2,7 +2,7 @@
  * Feature Gate Middleware
  *
  * Subscription-status check only. Per-entity caps (leads / domains / mailboxes /
- * webhook endpoints / DNSBL depth) were removed on 2026-04-27 — Superkabe now
+ * webhook endpoints / DNSBL depth) were removed on 2026-04-27 - Superkabe now
  * meters only monthly send volume and email-validation credits. The protection
  * layer is a flat capability that runs comprehensively on every connected
  * entity, regardless of tier.

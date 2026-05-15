@@ -1,5 +1,5 @@
 /**
- * /api/linkedin — Super LinkedIn module routes.
+ * /api/linkedin - Super LinkedIn module routes.
  * Org-scoped via the global orgContext middleware mounted at /api.
  */
 
@@ -30,7 +30,7 @@ router.post('/accounts/:id/reconnect', asyncHandler(accounts.reconnect));
 router.patch('/accounts/:id', asyncHandler(accounts.update));
 router.delete('/accounts/:id', asyncHandler(accounts.remove));
 
-// Campaigns — Super LinkedIn is single-channel by design. These endpoints
+// Campaigns - Super LinkedIn is single-channel by design. These endpoints
 // own LinkedIn-only campaign create / launch / detail. Mixed-channel
 // campaigns belong on the unified /api/sequencer/campaigns surface.
 router.get('/campaigns/step-types', asyncHandler(campaigns.listStepTypes));
@@ -45,10 +45,10 @@ router.get('/campaigns/:id/senders', asyncHandler(campaigns.listSenders));
 router.post('/campaigns/:id/senders', asyncHandler(campaigns.attachSender));
 router.delete('/campaigns/:id/senders/:senderId', asyncHandler(campaigns.detachSender));
 
-// Signals feed — engagement events with resolved mode + outcome.
+// Signals feed - engagement events with resolved mode + outcome.
 router.get('/signals/feed', asyncHandler(signals.feed));
 
-// SUGGEST review queue — pending approval rows from the supervisor.
+// SUGGEST review queue - pending approval rows from the supervisor.
 router.get('/signals/review-queue', asyncHandler(signals.reviewQueue));
 router.post('/signals/review-queue/:eventId/approve', asyncHandler(signals.approveReview));
 router.post('/signals/review-queue/:eventId/dismiss', asyncHandler(signals.dismissReview));
@@ -62,7 +62,7 @@ router.get('/signals/rule-health', asyncHandler(signals.ruleHealth));
 router.get('/leads/:id/icebreaker', asyncHandler(leads.getIcebreaker));
 router.post('/leads/:id/icebreaker/regenerate', asyncHandler(leads.regenerateIcebreaker));
 
-// LinkedIn Contacts — workspace-level Lead rows that carry a linkedin_url,
+// LinkedIn Contacts - workspace-level Lead rows that carry a linkedin_url,
 // joined with LinkedIn connection-edge state + LinkedIn campaign enrollment
 // counts. Tag operations (per-row PUT + bulk-tag) reuse the unified
 // /api/sequencer/contacts/* endpoints since the underlying Lead is shared.
@@ -73,7 +73,7 @@ router.post('/contacts/bulk', asyncHandler(contacts.bulk));
 router.post('/contacts/delete', asyncHandler(contacts.remove));
 router.post('/contacts/enroll-in-campaign', asyncHandler(contacts.enrollInCampaign));
 
-// Topics watchlist — lemlist-style keyword monitoring for signal-based outbound.
+// Topics watchlist - lemlist-style keyword monitoring for signal-based outbound.
 router.get('/watchlists', asyncHandler(watchlists.list));
 router.post('/watchlists', asyncHandler(watchlists.create));
 router.get('/watchlists/:id', asyncHandler(watchlists.detail));
@@ -84,7 +84,7 @@ router.get('/watchlists/:id/matches', asyncHandler(watchlists.listMatches));
 router.post('/watchlists/:id/matches/:matchId/push', asyncHandler(watchlists.pushMatch));
 router.post('/watchlists/:id/matches/:matchId/skip', asyncHandler(watchlists.skipMatch));
 
-// Customer registry — powers the engager-relationship label.
+// Customer registry - powers the engager-relationship label.
 router.get('/customers', asyncHandler(customers.list));
 router.post('/customers/import', asyncHandler(customers.importFromCsv));
 router.delete('/customers/:id', asyncHandler(customers.remove));
@@ -96,11 +96,11 @@ router.get('/icp/:id', asyncHandler(icp.get));
 router.patch('/icp/:id', asyncHandler(icp.update));
 router.delete('/icp/:id', asyncHandler(icp.remove));
 router.post('/icp/:id/toggle', asyncHandler(icp.toggle));
-// Dry-run an ICP against a sample profile — no audit row, no side
+// Dry-run an ICP against a sample profile - no audit row, no side
 // effects. Surfaces the per-filter hit/miss breakdown so operators
 // can verify their ICP before saving.
 router.post('/icp/:id/test', asyncHandler(icp.testIcp));
-// Pre-delete impact report — count of audit rows + rules referencing
+// Pre-delete impact report - count of audit rows + rules referencing
 // this ICP. Powers the delete-confirmation modal.
 router.get('/icp/:id/delete-impact', asyncHandler(icp.deleteImpact));
 // Operator-triggered re-evaluation of stuck SUGGEST events after

@@ -1,5 +1,5 @@
 /**
- * LinkedIn send service — domain layer that wraps the Unipile invitation
+ * LinkedIn send service - domain layer that wraps the Unipile invitation
  * + messaging surfaces and enforces our local invariants (per-account
  * daily/weekly caps, edge-state transitions, audit writes).
  *
@@ -25,7 +25,7 @@ interface SendBase {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Capacity gate — checks per-account daily/weekly caps before any send.
+// Capacity gate - checks per-account daily/weekly caps before any send.
 // Returns null when capacity is fine; otherwise an outcome to short-circuit.
 // ────────────────────────────────────────────────────────────────────
 
@@ -127,7 +127,7 @@ export async function sendConnectionRequest(input: SendCrInput): Promise<SendOut
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Send DM (1st-degree only — caller should have evaluated the
+// Send DM (1st-degree only - caller should have evaluated the
 // sender_is_first_degree precondition before calling this).
 // ────────────────────────────────────────────────────────────────────
 
@@ -168,7 +168,7 @@ export async function sendDirectMessage(input: SendDmInput): Promise<SendOutcome
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Send InMail (Sales Nav / Recruiter only — caller should have
+// Send InMail (Sales Nav / Recruiter only - caller should have
 // evaluated the sender_supports_inmail precondition).
 // ────────────────────────────────────────────────────────────────────
 

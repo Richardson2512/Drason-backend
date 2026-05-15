@@ -20,9 +20,9 @@
  *
  * What's NOT in the public spec:
  *   - Response field shapes (Apidog page shows `properties: {}` for every
- *     200 response). The mailbox object's field names — email vs username,
+ *     200 response). The mailbox object's field names - email vs username,
  *     password vs app_password vs smtp_password, provider vs service_type,
- *     etc. — must be inferred at runtime.
+ *     etc. - must be inferred at runtime.
  *
  * To stay safe under that uncertainty this module:
  *   1. Reads each field via a list of plausible aliases. If Scaled Mail
@@ -32,7 +32,7 @@
  *      organization (at debug level) so a misalignment is visible without
  *      leaking creds in normal logs.
  *   3. Returns mailboxes with `appPassword: null` when no password field
- *      is recognized — the import service already handles that gracefully
+ *      is recognized - the import service already handles that gracefully
  *      by marking the row "not ready" rather than failing the batch.
  *
  * When you have a real API key, hit listAllMailboxes once and check the
@@ -45,7 +45,7 @@ const BASE_URL = 'https://server.scaledmail.com/api/v1';
 
 /** Scaled Mail enforces a hard 5 req/sec ceiling. We pace at 4/sec to leave
  *  headroom for retries and clock skew. A simple in-process throttle is
- *  enough — the bulk-import controller is single-tenant per request and
+ *  enough - the bulk-import controller is single-tenant per request and
  *  not invoked concurrently within a single Node process for the same key. */
 const MIN_REQUEST_INTERVAL_MS = 250; // 4 req/sec
 let lastRequestAt = 0;
@@ -69,7 +69,7 @@ export interface ScaledMailDomain {
 }
 
 /** Normalized Scaled Mail mailbox. Field aliases are resolved during
- *  parsing — see extractMailbox(). Credentials may be null when the
+ *  parsing - see extractMailbox(). Credentials may be null when the
  *  underlying mailbox is still being provisioned by Scaled Mail. */
 export interface ScaledMailMailbox {
     id: string;
@@ -86,7 +86,7 @@ export interface ScaledMailMailbox {
 }
 
 /**
- * Low-level fetch wrapper — applies auth, throttling, and consistent
+ * Low-level fetch wrapper - applies auth, throttling, and consistent
  * error mapping. Mirrors the shape of zapmailFetch so error UX is uniform
  * across resellers.
  */
@@ -158,7 +158,7 @@ function pickBoolean(obj: Record<string, any>, keys: string[]): boolean | undefi
 }
 
 /** Some APIs return a bare array, others wrap in {data: [...]}. Scaled
- *  Mail's spec doesn't say which — accept both. */
+ *  Mail's spec doesn't say which - accept both. */
 function extractArray(payload: unknown): any[] {
     if (Array.isArray(payload)) return payload;
     if (payload && typeof payload === 'object') {
@@ -174,7 +174,7 @@ function extractArray(payload: unknown): any[] {
 }
 
 /**
- * Validate that the API key works. Calls GET /organizations — succeeds
+ * Validate that the API key works. Calls GET /organizations - succeeds
  * 200 with a list (possibly empty), 401/403 on bad key. Throws our
  * standard friendly error message for invalid keys.
  */
@@ -201,7 +201,7 @@ export async function listOrganizations(apiKey: string): Promise<ScaledMailOrgan
 
 /**
  * List domains the customer owns under one organization. `available=false`
- * is required to include domains that already have mailboxes — without it
+ * is required to include domains that already have mailboxes - without it
  * Scaled Mail filters to "domains usable for new orders" only, which is
  * the wrong set for an import flow.
  */
@@ -227,7 +227,7 @@ export async function listPurchasedDomains(
 
 /**
  * List mailboxes under one domain. The response field shape is the
- * undocumented part — see extractMailbox() for the alias-matching logic.
+ * undocumented part - see extractMailbox() for the alias-matching logic.
  */
 export async function listMailboxesByDomain(
     apiKey: string,
@@ -274,7 +274,7 @@ function extractMailbox(
     const email = pickString(raw, ['email', 'email_address', 'address', 'username']);
     if (!id || !email) return null;
 
-    // Provider — Scaled Mail sells both Google Workspace and Microsoft 365
+    // Provider - Scaled Mail sells both Google Workspace and Microsoft 365
     // mailboxes. Default to google because their flagship product is
     // Workspace; fall through to microsoft on any clear signal.
     const providerRaw = (
@@ -340,7 +340,7 @@ export async function listAllMailboxes(apiKey: string): Promise<{
     try {
         orgs = await listOrganizations(apiKey);
     } catch (err) {
-        // Caller wants this to bubble — bad key, network down, etc. Don't
+        // Caller wants this to bubble - bad key, network down, etc. Don't
         // mask the failure as "0 mailboxes found".
         throw err;
     }

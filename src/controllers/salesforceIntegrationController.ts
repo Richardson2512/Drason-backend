@@ -1,12 +1,12 @@
 /**
- * Salesforce integration controller — production AND sandbox.
+ * Salesforce integration controller - production AND sandbox.
  *
  * Endpoints:
  *   GET  /api/integrations/salesforce/authorize?env=production|sandbox
  *   GET  /api/integrations/salesforce/callback
- *   GET  /api/integrations/salesforce/list-views   — list views available on Contact
- *   GET  /api/integrations/salesforce/fields       — describe Contact fields
- *   POST /api/integrations/salesforce/import       — body: { view_id?, soql?, field_mapping? }
+ *   GET  /api/integrations/salesforce/list-views   - list views available on Contact
+ *   GET  /api/integrations/salesforce/fields       - describe Contact fields
+ *   POST /api/integrations/salesforce/import       - body: { view_id?, soql?, field_mapping? }
  */
 
 import type { Request, Response } from 'express';
@@ -83,7 +83,7 @@ export async function callback(req: Request, res: Response): Promise<void> {
     }
 
     try {
-        // Build a placeholder client just for the exchange — instanceUrl
+        // Build a placeholder client just for the exchange - instanceUrl
         // will be populated from the response and used for everything else.
         const client = new SalesforceCrmClient({
             accessToken: '',

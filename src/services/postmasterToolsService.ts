@@ -14,7 +14,7 @@
  *   4. Daily worker uses refresh token to fetch reputation per domain
  *
  * Re-uses GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET (same OAuth client as
- * sequencer Gmail OAuth — different scope).
+ * sequencer Gmail OAuth - different scope).
  *
  * Postmaster Tools API reference:
  *   https://developers.google.com/gmail/postmaster
@@ -53,7 +53,7 @@ function clientCreds(): { clientId: string; clientSecret: string } {
 
 /**
  * Build the Google OAuth authorize URL. The `state` param is a one-time
- * cryptographic nonce stored server-side keyed to this org — replaces the
+ * cryptographic nonce stored server-side keyed to this org - replaces the
  * earlier scheme of stuffing orgId into state, which was CSRF-vulnerable
  * because orgId is semi-public (UUIDs leak via JWTs, logs, URLs).
  */
@@ -164,7 +164,7 @@ export async function getValidAccessToken(orgId: string): Promise<string | null>
         : org.postmaster_refresh_token;
 
     const expiresAt = org.postmaster_token_expires_at;
-    // 60s safety window — refresh if token expires within the next minute.
+    // 60s safety window - refresh if token expires within the next minute.
     if (org.postmaster_access_token && expiresAt && expiresAt.getTime() - Date.now() > 60_000) {
         const access = isEncrypted(org.postmaster_access_token)
             ? decrypt(org.postmaster_access_token)
@@ -215,12 +215,12 @@ export async function getValidAccessToken(orgId: string): Promise<string | null>
  * Disconnect: revoke the grant on Google's side, then clear stored tokens.
  *
  * Per Google best-practices: "Revoke tokens as soon as they are no longer
- * needed and delete them permanently from your systems." We do BOTH —
+ * needed and delete them permanently from your systems." We do BOTH -
  * revoke first (so Google kills the grant even if the DB row leaks later),
  * then clear locally.
  *
  * Revoking the refresh_token invalidates ALL access tokens issued for that
- * grant, immediately. We never raise on revoke failure — best-effort, log
+ * grant, immediately. We never raise on revoke failure - best-effort, log
  * it, and proceed to clear locally so the user always sees an honest UI.
  */
 export async function disconnect(orgId: string): Promise<void> {
@@ -303,7 +303,7 @@ export async function getTrafficStats(
         );
         return res.data as PostmasterTrafficStats;
     } catch (err: any) {
-        // 404 = no data for that date (legitimate — happens when the domain
+        // 404 = no data for that date (legitimate - happens when the domain
         // didn't send any mail Google could measure). 400 = malformed date.
         if (err.response?.status === 404) return null;
         throw err;
@@ -391,7 +391,7 @@ export async function fetchAllForOrg(orgId: string): Promise<{
     }
     domainsFound = pmDomains.length;
 
-    // Postmaster has 24-48h delay — yesterday is the freshest reliable date.
+    // Postmaster has 24-48h delay - yesterday is the freshest reliable date.
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const dateStr = yesterday.toISOString().slice(0, 10);
 

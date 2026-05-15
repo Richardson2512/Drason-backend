@@ -1,5 +1,5 @@
 /**
- * AI Profile Extraction Queue — BullMQ-backed async pipeline for
+ * AI Profile Extraction Queue - BullMQ-backed async pipeline for
  * `extractAndCacheProfile`.
  *
  * Why a queue:
@@ -30,7 +30,7 @@ import IORedis from 'ioredis';
 import { logger } from './observabilityService';
 import { extractAndCacheProfile } from './aiCopywritingService';
 
-// Queue names cannot contain ':' — see eventQueue.ts for the gotcha.
+// Queue names cannot contain ':' - see eventQueue.ts for the gotcha.
 const QUEUE_NAME = 'drason-ai-profile-extraction';
 
 interface JobPayload {
@@ -51,7 +51,7 @@ let connection: IORedis | null = null;
 /** Lazy connection so the queue + worker share one Redis client. */
 function getConnection(): ConnectionOptions {
     if (!process.env.REDIS_URL) {
-        throw new Error('REDIS_URL is not configured — required for AI profile extraction queue');
+        throw new Error('REDIS_URL is not configured - required for AI profile extraction queue');
     }
     if (!connection) {
         connection = new IORedis(process.env.REDIS_URL, {
@@ -67,7 +67,7 @@ export function getExtractionQueue(): Queue<JobPayload, JobResult> {
         queue = new Queue<JobPayload, JobResult>(QUEUE_NAME, {
             connection: getConnection(),
             defaultJobOptions: {
-                // 3 attempts total — one initial + two retries — with
+                // 3 attempts total - one initial + two retries - with
                 // exponential backoff. The OpenAI client wrapper has its
                 // own retry/backoff; this layer protects against truly
                 // transient failures (network, redis blips) at the job
@@ -99,11 +99,11 @@ export function getExtractionQueue(): Queue<JobPayload, JobResult> {
 export async function enqueueExtraction(payload: JobPayload): Promise<string> {
     const q = getExtractionQueue();
 
-    // Dedup — look for an existing active/waiting job for this org.
+    // Dedup - look for an existing active/waiting job for this org.
     const existing = await q.getJobs(['waiting', 'waiting-children', 'active', 'delayed', 'paused']);
     for (const job of existing) {
         if (job.data?.organizationId === payload.organizationId) {
-            logger.info('[AI_PROFILE_QUEUE] dedup — returning existing job', {
+            logger.info('[AI_PROFILE_QUEUE] dedup - returning existing job', {
                 orgId: payload.organizationId,
                 jobId: job.id,
             });
@@ -168,7 +168,7 @@ export async function getJobStatus(jobId: string, organizationId: string): Promi
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Worker — processes queued jobs.
+// Worker - processes queued jobs.
 //
 // Concurrency: bounded at QUEUE_CONCURRENCY. Each call inside still
 // passes through openaiClient's per-process semaphore, so this layer
@@ -181,7 +181,7 @@ const QUEUE_CONCURRENCY = parseInt(process.env.AI_EXTRACTION_QUEUE_CONCURRENCY |
 export function startExtractionWorker(): void {
     if (worker) return;
     if (!process.env.REDIS_URL) {
-        logger.warn('[AI_PROFILE_QUEUE] REDIS_URL not set — extraction worker disabled (sync fallback only)');
+        logger.warn('[AI_PROFILE_QUEUE] REDIS_URL not set - extraction worker disabled (sync fallback only)');
         return;
     }
 

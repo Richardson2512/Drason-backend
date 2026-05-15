@@ -133,7 +133,7 @@ export const getClayWebhookUrl = async (req: Request, res: Response) => {
 
         // Use the canonical public-URL resolver so the Clay webhook URL we
         // hand the customer is the api.superkabe.com customer-facing domain
-        // — not a Railway-internal hostname that confuses customers and
+        // - not a Railway-internal hostname that confuses customers and
         // breaks if Railway changes the internal name.
         const baseUrl = getPublicBackendUrl();
 
@@ -186,7 +186,7 @@ function maskSecret(value: string): string {
 export const disconnectSlack = async (req: Request, res: Response) => {
     try {
         const orgId = getOrgId(req);
-        // Defensive assertion — if middleware fails to populate orgId,
+        // Defensive assertion - if middleware fails to populate orgId,
         // deleteMany({ where: { organization_id: undefined } }) would
         // become deleteMany() with no scope and nuke every row. Bail loud.
         if (!orgId || typeof orgId !== 'string') {

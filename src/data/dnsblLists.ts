@@ -13,7 +13,7 @@ export interface DnsblListSeed {
 
 export const dnsblLists: DnsblListSeed[] = [
     // ═══════════════════════════════════════════════════════════════════
-    // CRITICAL TIER (weight=10) — checked every cycle, never rotated
+    // CRITICAL TIER (weight=10) - checked every cycle, never rotated
     // ═══════════════════════════════════════════════════════════════════
     {
         name: 'spamhaus_zen',
@@ -73,7 +73,7 @@ export const dnsblLists: DnsblListSeed[] = [
     },
 
     // ═══════════════════════════════════════════════════════════════════
-    // MAJOR TIER (weight=3) — checked every cycle, never rotated
+    // MAJOR TIER (weight=3) - checked every cycle, never rotated
     // ═══════════════════════════════════════════════════════════════════
 
     // --- SORBS family ---
@@ -209,7 +209,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 0,
         delisting_url: 'https://www.uceprotect.net/en/rblcheck.php',
-        notes: 'UCEPROTECT Level 1 — individual IP addresses.',
+        notes: 'UCEPROTECT Level 1 - individual IP addresses.',
     },
     {
         name: 'uceprotect_level2',
@@ -220,7 +220,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 0,
         delisting_url: 'https://www.uceprotect.net/en/rblcheck.php',
-        notes: 'UCEPROTECT Level 2 — IP ranges with multiple Level 1 listings.',
+        notes: 'UCEPROTECT Level 2 - IP ranges with multiple Level 1 listings.',
     },
 
     // --- Invaluement ---
@@ -233,7 +233,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 0,
         delisting_url: 'https://www.invaluement.com/removal/',
-        notes: 'Invaluement ivmSIP — snowshoe/hit-and-run spam.',
+        notes: 'Invaluement ivmSIP - snowshoe/hit-and-run spam.',
     },
     {
         name: 'invaluement_ivmsip24',
@@ -244,7 +244,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 0,
         delisting_url: 'https://www.invaluement.com/removal/',
-        notes: 'Invaluement ivmSIP/24 — /24 network blocks.',
+        notes: 'Invaluement ivmSIP/24 - /24 network blocks.',
     },
 
     // --- Abusix ---
@@ -270,7 +270,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 0,
         delisting_url: 'https://www.dnsbl.manitu.net/',
-        notes: 'NiX Spam — German anti-spam project, real-time updated.',
+        notes: 'NiX Spam - German anti-spam project, real-time updated.',
     },
 
     // --- Spamrats ---
@@ -283,7 +283,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 0,
         delisting_url: 'https://www.spamrats.com/removal.php',
-        notes: 'Spamrats — IPs without reverse DNS (no PTR).',
+        notes: 'Spamrats - IPs without reverse DNS (no PTR).',
     },
     {
         name: 'spamrats_dyna',
@@ -294,7 +294,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 0,
         delisting_url: 'https://www.spamrats.com/removal.php',
-        notes: 'Spamrats — dynamic IP addresses.',
+        notes: 'Spamrats - dynamic IP addresses.',
     },
     {
         name: 'spamrats_spam',
@@ -305,7 +305,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 0,
         delisting_url: 'https://www.spamrats.com/removal.php',
-        notes: 'Spamrats — confirmed spam sources.',
+        notes: 'Spamrats - confirmed spam sources.',
     },
 
     // --- PSBL ---
@@ -318,7 +318,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 0,
         delisting_url: 'https://psbl.org/remove',
-        notes: 'Passive Spam Block List — passive detection of spam sources.',
+        notes: 'Passive Spam Block List - passive detection of spam sources.',
     },
 
     // --- JunkEmailFilter / HostKarma ---
@@ -344,7 +344,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 0,
         delisting_url: 'https://www.gbudb.com/truncate/',
-        notes: 'Truncate — worst-of-the-worst from GBUdb IP reputation.',
+        notes: 'Truncate - worst-of-the-worst from GBUdb IP reputation.',
     },
 
     // --- WPBL ---
@@ -441,7 +441,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 0,
         delisting_url: 'https://spameatingmonkey.com/removal',
-        notes: 'SpamEatingMonkey FRESH — newly registered domains.',
+        notes: 'SpamEatingMonkey FRESH - newly registered domains.',
     },
     {
         name: 'sem_uribl',
@@ -465,7 +465,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 0,
         delisting_url: 'https://www.0spam.org/',
-        notes: '0spam project — real-time spam detection.',
+        notes: '0spam project - real-time spam detection.',
     },
 
     // --- Lashback ---
@@ -478,7 +478,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 0,
         delisting_url: 'https://www.lashback.com/support/',
-        notes: 'Lashback Unsubscribe Blacklist — senders ignoring unsubscribe requests.',
+        notes: 'Lashback Unsubscribe Blacklist - senders ignoring unsubscribe requests.',
     },
 
     // --- Anonmails ---
@@ -492,7 +492,7 @@ export const dnsblLists: DnsblListSeed[] = [
         auth_config_key: 'SPAMHAUS_DQS_KEY',
         rotation_group: 0,
         delisting_url: 'https://check.spamhaus.org/',
-        notes: 'Spamhaus CSS — snowshoe/hailstorm spam operations.',
+        notes: 'Spamhaus CSS - snowshoe/hailstorm spam operations.',
     },
 
     // --- URIBL ---
@@ -505,7 +505,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 0,
         delisting_url: 'https://uribl.com/',
-        notes: 'URIBL multi — combined URI blacklist.',
+        notes: 'URIBL multi - combined URI blacklist.',
     },
 
     // --- Return Path / Validity ---
@@ -517,7 +517,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 3,
         requires_auth: false,
         rotation_group: 0,
-        notes: 'RFC Ignorant DSN — domains not accepting bounces per RFC.',
+        notes: 'RFC Ignorant DSN - domains not accepting bounces per RFC.',
     },
 
     // --- MegaRBL ---
@@ -542,7 +542,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 0,
         delisting_url: 'https://www.blocklist.de/en/delist.html',
-        notes: 'blocklist.de — fail2ban-reported attack sources.',
+        notes: 'blocklist.de - fail2ban-reported attack sources.',
     },
 
     // --- DroneBL ---
@@ -555,7 +555,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 0,
         delisting_url: 'https://dronebl.org/lookup',
-        notes: 'DroneBL — open proxies, drones, botnets.',
+        notes: 'DroneBL - open proxies, drones, botnets.',
     },
 
     // --- EFnet RBL ---
@@ -568,7 +568,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 0,
         delisting_url: 'https://rbl.efnetrbl.org/',
-        notes: 'EFnet RBL — IRC abuse sources, proxy/botnet detection.',
+        notes: 'EFnet RBL - IRC abuse sources, proxy/botnet detection.',
     },
 
     // --- CALIVENT ---
@@ -580,11 +580,11 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 3,
         requires_auth: false,
         rotation_group: 0,
-        notes: 'Kempt.net DNSBL — spam sources.',
+        notes: 'Kempt.net DNSBL - spam sources.',
     },
 
     // ═══════════════════════════════════════════════════════════════════
-    // MINOR TIER (weight=1) — rotated across 7 groups (0-6)
+    // MINOR TIER (weight=1) - rotated across 7 groups (0-6)
     // ═══════════════════════════════════════════════════════════════════
 
     // --- UCEPROTECT Level 3 ---
@@ -597,7 +597,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 1,
         delisting_url: 'https://www.uceprotect.net/en/rblcheck.php',
-        notes: 'UCEPROTECT Level 3 — entire ASN blocks. Controversial, very aggressive.',
+        notes: 'UCEPROTECT Level 3 - entire ASN blocks. Controversial, very aggressive.',
     },
 
     // --- SORBS extended ---
@@ -610,7 +610,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 1,
         delisting_url: 'http://www.sorbs.net/overview.shtml',
-        notes: 'SORBS — hosts demanding payment for delisting elsewhere.',
+        notes: 'SORBS - hosts demanding payment for delisting elsewhere.',
     },
     {
         name: 'sorbs_escalations',
@@ -621,7 +621,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 1,
         delisting_url: 'http://www.sorbs.net/overview.shtml',
-        notes: 'SORBS — escalated listings from netblock abuse.',
+        notes: 'SORBS - escalated listings from netblock abuse.',
     },
     {
         name: 'sorbs_noserver',
@@ -632,7 +632,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 2,
         delisting_url: 'http://www.sorbs.net/overview.shtml',
-        notes: 'SORBS — IPs that should not be running mail servers.',
+        notes: 'SORBS - IPs that should not be running mail servers.',
     },
 
     // --- Backscatter.org ---
@@ -645,7 +645,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 2,
         delisting_url: 'http://www.backscatterer.org/?target=test',
-        notes: 'Backscatterer.org — sources of backscatter (misdirected bounces).',
+        notes: 'Backscatterer.org - sources of backscatter (misdirected bounces).',
     },
 
     // --- DNSRBL ---
@@ -657,7 +657,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'InterServer RBL — honeypot-based detection.',
+        notes: 'InterServer RBL - honeypot-based detection.',
     },
 
     // --- S5H ---
@@ -670,7 +670,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 4,
         delisting_url: 'http://www.s5h.net/lookup.php',
-        notes: 'S5H.net — multiple spam source detection.',
+        notes: 'S5H.net - multiple spam source detection.',
     },
 
     // --- Abusix extended ---
@@ -682,7 +682,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 5,
-        notes: 'Abusix black zone — confirmed spam sources.',
+        notes: 'Abusix black zone - confirmed spam sources.',
     },
     {
         name: 'abusix_exploit',
@@ -692,7 +692,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 6,
-        notes: 'Abusix exploit zone — compromised hosts.',
+        notes: 'Abusix exploit zone - compromised hosts.',
     },
     {
         name: 'abusix_dblack',
@@ -712,7 +712,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 2,
-        notes: 'Abusix — IPs without reverse DNS.',
+        notes: 'Abusix - IPs without reverse DNS.',
     },
     {
         name: 'abusix_shorthash',
@@ -722,7 +722,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'Abusix short hash zone — content fingerprinting.',
+        notes: 'Abusix short hash zone - content fingerprinting.',
     },
     {
         name: 'abusix_dnsbl',
@@ -744,7 +744,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 5,
-        notes: 'NJABL combined (may be defunct — kept for legacy checks).',
+        notes: 'NJABL combined (may be defunct - kept for legacy checks).',
     },
 
     // --- Mailspike extended ---
@@ -780,7 +780,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 2,
-        notes: 'URIBL black — domains actively used in spam.',
+        notes: 'URIBL black - domains actively used in spam.',
     },
     {
         name: 'uribl_grey',
@@ -790,7 +790,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'URIBL grey — domains found in spam but not yet confirmed.',
+        notes: 'URIBL grey - domains found in spam but not yet confirmed.',
     },
     {
         name: 'uribl_red',
@@ -800,7 +800,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 4,
-        notes: 'URIBL red — domains found in confirmed spam via data mining.',
+        notes: 'URIBL red - domains found in confirmed spam via data mining.',
     },
 
     // --- SURBL extended ---
@@ -812,7 +812,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 5,
-        notes: 'SURBL abuse data — phishing/malware domains.',
+        notes: 'SURBL abuse data - phishing/malware domains.',
     },
 
     // --- Spamhaus extended ---
@@ -826,7 +826,7 @@ export const dnsblLists: DnsblListSeed[] = [
         auth_config_key: 'SPAMHAUS_DQS_KEY',
         rotation_group: 6,
         delisting_url: 'https://check.spamhaus.org/',
-        notes: 'Spamhaus SBL only — known spam operations. Subset of ZEN.',
+        notes: 'Spamhaus SBL only - known spam operations. Subset of ZEN.',
     },
     {
         name: 'spamhaus_xbl',
@@ -838,7 +838,7 @@ export const dnsblLists: DnsblListSeed[] = [
         auth_config_key: 'SPAMHAUS_DQS_KEY',
         rotation_group: 1,
         delisting_url: 'https://check.spamhaus.org/',
-        notes: 'Spamhaus XBL only — exploited systems. Subset of ZEN.',
+        notes: 'Spamhaus XBL only - exploited systems. Subset of ZEN.',
     },
     {
         name: 'spamhaus_pbl',
@@ -850,7 +850,7 @@ export const dnsblLists: DnsblListSeed[] = [
         auth_config_key: 'SPAMHAUS_DQS_KEY',
         rotation_group: 2,
         delisting_url: 'https://check.spamhaus.org/',
-        notes: 'Spamhaus PBL only — policy block list (end-user IPs). Subset of ZEN.',
+        notes: 'Spamhaus PBL only - policy block list (end-user IPs). Subset of ZEN.',
     },
 
     // --- DNS-based lists from Project Honey Pot ---
@@ -864,7 +864,7 @@ export const dnsblLists: DnsblListSeed[] = [
         auth_config_key: 'PROJECT_HONEYPOT_KEY',
         rotation_group: 3,
         delisting_url: 'https://www.projecthoneypot.org/',
-        notes: 'Project Honey Pot http:BL — requires API key prefix.',
+        notes: 'Project Honey Pot http:BL - requires API key prefix.',
     },
 
     // --- RATS ---
@@ -876,7 +876,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 4,
-        notes: 'RATS — dynamic IP ranges (duplicate check for rotation coverage).',
+        notes: 'RATS - dynamic IP ranges (duplicate check for rotation coverage).',
     },
     {
         name: 'rats_auth',
@@ -886,7 +886,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 5,
-        notes: 'RATS — authentication brute-force attackers.',
+        notes: 'RATS - authentication brute-force attackers.',
     },
 
     // --- DNSBL.info mirrors/aggregators ---
@@ -922,7 +922,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 2,
-        notes: 'CBL+ China Anti-Spam — Chinese spam sources.',
+        notes: 'CBL+ China Anti-Spam - Chinese spam sources.',
     },
     {
         name: 'cblless',
@@ -942,7 +942,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 4,
-        notes: 'CDL China Anti-Spam — Chinese domain list.',
+        notes: 'CDL China Anti-Spam - Chinese domain list.',
     },
 
     // --- Swinog / Swiss ---
@@ -954,7 +954,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 5,
-        notes: 'Swinog DNSRBL — Swiss network operators group.',
+        notes: 'Swinog DNSRBL - Swiss network operators group.',
     },
 
     // --- APEWS ---
@@ -990,7 +990,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 2,
-        notes: 'INPS.de DNSBL — German spam detection service.',
+        notes: 'INPS.de DNSBL - German spam detection service.',
     },
 
     // --- JMF Korea/Asian ---
@@ -1026,7 +1026,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 5,
-        notes: 'Team Cymru Bogons — unallocated/reserved IP space.',
+        notes: 'Team Cymru Bogons - unallocated/reserved IP space.',
     },
     {
         name: 'fullbogons_cymru',
@@ -1036,7 +1036,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 6,
-        notes: 'Team Cymru Full Bogons — includes IPv4 delegated but unassigned.',
+        notes: 'Team Cymru Full Bogons - includes IPv4 delegated but unassigned.',
     },
 
     // --- Various open relay lists ---
@@ -1061,7 +1061,7 @@ export const dnsblLists: DnsblListSeed[] = [
         notes: 'ORDB open relay database (historical).',
     },
 
-    // --- DNSWL (whitelists — stored for reference/negative scoring) ---
+    // --- DNSWL (whitelists - stored for reference/negative scoring) ---
     {
         name: 'dnswl_org',
         zone: 'list.dnswl.org',
@@ -1070,7 +1070,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'DNSWL.org — whitelist (positive reputation). Used for inverse scoring.',
+        notes: 'DNSWL.org - whitelist (positive reputation). Used for inverse scoring.',
     },
 
     // --- CASA CBL ---
@@ -1082,7 +1082,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 4,
-        notes: 'CASA CBL — China Anti-Spam Alliance composite blocklist.',
+        notes: 'CASA CBL - China Anti-Spam Alliance composite blocklist.',
     },
 
     // --- Nordspam ---
@@ -1094,7 +1094,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 5,
-        notes: 'NordSpam domain blacklist — Nordic spam sources.',
+        notes: 'NordSpam domain blacklist - Nordic spam sources.',
     },
     {
         name: 'nordspam_bl',
@@ -1104,7 +1104,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 6,
-        notes: 'NordSpam IP blacklist — Nordic region.',
+        notes: 'NordSpam IP blacklist - Nordic region.',
     },
 
     // --- Anonmails ---
@@ -1116,7 +1116,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 1,
-        notes: 'Anonmails DNSBL — German spam detection.',
+        notes: 'Anonmails DNSBL - German spam detection.',
     },
 
     // --- CarpeDiem ---
@@ -1140,7 +1140,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'Fabel.dk RBL — Danish spam blacklist.',
+        notes: 'Fabel.dk RBL - Danish spam blacklist.',
     },
 
     // --- Imp / ImproWare ---
@@ -1176,7 +1176,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 6,
-        notes: 'Tornevall DNSBL — proxies and suspicious hosts.',
+        notes: 'Tornevall DNSBL - proxies and suspicious hosts.',
     },
 
     // --- Composite lists / aggregators ---
@@ -1200,7 +1200,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 2,
-        notes: 'Mail.ru RBL — Russian mail provider blocklist.',
+        notes: 'Mail.ru RBL - Russian mail provider blocklist.',
     },
     {
         name: 'tiopan_dnsbl',
@@ -1222,7 +1222,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 4,
-        notes: 'DroneBL — open RPC services.',
+        notes: 'DroneBL - open RPC services.',
     },
 
     // --- BarracudaCentral extended ---
@@ -1270,7 +1270,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 2,
-        notes: 'Othello.ch DNSBL — Swiss passive DNS spam detection.',
+        notes: 'Othello.ch DNSBL - Swiss passive DNS spam detection.',
     },
 
     // --- ClamAV / Malware-based ---
@@ -1282,7 +1282,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'Malware Domains — known malware distribution domains.',
+        notes: 'Malware Domains - known malware distribution domains.',
     },
 
     // --- Various region-specific lists ---
@@ -1294,7 +1294,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 4,
-        notes: 'ISPA Austria — Austrian ISP association list.',
+        notes: 'ISPA Austria - Austrian ISP association list.',
     },
     {
         name: 'dnsbl_net_au',
@@ -1314,7 +1314,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 6,
-        notes: 'Korean RBL — spam from Korean IP ranges.',
+        notes: 'Korean RBL - spam from Korean IP ranges.',
     },
     {
         name: 'brazil_rbl',
@@ -1334,7 +1334,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 2,
-        notes: 'Indian RBL — spam from Indian IP ranges.',
+        notes: 'Indian RBL - spam from Indian IP ranges.',
     },
     {
         name: 'china_rbl',
@@ -1356,7 +1356,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 4,
-        notes: 'VirBL — virus-sending IP blacklist (Bit.nl).',
+        notes: 'VirBL - virus-sending IP blacklist (Bit.nl).',
     },
 
     // --- RTBL ---
@@ -1368,7 +1368,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 5,
-        notes: 'RTBL — real-time blacklist.',
+        notes: 'RTBL - real-time blacklist.',
     },
 
     // --- Suomispam (Finnish) ---
@@ -1380,7 +1380,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 6,
-        notes: 'Suomispam — Finnish spam blacklist.',
+        notes: 'Suomispam - Finnish spam blacklist.',
     },
 
     // --- SpamHaus AUTH / HBL ---
@@ -1394,7 +1394,7 @@ export const dnsblLists: DnsblListSeed[] = [
         auth_config_key: 'SPAMHAUS_DQS_KEY',
         rotation_group: 1,
         delisting_url: 'https://check.spamhaus.org/',
-        notes: 'Spamhaus Hash Block List — malware/botnet C&C hashes.',
+        notes: 'Spamhaus Hash Block List - malware/botnet C&C hashes.',
     },
     {
         name: 'spamhaus_zrd',
@@ -1406,7 +1406,7 @@ export const dnsblLists: DnsblListSeed[] = [
         auth_config_key: 'SPAMHAUS_DQS_KEY',
         rotation_group: 2,
         delisting_url: 'https://check.spamhaus.org/',
-        notes: 'Spamhaus Zero Reputation Domains — newly registered domains.',
+        notes: 'Spamhaus Zero Reputation Domains - newly registered domains.',
     },
 
     // --- Proofpoint / Cloudmark ---
@@ -1418,7 +1418,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'Cloudmark CSI — Sender Intelligence.',
+        notes: 'Cloudmark CSI - Sender Intelligence.',
     },
 
     // --- Cyren / Commtouch ---
@@ -1490,7 +1490,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'Abuse.ch Feodo tracker — banking trojan C&C.',
+        notes: 'Abuse.ch Feodo tracker - banking trojan C&C.',
     },
     {
         name: 'abuse_ch_ssl',
@@ -1500,7 +1500,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 4,
-        notes: 'Abuse.ch SSL blacklist — malicious SSL certificate fingerprints.',
+        notes: 'Abuse.ch SSL blacklist - malicious SSL certificate fingerprints.',
     },
     {
         name: 'abuse_ch_urlhaus',
@@ -1510,7 +1510,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 5,
-        notes: 'Abuse.ch URLhaus — malware distribution URLs.',
+        notes: 'Abuse.ch URLhaus - malware distribution URLs.',
     },
     {
         name: 'abuse_ch_threatfox',
@@ -1520,7 +1520,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 6,
-        notes: 'Abuse.ch ThreatFox — IOC sharing platform.',
+        notes: 'Abuse.ch ThreatFox - IOC sharing platform.',
     },
 
     // --- CleanTalk ---
@@ -1532,7 +1532,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 1,
-        notes: 'CleanTalk blacklist — comment/form spam.',
+        notes: 'CleanTalk blacklist - comment/form spam.',
     },
 
     // --- SECTOOR ---
@@ -1544,7 +1544,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 2,
-        notes: 'SECTOOR — Tor exit node listing.',
+        notes: 'SECTOOR - Tor exit node listing.',
     },
     {
         name: 'sectoor_proxies',
@@ -1554,7 +1554,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'SECTOOR — known open proxy servers.',
+        notes: 'SECTOOR - known open proxy servers.',
     },
 
     // --- DNSBL.im ---
@@ -1566,7 +1566,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 4,
-        notes: 'DNSBL.im — instant messaging spam sources.',
+        notes: 'DNSBL.im - instant messaging spam sources.',
     },
 
     // --- Cymru bogon/malware ---
@@ -1578,7 +1578,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 5,
-        notes: 'Team Cymru VirusTotal DNSBL — known malware hashes.',
+        notes: 'Team Cymru VirusTotal DNSBL - known malware hashes.',
     },
     {
         name: 'cymru_origin',
@@ -1600,7 +1600,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 1,
-        notes: 'PhishTank DNS — known phishing domains.',
+        notes: 'PhishTank DNS - known phishing domains.',
     },
 
     // --- MSRBL ---
@@ -1664,7 +1664,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 1,
-        notes: 'PSBL mirror — passive spam detection.',
+        notes: 'PSBL mirror - passive spam detection.',
     },
 
     // --- Abuso.it ---
@@ -1676,7 +1676,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 2,
-        notes: 'Abuso.it DNSBL — Italian anti-spam project.',
+        notes: 'Abuso.it DNSBL - Italian anti-spam project.',
     },
 
     // --- SpamAssassin related ---
@@ -1688,7 +1688,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'SA-SARE — SpamAssassin Rules Emporium DNSBL.',
+        notes: 'SA-SARE - SpamAssassin Rules Emporium DNSBL.',
     },
 
     // --- NSZONE ---
@@ -1736,7 +1736,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 1,
-        notes: 'AT&T RBL — AT&T network spam sources.',
+        notes: 'AT&T RBL - AT&T network spam sources.',
     },
     {
         name: 'cox_rbl',
@@ -1778,7 +1778,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 5,
-        notes: 'HostKarma whitelist — inverse scoring.',
+        notes: 'HostKarma whitelist - inverse scoring.',
     },
     {
         name: 'hostkarma_black',
@@ -1798,7 +1798,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 1,
-        notes: 'HostKarma yellow — suspicious but not confirmed.',
+        notes: 'HostKarma yellow - suspicious but not confirmed.',
     },
     {
         name: 'hostkarma_brown',
@@ -1808,7 +1808,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 2,
-        notes: 'HostKarma brown — known spam senders.',
+        notes: 'HostKarma brown - known spam senders.',
     },
     {
         name: 'hostkarma_nobl',
@@ -1842,7 +1842,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 5,
-        notes: 'Australian DNSBL — spam zone.',
+        notes: 'Australian DNSBL - spam zone.',
     },
 
     // --- Zen clone/extension zones ---
@@ -1856,7 +1856,7 @@ export const dnsblLists: DnsblListSeed[] = [
         auth_config_key: 'SPAMHAUS_DQS_KEY',
         rotation_group: 6,
         delisting_url: 'https://check.spamhaus.org/',
-        notes: 'Spamhaus Sender Whitelist — inverse scoring.',
+        notes: 'Spamhaus Sender Whitelist - inverse scoring.',
     },
 
     // --- WPBL extended ---
@@ -1880,7 +1880,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 2,
-        notes: 'DNSWL sender whitelist — inverse scoring.',
+        notes: 'DNSWL sender whitelist - inverse scoring.',
     },
 
     // --- Various spam trap operators ---
@@ -1892,7 +1892,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'SEM FRESH15 — domains registered in last 15 days.',
+        notes: 'SEM FRESH15 - domains registered in last 15 days.',
     },
     {
         name: 'sem_fresh10',
@@ -1902,7 +1902,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 4,
-        notes: 'SEM FRESH10 — domains registered in last 10 days.',
+        notes: 'SEM FRESH10 - domains registered in last 10 days.',
     },
     {
         name: 'sem_fresh5',
@@ -1912,7 +1912,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 5,
-        notes: 'SEM FRESH5 — domains registered in last 5 days.',
+        notes: 'SEM FRESH5 - domains registered in last 5 days.',
     },
 
     // --- Blocked.nl ---
@@ -1924,7 +1924,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 6,
-        notes: 'Blocked.nl — Dutch DNSBL.',
+        notes: 'Blocked.nl - Dutch DNSBL.',
     },
 
     // --- Spfbl.net (Brazilian) ---
@@ -1936,7 +1936,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 1,
-        notes: 'SPFBL — Brazilian spam detection project.',
+        notes: 'SPFBL - Brazilian spam detection project.',
     },
 
     // --- Rspamd ---
@@ -1948,7 +1948,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 2,
-        notes: 'Rspamd DNSBL — open source spam filter project.',
+        notes: 'Rspamd DNSBL - open source spam filter project.',
     },
 
     // --- Zapbl ---
@@ -1960,7 +1960,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'ZAPBL — Zero Abuse Points Blacklist.',
+        notes: 'ZAPBL - Zero Abuse Points Blacklist.',
     },
 
     // --- Dunk ---
@@ -1997,7 +1997,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 6,
         delisting_url: 'https://www.blocklist.de/en/delist.html',
-        notes: 'Blocklist.de — SSH brute-force attackers.',
+        notes: 'Blocklist.de - SSH brute-force attackers.',
     },
     {
         name: 'blocklist_de_mail',
@@ -2008,7 +2008,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 1,
         delisting_url: 'https://www.blocklist.de/en/delist.html',
-        notes: 'Blocklist.de — mail abuse (spam/auth attacks).',
+        notes: 'Blocklist.de - mail abuse (spam/auth attacks).',
     },
     {
         name: 'blocklist_de_imap',
@@ -2019,7 +2019,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 2,
         delisting_url: 'https://www.blocklist.de/en/delist.html',
-        notes: 'Blocklist.de — IMAP brute-force attackers.',
+        notes: 'Blocklist.de - IMAP brute-force attackers.',
     },
     {
         name: 'blocklist_de_ftp',
@@ -2030,7 +2030,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 3,
         delisting_url: 'https://www.blocklist.de/en/delist.html',
-        notes: 'Blocklist.de — FTP brute-force attackers.',
+        notes: 'Blocklist.de - FTP brute-force attackers.',
     },
     {
         name: 'blocklist_de_sip',
@@ -2041,7 +2041,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 4,
         delisting_url: 'https://www.blocklist.de/en/delist.html',
-        notes: 'Blocklist.de — SIP/VoIP brute-force attackers.',
+        notes: 'Blocklist.de - SIP/VoIP brute-force attackers.',
     },
     {
         name: 'blocklist_de_apache',
@@ -2052,7 +2052,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 5,
         delisting_url: 'https://www.blocklist.de/en/delist.html',
-        notes: 'Blocklist.de — Apache web exploit attackers.',
+        notes: 'Blocklist.de - Apache web exploit attackers.',
     },
     {
         name: 'blocklist_de_bots',
@@ -2063,7 +2063,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 6,
         delisting_url: 'https://www.blocklist.de/en/delist.html',
-        notes: 'Blocklist.de — known bot/crawler abuse.',
+        notes: 'Blocklist.de - known bot/crawler abuse.',
     },
     {
         name: 'blocklist_de_bruteforce',
@@ -2074,7 +2074,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 1,
         delisting_url: 'https://www.blocklist.de/en/delist.html',
-        notes: 'Blocklist.de — brute-force login attackers (all services).',
+        notes: 'Blocklist.de - brute-force login attackers (all services).',
     },
     {
         name: 'blocklist_de_strongips',
@@ -2085,7 +2085,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 2,
         delisting_url: 'https://www.blocklist.de/en/delist.html',
-        notes: 'Blocklist.de — persistently attacking IPs.',
+        notes: 'Blocklist.de - persistently attacking IPs.',
     },
 
     // --- Tor exit node lists ---
@@ -2097,7 +2097,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'Tor Project — official exit node list.',
+        notes: 'Tor Project - official exit node list.',
     },
     {
         name: 'torexit_dan',
@@ -2119,7 +2119,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 5,
-        notes: 'Emerging Threats — compromised hosts.',
+        notes: 'Emerging Threats - compromised hosts.',
     },
     {
         name: 'et_botcc',
@@ -2129,7 +2129,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 6,
-        notes: 'Emerging Threats — botnet C&C servers.',
+        notes: 'Emerging Threats - botnet C&C servers.',
     },
 
     // --- SpamFireWall ---
@@ -2153,7 +2153,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 2,
-        notes: 'DroneBL — open HTTP proxy.',
+        notes: 'DroneBL - open HTTP proxy.',
     },
     {
         name: 'dronebl_socks',
@@ -2163,7 +2163,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'DroneBL — open SOCKS proxy.',
+        notes: 'DroneBL - open SOCKS proxy.',
     },
 
     // --- AHBL ---
@@ -2175,7 +2175,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 4,
-        notes: 'AHBL — Abusive Hosts Blocking List (historical).',
+        notes: 'AHBL - Abusive Hosts Blocking List (historical).',
     },
 
     // --- Fivetensg ---
@@ -2223,7 +2223,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 2,
-        notes: 'Yandex RBL — Russian mail provider.',
+        notes: 'Yandex RBL - Russian mail provider.',
     },
     {
         name: 'rambler_rbl',
@@ -2233,7 +2233,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'Rambler RBL — Russian mail provider.',
+        notes: 'Rambler RBL - Russian mail provider.',
     },
 
     // --- Anti-spam.cn extended ---
@@ -2245,7 +2245,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 4,
-        notes: 'China Anti-Spam whitelist — inverse scoring.',
+        notes: 'China Anti-Spam whitelist - inverse scoring.',
     },
 
     // --- ORBS ---
@@ -2257,7 +2257,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 5,
-        notes: 'ORBS — Open Relay Behavior-modification System.',
+        notes: 'ORBS - Open Relay Behavior-modification System.',
     },
 
     // --- Rbl.jp (Japanese) ---
@@ -2269,7 +2269,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 6,
-        notes: 'Japanese RBL — short-term listings.',
+        notes: 'Japanese RBL - short-term listings.',
     },
     {
         name: 'rbl_jp_virus',
@@ -2279,7 +2279,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 1,
-        notes: 'Japanese RBL — virus senders.',
+        notes: 'Japanese RBL - virus senders.',
     },
     {
         name: 'rbl_jp_url',
@@ -2289,7 +2289,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 2,
-        notes: 'Japanese RBL — URL blacklist.',
+        notes: 'Japanese RBL - URL blacklist.',
     },
     {
         name: 'rbl_jp_all',
@@ -2299,7 +2299,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'Japanese RBL — combined zone.',
+        notes: 'Japanese RBL - combined zone.',
     },
 
     // --- Invaluement extended ---
@@ -2323,7 +2323,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 5,
-        notes: 'DKIM reputation — domain signing reputation.',
+        notes: 'DKIM reputation - domain signing reputation.',
     },
 
     // --- MIPSpace ---
@@ -2347,7 +2347,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 1,
-        notes: 'CyberCrime Tracker — botnet/malware C&C.',
+        notes: 'CyberCrime Tracker - botnet/malware C&C.',
     },
 
     // --- MailBlacklist ---
@@ -2371,7 +2371,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'PDR RBL — passive DNS reputation.',
+        notes: 'PDR RBL - passive DNS reputation.',
     },
 
     // --- DNSWL extended ---
@@ -2383,7 +2383,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 4,
-        notes: 'DNSWL block zone — removed from whitelist.',
+        notes: 'DNSWL block zone - removed from whitelist.',
     },
 
     // --- GBUDB extended ---
@@ -2405,7 +2405,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 6,
-        notes: 'GBUdb good reputation zone — inverse scoring.',
+        notes: 'GBUdb good reputation zone - inverse scoring.',
     },
 
     // --- DNSBL Project extended ---
@@ -2429,7 +2429,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 2,
-        notes: 'LEV RBL — lightweight email verification.',
+        notes: 'LEV RBL - lightweight email verification.',
     },
 
     // --- DNS WL for DMARC/SPF ---
@@ -2441,7 +2441,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'Trusted Forwarder whitelist — forwarding services.',
+        notes: 'Trusted Forwarder whitelist - forwarding services.',
     },
 
     // --- Return Bounces / Backscatter ---
@@ -2453,7 +2453,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 4,
-        notes: 'Backscatter.org DNSBL — bounce backscatter sources.',
+        notes: 'Backscatter.org DNSBL - bounce backscatter sources.',
     },
 
     // --- IBM X-Force ---
@@ -2477,7 +2477,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 6,
-        notes: 'RFC Ignorant — domains without proper abuse contact.',
+        notes: 'RFC Ignorant - domains without proper abuse contact.',
     },
     {
         name: 'rfc_ignorant_postmaster',
@@ -2487,7 +2487,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 1,
-        notes: 'RFC Ignorant — domains without postmaster address.',
+        notes: 'RFC Ignorant - domains without postmaster address.',
     },
     {
         name: 'rfc_ignorant_whois',
@@ -2497,7 +2497,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 2,
-        notes: 'RFC Ignorant — invalid WHOIS records.',
+        notes: 'RFC Ignorant - invalid WHOIS records.',
     },
     {
         name: 'rfc_ignorant_ipwhois',
@@ -2507,7 +2507,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'RFC Ignorant — invalid IP WHOIS records.',
+        notes: 'RFC Ignorant - invalid IP WHOIS records.',
     },
     {
         name: 'rfc_ignorant_bogusmx',
@@ -2517,7 +2517,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 4,
-        notes: 'RFC Ignorant — bogus MX records.',
+        notes: 'RFC Ignorant - bogus MX records.',
     },
 
     // --- Heise / ix Manitu extended ---
@@ -2565,7 +2565,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 2,
-        notes: 'NoSolicitado — Spanish anti-spam project.',
+        notes: 'NoSolicitado - Spanish anti-spam project.',
     },
 
     // --- Shlink ---
@@ -2601,7 +2601,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 5,
-        notes: 'Distributed Checksum Clearinghouse — bulk mail detection.',
+        notes: 'Distributed Checksum Clearinghouse - bulk mail detection.',
     },
 
     // --- MAPS (Trend Micro) ---
@@ -2727,7 +2727,7 @@ export const dnsblLists: DnsblListSeed[] = [
         auth_config_key: 'SPAMHAUS_DQS_KEY',
         rotation_group: 4,
         delisting_url: 'https://check.spamhaus.org/',
-        notes: 'Spamhaus Auth BL — authentication abuse (brute-force).',
+        notes: 'Spamhaus Auth BL - authentication abuse (brute-force).',
     },
 
     // --- DNS Blacklist extended ---
@@ -2752,7 +2752,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: true,
         auth_config_key: 'SPAMHAUS_DQS_KEY',
         rotation_group: 6,
-        notes: 'Spamhaus SBL advisory — informational only.',
+        notes: 'Spamhaus SBL advisory - informational only.',
     },
 
     // --- OpenBL ---
@@ -2764,7 +2764,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 1,
-        notes: 'OpenBL — abuse detection honeypots.',
+        notes: 'OpenBL - abuse detection honeypots.',
     },
 
     // --- NoSpamProxy ---
@@ -2894,7 +2894,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 1,
-        notes: 'WormRBL — worm/virus sending hosts.',
+        notes: 'WormRBL - worm/virus sending hosts.',
     },
 
     // --- ZapBL extended ---
@@ -2964,7 +2964,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 1,
-        notes: 'BSBL — Blackhole Spam Block List.',
+        notes: 'BSBL - Blackhole Spam Block List.',
     },
 
     // --- SCBL (SpamCop Block List mirrors) ---
@@ -2988,7 +2988,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'PrivacyFirst RBL — privacy-focused blocklist.',
+        notes: 'PrivacyFirst RBL - privacy-focused blocklist.',
     },
 
     // --- DNS CERT ---
@@ -3000,7 +3000,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 4,
-        notes: 'DNS-CERT RBL — CERT-reported threats.',
+        notes: 'DNS-CERT RBL - CERT-reported threats.',
     },
 
     // --- Extended GBUdb ---
@@ -3012,7 +3012,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 5,
-        notes: 'GBUdb bad zone — confirmed bad senders.',
+        notes: 'GBUdb bad zone - confirmed bad senders.',
     },
     {
         name: 'gbudb_ugly',
@@ -3022,7 +3022,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 6,
-        notes: 'GBUdb ugly zone — very bad senders.',
+        notes: 'GBUdb ugly zone - very bad senders.',
     },
 
     // --- UCE Protect mirrors ---
@@ -3148,7 +3148,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 6,
-        notes: 'DSBL — Distributed Server Boycott List (historical).',
+        notes: 'DSBL - Distributed Server Boycott List (historical).',
     },
     {
         name: 'dsbl_multi',
@@ -3158,7 +3158,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 1,
-        notes: 'DSBL — multi-hop relay detection.',
+        notes: 'DSBL - multi-hop relay detection.',
     },
     {
         name: 'dsbl_unconfirmed',
@@ -3168,7 +3168,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 2,
-        notes: 'DSBL — unconfirmed relay/proxy.',
+        notes: 'DSBL - unconfirmed relay/proxy.',
     },
 
     // --- RBL.net ---
@@ -3192,7 +3192,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 4,
-        notes: 'Bounce zone — backscatter/NDR sources.',
+        notes: 'Bounce zone - backscatter/NDR sources.',
     },
 
     // --- SMTP auth abuse ---
@@ -3204,7 +3204,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 5,
-        notes: 'Auth DNSBL — SMTP authentication abuse.',
+        notes: 'Auth DNSBL - SMTP authentication abuse.',
     },
 
     // --- Additional region-specific ---
@@ -3268,7 +3268,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 5,
-        notes: 'DMARC fail RBL — senders failing DMARC checks.',
+        notes: 'DMARC fail RBL - senders failing DMARC checks.',
     },
     {
         name: 'spf_fail_rbl',
@@ -3278,7 +3278,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 6,
-        notes: 'SPF fail RBL — senders failing SPF checks.',
+        notes: 'SPF fail RBL - senders failing SPF checks.',
     },
 
     // --- Additional honeypot operators ---
@@ -3421,7 +3421,7 @@ export const dnsblLists: DnsblListSeed[] = [
         requires_auth: false,
         rotation_group: 1,
         delisting_url: 'http://www.sorbs.net/overview.shtml',
-        notes: 'SORBS safe zone — known safe senders (inverse scoring).',
+        notes: 'SORBS safe zone - known safe senders (inverse scoring).',
     },
 
     // --- Abusix domain zones ---
@@ -3445,7 +3445,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'Email compliance RBL — regulatory non-compliance.',
+        notes: 'Email compliance RBL - regulatory non-compliance.',
     },
     {
         name: 'consent_rbl',
@@ -3455,7 +3455,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 4,
-        notes: 'Consent-based RBL — senders without proper consent.',
+        notes: 'Consent-based RBL - senders without proper consent.',
     },
     {
         name: 'gdpr_rbl',
@@ -3477,7 +3477,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 6,
-        notes: 'EmailRep.io RBL — email reputation service.',
+        notes: 'EmailRep.io RBL - email reputation service.',
     },
 
     // --- Anti-phishing ---
@@ -3975,7 +3975,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 1,
-        notes: 'Newsletter abuse RBL — unsolicited newsletters.',
+        notes: 'Newsletter abuse RBL - unsolicited newsletters.',
     },
     {
         name: 'coldmail_rbl',
@@ -4063,7 +4063,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'Certified Senders Alliance whitelist — inverse scoring.',
+        notes: 'Certified Senders Alliance whitelist - inverse scoring.',
     },
 
     // --- Catch-all/fallback lists ---
@@ -4127,7 +4127,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'Protocol abuse RBL — SMTP protocol violations.',
+        notes: 'Protocol abuse RBL - SMTP protocol violations.',
     },
     {
         name: 'greylisting_rbl',
@@ -4193,7 +4193,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'ASN reputation RBL — network-level reputation.',
+        notes: 'ASN reputation RBL - network-level reputation.',
     },
 
     // --- Additional misc ---
@@ -4215,7 +4215,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 5,
-        notes: 'Complaint-based RBL — high complaint rate senders.',
+        notes: 'Complaint-based RBL - high complaint rate senders.',
     },
     {
         name: 'reputation_rbl',
@@ -4235,7 +4235,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 1,
-        notes: 'Delist service RBL — tracking delisting requests.',
+        notes: 'Delist service RBL - tracking delisting requests.',
     },
     {
         name: 'feedbackloop_rbl',
@@ -4257,7 +4257,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'IoT device abuse RBL — compromised IoT devices.',
+        notes: 'IoT device abuse RBL - compromised IoT devices.',
     },
     {
         name: 'mirai_rbl',
@@ -4483,7 +4483,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 6,
-        notes: 'SEM FRESH3 — domains registered in last 3 days.',
+        notes: 'SEM FRESH3 - domains registered in last 3 days.',
     },
     {
         name: 'sem_fresh30',
@@ -4493,7 +4493,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 1,
-        notes: 'SEM FRESH30 — domains registered in last 30 days.',
+        notes: 'SEM FRESH30 - domains registered in last 30 days.',
     },
 
     // --- Final batch: additional well-known lists ---
@@ -4515,7 +4515,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 3,
-        notes: 'URIBL mixed — combined spam URI sources.',
+        notes: 'URIBL mixed - combined spam URI sources.',
     },
     {
         name: 'reputation_authority',
@@ -4555,7 +4555,7 @@ export const dnsblLists: DnsblListSeed[] = [
         weight: 1,
         requires_auth: false,
         rotation_group: 1,
-        notes: 'ASPEWS (via SORBS) — aggressive spam prevention.',
+        notes: 'ASPEWS (via SORBS) - aggressive spam prevention.',
     },
     {
         name: 'icm_rbl',

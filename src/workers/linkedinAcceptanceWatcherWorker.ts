@@ -2,7 +2,7 @@
  * LinkedIn connection-acceptance backstop poller.
  *
  * Unipile's `invitation_accepted` (`new_relation`) webhook lags up to 8
- * HOURS per their own docs — explicitly called out as a known limitation
+ * HOURS per their own docs - explicitly called out as a known limitation
  * of their relations sync. For sequence flows that hinge on the
  * accept-→-DM transition this is unacceptably slow.
  *
@@ -11,7 +11,7 @@
  * a thread we own, which Unipile DOES push in real-time. The webhook
  * handler flips LinkedInConnectionEdge.status to ACCEPTED on receipt.
  *
- * THIS worker is the slow path — every 2 hours, for every account, we
+ * THIS worker is the slow path - every 2 hours, for every account, we
  * pull the relations list + sent-invitations list and reconcile any
  * INVITE_SENT edges that have transitioned. Catches noteless CRs (which
  * have no fast-path signal) and serves as defense-in-depth for note-
@@ -59,7 +59,7 @@ export async function runOnce(): Promise<{ accountsScanned: number; acceptances:
 }
 
 async function reconcileAccount(acct: { id: string; organization_id: string; unipile_account_id: string }): Promise<number> {
-    // Find all edges currently marked INVITE_SENT for this account — these
+    // Find all edges currently marked INVITE_SENT for this account - these
     // are the only ones we need to recheck. Already-CONNECTED edges don't
     // change; NOT_CONNECTED edges aren't pending so a reconcile is moot.
     const pending = await prisma.linkedInConnectionEdge.findMany({

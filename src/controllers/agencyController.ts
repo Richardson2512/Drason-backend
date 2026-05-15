@@ -1,5 +1,5 @@
 /**
- * Agency Controller — read endpoints for the workspaces feature.
+ * Agency Controller - read endpoints for the workspaces feature.
  *
  * Phase 1 scope: read-only. The endpoints in this file populate the
  * frontend's fleet-overview, sidebar workspace switcher, and workspace
@@ -33,7 +33,7 @@ interface AgencyAccessContext {
 
 /**
  * Resolve which Account/scope the requesting user has access to. Returns
- * null if the user can't be loaded — caller responds with 401.
+ * null if the user can't be loaded - caller responds with 401.
  */
 async function resolveAgencyContext(req: Request): Promise<AgencyAccessContext | null> {
     const userId = req.orgContext?.userId;
@@ -67,7 +67,7 @@ async function resolveAgencyContext(req: Request): Promise<AgencyAccessContext |
  *      access any org under the same Account.
  *   3. Legacy unmigrated user (both NULL):
  *      access only the org their JWT was issued for. We never grant access
- *      to other NULL-account orgs — that was the cross-tenant hole the
+ *      to other NULL-account orgs - that was the cross-tenant hole the
  *      audit caught.
  *
  * Returns true on success, false on denied / not-found.
@@ -109,7 +109,7 @@ const SINCE_30D_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * Compute a workspace card's denormalized stats for fleet/list display.
- * Each call hits the DB ~5x — fine for v1, batch via Promise.all when the
+ * Each call hits the DB ~5x - fine for v1, batch via Promise.all when the
  * fleet grows past ~20 workspaces.
  */
 async function buildWorkspaceCard(orgId: string): Promise<WorkspaceCard | null> {
@@ -142,7 +142,7 @@ async function buildWorkspaceCard(orgId: string): Promise<WorkspaceCard | null> 
         prisma.bounceEvent.count({
             where: { organization_id: orgId, bounced_at: { gte: since } },
         }),
-        // Count actual CLIENT memberships only — exclude the agency owner's
+        // Count actual CLIENT memberships only - exclude the agency owner's
         // auto-granted '*' membership. Clients get explicit capability lists,
         // never the wildcard.
         prisma.workspaceMembership.count({
@@ -197,7 +197,7 @@ export const listWorkspaces = async (req: Request, res: Response): Promise<void>
         // Determine which Org IDs the user can see.
         let orgIds: string[] = [];
         if (ctx.scopedOrganizationId) {
-            // Hard-locked client user — single workspace only.
+            // Hard-locked client user - single workspace only.
             orgIds = [ctx.scopedOrganizationId];
         } else if (ctx.accountId) {
             const orgs = await prisma.organization.findMany({
@@ -258,10 +258,10 @@ export const getWorkspace = async (req: Request, res: Response): Promise<void> =
 /**
  * Generate a URL-safe workspace slug from a free-text name. Adds a numeric
  * suffix (-2, -3, …) until globally unique. Slug uniqueness is global at
- * the DB level (Organization.slug @unique), so we must check globally — a
+ * the DB level (Organization.slug @unique), so we must check globally - a
  * per-account check would happily return a candidate that the create() then
  * 500s on. Falls back to a UUID-derived slug if collision count exceeds 50
- * (defensive — should never trigger).
+ * (defensive - should never trigger).
  */
 async function uniqueSlug(name: string): Promise<string> {
     const base = name
@@ -278,7 +278,7 @@ async function uniqueSlug(name: string): Promise<string> {
         });
         if (!existing) return candidate;
     }
-    // Defensive fallback — append a base36 timestamp to guarantee uniqueness.
+    // Defensive fallback - append a base36 timestamp to guarantee uniqueness.
     return `${base}-${Date.now().toString(36)}`;
 }
 
@@ -289,7 +289,7 @@ async function uniqueSlug(name: string): Promise<string> {
  * Re-issue the requesting user's JWT with `orgId` / `activeOrganizationId`
  * pointing at the requested workspace. Updates the httpOnly cookie. After
  * this returns 200, the frontend should invalidate its DashboardContext
- * cache and re-fetch — every subsequent API call now scopes to the new org.
+ * cache and re-fetch - every subsequent API call now scopes to the new org.
  *
  * Authorization:
  *   - Agency owner: target org must belong to their Account.
@@ -313,7 +313,7 @@ export const switchWorkspace = async (req: Request, res: Response): Promise<void
         const access = await checkOrgAccess(ctx, targetId);
         if (!access) {
             // Use 403 over 404 here because the user is authenticated and
-            // possibly clicked a stale workspace link — the actionable error
+            // possibly clicked a stale workspace link - the actionable error
             // is "you don't have access", not "doesn't exist".
             res.status(403).json({ success: false, error: 'You do not have access to that workspace' });
             return;
@@ -374,7 +374,7 @@ export const switchWorkspace = async (req: Request, res: Response): Promise<void
  * Body: { name: string, clientCompany?: string, slug?: string }
  *
  * Creates a new Organization (=workspace) under the requesting agency
- * owner's Account. Only agency owners can call this — clients are blocked.
+ * owner's Account. Only agency owners can call this - clients are blocked.
  *
  * The new workspace inherits the Account's primary org's `subscription_tier`
  * for downstream limit checks (carries over from the seed Org).
@@ -430,7 +430,7 @@ export const createWorkspace = async (req: Request, res: Response): Promise<void
                 subscription_tier: seed?.subscription_tier ?? 'trial',
                 system_mode: seed?.system_mode ?? 'observe',
                 mailing_address: seed?.mailing_address ?? null,
-                assessment_completed: true, // new workspaces start clean — no assessment gate
+                assessment_completed: true, // new workspaces start clean - no assessment gate
             },
             select: {
                 id: true, name: true, slug: true, client_company_name: true,

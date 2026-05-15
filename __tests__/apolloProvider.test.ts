@@ -1,5 +1,5 @@
 /**
- * Apollo provider — normalizeLinkedInUrl unit tests.
+ * Apollo provider - normalizeLinkedInUrl unit tests.
  *
  * Apollo emits LinkedIn URLs in inconsistent shapes (bare paths, http://,
  * trailing slashes, locale subdomains, mixed casing). The normalizer
@@ -58,7 +58,7 @@ describe('normalizeLinkedInUrl', () => {
     });
 
     it('returns null for LinkedIn URLs that aren\'t profile pages', () => {
-        // Company pages, posts, etc. — not /in/<slug>
+        // Company pages, posts, etc. - not /in/<slug>
         expect(normalizeLinkedInUrl('https://www.linkedin.com/company/openai')).toBeNull();
         expect(normalizeLinkedInUrl('https://www.linkedin.com/feed')).toBeNull();
         expect(normalizeLinkedInUrl('https://www.linkedin.com/jobs/123')).toBeNull();

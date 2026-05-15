@@ -1,11 +1,11 @@
 /**
- * Operational alert emails — fired from healing / state-machine / send-
+ * Operational alert emails - fired from healing / state-machine / send-
  * pipeline code when an entity transitions to a degraded state.
  *
  * Coalescing: callers should pass a 15-minute bucket idempotency key to
  * the dispatcher (see `coalesceBucket()` below). Resend dedupes on the
  * key for 24h, so multiple rapid-fire pauses inside a 15-min window
- * collapse to ONE email — the first one. Subsequent pauses are silently
+ * collapse to ONE email - the first one. Subsequent pauses are silently
  * suppressed (in-app notifications, audit log, and Slack alerts still
  * fire for each).
  *
@@ -17,7 +17,7 @@
 import { renderEmailTemplate, renderEmailPlainText, type RenderEmailParams } from '../transactionalEmailTemplates';
 import type { RenderedEmail } from './dispatcher';
 
-/** 15-minute window — matches the operational coalescing policy. */
+/** 15-minute window - matches the operational coalescing policy. */
 export const COALESCE_WINDOW_MS = 15 * 60 * 1000;
 
 /**
@@ -42,7 +42,7 @@ export interface MailboxPausedEmailParams {
 }
 
 export function mailboxPausedEmail(p: MailboxPausedEmailParams): RenderedEmail {
-    const subject = `Mailbox paused — ${p.mailboxEmail}`;
+    const subject = `Mailbox paused - ${p.mailboxEmail}`;
     const preheader = `${p.mailboxEmail} was auto-paused: ${p.reason.slice(0, 80)}`;
     const tpl: RenderEmailParams = {
         preheader,
@@ -55,7 +55,7 @@ export function mailboxPausedEmail(p: MailboxPausedEmailParams): RenderedEmail {
             { label: 'Reason', value: p.reason },
             { label: 'Paused at', value: p.pausedAt.toUTCString() },
         ],
-        body: `Other mailboxes may have hit the same threshold inside the last 15 minutes — open the dashboard for the full picture. The recovery pipeline will graduate this mailbox automatically once bounce rates settle.`,
+        body: `Other mailboxes may have hit the same threshold inside the last 15 minutes - open the dashboard for the full picture. The recovery pipeline will graduate this mailbox automatically once bounce rates settle.`,
         ctaLabel: 'Inspect mailbox',
         ctaUrl: p.mailboxUrl,
     };
@@ -74,7 +74,7 @@ export interface MailboxQuarantineEmailParams {
 }
 
 export function mailboxQuarantineEmail(p: MailboxQuarantineEmailParams): RenderedEmail {
-    const subject = `Mailbox in quarantine — ${p.mailboxEmail}`;
+    const subject = `Mailbox in quarantine - ${p.mailboxEmail}`;
     const preheader = `${p.mailboxEmail} entered the recovery pipeline. It will warm back up automatically; no action needed unless relapses continue.`;
     const tpl: RenderEmailParams = {
         preheader,
@@ -86,7 +86,7 @@ export function mailboxQuarantineEmail(p: MailboxQuarantineEmailParams): Rendere
             { label: 'Relapses', value: String(p.relapseCount) },
             { label: 'Resilience score', value: `${p.resilienceScore} / 100` },
         ],
-        body: `Quarantine is automatic — sending stays paused while we monitor for clean signal. Once the threshold of consecutive clean sends is reached, the mailbox graduates to "restricted send" and then back to "warm recovery" before resuming full sending. You don't need to do anything yet; we'll email again if manual intervention becomes required.`,
+        body: `Quarantine is automatic - sending stays paused while we monitor for clean signal. Once the threshold of consecutive clean sends is reached, the mailbox graduates to "restricted send" and then back to "warm recovery" before resuming full sending. You don't need to do anything yet; we'll email again if manual intervention becomes required.`,
         ctaLabel: 'Open recovery pipeline',
         ctaUrl: p.healingUrl,
     };
@@ -107,13 +107,13 @@ export interface MailboxRecoveredEmailParams {
 }
 
 export function mailboxRecoveredEmail(p: MailboxRecoveredEmailParams): RenderedEmail {
-    const subject = `Mailbox healed — ${p.mailboxEmail}`;
+    const subject = `Mailbox healed - ${p.mailboxEmail}`;
     const preheader = `${p.mailboxEmail} graduated from the recovery pipeline and is sending normally again.`;
     const tpl: RenderEmailParams = {
         preheader,
         eyebrow: 'Healing pipeline · Good news',
         heading: 'A mailbox is back to healthy',
-        intro: `Good news — <strong>${escapeHtml(p.mailboxEmail)}</strong> on <strong>${escapeHtml(p.domainName)}</strong> graduated from the recovery pipeline and is sending normally again.`,
+        intro: `Good news - <strong>${escapeHtml(p.mailboxEmail)}</strong> on <strong>${escapeHtml(p.domainName)}</strong> graduated from the recovery pipeline and is sending normally again.`,
         facts: [
             { label: 'Mailbox', value: p.mailboxEmail },
             { label: 'Recovery time', value: p.durationLabel },
@@ -137,7 +137,7 @@ export interface DomainPausedEmailParams {
 }
 
 export function domainPausedEmail(p: DomainPausedEmailParams): RenderedEmail {
-    const subject = `Domain paused — ${p.domainName}`;
+    const subject = `Domain paused - ${p.domainName}`;
     const preheader = `${p.domainName} was auto-paused: ${p.reason.slice(0, 80)}`;
     const tpl: RenderEmailParams = {
         preheader,
@@ -168,7 +168,7 @@ export interface ManualInterventionEmailParams {
 }
 
 export function manualInterventionEmail(p: ManualInterventionEmailParams): RenderedEmail {
-    const subject = `Manual review needed — ${p.entityLabel}`;
+    const subject = `Manual review needed - ${p.entityLabel}`;
     const preheader = `Automated healing has been blocked for ${p.entityLabel} after ${p.relapseCount} relapses. Manual review required.`;
     const tpl: RenderEmailParams = {
         preheader,
@@ -200,7 +200,7 @@ export interface CampaignPausedEmailParams {
 }
 
 export function campaignPausedEmail(p: CampaignPausedEmailParams): RenderedEmail {
-    const subject = `Campaign paused — ${p.campaignName}`;
+    const subject = `Campaign paused - ${p.campaignName}`;
     const preheader = `Campaign "${p.campaignName}" was paused: ${p.reason.slice(0, 80)}`;
     const tpl: RenderEmailParams = {
         preheader,
@@ -214,7 +214,7 @@ export function campaignPausedEmail(p: CampaignPausedEmailParams): RenderedEmail
             { label: 'Bounce rate', value: `${(p.bounceRate * 100).toFixed(2)}%` },
             { label: 'Paused at', value: p.pausedAt.toUTCString() },
         ],
-        body: `Inspect the campaign for the specific trigger — usually a bounce-rate threshold or a paused mailbox/domain in the assigned set. Resume manually once you've addressed the root cause.`,
+        body: `Inspect the campaign for the specific trigger - usually a bounce-rate threshold or a paused mailbox/domain in the assigned set. Resume manually once you've addressed the root cause.`,
         ctaLabel: 'Open campaign',
         ctaUrl: p.campaignUrl,
     };
@@ -234,7 +234,7 @@ export interface MailboxOAuthDisconnectedEmailParams {
 }
 
 export function mailboxOAuthDisconnectedEmail(p: MailboxOAuthDisconnectedEmailParams): RenderedEmail {
-    const subject = `Reconnect needed — ${p.mailboxEmail}`;
+    const subject = `Reconnect needed - ${p.mailboxEmail}`;
     const preheader = `${p.mailboxEmail} lost its ${labelProvider(p.provider)} connection. Sending is paused until you reconnect.`;
     const facts: { label: string; value: string }[] = [
         { label: 'Mailbox', value: p.mailboxEmail },

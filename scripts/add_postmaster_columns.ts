@@ -1,5 +1,5 @@
 /**
- * Adds postmaster_* columns to Organization. Schema has them, DB doesn't —
+ * Adds postmaster_* columns to Organization. Schema has them, DB doesn't -
  * pre-existing drift. Idempotent (uses IF NOT EXISTS).
  */
 import { PrismaClient } from '@prisma/client';

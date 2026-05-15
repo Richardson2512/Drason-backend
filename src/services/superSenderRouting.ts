@@ -1,5 +1,5 @@
 /**
- * Super Sender routing — decides at send time whether a given outbound
+ * Super Sender routing - decides at send time whether a given outbound
  * should go through a dedicated IP or fall back to the mailbox's native
  * provider.
  *
@@ -14,7 +14,7 @@
  *      counter is enforced atomically: a conditional UPDATE that bumps
  *      sends_today only when sends_today < daily_cap returns count=0
  *      when at-cap, signaling the caller to fall back to native send
- *      (we never block — we degrade gracefully to the mailbox's own
+ *      (we never block - we degrade gracefully to the mailbox's own
  *      provider). Reset boundary is checked + applied in the same UPDATE.
  *
  * Returns a tagged decision the caller switches on:
@@ -48,7 +48,7 @@ export function isMailboxSesEligible(provider: string): boolean {
  * = 0), capacity is exhausted; caller falls back to native transport.
  *
  * Resets the daily counter when sends_reset_at is more than 24 hours old
- * — checked in the same UPDATE so we don't need a separate cron.
+ * - checked in the same UPDATE so we don't need a separate cron.
  */
 export async function resolveRouteForSend(opts: {
     organizationId: string;
@@ -75,7 +75,7 @@ export async function resolveRouteForSend(opts: {
     // in two passes only when needed:
     //   Pass 1: roll the daily counter if sends_reset_at is >= 24h old.
     //   Pass 2: increment sends_today only when sends_today < daily_cap.
-    // Both pass 1 and pass 2 are conditional updateMany() calls — they
+    // Both pass 1 and pass 2 are conditional updateMany() calls - they
     // either succeed atomically or do nothing.
     const now = new Date();
     const resetCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
@@ -90,7 +90,7 @@ export async function resolveRouteForSend(opts: {
         });
     }
 
-    // Atomic conditional increment — succeeds only when capacity remains.
+    // Atomic conditional increment - succeeds only when capacity remains.
     const claimed = await prisma.dedicatedIp.updateMany({
         where: {
             id: ip.id,
@@ -122,7 +122,7 @@ export async function resolveRouteForSend(opts: {
 /**
  * Refund a send-cap claim when the SES send itself fails. Without this,
  * a transient AWS error would still consume the day's quota. Best-effort
- * — never throws because we don't want to mask the original send error.
+ * - never throws because we don't want to mask the original send error.
  */
 export async function refundCapClaim(ipId: string): Promise<void> {
     try {

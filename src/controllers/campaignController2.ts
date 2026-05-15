@@ -35,19 +35,19 @@ export const listCampaigns = async (req: Request, res: Response): Promise<Respon
         const orgId = getOrgId(req);
         const page = Math.max(1, parseInt(req.query.page as string) || 1);
         // Hard cap on page size. The detail-row payload includes `_count`
-        // joins on steps/leads/accounts plus tag relations — an unbounded
+        // joins on steps/leads/accounts plus tag relations - an unbounded
         // limit lets a single request load every campaign in the org with
         // their counts into memory, which we've seen OOM on dev DBs at a
         // few thousand rows. 200 is enough for any practical UI surface.
         const limit = Math.min(200, Math.max(1, parseInt(req.query.limit as string) || 25));
         const status = (req.query.status as string) || undefined;
-        // Filter by org-level tag IDs (OR semantics — any tag matches).
+        // Filter by org-level tag IDs (OR semantics - any tag matches).
         const tagIdsRaw = (req.query.tag_ids as string) || '';
         const tagIds = tagIdsRaw.split(',').map(s => s.trim()).filter(Boolean);
 
         // List all of the org's campaigns. Campaign table is unified post-Phase-B
-        // (2026-04-26) — every row is a native sequencer campaign.
-        // Channel filter — when present, narrows to a single channel. The
+        // (2026-04-26) - every row is a native sequencer campaign.
+        // Channel filter - when present, narrows to a single channel. The
         // Super LinkedIn campaigns list calls this with channel='linkedin'
         // so it only renders LinkedIn-only campaigns (mixed + email-only
         // are owned by the Sequencer surface).
@@ -86,7 +86,7 @@ export const listCampaigns = async (req: Request, res: Response): Promise<Respon
             name: c.name,
             status: c.status,
             channel: c.channel,
-            // Org-level tag relation — objects with { id, name, color }.
+            // Org-level tag relation - objects with { id, name, color }.
             // Used for the new tag UI on the campaigns list.
             tags: c.tagLinks.map(tl => ({ id: tl.tag.id, name: tl.tag.name, color: tl.tag.color })),
             // Legacy Smartlead-import string-array tags. Kept under a distinct
@@ -130,10 +130,10 @@ export const getCampaign = async (req: Request, res: Response): Promise<Response
         const orgId = getOrgId(req);
         const campaignId = String(req.params.id);
 
-        // Three independent reads — the main campaign row + relations,
+        // Three independent reads - the main campaign row + relations,
         // the per-status lead count (groupBy), and the lead-import
         // provenance list. None depend on each other's data, only on
-        // the campaign_id. Running them sequentially was a P1 — the
+        // the campaign_id. Running them sequentially was a P1 - the
         // page paid for round-trip latency three times. Parallel reads
         // cap wall-clock at the slowest query (the big include).
         const [campaign, leadsByStatus, leadImports] = await Promise.all([
@@ -151,7 +151,7 @@ export const getCampaign = async (req: Request, res: Response): Promise<Response
                             },
                         },
                     },
-                    // LinkedIn sender pool — only populated on mixed-channel
+                    // LinkedIn sender pool - only populated on mixed-channel
                     // campaigns. The wizard reads this to pre-fill the sender
                     // picker in edit mode.
                     linkedinSenders: {
@@ -171,7 +171,7 @@ export const getCampaign = async (req: Request, res: Response): Promise<Response
                 where: { campaign_id: campaignId, campaign: { organization_id: orgId } },
                 _count: true,
             }),
-            // Lead-source provenance — every CSV upload / Clay ingest / manual
+            // Lead-source provenance - every CSV upload / Clay ingest / manual
             // add is its own CampaignLeadImport row. Surface them so the
             // detail page can render a "Lead sources" panel with filenames +
             // counts + dates.
@@ -237,7 +237,7 @@ export const getCampaign = async (req: Request, res: Response): Promise<Response
 /**
  * GET /api/sequencer/campaigns/:id/health
  *
- * Lightweight live status — the detail page polls this every 30s while the
+ * Lightweight live status - the detail page polls this every 30s while the
  * campaign is active so operators see the auto-pause flip the moment the
  * dispatcher trips it. Returns just the operationally-important bits:
  * current status, paused reason, mailbox tally. No expensive includes.
@@ -314,7 +314,7 @@ export const getCampaignHealth = async (req: Request, res: Response): Promise<Re
  * Lightweight read used by the campaign wizard to gate the
  * `find_linkedin_url` / `find_email` step types. Returns the count of
  * configured providers + their codes so the wizard can show:
- *   - "No enrichment providers connected — connect one in Settings → Enrichment"
+ *   - "No enrichment providers connected - connect one in Settings → Enrichment"
  *   - "Waterfall: Apollo → Clay → ..." when 2+ are wired
  */
 export const getEnrichmentProviderStatus = async (req: Request, res: Response): Promise<Response> => {
@@ -344,7 +344,7 @@ export const getEnrichmentProviderStatus = async (req: Request, res: Response): 
  * Aggregates SequenceStepExecution rows by skip_reason for the detail
  * page's "Why steps were skipped" widget. Lets operators see at a glance
  * that, say, 400 leads bypassed every LinkedIn step because they had no
- * profile URL on file — informs whether to add a find_linkedin_url step
+ * profile URL on file - informs whether to add a find_linkedin_url step
  * or fix the import.
  */
 export const getCampaignSkipStats = async (req: Request, res: Response): Promise<Response> => {
@@ -383,7 +383,7 @@ export const getCampaignSkipStats = async (req: Request, res: Response): Promise
             sender_has_inmail_credits_or_open_profile: 'No InMail credits and lead profile is closed',
             lead_has_recent_post: 'Lead has no post within the configured timespan',
             lead_already_has_linkedin_url: 'Lead already has a LinkedIn URL (find step no-op)',
-            no_enrichment_provider_configured: 'No enrichment provider connected — connect one in Settings → Enrichment',
+            no_enrichment_provider_configured: 'No enrichment provider connected - connect one in Settings → Enrichment',
             linkedin_url_not_found_by_any_provider: 'Waterfall ran but no provider returned a LinkedIn URL',
             no_sender_capacity_or_out_of_hours: 'Sender out of daily budget or outside working hours',
         };
@@ -473,19 +473,19 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
         const orgId = getOrgId(req);
         const {
             name, tags, steps, leads, schedule, settings, accountIds, skipDuplicatesAcrossCampaigns,
-            // New unified suppression model — see campaignSuppressionService.
+            // New unified suppression model - see campaignSuppressionService.
             // `suppressionRules` is the canonical shape; `skipDuplicatesAcrossCampaigns`
             // is the legacy boolean preserved for backwards compat. When both are
             // provided, the boolean is folded into the rules as an 'all_campaigns'
             // rule so the resolver gets a single source of truth.
             suppressionRules,
-            // Provenance for the initial leads — surfaced in the campaign detail
+            // Provenance for the initial leads - surfaced in the campaign detail
             // page's "Lead sources" panel. Defaults to 'manual' if the caller
             // doesn't say otherwise (e.g. the legacy wizard before this change).
             leadSource = 'manual',
             leadSourceFile,
             leadSourceLabel,
-            // Mixed-channel support — attach LinkedIn senders when any
+            // Mixed-channel support - attach LinkedIn senders when any
             // linkedin_* step is present in the sequence. Shape mirrors the
             // LinkedIn-only campaign controller so the wizard can reuse types.
             linkedinSenders,
@@ -581,13 +581,13 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
             : 'email';
 
         // No automatic validation pass. Users pre-validate their leads via the
-        // "Verify Emails" button in the Leads step of the wizard before launch —
+        // "Verify Emails" button in the Leads step of the wizard before launch -
         // credits shouldn't be spent silently on campaign creation. classifyLeadHealth
         // still runs below, using cached validation_status from the Lead table when
         // available; otherwise it relies on light syntax/disposable/role checks.
         const leadValidations = new Map<string, { score: number; status: string; isDisposable: boolean; isCatchAll: boolean }>();
 
-        // Emails actually accepted into the campaign — populated inside the transaction,
+        // Emails actually accepted into the campaign - populated inside the transaction,
         // consumed after it commits to forward-wire Protection Lead rows.
         let acceptedEmails: string[] = [];
 
@@ -625,7 +625,7 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
 
             // 2. Create sequence steps + variants. step_type / step_config /
             //    condition / branch_to_step_number come through the
-            //    normalized array — defaults for legacy callers were already
+            //    normalized array - defaults for legacy callers were already
             //    applied in the preflight above.
             for (const step of normalizedSteps) {
                 const createdStep = await tx.sequenceStep.create({
@@ -677,11 +677,11 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
                 });
             }
 
-            // 3. Create campaign leads — with health gate classification + validation
+            // 3. Create campaign leads - with health gate classification + validation
             // Persist suppression rules and apply them before lead classification.
             // The legacy `skipDuplicatesAcrossCampaigns` boolean is folded into the
             // unified rule set as an 'all_campaigns' rule so the resolver is the
-            // single source of truth — no logic forks below this point.
+            // single source of truth - no logic forks below this point.
             const { setSuppressionRules, getSuppressedEmails, applySuppression } =
                 await import('../services/campaignSuppressionService');
             const incomingRules = Array.isArray(suppressionRules) ? suppressionRules : [];
@@ -708,7 +708,7 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
                     skippedCrossCampaign = skipped;
                 }
 
-                // Org-level reply-suppression — leads who replied 'hard_no' /
+                // Org-level reply-suppression - leads who replied 'hard_no' /
                 // 'angry' to any prior campaign should never be re-contacted
                 // unless the operator manually removes them from the list.
                 const { getSuppressedEmailSet } = await import('../services/replyActionService');
@@ -726,7 +726,7 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
 
                 // Classify each lead using validation results as context.
                 // Chunked Promise.all so a 100k-lead import doesn't materialize
-                // 100k pending microtasks inside the transaction — that bloats
+                // 100k pending microtasks inside the transaction - that bloats
                 // the Node heap and holds DB row locks for the full duration.
                 // classifyLeadHealth is pure (no DB) so chunking just paces
                 // the in-process CPU work; each chunk runs in parallel, the
@@ -840,7 +840,7 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
         });
 
         // Forward-wire Protection Lead rows for any email that was accepted into
-        // the new campaign. This is done post-transaction — the sequencer-side
+        // the new campaign. This is done post-transaction - the sequencer-side
         // writes have committed, so failures here can't roll them back. Each
         // sub-step is isolated so one bad Lead row doesn't cascade.
         //
@@ -852,7 +852,7 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
         //     Protection perspective this lead has been released into execution).
         //   - If no Lead row exists (e.g. user uploaded emails inline without going
         //     through bulkImportContacts first), we intentionally do NOT auto-create
-        //     Lead rows here — that responsibility lives with the Contacts import path.
+        //     Lead rows here - that responsibility lives with the Contacts import path.
         if (acceptedEmails.length > 0) {
             await prisma.lead.updateMany({
                 where: { organization_id: orgId, email: { in: acceptedEmails } },
@@ -908,7 +908,7 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
             // Replace this campaign's suppression rules when provided. Pass null
             // (or omit) to leave existing rules untouched; pass [] to clear them.
             suppressionRules,
-            // Provenance for the leads being added in this update — defaults to
+            // Provenance for the leads being added in this update - defaults to
             // 'manual' (e.g. user added rows directly in the UI). CSV imports
             // pass leadSource='csv' + leadSourceFile=<filename>.
             leadSource = 'manual',
@@ -927,7 +927,7 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
 
         if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
 
-        // Editing is allowed on any status except archived/completed — replacing steps
+        // Editing is allowed on any status except archived/completed - replacing steps
         // on an active campaign is safe because CampaignLead.current_step is preserved
         // (leads continue from where they left off; leads past the new last step are
         // effectively done). Replacing mailboxes reroutes future sends.
@@ -983,7 +983,7 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
             if (dailyLim !== undefined) scalarUpdate.daily_limit = dailyLim;
         }
 
-        // No automatic validation on add — users run "Verify Emails" in the wizard
+        // No automatic validation on add - users run "Verify Emails" in the wizard
         // before saving if they want to pre-check credits against their list.
         const addList = Array.isArray(addLeads) ? addLeads : [];
         const leadValidations = new Map<string, { score: number; status: string; isDisposable: boolean; isCatchAll: boolean }>();
@@ -1001,7 +1001,7 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
                 // this controller says leads past the new last step are
                 // "effectively done" (dispatcher's resolveDeliverableStep
                 // returns null → marks them completed). That's intentional
-                // but invisible to the operator — log a structured warning
+                // but invisible to the operator - log a structured warning
                 // with the count so support has a trail when a customer
                 // asks "why did 200 leads suddenly complete?".
                 if (campaign.status === 'active' && Array.isArray(steps) && steps.length > 0) {
@@ -1030,7 +1030,7 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
                     }
                 }
 
-                // Delete existing steps — variants cascade via SequenceStepVariant relation
+                // Delete existing steps - variants cascade via SequenceStepVariant relation
                 await tx.sequenceStep.deleteMany({ where: { campaign_id: campaignId } });
                 for (const step of steps as any[]) {
                     const stepNumber = step.step_number ?? step.stepNumber;
@@ -1133,7 +1133,7 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
                 const accepted = classifications.filter(({ result }) => result.classification !== 'red');
                 const rejected = classifications.filter(({ result }) => result.classification === 'red');
 
-                // Same provenance-batch pattern as createCampaign — every batch
+                // Same provenance-batch pattern as createCampaign - every batch
                 // of leads added in an update gets its own import row so the
                 // detail page can show "added 50 from leads_q3.csv on Mon at 14:32"
                 // separately from the original create-time import.
@@ -1234,7 +1234,7 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
 /**
  * DELETE /api/sequencer/campaigns/:id
  *
- * Soft-delete. We DO NOT cascade-drop the row anymore — that took analytics,
+ * Soft-delete. We DO NOT cascade-drop the row anymore - that took analytics,
  * reply history, lead sources, and cross-campaign suppression references
  * with it, and a GDPR / audit request had nothing to show. Instead we
  * tombstone the row (`deleted_at`, `deleted_by_user_id`) and every read
@@ -1248,7 +1248,7 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
  *     might not include the filter (defense-in-depth).
  *   - Mark all active CampaignLeads as 'paused' so cross-channel
  *     suppression already-in-flight stays consistent.
- *   - Write an AuditLog entry — entity='campaign', action='delete' — so
+ *   - Write an AuditLog entry - entity='campaign', action='delete' - so
  *     the compliance team can prove the deletion happened and by whom.
  *
  * Hard-delete is a separate operation (future endpoint or retention
@@ -1306,7 +1306,7 @@ export const deleteCampaign = async (req: Request, res: Response): Promise<Respo
 /**
  * POST /api/sequencer/campaigns/:id/launch
  *
- * Unified launch entry point — used by both the email-side Sequencer UI
+ * Unified launch entry point - used by both the email-side Sequencer UI
  * and (indirectly) any caller that doesn't know about channel. We
  * dispatch on `channel` to validate per-channel preconditions:
  *
@@ -1346,7 +1346,7 @@ export const launchCampaign = async (req: Request, res: Response): Promise<Respo
 
         // Step + account counts up front. For LinkedIn we count the
         // LinkedIn sender pool (CampaignLinkedInSender), not the email
-        // CampaignAccount table — they're separate attachments.
+        // CampaignAccount table - they're separate attachments.
         const [stepCount, emailAccountCount, linkedInSenderCount, linkedInStepCount] = await Promise.all([
             prisma.sequenceStep.count({ where: { campaign_id: campaignId } }),
             hasEmail ? prisma.campaignAccount.count({ where: { campaign_id: campaignId } }) : Promise.resolve(0),
@@ -1369,7 +1369,7 @@ export const launchCampaign = async (req: Request, res: Response): Promise<Respo
 
         // Connected-state re-check for LinkedIn senders. The count above
         // can pass while every attached account is in ERROR/CREDENTIALS
-        // (re-auth required) — the dispatcher would then no-op every
+        // (re-auth required) - the dispatcher would then no-op every
         // tick and the campaign would silently sit "active" with no
         // sends. Block launch and tell the operator which accounts need
         // attention.
@@ -1392,7 +1392,7 @@ export const launchCampaign = async (req: Request, res: Response): Promise<Respo
             }
         }
 
-        // Full LinkedIn pre-launch validation — capacity ladder, tier
+        // Full LinkedIn pre-launch validation - capacity ladder, tier
         // gates for InMail, degree-of-connection state, working-hours,
         // sequence-shape rules. Only runs when the campaign actually has
         // LinkedIn steps; a multi-channel campaign with email-only steps
@@ -1529,7 +1529,7 @@ export const resumeCampaign = async (req: Request, res: Response): Promise<Respo
 
         // Clear the pause metadata on resume so a follow-up pause doesn't
         // inherit stale auto-pause attribution (e.g. campaign was
-        // system-paused, operator resumed, then manually paused — without
+        // system-paused, operator resumed, then manually paused - without
         // clearing here the UI would still show `paused_by='system'`).
         const updated = await prisma.campaign.update({
             where: { id: campaignId },
@@ -1553,7 +1553,7 @@ export const resumeCampaign = async (req: Request, res: Response): Promise<Respo
  * Body: { tagIds: string[] }
  *
  * Replace the campaign's tag set wholesale. Mirror of contacts'
- * setContactTags — server-side validation that all tagIds belong to
+ * setContactTags - server-side validation that all tagIds belong to
  * the caller's org so cross-org tags can't be applied.
  */
 export const setCampaignTags = async (req: Request, res: Response): Promise<Response> => {
@@ -1639,7 +1639,7 @@ export const bulkTagCampaigns = async (req: Request, res: Response): Promise<Res
 };
 
 // ────────────────────────────────────────────────────────────────────
-// Suppression — GET rules for hydration + lead-picker for the modal
+// Suppression - GET rules for hydration + lead-picker for the modal
 // ────────────────────────────────────────────────────────────────────
 
 /**
@@ -1677,7 +1677,7 @@ export const getCampaignSuppression = async (req: Request, res: Response): Promi
  * Lists leads from the named source campaigns so the wizard's "pick
  * leads" modal can render a scoped, searchable list. The picker is
  * intentionally scoped to user-selected campaigns (per the product
- * decision in the design Q&A) — never returns the whole org's leads.
+ * decision in the design Q&A) - never returns the whole org's leads.
  *
  * Cross-tenant safe via the campaign.organization_id join.
  */

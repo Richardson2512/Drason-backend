@@ -56,7 +56,7 @@ export const getBounceAnalytics = async (req: Request, res: Response) => {
             if (mailboxIds.length > 0) {
                 where.mailbox_id = { in: mailboxIds };
             } else {
-                // No mailboxes on this domain — return empty results
+                // No mailboxes on this domain - return empty results
                 where.mailbox_id = 'no-match';
             }
         }
@@ -257,7 +257,7 @@ export const getBounceAnalytics = async (req: Request, res: Response) => {
  * Get date-bucketed campaign analytics for trend visualization.
  *
  * Query params:
- * - campaign_id: Filter by specific campaign (optional — aggregates all if omitted)
+ * - campaign_id: Filter by specific campaign (optional - aggregates all if omitted)
  * - start_date: Start date (ISO string, default: 30 days ago)
  * - end_date: End date (ISO string, default: today)
  */
@@ -535,8 +535,8 @@ export const getEspPerformance = async (req: Request, res: Response) => {
  * Gmail mailboxes outperforming Outlook?" without per-row arithmetic.
  *
  * Window resolution:
- *   start_date + end_date (preferred — matches the existing analytics page)
- *   timeRange (7d/30d/90d preset — for shorthand)
+ *   start_date + end_date (preferred - matches the existing analytics page)
+ *   timeRange (7d/30d/90d preset - for shorthand)
  *   default: last 30 days
  */
 export const getMailboxComparison = async (req: Request, res: Response) => {
@@ -568,7 +568,7 @@ export const getMailboxComparison = async (req: Request, res: Response) => {
         const replyWhere: any = { organization_id: orgId, mailbox_id: { in: mailboxIds }, replied_at: { gte, lte } };
         const bounceWhere: any = { organization_id: orgId, mailbox_id: { in: mailboxIds }, bounced_at: { gte, lte } };
 
-        // Parallel groupBy queries — same pattern as sequencer's
+        // Parallel groupBy queries - same pattern as sequencer's
         // getMailboxPerformance. Index-friendly: each event model has a
         // (mailbox_id, <time-column>) composite index.
         const [sends, replies, bounces, mailboxStates] = await Promise.all([
@@ -613,7 +613,7 @@ export const getMailboxComparison = async (req: Request, res: Response) => {
 
         const pct = (n: number, d: number) => (d > 0 ? parseFloat(((n / d) * 100).toFixed(2)) : 0);
 
-        // Health score 0-100 — single composite signal for ranking. We use:
+        // Health score 0-100 - single composite signal for ranking. We use:
         //   reply_rate * 6   (signal: deliverable + engaged audience)
         //   delivery_rate * 0.4 (1 - bounce_rate; signal: list quality)
         //   warmup bonus +10 (mailbox graduated warmup)
@@ -721,7 +721,7 @@ export const getMailboxComparison = async (req: Request, res: Response) => {
             };
         }).sort((a, b) => b.total_sent - a.total_sent);
 
-        // Sort mailboxes by health_score desc, then volume desc — that's the
+        // Sort mailboxes by health_score desc, then volume desc - that's the
         // "show me my best performers first" answer the operator wants when
         // the question is "what mailboxes are doing well".
         perMailbox.sort((a, b) => {
@@ -743,7 +743,7 @@ export const getMailboxComparison = async (req: Request, res: Response) => {
     }
 };
 
-/** Shared window resolver — accepts `start_date`/`end_date` (analytics-page
+/** Shared window resolver - accepts `start_date`/`end_date` (analytics-page
  *  convention) or `timeRange` (sequencer convention) so the same endpoint
  *  works regardless of which surface calls it. */
 function resolveWindow(req: Request): { gte: Date; lte: Date } {

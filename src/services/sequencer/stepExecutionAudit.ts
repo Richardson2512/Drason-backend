@@ -1,7 +1,7 @@
 /**
  * SequenceStepExecution audit writer.
  *
- * Every step dispatch attempt — successful, failed, skipped, or branched —
+ * Every step dispatch attempt - successful, failed, skipped, or branched -
  * writes a row here. The dispatcher (Phase 5) calls these. Until then, the
  * functions are unused but available so the contract is stable when the
  * dispatcher lands.
@@ -51,7 +51,7 @@ export interface MarkSkippedInput extends MarkScheduledInput {
     skip_reason: string;
 }
 
-/** SKIPPED rows have status='SKIPPED' from inception — never SCHEDULED. */
+/** SKIPPED rows have status='SKIPPED' from inception - never SCHEDULED. */
 export async function markSkipped(input: MarkSkippedInput): Promise<void> {
     await prisma.sequenceStepExecution.create({
         data: {
@@ -108,7 +108,7 @@ export async function markFailed(executionId: string, errorMessage: string): Pro
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Reads — used by Lead Analytics and the dashboard
+// Reads - used by Lead Analytics and the dashboard
 // ────────────────────────────────────────────────────────────────────
 
 export interface LeadExecutionTimelineEntry {
@@ -125,7 +125,7 @@ export interface LeadExecutionTimelineEntry {
     error_message: string | null;
 }
 
-/** Full step-by-step history for one lead — ordered by attempt time. */
+/** Full step-by-step history for one lead - ordered by attempt time. */
 export async function listForLead(organizationId: string, campaignLeadId: string): Promise<LeadExecutionTimelineEntry[]> {
     try {
         const rows = await prisma.sequenceStepExecution.findMany({
@@ -151,7 +151,7 @@ export async function listForLead(organizationId: string, campaignLeadId: string
     }
 }
 
-/** Aggregate skip-reason counts for a campaign — drives the analytics drilldown. */
+/** Aggregate skip-reason counts for a campaign - drives the analytics drilldown. */
 export async function aggregateSkipsForCampaign(organizationId: string, campaignId: string): Promise<Record<string, number>> {
     const rows = await prisma.sequenceStepExecution.groupBy({
         by: ['skip_reason'],

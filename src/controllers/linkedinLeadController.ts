@@ -1,10 +1,10 @@
 /**
- * LinkedIn lead-detail endpoints — narrow surface focused on the
+ * LinkedIn lead-detail endpoints - narrow surface focused on the
  * signal-context icebreaker.
  *
- *   GET  /api/linkedin/leads/:id/icebreaker     — read stored text + meta
+ *   GET  /api/linkedin/leads/:id/icebreaker     - read stored text + meta
  *   POST /api/linkedin/leads/:id/icebreaker/regenerate
- *                                              — re-run the generator
+ *                                              - re-run the generator
  *                                                against the most recent
  *                                                engagement event for
  *                                                this lead's profile
@@ -71,7 +71,7 @@ export const regenerateIcebreaker = async (req: Request, res: Response): Promise
             if (!profile) {
                 return res.status(400).json({
                     success: false,
-                    error: 'No LinkedIn profile linked to this lead — nothing to ground the opener on.',
+                    error: 'No LinkedIn profile linked to this lead - nothing to ground the opener on.',
                 });
             }
             const event = await prisma.engagementEvent.findFirst({
@@ -82,7 +82,7 @@ export const regenerateIcebreaker = async (req: Request, res: Response): Promise
             if (!event) {
                 return res.status(400).json({
                     success: false,
-                    error: 'No engagement events for this lead — generator has nothing to reference.',
+                    error: 'No engagement events for this lead - generator has nothing to reference.',
                 });
             }
             eventId = event.id;

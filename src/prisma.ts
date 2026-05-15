@@ -1,9 +1,9 @@
 /**
- * Prisma client — extracted from index.ts so importing the database
+ * Prisma client - extracted from index.ts so importing the database
  * client doesn't transitively boot the Express server.
  *
  * Before this split, every service file that read `import { prisma }
- * from '../index'` would re-execute index.ts at module-load time —
+ * from '../index'` would re-execute index.ts at module-load time -
  * including the route table, middleware setup, OAuth router, Redis
  * connection, and (in dev) the full worker scheduler. That made the
  * codebase untestable: any unit test that depended on a service
@@ -15,7 +15,7 @@
  * Import from here (`import { prisma } from './prisma'` /
  * `'../prisma'` / `'../../prisma'`) anywhere that needs the DB
  * client. The legacy `from './index'` re-export remains so existing
- * call sites keep working without a mass rename — but new code should
+ * call sites keep working without a mass rename - but new code should
  * point at this module directly.
  */
 

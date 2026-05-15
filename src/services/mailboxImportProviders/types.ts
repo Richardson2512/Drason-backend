@@ -1,5 +1,5 @@
 /**
- * Mailbox Import Provider — shared interface for bulk-import resellers.
+ * Mailbox Import Provider - shared interface for bulk-import resellers.
  *
  * Resellers like Zapmail, Premium Inboxes, Mission Inbox, and Scaled Mail
  * sell pre-warmed Gmail/Outlook mailboxes in bulk. Each one exposes a
@@ -28,13 +28,13 @@ export type MailboxImportProviderKey =
     | 'scaled_mail';
 
 /** What a provider returns for each mailbox after listing the customer's
- *  inventory. The credentials are PLAINTEXT — the controller is responsible
+ *  inventory. The credentials are PLAINTEXT - the controller is responsible
  *  for encrypting before any DB write. */
 export interface RemoteMailboxCredential {
     /** Provider-side mailbox identifier (used for selecting/excluding in bulk import). */
     remoteId: string;
     email: string;
-    /** Display name / first-last name combined. Optional — not all resellers expose. */
+    /** Display name / first-last name combined. Optional - not all resellers expose. */
     displayName?: string;
     provider: 'google' | 'microsoft';
     /** Domain the mailbox lives on, if known. */
@@ -81,7 +81,7 @@ export interface BulkImportResult {
  * Methods are async because every implementation will hit a remote API.
  */
 export interface MailboxImportProvider {
-    /** Stable identifier — matches the URL slug and DB string. */
+    /** Stable identifier - matches the URL slug and DB string. */
     readonly key: MailboxImportProviderKey;
 
     /** Human-readable name for UI. */
@@ -98,7 +98,7 @@ export interface MailboxImportProvider {
     validateApiKey(apiKey: string): Promise<boolean>;
 
     /** List ALL mailboxes the customer has access to with this API key.
-     *  Some resellers paginate — implementations should handle pagination
+     *  Some resellers paginate - implementations should handle pagination
      *  internally and return the flattened list. */
     listMailboxes(apiKey: string): Promise<RemoteMailboxCredential[]>;
 }

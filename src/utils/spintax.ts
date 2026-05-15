@@ -1,5 +1,5 @@
 /**
- * Spintax resolver — expands {a|b|c} alternatives into a single chosen branch.
+ * Spintax resolver - expands {a|b|c} alternatives into a single chosen branch.
  *
  * Each call returns a fresh random expansion, so when invoked per-send, every
  * recipient receives a different lexical variant of the same step template.
@@ -8,10 +8,10 @@
  * rotate at the sequence-step level).
  *
  * Position in the send pipeline:
- *   1. pickVariant   — chooses one of the step's variants for this lead
- *   2. personalize   — resolves {{first_name}} → "John", etc.
- *   3. resolveSpintax — expands {Hi|Hey} → "Hi" or "Hey"   ← here
- *   4. applyTracking — wraps URLs with HMAC tracking tokens
+ *   1. pickVariant   - chooses one of the step's variants for this lead
+ *   2. personalize   - resolves {{first_name}} → "John", etc.
+ *   3. resolveSpintax - expands {Hi|Hey} → "Hi" or "Hey"   ← here
+ *   4. applyTracking - wraps URLs with HMAC tracking tokens
  *
  * Ordering rationale:
  *  - Personalization MUST run first so any spintax placed inside a token
@@ -20,13 +20,13 @@
  *    possible) are resolved before being signed.
  *
  * Supported syntax:
- *   {a|b|c}                    — pick one of three
- *   {Hi|Hey {there|friend}}    — nested; inner resolves first
- *   {a||c}                     — empty option is allowed (1/3 chance of "")
- *   \{literal\}                — escaped braces pass through (rendered as {literal})
+ *   {a|b|c}                    - pick one of three
+ *   {Hi|Hey {there|friend}}    - nested; inner resolves first
+ *   {a||c}                     - empty option is allowed (1/3 chance of "")
+ *   \{literal\}                - escaped braces pass through (rendered as {literal})
  *
  * Excluded by design:
- *   {{first_name}}             — double-brace tokens are NOT spintax. The regex
+ *   {{first_name}}             - double-brace tokens are NOT spintax. The regex
  *                                requires a literal `|` inside the braces, so
  *                                {{...}} (no pipe) is never matched.
  */
@@ -62,7 +62,7 @@ export function resolveSpintax(template: string): string {
 
 /**
  * Lint helper for editor preview / preflight. Returns structural issues
- * without throwing — `issues.length === 0` means safe to send.
+ * without throwing - `issues.length === 0` means safe to send.
  */
 export interface SpintaxIssue {
     code: 'unbalanced' | 'empty_group';
@@ -99,7 +99,7 @@ export function validateSpintax(template: string): SpintaxIssue[] {
     let m: RegExpExecArray | null;
     while ((m = groupRe.exec(template))) {
         if (m[1] === '') {
-            issues.push({ code: 'empty_group', message: 'Empty {} — no choices', position: m.index });
+            issues.push({ code: 'empty_group', message: 'Empty {} - no choices', position: m.index });
         }
     }
 

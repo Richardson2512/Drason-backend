@@ -8,11 +8,11 @@
  * org admins.
  *
  * Idempotency: keyed on (orgId, ISO week). If the worker fires twice on
- * the same Monday — process restart, accidental re-trigger — Resend
+ * the same Monday - process restart, accidental re-trigger - Resend
  * dedupes the second send via the idempotency key.
  *
  * Schedule strategy: setInterval with a 5-minute tick that checks "is
- * it the right minute" — simpler than pulling in a cron library, and
+ * it the right minute" - simpler than pulling in a cron library, and
  * survives clock drift since we anchor on UTC hour/minute. Catches up
  * after a deploy: if the previous Monday wasn't dispatched (the AuditLog
  * has no `weekly_digest_sent` row for that week), we send it on the
@@ -34,7 +34,7 @@ let stopped = false;
 let running = false;
 
 /**
- * ISO 8601 week number — used as the idempotency anchor so a worker
+ * ISO 8601 week number - used as the idempotency anchor so a worker
  * restart on the same Monday doesn't re-send.
  */
 function isoWeekKey(d: Date): string {
@@ -72,7 +72,7 @@ async function dispatchForOrg(orgId: string, orgName: string, weekStart: Date, w
     ]);
 
     if (thisWeekSent === 0 && lastWeekSent === 0) {
-        // Inactive workspace — skip the digest. Sending an "all zeros"
+        // Inactive workspace - skip the digest. Sending an "all zeros"
         // email weekly to a dormant org is noise.
         return;
     }
@@ -122,7 +122,7 @@ async function dispatchForOrg(orgId: string, orgName: string, weekStart: Date, w
         sent: sentMap.get(g.campaign_id || '') || 0,
     }));
 
-    // Operational summary — count state transitions this week.
+    // Operational summary - count state transitions this week.
     const [mailboxesPaused, mailboxesRecovered, domainsPaused] = await Promise.all([
         prisma.stateTransition.count({
             where: {
@@ -178,7 +178,7 @@ async function dispatchForOrg(orgId: string, orgName: string, weekStart: Date, w
         idempotencyKey: `weekly-digest:${orgId}:${weekKey}`,
     });
 
-    // Audit row — used to detect "we already sent this week" on catch-up
+    // Audit row - used to detect "we already sent this week" on catch-up
     // ticks after a deploy.
     await prisma.auditLog.create({
         data: {
@@ -225,7 +225,7 @@ async function tick(): Promise<void> {
 
         const orgs = await prisma.organization.findMany({
             where: {
-                // Skip suspended/expired/canceled orgs — they don't get
+                // Skip suspended/expired/canceled orgs - they don't get
                 // performance reports for periods they can't act on.
                 subscription_status: { notIn: ['canceled', 'expired'] },
             },
@@ -264,7 +264,7 @@ export function scheduleWeeklyDigestWorker(): void {
     // landed Monday morning between 09:00 and 09:05 UTC.
     setTimeout(() => { if (!stopped) void tick(); }, 30_000);
     timer = setInterval(() => { if (!stopped) void tick(); }, TICK_INTERVAL_MS);
-    logger.info('[WEEKLY-DIGEST] Scheduled — checks every 5min, fires Mondays 09:00 UTC');
+    logger.info('[WEEKLY-DIGEST] Scheduled - checks every 5min, fires Mondays 09:00 UTC');
 }
 
 export function stopWeeklyDigestWorker(): void {

@@ -1,5 +1,5 @@
 /**
- * Mailbox Import Service — provider-agnostic bulk import orchestration.
+ * Mailbox Import Service - provider-agnostic bulk import orchestration.
  *
  * The flow:
  *   1. Controller resolves the provider via the registry.
@@ -17,7 +17,7 @@
  *   - If a ConnectedAccount with the same (org, email) already exists, we
  *     UPDATE its credentials instead of failing. This makes the import
  *     safe to re-run (e.g., after Zapmail rotates an app password).
- *   - Provisioning is itself idempotent — re-running creates no duplicates.
+ *   - Provisioning is itself idempotent - re-running creates no duplicates.
  */
 
 import { prisma } from '../prisma';
@@ -71,7 +71,7 @@ interface ImportArgs {
  * Run the full import pipeline. Returns a per-mailbox result so the UI can
  * show "78 imported, 12 already connected, 10 not ready (no app password yet)".
  *
- * Errors at any per-mailbox step land on that item's record — they NEVER
+ * Errors at any per-mailbox step land on that item's record - they NEVER
  * abort the whole batch. A partial failure with one bad mailbox shouldn't
  * block the other 99.
  */
@@ -95,7 +95,7 @@ export async function runBulkImport(args: ImportArgs): Promise<BulkImportResult>
     const defaultDailyLimit = orgSettings.default_daily_limit;
 
     for (const remote of selected) {
-        // Skip rows the reseller hasn't finished provisioning yet — no
+        // Skip rows the reseller hasn't finished provisioning yet - no
         // app password = nothing to connect with.
         if (!remote.appPassword) {
             items.push({
@@ -136,7 +136,7 @@ export async function runBulkImport(args: ImportArgs): Promise<BulkImportResult>
                 display_name: remote.displayName || existing?.display_name || null,
                 // Tag the row with the reseller key so the operator can filter
                 // mailboxes by source ('zapmail' / 'premium_inboxes' / etc.).
-                // Re-importing an existing row OVERWRITES the source tag —
+                // Re-importing an existing row OVERWRITES the source tag -
                 // last-touched-by wins, which is the right behavior because
                 // updating credentials means this reseller is now the truth.
                 source: provider.key,
@@ -145,7 +145,7 @@ export async function runBulkImport(args: ImportArgs): Promise<BulkImportResult>
             let accountId: string;
             if (existing) {
                 // Re-import: update credentials in place. Don't touch
-                // OAuth fields — they may still be in use by a legacy
+                // OAuth fields - they may still be in use by a legacy
                 // connection. Don't reset send-stat counters.
                 await prisma.connectedAccount.update({
                     where: { id: existing.id },
@@ -185,7 +185,7 @@ export async function runBulkImport(args: ImportArgs): Promise<BulkImportResult>
                     displayName: remote.displayName,
                 });
             } catch (provisionErr) {
-                // Provisioning failure is recoverable — the reconciliation
+                // Provisioning failure is recoverable - the reconciliation
                 // worker will retry. Mark the row but don't fail the import.
                 logger.error(
                     '[MAILBOX_IMPORT] Provisioning failed (will retry)',

@@ -13,7 +13,7 @@ import { logger } from './observabilityService';
 
 const MV_API_BASE = 'https://api.millionverifier.com/api/v3';
 
-// Platform-level API key — NOT per-org. Set via MILLION_VERIFIER_API_KEY env var on Railway.
+// Platform-level API key - NOT per-org. Set via MILLION_VERIFIER_API_KEY env var on Railway.
 const API_KEY = process.env.MILLION_VERIFIER_API_KEY || '';
 
 interface MillionVerifierRawResponse {
@@ -27,7 +27,7 @@ interface MillionVerifierRawResponse {
     executed_time: number;  // Execution time in ms
 }
 
-// Normalized result — always uses string labels regardless of API response format
+// Normalized result - always uses string labels regardless of API response format
 interface MillionVerifierResult {
     result: string;
     subresult: string;

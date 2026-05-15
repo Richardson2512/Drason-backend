@@ -1,5 +1,5 @@
 /**
- * /api/linkedin/signals/feed — engagement-event feed for the Signals page.
+ * /api/linkedin/signals/feed - engagement-event feed for the Signals page.
  *
  * Returns rows shaped like the operator UI expects: who engaged, on what
  * post, ICP match snapshot, mode decision (OBSERVE/SUGGEST/ENFORCE), and
@@ -9,7 +9,7 @@
  * Filters mirror the UI controls:
  *   q             free-text against actor name + headline
  *   reaction      event_type === REACTION → reaction_type; else event_type
- *   mode          OBSERVE | SUGGEST | ENFORCE — resolved per-row from
+ *   mode          OBSERVE | SUGGEST | ENFORCE - resolved per-row from
  *                 SignalMonitoringRule using the same scope precedence as
  *                 supervisor.resolveRule (POST > ACCOUNT > WORKSPACE)
  *   icp_id        filter to events whose top-scoring ICP matches
@@ -39,7 +39,7 @@ function resolveModeForRow(
     postId: string,
     accountId: string,
 ): { mode: 'OBSERVE' | 'SUGGEST' | 'ENFORCE'; rule_id: string | null } {
-    // POST > ACCOUNT > WORKSPACE — matches supervisor.resolveRule.
+    // POST > ACCOUNT > WORKSPACE - matches supervisor.resolveRule.
     const post = rules.find(r => r.scope_level === 'POST' && r.scope_targets.includes(postId));
     if (post) return { mode: post.mode as 'OBSERVE' | 'SUGGEST' | 'ENFORCE', rule_id: post.id };
     const account = rules.find(r => r.scope_level === 'ACCOUNT' && r.scope_targets.includes(accountId));
@@ -123,7 +123,7 @@ export async function feed(req: Request, res: Response) {
 
     // Resolve mode per-row + look up "action" outcome from the most recent
     // supervisor AgentRun for this event when available. Outcome lives in
-    // the decision JSON column — see supervisor.ts.
+    // the decision JSON column - see supervisor.ts.
     const eventIds = filteredRows.map((e: any) => e.id);
     const agentRunsByEvent = new Map<string, { outcome: string | null; target_id: string | null }>();
     if (eventIds.length > 0) {
@@ -147,7 +147,7 @@ export async function feed(req: Request, res: Response) {
         }
     }
 
-    // Optional icp filter — match against IcpProfile of any AgentRun outcome that
+    // Optional icp filter - match against IcpProfile of any AgentRun outcome that
     // referenced an ICP. For v1 we rely on the profile's icp_match_score being
     // populated; precise ICP-id filtering will become exact when ICP audit lands.
     const icpProfiles = icpId !== 'all'
@@ -200,7 +200,7 @@ export async function feed(req: Request, res: Response) {
         .filter((row: any) => {
             if (mode !== 'all' && row.mode !== mode) return false;
             // ICP filter applies only when we can verify a match via the
-            // profile's most-recent ICP snapshot — when icpName matches the
+            // profile's most-recent ICP snapshot - when icpName matches the
             // profile's stored icp_match score we treat it as a hit.
             if (icpId !== 'all' && icpName) {
                 // Without per-event ICP id audit we approximate with score
@@ -228,11 +228,11 @@ export async function feed(req: Request, res: Response) {
 // decision.outcome='suggested_for_review' but does NOT auto-enroll the
 // lead. These endpoints surface those for operator approval:
 //
-//   GET  /api/linkedin/signals/review-queue                — list pending
+//   GET  /api/linkedin/signals/review-queue                - list pending
 //   POST /api/linkedin/signals/review-queue/:eventId/approve { campaign_id? }
 //   POST /api/linkedin/signals/review-queue/:eventId/dismiss
 //
-// "Approve" runs the same shared promotion flow as ENFORCE — same
+// "Approve" runs the same shared promotion flow as ENFORCE - same
 // enrichment, icebreaker, routing, audit. "Dismiss" just marks the
 // AgentRun as reviewed without action.
 // ────────────────────────────────────────────────────────────────────
@@ -368,7 +368,7 @@ export async function approveReview(req: Request, res: Response) {
  * Diagnostic: list SignalMonitoringRule rows that reference deleted
  * entities (campaign, cold-call list). The supervisor logs warnings
  * each time it tries to act on a dangling ref, but ops don't read
- * worker logs — the page does. The signals UI calls this on mount to
+ * worker logs - the page does. The signals UI calls this on mount to
  * render a "1 of your monitoring rules points at a deleted campaign"
  * banner with a deep-link to fix.
  *
@@ -395,10 +395,10 @@ export async function ruleHealth(req: Request, res: Response) {
         : [];
     const liveCampaignSet = new Set(liveCampaigns.map(c => c.id));
 
-    // ICP references — SignalMonitoringRule.icp_profile_ids is a text
+    // ICP references - SignalMonitoringRule.icp_profile_ids is a text
     // array, not a FK, so deleted ICPs leave silent dangling refs.
     // With ICP soft-delete in place we check both deleted_at != null
-    // and "row doesn't exist at all" — either way the rule's filter
+    // and "row doesn't exist at all" - either way the rule's filter
     // silently no-ops for that ICP.
     const allIcpIds = Array.from(new Set(rules.flatMap(r => r.icp_profile_ids)));
     const liveIcps = allIcpIds.length > 0

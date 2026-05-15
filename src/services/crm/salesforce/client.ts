@@ -5,7 +5,7 @@
  * Activity push writes to the standard Task object so timeline display
  * works without an AppExchange listing or custom event template.
  *
- * Uses Bulk API 2.0 indirectly via SOQL pagination — for v1 we rely on
+ * Uses Bulk API 2.0 indirectly via SOQL pagination - for v1 we rely on
  * SOQL paging through REST (`nextRecordsUrl`); Bulk API graduation lands
  * in Phase 4 if list sizes warrant.
  */
@@ -187,7 +187,7 @@ export class SalesforceCrmClient implements CrmClient {
                 nextCursor: data.done ? null : (data.nextRecordsUrl ?? null),
             };
         } else {
-            // 'all' or 'list' (HubSpot kind, ignore for SF) — generic SOQL
+            // 'all' or 'list' (HubSpot kind, ignore for SF) - generic SOQL
             soql = `SELECT Id, Email, FirstName, LastName, AccountId, Account.Name, Title, Phone, HasOptedOutOfEmail FROM Contact WHERE Email != NULL ORDER BY CreatedDate DESC LIMIT ${limit}`;
         }
 
@@ -348,11 +348,11 @@ function mapSalesforceType(t: string | undefined): CrmFieldDescriptor['type'] {
 }
 
 const SUBJECT: Record<CrmActivityEventType, string> = {
-    'email.sent':    'Superkabe — Email sent',
-    'email.opened':  'Superkabe — Email opened',
-    'email.clicked': 'Superkabe — Link clicked',
-    'email.replied': 'Superkabe — Reply received',
-    'email.bounced': 'Superkabe — Email bounced',
+    'email.sent':    'Superkabe - Email sent',
+    'email.opened':  'Superkabe - Email opened',
+    'email.clicked': 'Superkabe - Link clicked',
+    'email.replied': 'Superkabe - Reply received',
+    'email.bounced': 'Superkabe - Email bounced',
 };
 
 function renderTaskSubject(a: CrmActivity): string {
@@ -369,7 +369,7 @@ function renderTaskDescription(a: CrmActivity): string {
             .filter(([, v]) => v !== null && v !== undefined && v !== '')
             .slice(0, 12);
         if (entries.length) {
-            lines.push('', '— Context —');
+            lines.push('', '- Context -');
             for (const [k, v] of entries) lines.push(`${k}: ${String(v)}`);
         }
     }

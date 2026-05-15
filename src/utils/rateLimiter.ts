@@ -161,7 +161,7 @@ export class RateLimiter {
                     const MAX_TRANSIENT_RETRIES = 5;
 
                     if (is429) {
-                        // 429 means "slow down" — always retry with exponential backoff,
+                        // 429 means "slow down" - always retry with exponential backoff,
                         // capped at 30s. Never give up on a rate limit; the data must land.
                         request.retryCount++;
                         const delayMs = Math.min(
@@ -177,7 +177,7 @@ export class RateLimiter {
                         await this.delay(delayMs);
                         this.queue.unshift(request);
                     } else if (isTransient && request.retryCount < MAX_TRANSIENT_RETRIES) {
-                        // Transient server/network error — retry with backoff, up to limit
+                        // Transient server/network error - retry with backoff, up to limit
                         request.retryCount++;
                         const delayMs = Math.min(
                             Math.pow(2, request.retryCount) * 1000,
@@ -195,7 +195,7 @@ export class RateLimiter {
                         await this.delay(delayMs);
                         this.queue.unshift(request);
                     } else {
-                        // Non-retryable error or max retries exceeded — reject
+                        // Non-retryable error or max retries exceeded - reject
                         request.reject(error);
                     }
                 }

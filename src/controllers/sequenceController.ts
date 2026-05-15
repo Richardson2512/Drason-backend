@@ -1,13 +1,13 @@
 /**
- * Sequence controller — REST surface for saved sequences + AI generator.
+ * Sequence controller - REST surface for saved sequences + AI generator.
  *
- *   GET    /api/sequencer/sequences             — list all (light shape)
- *   GET    /api/sequencer/sequences/:id         — full shape (with steps)
- *   POST   /api/sequencer/sequences             — create from hand-authored steps
- *   PATCH  /api/sequencer/sequences/:id         — update (steps replace-all)
+ *   GET    /api/sequencer/sequences             - list all (light shape)
+ *   GET    /api/sequencer/sequences/:id         - full shape (with steps)
+ *   POST   /api/sequencer/sequences             - create from hand-authored steps
+ *   PATCH  /api/sequencer/sequences/:id         - update (steps replace-all)
  *   DELETE /api/sequencer/sequences/:id
  *   POST   /api/sequencer/sequences/:id/duplicate
- *   POST   /api/sequencer/sequences/generate    — AI-assisted draft (returns
+ *   POST   /api/sequencer/sequences/generate    - AI-assisted draft (returns
  *                                                 result without persisting;
  *                                                 the UI POSTs the result to
  *                                                 /sequences if the user keeps it)
@@ -93,7 +93,7 @@ export const duplicate = async (req: Request, res: Response): Promise<Response> 
 
 export const generate = async (req: Request, res: Response): Promise<Response> => {
     try {
-        // Tier check — gate the AI generator behind the same eligibility
+        // Tier check - gate the AI generator behind the same eligibility
         // as Super Sender so trial users don't burn Gemini budget on it.
         const body = req.body || {};
         const urls = Array.isArray(body.urls) ? body.urls.filter((u: unknown) => typeof u === 'string') : [];

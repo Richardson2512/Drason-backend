@@ -1,5 +1,5 @@
 /**
- * Reply classifier — the Auto-Tag pipeline.
+ * Reply classifier - the Auto-Tag pipeline.
  *
  * Behavior:
  *   - First reply only (subsequent replies don't re-tag)
@@ -35,7 +35,7 @@ const SYSTEM = `You are a sales-reply classifier. Given the lead's first reply t
 Output STRICT JSON: { "tag": "Interested" | "Not Interested" | "Generic", "confidence": 0..1, "reasoning": "≤ 240 chars" }`;
 
 /**
- * Rule-based pre-filter — runs before the LLM to catch obvious cases
+ * Rule-based pre-filter - runs before the LLM to catch obvious cases
  * cheaply (OOO replies, opt-outs, etc.). Returns NULL when no rule
  * matches and the LLM should be called.
  */
@@ -68,7 +68,7 @@ function ruleBasedShortcut(reply: string): ReplyClassification | null {
  * profile id is supplied (so the Unibox can render the auto-tag badge
  * without re-running the classifier on page load).
  *
- * Latest classification wins (workspace-wide). We always overwrite —
+ * Latest classification wins (workspace-wide). We always overwrite -
  * there's no "lock first tag" semantics.
  */
 export async function classifyReply(
@@ -92,7 +92,7 @@ export async function classifyReply(
 
             // LLM path (Kimi K2.5).
             if (!isKimiConfigured()) {
-                // Stub-safe fallback when Kimi isn't configured — neutral
+                // Stub-safe fallback when Kimi isn't configured - neutral
                 // Generic label with low confidence so downstream auto-
                 // actions don't fire on guesses.
                 return {
@@ -122,7 +122,7 @@ export async function classifyReply(
     );
 
     // Persist the tag on the profile so Unibox + analytics can read it
-    // without re-running the classifier. Best-effort — failures here
+    // without re-running the classifier. Best-effort - failures here
     // don't surface to the caller since the audit row already has the
     // canonical record via AgentRun.
     if (opts.linkedinProfileId) {

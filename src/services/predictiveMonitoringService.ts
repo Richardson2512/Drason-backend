@@ -230,7 +230,7 @@ async function analyzeCampaignRisk(
         }
     }
 
-    // ── Signal 3: Mailbox Bounce Rate (informational — campaigns are NOT paused on bounce rate) ──
+    // ── Signal 3: Mailbox Bounce Rate (informational - campaigns are NOT paused on bounce rate) ──
     // NOTE: Bounce rate is tracked per-mailbox. Campaign-level avg is shown for awareness only.
     // Campaigns only pause when ALL mailboxes are paused/removed, never on bounce rate.
     if (avgBounceRate >= 10) {
@@ -390,7 +390,7 @@ async function analyzeCampaignRisk(
         recommendations.push('Wait for mailboxes to exit cooldown or add additional mailboxes');
         structuredRecs.push({
             action: 'wait_cooldown',
-            label: `${mailboxesInCooldown} mailbox${mailboxesInCooldown > 1 ? 'es' : ''} in cooldown — add more or wait`,
+            label: `${mailboxesInCooldown} mailbox${mailboxesInCooldown > 1 ? 'es' : ''} in cooldown - add more or wait`,
             campaign_id: campaignId
         });
     }
@@ -653,7 +653,7 @@ export const applyRecommendation = async (
             }
 
             case 'investigate_bounces': {
-                // Navigate user to campaign — no automated action, just acknowledge
+                // Navigate user to campaign - no automated action, just acknowledge
                 return {
                     success: true,
                     message: 'Navigate to the campaign to review bounce details and take action'
@@ -661,7 +661,7 @@ export const applyRecommendation = async (
             }
 
             case 'fix_domains': {
-                // Navigate user to domains — no automated action
+                // Navigate user to domains - no automated action
                 return {
                     success: true,
                     message: 'Navigate to Domains page to address health issues'

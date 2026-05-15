@@ -249,7 +249,7 @@ async function expireTrials(now: Date): Promise<void> {
                 message: `Your Superkabe trial has ended. Sending and validation are paused. Upgrade to resume.`,
             }).catch((err) => logger.warn('[TRIAL-WORKER] Slack alert failed (expired)', { error: err?.message }));
 
-            // Notify all org admins. Single email per org per trial — once
+            // Notify all org admins. Single email per org per trial - once
             // expired they don't expire again, so a static idempotency key
             // is fine.
             void dispatchEmail({

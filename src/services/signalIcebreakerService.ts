@@ -3,7 +3,7 @@
  *
  * When a LinkedIn engagement signal promotes a prospect into a campaign,
  * this service generates a 1-3 sentence AI opener seeded by what the
- * prospect actually engaged with — the post body, their interaction type
+ * prospect actually engaged with - the post body, their interaction type
  * (like / comment / share / repost), the literal comment text if they
  * commented, the post date, and the post author's name. The opener gets
  * written to Lead.signal_icebreaker; the Sequencer email renderer
@@ -11,25 +11,25 @@
  *
  * Inspired by lemlist's `{{signalLinkedInTopicPostAuthorName}}` /
  * `{{signalLinkedInTopicCommentContent}}` variable family. We keep the
- * surface narrow on purpose — one workspace-wide prompt template,
+ * surface narrow on purpose - one workspace-wide prompt template,
  * triggered automatically on signal-promotion. v2 may add per-campaign
  * prompts and manual regenerate-from-UI controls.
  *
  * Stub-safe: if OPENAI_API_KEY is unset, the generator no-ops (returns
  * null) and the Sequencer renderer falls back to whatever default the
- * step author wrote inline — same way it falls back on any missing var.
+ * step author wrote inline - same way it falls back on any missing var.
  */
 
 import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import { safeCompletion } from './openaiClient';
 
-// Default prompt — kept here as a constant rather than a settings row
+// Default prompt - kept here as a constant rather than a settings row
 // for v1. The operator can override via a workspace setting in v2; for
 // now this is what every org gets. Designed to produce a single-sentence
 // opener that references the specific engagement without sounding
 // AI-stitched.
-const DEFAULT_PROMPT = `You write 1-2 sentence cold-outreach openers. The lead engaged with a LinkedIn post by my colleague. Write an opener that mentions the post naturally and references what the lead said or how they reacted. The opener will be the first sentence of an email — no greeting, no sign-off, no quotes. Don't say "I noticed" or "I saw" — make it feel like a peer-to-peer observation. Maximum 280 characters.`;
+const DEFAULT_PROMPT = `You write 1-2 sentence cold-outreach openers. The lead engaged with a LinkedIn post by my colleague. Write an opener that mentions the post naturally and references what the lead said or how they reacted. The opener will be the first sentence of an email - no greeting, no sign-off, no quotes. Don't say "I noticed" or "I saw" - make it feel like a peer-to-peer observation. Maximum 280 characters.`;
 
 const MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 
@@ -43,7 +43,7 @@ interface IcebreakerInput {
 
 interface IcebreakerResult {
     text: string | null;
-    /** When the generator decided not to run — useful for telemetry +
+    /** When the generator decided not to run - useful for telemetry +
      *  the UI's "why is the opener empty?" affordance. */
     skip_reason?: string;
 }
@@ -72,7 +72,7 @@ function describeInteraction(eventType: string, reactionType: string | null): st
 /** Persist a skip-reason on the Lead so the operator-facing icebreaker
  *  panel can render "Couldn't auto-generate: {reason}" instead of a
  *  silent null. We don't clear `signal_icebreaker` if it was already
- *  set from a prior successful generation � a stale-but-real opener is
+ *  set from a prior successful generation � a stale-but-real opener is
  *  better UX than a vacated field. */
 async function recordSkip(leadId: string, reason: string): Promise<void> {
     try {
@@ -81,7 +81,7 @@ async function recordSkip(leadId: string, reason: string): Promise<void> {
             data: { signal_icebreaker_skip_reason: reason },
         });
     } catch {
-        // Best-effort � failure to log a skip reason should never
+        // Best-effort � failure to log a skip reason should never
         // propagate to the caller. Reason already lives in the
         // returned IcebreakerResult so the caller can still surface it.
     }
@@ -117,7 +117,7 @@ export async function generateIcebreakerFromSignal(
     const actorName = event.actor?.name || 'the lead';
     const postedAt = event.post?.posted_at ? new Date(event.post.posted_at) : null;
 
-    // Skip when we have neither post body nor a comment to ground on �
+    // Skip when we have neither post body nor a comment to ground on �
     // an AI opener with nothing to reference is just hallucinated filler.
     if (!postText && !articleTitle && !commentText) {
         await recordSkip(input.leadId, 'no_grounding_context');
@@ -156,10 +156,10 @@ export async function generateIcebreakerFromSignal(
         const text = (completion.choices?.[0]?.message?.content ?? '').trim();
         if (!text) { await recordSkip(input.leadId, 'empty_completion'); return { text: null, skip_reason: 'empty_completion' }; }
 
-        // Strip stray surrounding quotes — the model occasionally wraps.
+        // Strip stray surrounding quotes - the model occasionally wraps.
         const cleaned = text.replace(/^["“]/, '').replace(/["”]$/, '').trim();
 
-        // Success � clear any prior skip_reason so the panel renders the
+        // Success � clear any prior skip_reason so the panel renders the
         // opener cleanly instead of "Couldn't auto-generate" alongside
         // the generated text.
         await prisma.lead.update({
@@ -195,7 +195,7 @@ export async function generateIcebreakerFromSignal(
  * relevant engagement event for that lead's profile and generate.
  *
  * Caller-friendly because most promotion paths know the lead but not the
- * specific event — they just know "this person engaged."
+ * specific event - they just know "this person engaged."
  */
 export async function generateIcebreakerForLead(
     organizationId: string,

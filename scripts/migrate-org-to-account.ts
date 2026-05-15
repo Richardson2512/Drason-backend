@@ -1,5 +1,5 @@
 /**
- * Phase 1 data migration — wrap every existing Organization in a new Account.
+ * Phase 1 data migration - wrap every existing Organization in a new Account.
  *
  * For each Organization in the DB:
  *   1. Pick the "owner" User: preferred role='admin', tiebreak by created_at ASC.
@@ -45,13 +45,13 @@ async function main() {
         const tag = `[${org.slug}]`;
 
         if (org.account_id) {
-            console.log(`${tag} already migrated (account_id=${org.account_id}) — skipping`);
+            console.log(`${tag} already migrated (account_id=${org.account_id}) - skipping`);
             skipped++;
             continue;
         }
 
         if (org.users.length === 0) {
-            console.warn(`${tag} has zero users — skipping (cannot determine owner)`);
+            console.warn(`${tag} has zero users - skipping (cannot determine owner)`);
             skipped++;
             continue;
         }

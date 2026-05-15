@@ -1,5 +1,5 @@
 /**
- * Unipile Users API — relations + invitations for one LinkedIn account.
+ * Unipile Users API - relations + invitations for one LinkedIn account.
  *
  * Endpoint paths derived from the Unipile docs reference slugs:
  *   - userscontroller_getrelations              → /users/{account_id}/relations
@@ -10,7 +10,7 @@
  * per their own documentation.
  *
  * The exact path shape (whether the account_id is in the path or a query
- * param) is not pinned down in Unipile's marketing docs — both variants
+ * param) is not pinned down in Unipile's marketing docs - both variants
  * are exposed by the SDK. We start with path-param form, which matches
  * Unipile's REST conventions for other per-account resources, and will
  * swap to query-param form on the first 404 observed in live traffic.
@@ -19,7 +19,7 @@
 import { unipileRequest } from './client';
 
 // ────────────────────────────────────────────────────────────────────
-// Response shapes — fields confirmed by Unipile's "Detecting Accepted
+// Response shapes - fields confirmed by Unipile's "Detecting Accepted
 // Invitations" doc + the new_relation webhook payload reference.
 // ────────────────────────────────────────────────────────────────────
 
@@ -32,7 +32,7 @@ export interface UnipileRelation {
     full_name?: string;
     headline?: string;
     company?: string;
-    /** Current job title — returned by getProfile, not by listRelations. */
+    /** Current job title - returned by getProfile, not by listRelations. */
     position?: string;
     /** Free-text location string from the profile header. */
     location?: string;

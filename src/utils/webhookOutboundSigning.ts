@@ -1,5 +1,5 @@
 /**
- * Outbound webhook signing — HMAC-SHA256.
+ * Outbound webhook signing - HMAC-SHA256.
  *
  * Stripe-compatible scheme. Receivers verify by:
  *   1. Reading `X-Superkabe-Signature: t=<unix_ts>,v1=<hex>`
@@ -7,7 +7,7 @@
  *   3. Timing-safe comparing the recomputed hex to v1
  *   4. Rejecting events older than 5 minutes (t < now-300s)
  *
- * The replay window is enforced by the receiver, not us — we just stamp `t`.
+ * The replay window is enforced by the receiver, not us - we just stamp `t`.
  */
 
 import crypto from 'crypto';

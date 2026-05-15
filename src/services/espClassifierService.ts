@@ -2,7 +2,7 @@
  * ESP Classifier Service
  *
  * Classifies a domain's email service provider from its MX records.
- * Reads from the existing DomainInsight cache — zero additional DNS lookups.
+ * Reads from the existing DomainInsight cache - zero additional DNS lookups.
  */
 
 import { prisma } from '../prisma';

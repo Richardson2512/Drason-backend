@@ -10,7 +10,7 @@
  *   1. webhookService.dispatchEvent enqueues a fresh delivery → BullMQ runs it now
  *   2. A failed attempt re-adds the job with `delay = nextAttemptAt - now`
  *
- * A safety-net rescue scan also runs every 60s — sweeps DB for any pending /
+ * A safety-net rescue scan also runs every 60s - sweeps DB for any pending /
  * failed delivery whose next_attempt_at has passed but isn't in the queue
  * (e.g. after a Redis/process restart). Belt-and-braces; the queue is the
  * primary mechanism.
@@ -58,15 +58,15 @@ async function processDelivery(job: Job<DeliveryJobData>): Promise<void> {
     });
 
     if (!delivery) {
-        logger.warn(`[${LOG_TAG}] Delivery ${deliveryId} not found — skipping`);
+        logger.warn(`[${LOG_TAG}] Delivery ${deliveryId} not found - skipping`);
         return;
     }
     if (delivery.status === 'success' || delivery.status === 'dead_letter') {
-        // Already terminal — nothing to do.
+        // Already terminal - nothing to do.
         return;
     }
     if (!delivery.endpoint.active || delivery.endpoint.disabled_at) {
-        logger.info(`[${LOG_TAG}] Endpoint ${delivery.endpoint_id} is inactive — skipping ${deliveryId}`);
+        logger.info(`[${LOG_TAG}] Endpoint ${delivery.endpoint_id} is inactive - skipping ${deliveryId}`);
         return;
     }
 
@@ -130,7 +130,7 @@ async function postDelivery(
         'X-Superkabe-Delivery-Id': delivery.id,
     };
 
-    // HMAC signing — generic endpoints only. Slack incoming webhooks
+    // HMAC signing - generic endpoints only. Slack incoming webhooks
     // don't accept arbitrary signatures and Slack's own request signing
     // is for events going INTO Slack, not for incoming webhook URLs.
     if (endpoint.provider === 'generic') {
@@ -187,7 +187,7 @@ function buildGenericEnvelope(delivery: { event_type: string; event_id: string; 
 /**
  * Reshape a generic event payload into Slack's blocks format.
  *
- * Best-effort — the goal is "useful in a Slack channel without setting up
+ * Best-effort - the goal is "useful in a Slack channel without setting up
  * a custom transform." Each event type gets a one-line headline, a small
  * fields block of relevant context, and a link back to the dashboard.
  */
@@ -206,7 +206,7 @@ function buildSlackPayload(eventType: WebhookEventType, payload: Record<string, 
 function slackHeadlineFor(eventType: WebhookEventType, payload: Record<string, unknown>): string {
     const subject = (payload.email || payload.domain || payload.campaign_name || payload.id || '').toString();
     const verb = SLACK_VERBS[eventType] || eventType;
-    return subject ? `*${verb}* — \`${subject}\`` : `*${verb}*`;
+    return subject ? `*${verb}* - \`${subject}\`` : `*${verb}*`;
 }
 
 const SLACK_VERBS: Record<WebhookEventType, string> = {
@@ -244,7 +244,7 @@ function slackFieldsFor(payload: Record<string, unknown>): { type: 'mrkdwn'; tex
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Rescue scan — picks up deliveries whose next_attempt_at slipped past
+// Rescue scan - picks up deliveries whose next_attempt_at slipped past
 // the queue (e.g. process crash mid-retry, Redis flush, etc.)
 // ────────────────────────────────────────────────────────────────────
 
@@ -281,7 +281,7 @@ async function rescueScan(): Promise<void> {
 export function startWebhookDispatcherWorker(): void {
     const redis = getRedisClient();
     if (!redis) {
-        logger.warn(`[${LOG_TAG}] No Redis — webhook dispatcher disabled (deliveries will queue in DB only)`);
+        logger.warn(`[${LOG_TAG}] No Redis - webhook dispatcher disabled (deliveries will queue in DB only)`);
         return;
     }
 

@@ -1,5 +1,5 @@
 /**
- * Sequence service — CRUD + AI-assisted generation for reusable saved
+ * Sequence service - CRUD + AI-assisted generation for reusable saved
  * sequences. Distinct from the campaign-side SequenceStep model: these
  * are templates that get CLONED into a campaign on load, never linked.
  *
@@ -244,7 +244,7 @@ export async function duplicateSequence(orgId: string, id: string): Promise<Sequ
 }
 
 // ────────────────────────────────────────────────────────────────────
-// AI-assisted generation — Gemini Flash
+// AI-assisted generation - Gemini Flash
 // ────────────────────────────────────────────────────────────────────
 
 export interface AiGenerateInput {
@@ -265,7 +265,7 @@ export interface AiGenerateResult {
     name: string;
     description: string;
     steps: SequenceStepInput[];
-    /** Raw URL fetch outcomes — surfaced in UI so the user knows what was read. */
+    /** Raw URL fetch outcomes - surfaced in UI so the user knows what was read. */
     sources: Array<{ url: string; ok: boolean; error?: string }>;
     modelUsed: string;
 }
@@ -294,7 +294,7 @@ Rules:
 - Each step needs a preheader: a one-line inbox snippet (40–90 chars) that complements the subject.
 - delay_days for step N: step 1 = 0; steps 2+ = 2-4 days apart.
 - Use <p> tags for paragraphs; no <html> or <body> wrappers.
-- No greetings like "Hi {{first_name}}" — write as if the greeting will be prepended by the system.
+- No greetings like "Hi {{first_name}}" - write as if the greeting will be prepended by the system.
 
 Respond with ONLY a JSON object matching this exact shape:
 {
@@ -350,7 +350,7 @@ export async function generateSequenceWithAi(input: AiGenerateInput): Promise<Ai
     });
 
     if (!text || text.trim() === '{}') {
-        throw new Error('AI returned an empty response — try again or refine the instructions');
+        throw new Error('AI returned an empty response - try again or refine the instructions');
     }
 
     let parsed: { name?: string; description?: string; steps?: SequenceStepInput[] };
@@ -364,7 +364,7 @@ export async function generateSequenceWithAi(input: AiGenerateInput): Promise<Ai
         throw new Error('AI response did not include any steps');
     }
 
-    // Sanitize each step — trim, default delays, normalize step numbers.
+    // Sanitize each step - trim, default delays, normalize step numbers.
     const steps: SequenceStepInput[] = parsed.steps.map((s, i) => ({
         step_number: i + 1,
         delay_days: typeof s.delay_days === 'number' ? Math.max(0, Math.min(60, s.delay_days)) : (i === 0 ? 0 : 3),

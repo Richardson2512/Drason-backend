@@ -55,7 +55,7 @@ export const getCurrentUser = async (req: Request, res: Response): Promise<void>
 
         // Capability list for the frontend so it can hide write controls the
         // user can't actually use. Source of truth still lives on the backend
-        // — every gated route checks via requireCapability — but a clean UI
+        // - every gated route checks via requireCapability - but a clean UI
         // beats a button that 403s on click.
         //
         // capabilityKeys is the canonical list of every capability the
@@ -180,10 +180,10 @@ export const changePassword = async (req: Request, res: Response): Promise<void>
             }
         });
 
-        // Clear the current session cookie — force re-login
+        // Clear the current session cookie - force re-login
         clearTokenCookie(res);
 
-        // Security notification — fire-and-forget. Confirms the change and
+        // Security notification - fire-and-forget. Confirms the change and
         // gives the user a fast recovery path if it wasn't them.
         const userRecord = await prisma.user.findUnique({
             where: { id: userId },
@@ -205,7 +205,7 @@ export const changePassword = async (req: Request, res: Response): Promise<void>
             });
         }
 
-        logger.info('[USER] Password changed — all prior sessions invalidated', { userId });
+        logger.info('[USER] Password changed - all prior sessions invalidated', { userId });
         res.json({ success: true, message: 'Password changed successfully. Please log in again.' });
     } catch (error) {
         logger.error('[USER] Failed to change password', error as Error);

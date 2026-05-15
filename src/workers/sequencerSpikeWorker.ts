@@ -1,5 +1,5 @@
 /**
- * Sequencer spike detector — runs hourly, scans active campaigns, alerts to
+ * Sequencer spike detector - runs hourly, scans active campaigns, alerts to
  * Slack when bounce or unsubscribe rates cross thresholds.
  *
  * Thresholds chosen to fire BEFORE the protection layer auto-pauses anything:
@@ -119,7 +119,7 @@ export function scheduleSequencerSpikeWorker(): void {
     if (interval) return;
     runTick().catch(() => {});
     interval = setInterval(() => { runTick().catch(() => {}); }, TICK_MS);
-    logger.info(`[${LOG_TAG}] Scheduled — hourly tick`);
+    logger.info(`[${LOG_TAG}] Scheduled - hourly tick`);
 }
 
 export function stopSequencerSpikeWorker(): void {

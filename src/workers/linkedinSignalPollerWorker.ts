@@ -1,12 +1,12 @@
 /**
  * LinkedIn signal-monitoring poller (Phase 4).
  *
- * Unipile does NOT push engagement events on a user's own posts — their
+ * Unipile does NOT push engagement events on a user's own posts - their
  * webhook event list explicitly excludes likes / reactions / comments /
  * shares on the connected user's content (per the Unipile real-time
  * docs). The only way to detect them is to POLL.
  *
- * Their guidance: "few times per day, random spacing — don't fixed-time"
+ * Their guidance: "few times per day, random spacing - don't fixed-time"
  * to avoid LinkedIn's bot-detection. We schedule 4 cycles/day per
  * organization with ±20min jitter on each cycle.
  *
@@ -20,7 +20,7 @@
  *   4. Each new event is dispatched to the supervisor for ICP-match +
  *      enrichment + action (Phase 4 cont.).
  *
- * Stubbed when UNIPILE_API_KEY is unset — the worker still ticks but
+ * Stubbed when UNIPILE_API_KEY is unset - the worker still ticks but
  * skips the actual fetch, keeping logs quiet in dev.
  */
 
@@ -37,9 +37,9 @@ import {
 // call, so we cap to keep workspace-wide poll cycles bounded.
 //
 // Two-tier budget:
-//   - MAX_PROFILE_HYDRATIONS_PER_CYCLE — workspace-wide ceiling. Caps
+//   - MAX_PROFILE_HYDRATIONS_PER_CYCLE - workspace-wide ceiling. Caps
 //     total Unipile spend across all accounts in one cycle.
-//   - MAX_HYDRATIONS_PER_ACCOUNT_PER_CYCLE — per-account ceiling. Stops
+//   - MAX_HYDRATIONS_PER_ACCOUNT_PER_CYCLE - per-account ceiling. Stops
 //     a single high-volume account (1000+ reactions on a viral post)
 //     from draining the global pool before other accounts get a turn.
 //
@@ -74,7 +74,7 @@ function jitter(baseMs: number): number {
  */
 export async function runOnce(): Promise<{ accountsScanned: number; eventsInserted: number }> {
     if (!isUnipileConfigured()) {
-        logger.debug('[LINKEDIN-POLLER] Unipile not configured — skipping cycle');
+        logger.debug('[LINKEDIN-POLLER] Unipile not configured - skipping cycle');
         return { accountsScanned: 0, eventsInserted: 0 };
     }
 
@@ -88,7 +88,7 @@ export async function runOnce(): Promise<{ accountsScanned: number; eventsInsert
     });
 
     let eventsInserted = 0;
-    // Workspace-wide hydration budget — safety net so a cycle never spends
+    // Workspace-wide hydration budget - safety net so a cycle never spends
     // more than MAX_PROFILE_HYDRATIONS_PER_CYCLE Unipile profile calls
     // across all orgs.
     const globalHydrationBudget = { remaining: MAX_PROFILE_HYDRATIONS_PER_CYCLE };
@@ -99,7 +99,7 @@ export async function runOnce(): Promise<{ accountsScanned: number; eventsInsert
             // budget. Engagers will be upserted with sparse fields and
             // get richer data on the next cycle.
         }
-        // Each account gets its own slice — capped at the per-account
+        // Each account gets its own slice - capped at the per-account
         // ceiling and also clamped by whatever's left in the global pool.
         const perAccountBudget = {
             remaining: Math.min(MAX_HYDRATIONS_PER_ACCOUNT_PER_CYCLE, globalHydrationBudget.remaining),
@@ -127,7 +127,7 @@ async function pollOneAccount(
     lookbackCutoff: Date,
     hydrationBudget: { remaining: number },
 ): Promise<number> {
-    // List recent posts; cap at one page (50) per cycle — we'll catch
+    // List recent posts; cap at one page (50) per cycle - we'll catch
     // older posts on subsequent cycles if they continue accruing reactions.
     const postsResp = await unipilePosts.listAccountPosts(acct.unipile_account_id, {
         limit: 50,
@@ -163,7 +163,7 @@ async function pollOneAccount(
             update: {
                 last_polled_at: new Date(),
                 // Refresh text if it was null (older row predating this
-                // capture). Don't overwrite when already set — operators
+                // capture). Don't overwrite when already set - operators
                 // may have inline-edited it via a tools surface later.
                 ...(p.text ? { text: p.text } : {}),
                 ...(postKind ? { post_kind: postKind } : {}),
@@ -215,7 +215,7 @@ async function ingestReactions(orgId: string, localPostId: string, accountId: st
             await maybeHydrateProfile(orgId, accountId, profile, hydrationBudget);
         } catch (err) {
             // Unique constraint violation on (post, actor, event, reaction) is
-            // the expected dedup signal — skip silently. Anything else logged.
+            // the expected dedup signal - skip silently. Anything else logged.
             const code = (err as { code?: string })?.code;
             if (code !== 'P2002') logger.warn('[LINKEDIN-POLLER] reaction insert failed', { err: String(err).slice(0, 200) });
         }
@@ -241,7 +241,7 @@ async function ingestComments(orgId: string, localPostId: string, accountId: str
                     reaction_type: null,
                     occurred_at: occurredAt,
                     // Comment text is the strongest grounding signal for
-                    // the AI icebreaker — quotes the engager's own words.
+                    // the AI icebreaker - quotes the engager's own words.
                     // Cap at 1000 chars; longer comments are paragraphs
                     // we don't need verbatim.
                     comment_text: c.text ? c.text.slice(0, 1000) : null,
@@ -293,7 +293,7 @@ async function upsertProfileSnapshot(
             last_profile_fetch: now,
         },
         update: {
-            // Only refresh display fields when we have new data — keeps
+            // Only refresh display fields when we have new data - keeps
             // the cache stable for the rest of the pipeline.
             ...(name ? { name } : {}),
             ...(headline ? { headline } : {}),
@@ -382,7 +382,7 @@ async function tick(): Promise<void> {
 export function scheduleLinkedInSignalPoller(): void {
     if (scheduled) return;
     // Recurring-jitter loop. setInterval(..., jitter(X)) only evaluates
-    // the jitter once at scheduling time — every subsequent fire uses
+    // the jitter once at scheduling time - every subsequent fire uses
     // the same offset, which means N orgs running the same worker land
     // on Unipile at the same relative cadence. Replace with a
     // setTimeout chain that re-rolls jitter on each cycle, so the
@@ -420,7 +420,7 @@ export function getSignalPollerStatus() {
 /**
  * Local mirror of the inferPostKind in linkedinAccountController. Kept
  * here as a private helper so the poller can stamp post_kind on the
- * LinkedInPost row at ingest time — the AI-icebreaker generator reads
+ * LinkedInPost row at ingest time - the AI-icebreaker generator reads
  * this to phrase article references differently from short posts.
  */
 function inferPostKindForPoller(p: { post_urn?: string; text?: string }): 'post' | 'article' | 'repost' {

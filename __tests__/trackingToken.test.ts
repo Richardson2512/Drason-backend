@@ -4,7 +4,7 @@
  * of malformed inputs, and the signing-key isolation from ENCRYPTION_KEY.
  */
 
-// Must set ENCRYPTION_KEY BEFORE importing — the module derives its signing key at first use.
+// Must set ENCRYPTION_KEY BEFORE importing - the module derives its signing key at first use.
 process.env.ENCRYPTION_KEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
 import { signTrackingToken, verifyTrackingToken } from '../src/utils/trackingToken';
@@ -31,7 +31,7 @@ describe('trackingToken', () => {
     it('rejects a tampered payload', () => {
         const token = signTrackingToken({ leadId: 'lead-orig' });
         const dot = token.indexOf('.');
-        // Flip one char in the payload — signature should no longer match.
+        // Flip one char in the payload - signature should no longer match.
         const tampered = (token.charAt(0) === 'A' ? 'B' : 'A') + token.slice(1, dot) + token.slice(dot);
         expect(verifyTrackingToken(tampered)).toBeNull();
     });
@@ -50,7 +50,7 @@ describe('trackingToken', () => {
         expect(verifyTrackingToken('no-dot-here')).toBeNull();
         expect(verifyTrackingToken('.onlydot')).toBeNull();
         expect(verifyTrackingToken('before.')).toBeNull();
-        // @ts-expect-error — intentional type violation
+        // @ts-expect-error - intentional type violation
         expect(verifyTrackingToken(null)).toBeNull();
     });
 
@@ -69,7 +69,7 @@ describe('trackingToken', () => {
         } finally {
             (Date as any).now = realNow;
         }
-        // And for the hand-crafted body (unsigned) — also rejects.
+        // And for the hand-crafted body (unsigned) - also rejects.
         expect(verifyTrackingToken(`${body}.AAAAAAAAAAAAAAAAAAAAAA`)).toBeNull();
     });
 

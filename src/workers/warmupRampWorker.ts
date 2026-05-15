@@ -1,7 +1,7 @@
 /**
- * Warmup Ramp Worker — daily volume cadence + spam-rate adaptation.
+ * Warmup Ramp Worker - daily volume cadence + spam-rate adaptation.
  *
- * Cadence: every 6 hours (idempotent — only the first tick after
+ * Cadence: every 6 hours (idempotent - only the first tick after
  * midnight UTC actually mutates ramp state; later ticks are no-ops).
  *
  * On each tick (after the daily threshold):
@@ -53,7 +53,7 @@ async function processMembership(membership: {
 }): Promise<void> {
     const now = new Date();
     if (membership.last_ramp_advanced_on && isSameUtcDate(membership.last_ramp_advanced_on, now)) {
-        // Already advanced today — fast path before computing spam rate.
+        // Already advanced today - fast path before computing spam rate.
         return;
     }
 
@@ -68,7 +68,7 @@ async function processMembership(membership: {
         enabled: membership.enabled,
     });
 
-    // Atomic advance — the WHERE clause gates `last_ramp_advanced_on`
+    // Atomic advance - the WHERE clause gates `last_ramp_advanced_on`
     // so two concurrent ticks can't both flip the row. The fast-path
     // check above is for speed; this updateMany is the correctness
     // boundary. Postgres serializes the read-modify-write inside one
@@ -92,13 +92,13 @@ async function processMembership(membership: {
             spam_rate_30d: spamRate,
             last_ramp_advanced_on: now,
             last_error: decision.nextHealth === 'error'
-                ? `Spam rate ${(spamRate ?? 0).toFixed(3)} exceeded error threshold — operator review required.`
+                ? `Spam rate ${(spamRate ?? 0).toFixed(3)} exceeded error threshold - operator review required.`
                 : null,
         },
     });
 
     if (result.count === 0) {
-        // Lost the race to another concurrent tick — fine, nothing to do.
+        // Lost the race to another concurrent tick - fine, nothing to do.
         return;
     }
 

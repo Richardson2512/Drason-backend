@@ -75,7 +75,7 @@ export const runZapmailReconciliation = async (): Promise<SweepResult> => {
         });
     }
 
-    // ── Sweep 2: provisioning_failed rows — re-attempt ───────────────────
+    // ── Sweep 2: provisioning_failed rows - re-attempt ───────────────────
     const orphanProvisioning = await prisma.connectedAccount.findMany({
         where: { connection_status: 'provisioning_failed' },
         select: { id: true, email: true, display_name: true, organization_id: true },
@@ -135,7 +135,7 @@ export const scheduleZapmailReconciliationWorker = (): void => {
 
     // Delay first run so server boot isn't blocked by a long sweep.
     scheduled = setTimeout(tick, 60 * 1000);
-    logger.info(`[ZAPMAIL-RECON] Scheduled — sweep every ${INTERVAL_MS / 60000}m`);
+    logger.info(`[ZAPMAIL-RECON] Scheduled - sweep every ${INTERVAL_MS / 60000}m`);
 };
 
 export const stopZapmailReconciliationWorker = (): void => {

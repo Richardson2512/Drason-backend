@@ -1,15 +1,15 @@
 /**
  * Outreach.io integration controller.
  *
- *   GET  /api/integrations/outreach/authorize        — kicks off OAuth
- *   GET  /api/integrations/outreach/callback         — OAuth redirect target
- *   GET  /api/integrations/outreach/connection       — current connection info
- *   POST /api/integrations/outreach/disconnect       — revoke + wipe tokens
- *   GET  /api/integrations/outreach/sequences        — list user's sequences
- *   POST /api/integrations/outreach/sequences        — create a new (empty) sequence
- *   GET  /api/integrations/outreach/mailboxes        — list user's mailboxes
- *   POST /api/integrations/outreach/exports          — enqueue an export job
- *   GET  /api/integrations/outreach/exports/:id      — job status
+ *   GET  /api/integrations/outreach/authorize        - kicks off OAuth
+ *   GET  /api/integrations/outreach/callback         - OAuth redirect target
+ *   GET  /api/integrations/outreach/connection       - current connection info
+ *   POST /api/integrations/outreach/disconnect       - revoke + wipe tokens
+ *   GET  /api/integrations/outreach/sequences        - list user's sequences
+ *   POST /api/integrations/outreach/sequences        - create a new (empty) sequence
+ *   GET  /api/integrations/outreach/mailboxes        - list user's mailboxes
+ *   POST /api/integrations/outreach/exports          - enqueue an export job
+ *   GET  /api/integrations/outreach/exports/:id      - job status
  */
 
 import type { Request, Response } from 'express';

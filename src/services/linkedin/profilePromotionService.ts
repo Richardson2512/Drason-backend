@@ -1,5 +1,5 @@
 /**
- * Profile promotion service — the canonical path from "we identified a
+ * Profile promotion service - the canonical path from "we identified a
  * LinkedIn profile worth pursuing" to "the lead is in the CRM, enriched,
  * has an AI opener, and is enrolled in the right campaign / cold-call
  * list." All agent-decision paths (supervisor ENFORCE, watchlist
@@ -12,7 +12,7 @@
  *   2. Run the enrichment waterfall (BYOK providers in order_index;
  *      Clay-as-waterfall when Clay is connected).
  *   3. Run the icebreaker generator if a grounding engagement event is
- *      available — non-blocking, writes to Lead.signal_icebreaker.
+ *      available - non-blocking, writes to Lead.signal_icebreaker.
  *   4. **Routing per architecture**:
  *        - If phone present after enrichment → tag the lead for the
  *          day's cold-call list.
@@ -36,13 +36,13 @@ import type { EnrichedFields } from '../enrichment/providerInterface';
 
 export interface PromoteInput {
     organizationId: string;
-    /** LinkedInProfile.id — must already exist; caller responsible for
+    /** LinkedInProfile.id - must already exist; caller responsible for
      *  upserting the profile before calling here. */
     profileId: string;
-    /** Optional target campaign — if set, the promoted lead is upserted
+    /** Optional target campaign - if set, the promoted lead is upserted
      *  as a CampaignLead row. */
     campaignId?: string | null;
-    /** Optional rule-driven cold-call list tag — when a SignalMonitoring
+    /** Optional rule-driven cold-call list tag - when a SignalMonitoring
      *  Rule has `add_to_cold_call_list_id` set, the matching list is
      *  passed here and the lead picks up a `lead_category` marker for
      *  that list. */
@@ -52,10 +52,10 @@ export interface PromoteInput {
      *  push path may not have one (matches don't always have a poller
      *  event yet). When absent the icebreaker step is skipped. */
     engagementEventId?: string | null;
-    /** Provenance — what triggered this promotion. Surfaces in the
+    /** Provenance - what triggered this promotion. Surfaces in the
      *  AgentRun audit and (eventually) the lead-detail timeline. */
     trigger: 'engagement_event' | 'watchlist_match' | 'manual_push';
-    /** Reference id for the trigger — event id, match id, etc. Drives
+    /** Reference id for the trigger - event id, match id, etc. Drives
      *  audit linkage. */
     triggerRefId: string;
 }
@@ -70,7 +70,7 @@ export interface PromoteResult {
          *  which is a rule-specific tag. */
         added_to_cold_call_day_list: boolean;
         /** True when the lead got source='signal' for Sequencer contact
-         *  surface — i.e., a real email was enriched. */
+         *  surface - i.e., a real email was enriched. */
         appears_on_sequencer_contacts: boolean;
         /** True when CampaignLead row upserted. */
         added_to_campaign: boolean;
@@ -86,7 +86,7 @@ export interface PromoteResult {
  *  at a specific custom list. */
 const COLD_CALL_DAY_TAG = 'cold_call_signal_phone';
 
-/** Standard source label for signal-promoted leads — matches the
+/** Standard source label for signal-promoted leads - matches the
  *  enum the Super Sequencer Contacts UI renders + filters on. */
 const SIGNAL_SOURCE_LABEL = 'signal';
 
@@ -117,7 +117,7 @@ export async function promoteProfileToCampaign(input: PromoteInput): Promise<Pro
         const created = await prisma.lead.create({
             data: {
                 organization_id: input.organizationId,
-                // Placeholder email — sentinel that the dispatcher +
+                // Placeholder email - sentinel that the dispatcher +
                 // contacts UI recognise as "pre-enrichment stub" and
                 // hide the email column for.
                 email: `lin_${profile.public_identifier}@unresolved.local`,
@@ -232,7 +232,7 @@ export async function promoteProfileToCampaign(input: PromoteInput): Promise<Pro
         });
         if (!campaign) {
             warnings.push(`campaign_not_found: ${input.campaignId}`);
-            logger.warn('[PROMOTE] target campaign missing — skipping enrollment', {
+            logger.warn('[PROMOTE] target campaign missing - skipping enrollment', {
                 leadId, campaignId: input.campaignId,
             });
         } else {

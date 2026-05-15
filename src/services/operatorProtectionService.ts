@@ -143,7 +143,7 @@ export async function resumeCampaign(
 }
 
 /**
- * Force-unhealthy entity override — operator manually resumes a paused entity.
+ * Force-unhealthy entity override - operator manually resumes a paused entity.
  */
 export async function overrideEntityState(request: OverrideRequest): Promise<OverrideResult> {
     const overrideCheck = await assessOverrideRisk(request);
@@ -243,7 +243,7 @@ async function assessOverrideRisk(request: OverrideRequest): Promise<OverrideRes
 
     if (entityOverrides >= MAX_ENTITY_OVERRIDES) {
         cooldownMultiplier = 2;
-        warnings.push(`⛔ ${entityOverrides}+ overrides — cooldown period doubled`);
+        warnings.push(`⛔ ${entityOverrides}+ overrides - cooldown period doubled`);
     }
 
     // ── CHECK 2: Account-level override frequency ──
@@ -256,7 +256,7 @@ async function assessOverrideRisk(request: OverrideRequest): Promise<OverrideRes
     });
 
     if (accountOverrides >= MAX_ACCOUNT_OVERRIDES) {
-        warnings.push(`🚨 ${accountOverrides} overrides across all entities in 7 days — frequent override pattern detected`);
+        warnings.push(`🚨 ${accountOverrides} overrides across all entities in 7 days - frequent override pattern detected`);
 
         // Log account-level warning event
         await eventService.storeEvent({
@@ -290,7 +290,7 @@ async function assessOverrideRisk(request: OverrideRequest): Promise<OverrideRes
                     warnings
                 );
             }
-            warnings.push(`⚠️ Low resilience (${resilience}/100) — justification recorded`);
+            warnings.push(`⚠️ Low resilience (${resilience}/100) - justification recorded`);
         }
     }
 
@@ -302,7 +302,7 @@ async function assessOverrideRisk(request: OverrideRequest): Promise<OverrideRes
         requiresJustification,
         message: warnings.length > 0
             ? `Override allowed with warnings: ${warnings.join('; ')}`
-            : 'Override allowed — no risk indicators',
+            : 'Override allowed - no risk indicators',
     };
 }
 

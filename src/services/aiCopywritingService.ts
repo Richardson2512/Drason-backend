@@ -12,7 +12,7 @@
  *       → Postgres cache (BusinessProfile row, unique per org)
  *
  * Model: read from OPENAI_MODEL env (default gpt-4.1-mini). The same model
- * drives extraction AND generation — we split into two models only if a
+ * drives extraction AND generation - we split into two models only if a
  * bakeoff later proves generation needs more capability.
  */
 
@@ -22,7 +22,7 @@ import { logger } from './observabilityService';
 import { safeCompletion } from './openaiClient';
 
 // ────────────────────────────────────────────────────────────────────
-// Types — BusinessProfileV1 contract between extraction and generation
+// Types - BusinessProfileV1 contract between extraction and generation
 // ────────────────────────────────────────────────────────────────────
 
 export interface BusinessProfileV1 {
@@ -34,7 +34,7 @@ export interface BusinessProfileV1 {
         tagline?: string;
     };
     offering: {
-        category: string;           // "B2B SaaS — email deliverability"
+        category: string;           // "B2B SaaS - email deliverability"
         products: string[];         // ["AI sequencer", "Deliverability protection"]
         differentiators: string[];  // ["Auto-heals paused mailboxes", "ESP-aware routing"]
         pricing_model?: string;
@@ -46,7 +46,7 @@ export interface BusinessProfileV1 {
         pain_points: string[];      // ["Burned domains", "Bounce spikes"]
     };
     value_prop: {
-        primary: string;            // "Stop burning domains — protection layer auto-pauses risky mailboxes"
+        primary: string;            // "Stop burning domains - protection layer auto-pauses risky mailboxes"
         proof_points: string[];     // ["91% inbox placement", "0 domains burned in 6 months"]
     };
     voice: {
@@ -63,7 +63,7 @@ export interface BusinessProfileV1 {
 
 const MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 const JINA_READER_BASE = 'https://r.jina.ai/';
-const MAX_SCRAPE_CHARS = 200_000; // ~50k tokens — well under 400k context, leaves room for output + caching
+const MAX_SCRAPE_CHARS = 200_000; // ~50k tokens - well under 400k context, leaves room for output + caching
 const CACHE_TTL_DAYS = parseInt(process.env.AI_PROFILE_CACHE_TTL_DAYS || '30', 10);
 
 let _openai: OpenAI | null = null;
@@ -77,7 +77,7 @@ function getClient(): OpenAI {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Step 1 — scrape via Jina Reader
+// Step 1 - scrape via Jina Reader
 // ────────────────────────────────────────────────────────────────────
 
 /**
@@ -86,7 +86,7 @@ function getClient(): OpenAI {
  * Returns the raw markdown, truncated to MAX_SCRAPE_CHARS.
  */
 export async function scrapeUrl(url: string): Promise<{ markdown: string; chars: number }> {
-    // Normalize — Jina accepts the full URL appended after the base
+    // Normalize - Jina accepts the full URL appended after the base
     const normalized = url.trim().replace(/^https?:\/\//i, 'https://');
     const jinaUrl = `${JINA_READER_BASE}${normalized}`;
 
@@ -96,7 +96,7 @@ export async function scrapeUrl(url: string): Promise<{ markdown: string; chars:
             'Accept': 'text/plain',
             'X-Return-Format': 'markdown',
         },
-        // Jina can be slow on first hit — give it a wide timeout
+        // Jina can be slow on first hit - give it a wide timeout
         signal: AbortSignal.timeout(45_000),
     });
 
@@ -114,7 +114,7 @@ export async function scrapeUrl(url: string): Promise<{ markdown: string; chars:
 /**
  * Scrape multiple URLs in parallel and concatenate them with `## Source: <url>`
  * headers so the extractor can attribute facts. Per-URL failures are caught and
- * recorded — we don't fail the whole batch on one bad page.
+ * recorded - we don't fail the whole batch on one bad page.
  *
  * Total markdown is capped at MAX_SCRAPE_CHARS across all sources so prompt
  * cost stays bounded regardless of how many URLs the operator pasted.
@@ -164,7 +164,7 @@ export async function scrapeUrls(urls: string[]): Promise<{
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Step 2 — extract structured profile via OpenAI JSON mode
+// Step 2 - extract structured profile via OpenAI JSON mode
 // ────────────────────────────────────────────────────────────────────
 
 const PROFILE_SYSTEM_PROMPT = `You are a business analyst extracting a structured profile from a company's website.
@@ -182,7 +182,7 @@ Rules:
 - Prefer specificity over vagueness. "Series A B2B SaaS" > "businesses".
 - Only include proof points you can verify from the content (stats, customer names, quantified outcomes). Never fabricate.
 - distinctive_phrases: 3-5 terms this brand uses that a competitor wouldn't.
-- If information is missing, use an empty array — never invent.
+- If information is missing, use an empty array - never invent.
 - When multiple sources are provided (separated by "## Source: <url>" headers), synthesize across them:
     * Prefer the homepage / root URL for company.name, value_prop, voice.
     * Prefer pricing pages for offering.pricing_model.
@@ -221,7 +221,7 @@ export async function extractProfile(
         throw new Error('AI returned invalid JSON for business profile');
     }
 
-    // Best-effort shape fixup — the model occasionally returns legacy keys.
+    // Best-effort shape fixup - the model occasionally returns legacy keys.
     // When multiple URLs were passed, the first one is the canonical "primary".
     if (!parsed.schema_version) parsed.schema_version = 1;
     if (!parsed.company?.url) {
@@ -237,7 +237,7 @@ export async function extractProfile(
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Step 3 — end-to-end orchestration with cache
+// Step 3 - end-to-end orchestration with cache
 // ────────────────────────────────────────────────────────────────────
 
 /**
@@ -248,7 +248,7 @@ export async function extractProfile(
  * headers and the extractor synthesizes across them. The first URL wins
  * the source_url column (treated as the canonical "primary" URL).
  *
- * Throws if every URL fails to scrape — partial failures are kept and
+ * Throws if every URL fails to scrape - partial failures are kept and
  * surfaced via the returned `failures` shape on the variant below.
  */
 export async function extractAndCacheProfile(orgId: string, urlOrUrls: string | string[]): Promise<BusinessProfileV1> {
@@ -270,7 +270,7 @@ export async function extractAndCacheProfile(orgId: string, urlOrUrls: string | 
 
     // First URL wins the legacy `source_url` column for backwards-compat;
     // the full deduped, ordered list lands in `source_urls`. /refresh reads
-    // `source_urls` so re-runs hit every original source — no silent loss.
+    // `source_urls` so re-runs hit every original source - no silent loss.
     const primary = urls[0];
 
     await prisma.businessProfile.upsert({
@@ -324,7 +324,7 @@ export function getConfiguredModel(): string {
 // ════════════════════════════════════════════════════════════════════
 
 export type StepIntent =
-    | 'intro'          // First touch — introduce company + light hook
+    | 'intro'          // First touch - introduce company + light hook
     | 'follow_up'      // Polite re-ping on prior email
     | 'value_add'      // Share a specific insight / resource
     | 'social_proof'   // Customer story / metric reference
@@ -342,7 +342,7 @@ export interface GenerateStepInput {
     /** Optional per-recipient enrichment (LeadProfileV1 shape from
      *  leadProfileService). When supplied, the model gets a "RECIPIENT
      *  CONTEXT" block alongside the sender's profile and is instructed to
-     *  ground specifics in it. Strictly additive — generation works without it. */
+     *  ground specifics in it. Strictly additive - generation works without it. */
     lead_profile?: Record<string, unknown> | null;
 }
 
@@ -355,14 +355,14 @@ export interface GeneratedEmail {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Prompt construction — cache-friendly: stable prefix first, variable last
+// Prompt construction - cache-friendly: stable prefix first, variable last
 // ────────────────────────────────────────────────────────────────────
 
 const GENERATION_SYSTEM_PROMPT = `You write short, specific, high-signal cold outreach emails for B2B outbound campaigns.
 
 Rules you follow without exception:
 1. Sound like a human, not marketing copy. No "I hope this email finds you well" style openers.
-2. Reference the SENDER's company by its distinctive terms (from the business profile) — never generic.
+2. Reference the SENDER's company by its distinctive terms (from the business profile) - never generic.
 3. Use recipient variables where natural: {{first_name}}, {{last_name}}, {{company}}, {{persona}}. Do not invent other variables.
 4. Keep total body under the word_budget. Short is better than comprehensive.
 5. One soft CTA at the end. No double CTAs, no "let me know if you want to chat OR I can send more info".
@@ -383,8 +383,8 @@ function describeIntent(intent: StepIntent, step_number?: number, total_steps?: 
     const pos = step_number && total_steps ? ` (step ${step_number} of ${total_steps})` : '';
     const descriptions: Record<StepIntent, string> = {
         intro: `The FIRST touch${pos}. Introduce the sender's company in 1 sentence, hook with a specific observation about the recipient's company or role, then a low-friction CTA (question or quick ask, not a meeting request).`,
-        follow_up: `A POLITE follow-up${pos}. Assume prior email was unread, not rejected. Bring a fresh angle — new insight, question, or micro-value. Do NOT say "just following up" or "bumping this".`,
-        value_add: `A VALUE-FIRST message${pos}. Lead with something useful to the recipient (a specific insight, teardown, relevant resource). CTA is optional — the message stands alone if ignored.`,
+        follow_up: `A POLITE follow-up${pos}. Assume prior email was unread, not rejected. Bring a fresh angle - new insight, question, or micro-value. Do NOT say "just following up" or "bumping this".`,
+        value_add: `A VALUE-FIRST message${pos}. Lead with something useful to the recipient (a specific insight, teardown, relevant resource). CTA is optional - the message stands alone if ignored.`,
         social_proof: `A SOCIAL-PROOF message${pos}. Reference a concrete customer outcome or quantified result from the business profile's proof_points. Tie it directly to the recipient's likely pain. One sentence of proof, one sentence of relevance, CTA.`,
         breakup: `The FINAL message${pos}. Acknowledge the recipient hasn't responded, state the sender will stop reaching out, leave the door open. No pressure, no guilt. 3-4 short lines max.`,
         custom: `Follow the custom_instructions exactly.`,
@@ -409,11 +409,11 @@ export async function generateEmailStep(
         { role: 'system', content: GENERATION_SYSTEM_PROMPT },
         {
             role: 'system',
-            content: `SENDER BUSINESS PROFILE (stable context — same across every generation for this org):\n\n${JSON.stringify(profile, null, 2)}`,
+            content: `SENDER BUSINESS PROFILE (stable context - same across every generation for this org):\n\n${JSON.stringify(profile, null, 2)}`,
         },
     ];
 
-    // RECIPIENT CONTEXT — only included when the caller supplies a lead
+    // RECIPIENT CONTEXT - only included when the caller supplies a lead
     // profile (per-recipient enrichment from leadProfileService). Splicing
     // a separate system message keeps prompt-cache hits high: the
     // sender-profile prefix above stays identical across all generations
@@ -422,12 +422,12 @@ export async function generateEmailStep(
         messages.push({
             role: 'system',
             content: [
-                'RECIPIENT CONTEXT (per-lead enrichment from public sources — use to ground specifics, do not invent beyond it):',
+                'RECIPIENT CONTEXT (per-lead enrichment from public sources - use to ground specifics, do not invent beyond it):',
                 '',
                 JSON.stringify(input.lead_profile, null, 2),
                 '',
                 'When using this context:',
-                '- Reference the recipient\'s company by their distinctive_phrases or one_liner — never generic.',
+                '- Reference the recipient\'s company by their distinctive_phrases or one_liner - never generic.',
                 '- Tie the hook to a recipient pain_point or industry signal that overlaps with the sender\'s value_prop.',
                 '- If a fact is not in this context or the sender profile, do not state it as fact.',
             ].join('\n'),
@@ -520,7 +520,7 @@ export async function generateFullSequence(
             return DEFAULT_INTENT_PATTERN[Math.min(i, DEFAULT_INTENT_PATTERN.length - 2)];
         });
 
-    // Generate in parallel — faster + each call uses the same cached prefix.
+    // Generate in parallel - faster + each call uses the same cached prefix.
     // This is where the nano model's cache pricing shines: the profile+system prompt
     // is cached after the first call, subsequent calls in this batch read it ~10x cheaper.
     const results = await Promise.all(
@@ -553,14 +553,14 @@ function stripHtml(html: string): string {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Manual profile edit — deep-merge a partial BusinessProfileV1 into
+// Manual profile edit - deep-merge a partial BusinessProfileV1 into
 // the cached row. Used by PATCH /api/ai/profile so operators can
 // refine fields the AI got wrong (e.g., add a proof point the
 // homepage didn't mention, fix the company one-liner) without
 // re-scraping.
 //
 // Validation philosophy: accept any subset of valid keys; reject
-// unknown top-level sections. Field-level types are best-effort —
+// unknown top-level sections. Field-level types are best-effort -
 // the caller is the operator, not arbitrary user input.
 // ────────────────────────────────────────────────────────────────────
 
@@ -581,12 +581,12 @@ export class ProfilePatchError extends Error {
  *
  * Merge rules:
  * - Top-level sections (company / offering / icp / value_prop / voice):
- *   shallow-merge — patched fields overwrite, untouched fields keep their
+ *   shallow-merge - patched fields overwrite, untouched fields keep their
  *   value. This lets the operator update a single subfield (e.g. one_liner)
  *   without re-supplying the whole object.
  * - Arrays (products, proof_points, distinctive_phrases, sample_openers):
  *   replaced wholesale. Use the GET → edit → PATCH cycle to add an item.
- * - schema_version: ignored on patch — pinned to the cached row's value.
+ * - schema_version: ignored on patch - pinned to the cached row's value.
  */
 export async function patchCachedProfile(
     orgId: string,
@@ -604,7 +604,7 @@ export async function patchCachedProfile(
 
     const current = await getCachedProfile(orgId, { allowStale: true });
     if (!current) {
-        throw new ProfilePatchError('No business profile to patch yet — extract one first via POST /api/ai/profile');
+        throw new ProfilePatchError('No business profile to patch yet - extract one first via POST /api/ai/profile');
     }
 
     const merged: BusinessProfileV1 = {

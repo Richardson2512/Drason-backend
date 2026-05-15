@@ -19,7 +19,7 @@ import { cached } from '../utils/responseCache';
 // ─── Unified campaign helpers ───────────────────────────────────────────────
 //
 // Post-merge Campaign table holds every campaign in the org regardless of
-// These helpers replace the previous dual-table union pattern — one query per
+// These helpers replace the previous dual-table union pattern - one query per
 // helper now, because Campaign IS the unified table.
 
 /**
@@ -41,7 +41,7 @@ async function getAllActiveCampaignIds(orgId: string): Promise<string[]> {
 /**
  * For a set of campaign IDs, fetch `{ id, name, status }` for each. Since the
  * table is unified post-merge, this is a single findMany. IDs not found are
- * silently dropped — caller's default (e.g. `null` for the UI's "Campaign"
+ * silently dropped - caller's default (e.g. `null` for the UI's "Campaign"
  * column) takes over.
  */
 async function buildCampaignNameMap(
@@ -204,11 +204,11 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
         // even though its outbound lifecycle is clearly past that state.
         //
         // Rules (most-meaningful wins):
-        //   replied    — any CampaignLead.replied_at set
-        //   bounced    — any BounceEvent or CampaignLead.bounced_at set
-        //   unsubscribed — any CampaignLead.status='unsubscribed'
-        //   completed  — all CampaignLeads have status in {completed, replied, bounced, unsubscribed}
-        //   otherwise  — Lead.status itself (held / active / paused / blocked)
+        //   replied    - any CampaignLead.replied_at set
+        //   bounced    - any BounceEvent or CampaignLead.bounced_at set
+        //   unsubscribed - any CampaignLead.status='unsubscribed'
+        //   completed  - all CampaignLeads have status in {completed, replied, bounced, unsubscribed}
+        //   otherwise  - Lead.status itself (held / active / paused / blocked)
         //
         // This is PURELY READ-SIDE. It does not mutate Lead.status (which stays
         // as the canonical state-machine value for execution-gate decisions).
@@ -277,7 +277,7 @@ export const getStats = async (req: Request, res: Response, next: NextFunction) 
         const orgId = getOrgId(req);
         const campaignId = req.query.campaignId as string;
 
-        // Exclude leads from deleted/archived campaigns — union legacy Campaign
+        // Exclude leads from deleted/archived campaigns - union legacy Campaign
         // + native SendCampaign so sequencer-enrolled leads are counted.
         const activeCampaignIds = await getAllActiveCampaignIds(orgId);
 
@@ -902,7 +902,7 @@ export const getLeadHealthStats = async (req: Request, res: Response) => {
     try {
         const orgId = getOrgId(req);
 
-        // Exclude leads from deleted/archived campaigns — union legacy + sequencer.
+        // Exclude leads from deleted/archived campaigns - union legacy + sequencer.
         const activeCampaignIds = await getAllActiveCampaignIds(orgId);
 
 
@@ -1165,7 +1165,7 @@ export const resumeMailbox = async (req: Request, res: Response, next: NextFunct
             }
         });
 
-        // Native sending — flipping Mailbox.status back to 'healthy' is enough
+        // Native sending - flipping Mailbox.status back to 'healthy' is enough
         // for sendQueueService to pick it up on its next 60s tick. The
         // Mailbox↔Campaign relationship is preserved through the pause so no
         // re-attach is needed.
@@ -1177,11 +1177,11 @@ export const resumeMailbox = async (req: Request, res: Response, next: NextFunct
             },
         });
 
-        logger.info(`[INFRASTRUCTURE] Mailbox ${mailboxId} manually resumed by user — eligible for ${campaignCount} campaign(s)`);
+        logger.info(`[INFRASTRUCTURE] Mailbox ${mailboxId} manually resumed by user - eligible for ${campaignCount} campaign(s)`);
 
         res.json({
             success: true,
-            message: `Mailbox resumed successfully${campaignCount > 0 ? ` — eligible for ${campaignCount} active campaign(s)` : ''}`,
+            message: `Mailbox resumed successfully${campaignCount > 0 ? ` - eligible for ${campaignCount} active campaign(s)` : ''}`,
         });
     } catch (error) {
         next(error);
@@ -1243,7 +1243,7 @@ export const resumeDomain = async (req: Request, res: Response, next: NextFuncti
             }
         });
 
-        // Native sending — Mailbox.status='healthy' alone makes mailboxes
+        // Native sending - Mailbox.status='healthy' alone makes mailboxes
         // eligible for dispatch. The Mailbox↔Campaign relationships were
         // preserved through the pause, so no re-attach is needed.
         const healthyMailboxCount = await prisma.mailbox.count({
@@ -1254,11 +1254,11 @@ export const resumeDomain = async (req: Request, res: Response, next: NextFuncti
             },
         });
 
-        logger.info(`[INFRASTRUCTURE] Domain ${domainId} manually resumed by user — ${healthyMailboxCount} healthy mailbox(es) eligible`);
+        logger.info(`[INFRASTRUCTURE] Domain ${domainId} manually resumed by user - ${healthyMailboxCount} healthy mailbox(es) eligible`);
 
         res.json({
             success: true,
-            message: `Domain resumed successfully${healthyMailboxCount > 0 ? ` — ${healthyMailboxCount} mailbox(es) eligible for dispatch` : ''}`,
+            message: `Domain resumed successfully${healthyMailboxCount > 0 ? ` - ${healthyMailboxCount} mailbox(es) eligible for dispatch` : ''}`,
         });
     } catch (error) {
         next(error);
@@ -1314,10 +1314,10 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
             // original audit (saved sequences, dedicated IPs, reply intelligence,
             // suppression lists, warmup pool).
             'sequences', 'super_sender', 'reply_quality', 'suppression', 'warmup',
-            // Email validation — surface ValidationAttempt rows so support
+            // Email validation - surface ValidationAttempt rows so support
             // can debug bounced/risky verdicts per lead.
             'email_validation',
-            // Super LinkedIn — full data export across the LinkedIn module.
+            // Super LinkedIn - full data export across the LinkedIn module.
             'linkedin_accounts', 'linkedin_contacts', 'linkedin_campaigns',
             'linkedin_signals', 'linkedin_unibox', 'linkedin_sequences',
             'linkedin_enrichment', 'linkedin_agents', 'linkedin_icp',
@@ -1360,7 +1360,7 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
             }
             if (campaignIds.length > 0) where.assigned_campaign_id = { in: campaignIds };
 
-            // Engagement filter — narrow to recipients in a specific
+            // Engagement filter - narrow to recipients in a specific
             // post-send state. Translates directly onto Lead.emails_*
             // counters + the bounced/unsubscribed booleans. Mutually
             // exclusive states (one value at a time from the UI).
@@ -1394,7 +1394,7 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
                     where.emails_sent = 0;
                     break;
                 default:
-                    // No engagement filter — leave `where` alone.
+                    // No engagement filter - leave `where` alone.
                     break;
             }
 
@@ -1404,7 +1404,7 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
                 take: 50000,
             });
 
-            // Get campaign names — buildCampaignNameMap unions legacy + sequencer so
+            // Get campaign names - buildCampaignNameMap unions legacy + sequencer so
             // report columns correctly resolve both Campaign.id and SendCampaign.id.
             const cIds = [...new Set(leads.filter(l => l.assigned_campaign_id).map(l => l.assigned_campaign_id as string))];
             const fullCampaignMap = await buildCampaignNameMap(orgId, cIds);
@@ -1766,7 +1766,7 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
 
         // ---- SUPER SENDER (dedicated IPs) ----
         if (reportType === 'super_sender' || reportType === 'full') {
-            // Account-scoped — fetch the org's Account first. Single-org users
+            // Account-scoped - fetch the org's Account first. Single-org users
             // pre-dating agency mode may not have one; their report is empty.
             const org = await prisma.organization.findUnique({
                 where: { id: orgId }, select: { account_id: true },
@@ -1825,7 +1825,7 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
             if (statuses.length > 0) where.quality_class = { in: statuses };
             // Drill into replies on specific campaigns. Joins through the
             // EmailThread's campaign_id (set when the thread originated from
-            // a campaign send) so non-campaign replies are excluded too —
+            // a campaign send) so non-campaign replies are excluded too -
             // which is the right scope for "show me replies on Campaign X".
             if (campaignIds.length > 0) {
                 where.thread = { ...where.thread, campaign_id: { in: campaignIds } };
@@ -1979,7 +1979,7 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
         }
 
         // ──────────────────────────────────────────────────────────
-        // EMAIL VALIDATION — per-lead validation attempts
+        // EMAIL VALIDATION - per-lead validation attempts
         // ──────────────────────────────────────────────────────────
         if (reportType === 'email_validation' || reportType === 'full') {
             const where: any = {
@@ -2023,7 +2023,7 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
         }
 
         // ──────────────────────────────────────────────────────────
-        // SUPER LINKEDIN — accounts
+        // SUPER LINKEDIN - accounts
         // ──────────────────────────────────────────────────────────
         if (reportType === 'linkedin_accounts' || reportType === 'full') {
             const where: any = { organization_id: orgId };
@@ -2066,7 +2066,7 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
         }
 
         // ──────────────────────────────────────────────────────────
-        // SUPER LINKEDIN — contacts (LinkedInProfile cache)
+        // SUPER LINKEDIN - contacts (LinkedInProfile cache)
         // ──────────────────────────────────────────────────────────
         if (reportType === 'linkedin_contacts' || reportType === 'full') {
             const profiles = await prisma.linkedInProfile.findMany({
@@ -2105,7 +2105,7 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
         }
 
         // ──────────────────────────────────────────────────────────
-        // SUPER LINKEDIN — campaigns (those with LinkedIn senders)
+        // SUPER LINKEDIN - campaigns (those with LinkedIn senders)
         // ──────────────────────────────────────────────────────────
         if (reportType === 'linkedin_campaigns' || reportType === 'full') {
             const where: any = {
@@ -2145,7 +2145,7 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
         }
 
         // ──────────────────────────────────────────────────────────
-        // SUPER LINKEDIN — signals (engagement events)
+        // SUPER LINKEDIN - signals (engagement events)
         // ──────────────────────────────────────────────────────────
         if (reportType === 'linkedin_signals' || reportType === 'full') {
             const where: any = {
@@ -2182,7 +2182,7 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
         }
 
         // ──────────────────────────────────────────────────────────
-        // SUPER LINKEDIN — unibox (auto-tagged profiles)
+        // SUPER LINKEDIN - unibox (auto-tagged profiles)
         // ──────────────────────────────────────────────────────────
         if (reportType === 'linkedin_unibox' || reportType === 'full') {
             const where: any = {
@@ -2217,7 +2217,7 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
         }
 
         // ──────────────────────────────────────────────────────────
-        // SUPER LINKEDIN — step executions
+        // SUPER LINKEDIN - step executions
         // ──────────────────────────────────────────────────────────
         if (reportType === 'linkedin_sequences' || reportType === 'full') {
             const where: any = {
@@ -2262,7 +2262,7 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
         }
 
         // ──────────────────────────────────────────────────────────
-        // SUPER LINKEDIN — enrichment waterfall attempts
+        // SUPER LINKEDIN - enrichment waterfall attempts
         // ──────────────────────────────────────────────────────────
         if (reportType === 'linkedin_enrichment' || reportType === 'full') {
             const where: any = {
@@ -2275,7 +2275,7 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
                 orderBy: { attempted_at: 'desc' },
                 take: 100000,
             });
-            // Strict BYOK — no cost column. The customer's vendor
+            // Strict BYOK - no cost column. The customer's vendor
             // dashboard is the source of truth for spend; the CSV here
             // is just the audit trail of which provider was attempted
             // for which lead and what fields it filled.
@@ -2300,7 +2300,7 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
         }
 
         // ──────────────────────────────────────────────────────────
-        // SUPER LINKEDIN — agent runs (cost + latency telemetry)
+        // SUPER LINKEDIN - agent runs (cost + latency telemetry)
         // ──────────────────────────────────────────────────────────
         if (reportType === 'linkedin_agents' || reportType === 'full') {
             const where: any = {
@@ -2344,7 +2344,7 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
         }
 
         // ──────────────────────────────────────────────────────────
-        // SUPER LINKEDIN — ICP profiles
+        // SUPER LINKEDIN - ICP profiles
         // ──────────────────────────────────────────────────────────
         if (reportType === 'linkedin_icp' || reportType === 'full') {
             const icps = await prisma.icpProfile.findMany({

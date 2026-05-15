@@ -1,5 +1,5 @@
 /**
- * Step type registry — single source of truth for the multi-channel
+ * Step type registry - single source of truth for the multi-channel
  * sequence step vocabulary (Phase 3).
  *
  * Every step in a SequenceStep / SequenceTemplateStep row has a `step_type`
@@ -40,7 +40,7 @@ export interface StepTypeDef {
     label: string;
     description: string;
     required_sender: SenderKind;
-    /** Preconditions checked at dispatch — ALL must hold or the step is SKIPPED. */
+    /** Preconditions checked at dispatch - ALL must hold or the step is SKIPPED. */
     preconditions: PreconditionKey[];
     /** Allowed step_config keys; values are TypeScript-narrow type hints used
      *  by the runtime validator. Unknown keys are rejected on write. */
@@ -76,7 +76,7 @@ export const STEP_TYPES: Record<string, StepTypeDef> = {
         key: 'linkedin_connection_request',
         channel: 'linkedin',
         label: 'LinkedIn Connection Request',
-        description: 'Send a connection request (with optional note). Only fires when the lead is NOT already connected — paired with linkedin_message via the connection precondition.',
+        description: 'Send a connection request (with optional note). Only fires when the lead is NOT already connected - paired with linkedin_message via the connection precondition.',
         required_sender: 'linkedin_account',
         preconditions: ['lead_has_linkedin_profile', 'sender_is_not_first_degree'],
         config_schema: {
@@ -89,7 +89,7 @@ export const STEP_TYPES: Record<string, StepTypeDef> = {
         key: 'linkedin_inmail',
         channel: 'linkedin',
         label: 'LinkedIn InMail',
-        description: 'Send an InMail. Requires a paid LinkedIn tier on the sender side — Premium (5-15/mo), Sales Navigator (~50/mo), or Recruiter (30-150+/mo). Classic / free accounts have no InMail capability. Credits are consumed only on closed profiles; Open-Profile recipients are free.',
+        description: 'Send an InMail. Requires a paid LinkedIn tier on the sender side - Premium (5-15/mo), Sales Navigator (~50/mo), or Recruiter (30-150+/mo). Classic / free accounts have no InMail capability. Credits are consumed only on closed profiles; Open-Profile recipients are free.',
         required_sender: 'linkedin_account',
         preconditions: ['lead_has_linkedin_profile', 'sender_supports_inmail', 'sender_has_inmail_credits_or_open_profile'],
         config_schema: {
@@ -111,7 +111,7 @@ export const STEP_TYPES: Record<string, StepTypeDef> = {
         key: 'linkedin_follow',
         channel: 'linkedin',
         label: 'Follow',
-        description: 'Follow the lead. Must come BEFORE any connection_request in the same sequence — enforce in the validator.',
+        description: 'Follow the lead. Must come BEFORE any connection_request in the same sequence - enforce in the validator.',
         required_sender: 'linkedin_account',
         preconditions: ['lead_has_linkedin_profile'],
         config_schema: {},
@@ -139,7 +139,7 @@ export const STEP_TYPES: Record<string, StepTypeDef> = {
         description: 'Enrich the lead\'s email via the workspace\'s waterfall providers. One use per campaign per lead. Branches to step on Email Found / Not Found.',
         required_sender: 'none',
         // The precondition is implicit: if lead.email is already set we
-        // SKIP — Find Email runs at most once per lead.
+        // SKIP - Find Email runs at most once per lead.
         // Encoded as `lead_has_email` inverted in the evaluator.
         preconditions: [],
         config_schema: {
@@ -152,7 +152,7 @@ export const STEP_TYPES: Record<string, StepTypeDef> = {
         label: 'Find LinkedIn URL',
         description: 'Discover the lead\'s LinkedIn profile URL via the workspace\'s enrichment waterfall. Skipped (no action burned) when the lead already has a URL on file, or when zero enrichment providers are connected. Place BEFORE any linkedin_* step so downstream LinkedIn touch points have a profile to act on.',
         required_sender: 'none',
-        // Skip if the lead already has a linkedin_url — mirrors the
+        // Skip if the lead already has a linkedin_url - mirrors the
         // find_email precondition pattern (inverted lead_has_email).
         preconditions: [],
         config_schema: {
@@ -163,7 +163,7 @@ export const STEP_TYPES: Record<string, StepTypeDef> = {
         key: 'end',
         channel: 'utility',
         label: 'End',
-        description: 'Terminal node — leads reaching here are marked Finished and stop receiving steps.',
+        description: 'Terminal node - leads reaching here are marked Finished and stop receiving steps.',
         required_sender: 'none',
         preconditions: [],
         config_schema: {},
@@ -188,7 +188,7 @@ export function listStepTypes(): StepTypeDef[] {
  * doesn't need a sending mailbox (`find_email`, `find_linkedin_url`).
  *
  * Derived from STEP_TYPES so adding a new utility/LinkedIn step type
- * automatically lights up the dispatcher's eligibility filter — no
+ * automatically lights up the dispatcher's eligibility filter - no
  * separate hard-coded list to keep in sync.
  *
  * The email dispatcher (sendQueueService) owns the inverse: every
@@ -281,7 +281,7 @@ export interface FullStepLite extends StepLite {
     delay_days?: number;
     delay_hours?: number;
     step_config?: Record<string, unknown>;
-    /** Email-specific column — present only for step_type='email'. */
+    /** Email-specific column - present only for step_type='email'. */
     body_html?: string;
 }
 
@@ -318,7 +318,7 @@ export function validateSequenceShape(steps: FullStepLite[]): ConfigValidationIs
         if (totalHours < 3) {
             issues.push({
                 key: `step_${s.step_number}.delay`,
-                message: `Step ${s.step_number} delay is ${totalHours}h — a minimum 3-hour gap between consecutive steps is required.`,
+                message: `Step ${s.step_number} delay is ${totalHours}h - a minimum 3-hour gap between consecutive steps is required.`,
             });
         }
     }
@@ -364,7 +364,7 @@ export function validateSequenceShape(steps: FullStepLite[]): ConfigValidationIs
         }
     }
 
-    // 5. Don't repeat identical action steps in a sequence — two
+    // 5. Don't repeat identical action steps in a sequence - two
     //    consecutive steps of the same type with the same body are almost
     //    always a copy-paste mistake.
     for (let i = 1; i < sorted.length; i++) {
@@ -377,7 +377,7 @@ export function validateSequenceShape(steps: FullStepLite[]): ConfigValidationIs
         if (curContent && curContent === prvContent) {
             issues.push({
                 key: `step_${sorted[i].step_number}.duplicate`,
-                message: `Step ${sorted[i].step_number} has the same content as step ${sorted[i - 1].step_number}. This is a common mistake — vary the message.`,
+                message: `Step ${sorted[i].step_number} has the same content as step ${sorted[i - 1].step_number}. This is a common mistake - vary the message.`,
             });
         }
     }

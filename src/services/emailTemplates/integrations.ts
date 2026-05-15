@@ -1,5 +1,5 @@
 /**
- * Integration emails — fired from CRM sync workers and lead-source
+ * Integration emails - fired from CRM sync workers and lead-source
  * import workers when external integrations need attention or hit
  * a milestone.
  */
@@ -13,7 +13,7 @@ export interface CrmSyncFailedEmailParams {
     organizationName: string;
     /** "HubSpot" | "Salesforce". */
     provider: string;
-    /** "contact_import" | "activity_push" | "suppression_sync" — what was failing. */
+    /** "contact_import" | "activity_push" | "suppression_sync" - what was failing. */
     operation: string;
     /** Best-effort error string from the provider. */
     errorMessage: string;
@@ -26,7 +26,7 @@ export interface CrmSyncFailedEmailParams {
 }
 
 export function crmSyncFailedEmail(p: CrmSyncFailedEmailParams): RenderedEmail {
-    const subject = `${p.provider} sync failing — action needed`;
+    const subject = `${p.provider} sync failing - action needed`;
     const preheader = `${p.provider} ${p.operation.replace(/_/g, ' ')} has failed ${p.consecutiveFailures}× in a row. Latest error: ${p.errorMessage.slice(0, 80)}`;
 
     const facts: { label: string; value: string }[] = [
@@ -56,7 +56,7 @@ export function crmSyncFailedEmail(p: CrmSyncFailedEmailParams): RenderedEmail {
 
 export interface ImportCompletedEmailParams {
     organizationName: string;
-    /** "Apollo" | "Smartlead" | "Instantly" | "ZoomInfo" — display name. */
+    /** "Apollo" | "Smartlead" | "Instantly" | "ZoomInfo" - display name. */
     sourceLabel: string;
     totalProcessed: number;
     totalCreated: number;
@@ -65,14 +65,14 @@ export interface ImportCompletedEmailParams {
     totalFailed: number;
     /** Wall-clock duration the import ran. */
     durationLabel?: string | null;
-    /** Optional credits used (Apollo) — surfaced when present. */
+    /** Optional credits used (Apollo) - surfaced when present. */
     creditsConsumed?: number | null;
     /** /dashboard/sequencer/contacts (or /integrations/lead-sources/[id]). */
     contactsUrl: string;
 }
 
 export function importCompletedEmail(p: ImportCompletedEmailParams): RenderedEmail {
-    const subject = `${p.sourceLabel} import complete — ${p.totalCreated} new lead${p.totalCreated === 1 ? '' : 's'}`;
+    const subject = `${p.sourceLabel} import complete - ${p.totalCreated} new lead${p.totalCreated === 1 ? '' : 's'}`;
     const preheader = `${p.sourceLabel}: ${p.totalCreated} new, ${p.totalUpdated} updated, ${p.totalSkipped} skipped${p.totalFailed > 0 ? `, ${p.totalFailed} failed` : ''}.`;
 
     const facts: { label: string; value: string }[] = [

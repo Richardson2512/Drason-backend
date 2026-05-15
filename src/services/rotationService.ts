@@ -66,7 +66,7 @@ const ROTATION_DELAY_MS = 200;
 /**
  * Called after a mailbox is paused and removed from campaigns.
  * For each affected campaign, attempts to find a standby healthy mailbox
- * and rotate it in as a replacement. Non-blocking — failures are logged
+ * and rotate it in as a replacement. Non-blocking - failures are logged
  * but do not affect the pause flow.
  */
 export async function rotateForPausedMailbox(
@@ -135,7 +135,7 @@ export async function rotateForPausedMailbox(
             break;
         }
 
-        // Check campaign health — skip unhealthy campaigns
+        // Check campaign health - skip unhealthy campaigns
         const campaignData = await prisma.campaign.findUnique({
             where: { id: campaign.id },
             select: { status: true, bounce_rate: true }
@@ -155,7 +155,7 @@ export async function rotateForPausedMailbox(
             continue;
         }
 
-        // Skip rotating into campaigns already toxic — bounce_rate stored as percentage (0-100),
+        // Skip rotating into campaigns already toxic - bounce_rate stored as percentage (0-100),
         // compared against fraction constant × 100 to keep MONITORING_THRESHOLDS consistent.
         const rotationMaxPct = MONITORING_THRESHOLDS.ROTATION_MAX_CAMPAIGN_BOUNCE_RATE * 100;
         if (campaignData.bounce_rate >= rotationMaxPct) {
@@ -420,7 +420,7 @@ async function executeRotation(
     }
 
     try {
-        // Native sending — connect mailbox to campaign in DB. The dispatcher
+        // Native sending - connect mailbox to campaign in DB. The dispatcher
         // picks it up on its next 60s tick. No external platform call needed.
         await prisma.campaign.update({
             where: { id: campaignId },

@@ -1,7 +1,7 @@
 /**
  * Agency Routes
  *
- * Phase 1 — read-only endpoints for the workspaces feature. These power the
+ * Phase 1 - read-only endpoints for the workspaces feature. These power the
  * fleet overview, sidebar workspace switcher, and workspace detail page on
  * the frontend, replacing the localStorage mock with real data.
  *
@@ -36,7 +36,7 @@ router.delete('/workspaces/:id', agencyController.deleteWorkspace);
 // are JWT-locked to their scoped_organization_id).
 router.post('/switch-workspace', agencyController.switchWorkspace);
 
-// Create a workspace invite — agency-owner only. Sends the magic-link email.
+// Create a workspace invite - agency-owner only. Sends the magic-link email.
 router.post('/workspaces/:id/invites', inviteController.createWorkspaceInvite);
 
 export default router;

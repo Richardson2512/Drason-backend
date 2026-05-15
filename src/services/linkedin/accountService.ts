@@ -1,5 +1,5 @@
 /**
- * LinkedIn account service — domain layer above the raw Unipile API.
+ * LinkedIn account service - domain layer above the raw Unipile API.
  *
  * Responsibilities:
  *   - Persist/refresh LinkedInAccount rows from Unipile's source of truth.
@@ -8,7 +8,7 @@
  *   - Disconnect: cascade-delete the local row when Unipile confirms removal.
  *
  * Capacity counters (invites_today, invites_this_week, ...) are owned by
- * the send workers in a later phase — this service treats them as read-only.
+ * the send workers in a later phase - this service treats them as read-only.
  */
 
 import { prisma } from '../../prisma';
@@ -18,7 +18,7 @@ import type { UnipileAccount } from '../unipile/accounts';
 import { enforceCanAddAccount, releaseAddonSlotOnDisconnect } from './accountLimitService';
 
 // ────────────────────────────────────────────────────────────────────
-// View shapes — what the frontend consumes (matches the mock data shape
+// View shapes - what the frontend consumes (matches the mock data shape
 // already wired in the Accounts page, so the swap is purely about source).
 // ────────────────────────────────────────────────────────────────────
 
@@ -76,7 +76,7 @@ export async function listAccountsForOrg(organizationId: string): Promise<Linked
     // disconnecting a sender can see how many campaigns will be affected
     // BEFORE they confirm the destructive action.
     //
-    // One groupBy query batched across all accounts — avoids the N+1
+    // One groupBy query batched across all accounts - avoids the N+1
     // that the previous TODO suggested would be needed in Phase 5.
     const accountIds = rows.map(r => r.id);
     const senderRows = accountIds.length > 0
@@ -146,7 +146,7 @@ export async function generateConnectLink(input: ConnectLinkInput): Promise<{ ur
         // Encode the org ID so we can route the CREATION_SUCCESS webhook back.
         // Unipile echoes this field in subsequent webhook payloads.
         name: `org:${input.organizationId}`,
-        // 15-minute auth window — long enough to handle PIN flows, short
+        // 15-minute auth window - long enough to handle PIN flows, short
         // enough that stale links don't accumulate.
         expiresOn: Date.now() + 15 * 60 * 1000,
     });
@@ -174,7 +174,7 @@ export async function generateReconnectLink(organizationId: string, accountId: s
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Webhook ingestion — called by unipileWebhookController.
+// Webhook ingestion - called by unipileWebhookController.
 //
 // On CREATION_SUCCESS we fetch the full account detail (so we get
 // display name, account type) and upsert. On status changes we just
@@ -206,14 +206,14 @@ export async function handleStatusEvent(payload: {
         // Need to identify the org BEFORE the row is gone so the slot-
         // release logic can run. deleteMany doesn't return the row, so
         // look it up first. If the account doesn't exist locally we're
-        // done — Unipile sometimes emits DELETED twice and the second
+        // done - Unipile sometimes emits DELETED twice and the second
         // is a no-op.
         const orphan = await prisma.linkedInAccount.findUnique({
             where: { unipile_account_id: payload.account_id },
             select: { id: true, organization_id: true },
         });
         if (!orphan) {
-            logger.info('[LINKEDIN-ACCT] DELETED webhook for unknown account — already cleaned', { unipile_account_id: payload.account_id });
+            logger.info('[LINKEDIN-ACCT] DELETED webhook for unknown account - already cleaned', { unipile_account_id: payload.account_id });
             return;
         }
 
@@ -224,11 +224,11 @@ export async function handleStatusEvent(payload: {
         await prisma.linkedInAccount.delete({ where: { id: orphan.id } });
         logger.info('[LINKEDIN-ACCT] Removed account on DELETED webhook', { unipile_account_id: payload.account_id });
 
-        // Mirror the user-initiated disconnect release — Unipile-side
+        // Mirror the user-initiated disconnect release - Unipile-side
         // deletions (account revoked / session expired) free paid
         // capacity the same way an operator-driven disconnect does.
         // This stops billing for the slot on the next cycle; no money
-        // is refunded — it's purely a capacity-counter decrement.
+        // is refunded - it's purely a capacity-counter decrement.
         try {
             const result = await releaseAddonSlotOnDisconnect(orphan.organization_id, accountsBefore);
             if (result.released) {
@@ -263,7 +263,7 @@ export async function handleStatusEvent(payload: {
                 unipile_account_id: payload.account_id,
                 display_name: detail?.name ?? 'LinkedIn account',
                 account_type: tier,
-                // Tier-aware cap defaults — Classic can't send InMail at
+                // Tier-aware cap defaults - Classic can't send InMail at
                 // all; Premium gets 5-15/month; Sales Nav ~50/month;
                 // Recruiter 30-150/month. Daily caps are conservative so
                 // operators don't burn the monthly allotment in one day.
@@ -277,7 +277,7 @@ export async function handleStatusEvent(payload: {
                 display_name: detail?.name ?? undefined,
                 account_type: tier,
                 // On reconnect we DON'T reset the operator's manual cap
-                // overrides — only refresh the account_type label.
+                // overrides - only refresh the account_type label.
                 status: 'OK',
                 last_status_at: new Date(),
             },
@@ -312,7 +312,7 @@ async function safeFetchAccount(unipileAccountId: string): Promise<UnipileAccoun
  * and "LinkedIn Sales Navigator" but don't pin down the exact wire values.
  * The mapping below handles every casing + word-order variant we've seen
  * across their docs + community examples. Unknown strings fall back to
- * CLASSIC (most permissive — limits restrict actions, not capabilities).
+ * CLASSIC (most permissive - limits restrict actions, not capabilities).
  */
 /**
  * Per-tier daily-cap defaults applied at first account connection.
@@ -322,10 +322,10 @@ async function safeFetchAccount(unipileAccountId: string): Promise<UnipileAccoun
  * per-account on the settings page; we only set them once at creation
  * so existing manual overrides aren't clobbered on reconnect.
  *
- *   CLASSIC   — 0 InMails (LinkedIn doesn't expose the feature to Free)
- *   PREMIUM   — 1/day  (Career = 5/mo, Business = 15/mo → 0.2-0.7/day)
- *   SALES_NAV — 3/day  (Core / Advanced = ~50/mo → ~2.3/day)
- *   RECRUITER — 6/day  (Lite = 30/mo, Recruiter = 150+/mo)
+ *   CLASSIC   - 0 InMails (LinkedIn doesn't expose the feature to Free)
+ *   PREMIUM   - 1/day  (Career = 5/mo, Business = 15/mo → 0.2-0.7/day)
+ *   SALES_NAV - 3/day  (Core / Advanced = ~50/mo → ~2.3/day)
+ *   RECRUITER - 6/day  (Lite = 30/mo, Recruiter = 150+/mo)
  */
 function defaultCapsForTier(tier: string): { inmail_per_day: number } {
     switch (tier) {
@@ -376,7 +376,7 @@ export async function disconnectAccount(organizationId: string, id: string): Pro
     await unipileAccounts.deleteAccount(acct.unipile_account_id);
     await prisma.linkedInAccount.delete({ where: { id: acct.id } });
 
-    // Best-effort release. We log but never throw — the user-facing
+    // Best-effort release. We log but never throw - the user-facing
     // disconnect must succeed even if the addon-counter decrement
     // fails, because the LinkedInAccount row is already gone and a
     // stuck "still billed for an addon" state is recoverable via

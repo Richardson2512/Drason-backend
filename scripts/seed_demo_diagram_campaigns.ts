@@ -1,15 +1,15 @@
 /**
- * Demo Account — Sequence Diagram Showcase Campaigns
+ * Demo Account - Sequence Diagram Showcase Campaigns
  *
  * Adds 4 deliberately-designed campaigns to the demo org so the new
  * /campaigns/[id]/sequence page has variety to render. Does NOT touch
- * existing demo content — purely additive.
+ * existing demo content - purely additive.
  *
  * Campaigns added:
- *   1. "Diagram — Simple 3-step Linear" (no branches, stop on reply)
- *   2. "Diagram — Branching with Conditions" (if_no_reply chain + if_replied re-engage)
- *   3. "Diagram — Engagement-Conditional" (mixed if_opened, if_clicked, if_not_opened)
- *   4. "Diagram — A/B Variant Heavy" (3 variants on step 1, 2 on step 2)
+ *   1. "Diagram - Simple 3-step Linear" (no branches, stop on reply)
+ *   2. "Diagram - Branching with Conditions" (if_no_reply chain + if_replied re-engage)
+ *   3. "Diagram - Engagement-Conditional" (mixed if_opened, if_clicked, if_not_opened)
+ *   4. "Diagram - A/B Variant Heavy" (3 variants on step 1, 2 on step 2)
  *
  * STAGING DATABASE ONLY. Refuses to run against production-y URLs.
  *
@@ -72,58 +72,58 @@ interface CampaignSpec {
 
 const CAMPAIGNS: CampaignSpec[] = [
     // ─────────────────────────────────────────────────────────────────────
-    // 1. SIMPLE LINEAR — no conditions, classic 3-touch
+    // 1. SIMPLE LINEAR - no conditions, classic 3-touch
     // ─────────────────────────────────────────────────────────────────────
     {
         slug: 'diagram-simple-linear',
-        name: 'Diagram — Simple 3-step Linear',
+        name: 'Diagram - Simple 3-step Linear',
         status: 'active',
         stop_on_reply: true,
         stop_on_bounce: true,
         leadCount: 42,
         importSources: [
             { source: 'csv', label: 'q2-saas-founders.csv', count: 28 },
-            { source: 'apollo', label: 'Apollo — VP Sales SaaS', count: 14 },
+            { source: 'apollo', label: 'Apollo - VP Sales SaaS', count: 14 },
         ],
         steps: [
             {
                 delay_days: 0, delay_hours: 0,
                 subject: 'Quick question about {{company}}\'s outbound',
-                body_html: '<p>Hi {{first_name}},</p><p>Most B2B founders running cold email don\'t know their bounce rate across mailboxes until something paused. Worth 15 min to walk through what we\'re seeing in the {{custom.industry}} space?</p><p>— James</p>',
+                body_html: '<p>Hi {{first_name}},</p><p>Most B2B founders running cold email don\'t know their bounce rate across mailboxes until something paused. Worth 15 min to walk through what we\'re seeing in the {{custom.industry}} space?</p><p>- James</p>',
             },
             {
                 delay_days: 3, delay_hours: 0,
                 subject: 'Re: Quick question about {{company}}\'s outbound',
-                body_html: '<p>{{first_name}},</p><p>Bumping this up. Even if it\'s not the right time, would love to hear what platform you\'re running today.</p><p>— James</p>',
+                body_html: '<p>{{first_name}},</p><p>Bumping this up. Even if it\'s not the right time, would love to hear what platform you\'re running today.</p><p>- James</p>',
             },
             {
                 delay_days: 5, delay_hours: 0,
                 subject: 'Closing the loop, {{first_name}}',
-                body_html: '<p>{{first_name}},</p><p>Going to stop following up — clearly not the right time. If outbound deliverability ever creeps up the priority list, my calendar is here: {{custom.calendar_link}}</p><p>— James</p>',
+                body_html: '<p>{{first_name}},</p><p>Going to stop following up - clearly not the right time. If outbound deliverability ever creeps up the priority list, my calendar is here: {{custom.calendar_link}}</p><p>- James</p>',
             },
         ],
     },
 
     // ─────────────────────────────────────────────────────────────────────
-    // 2. BRANCHING WITH CONDITIONS — if_no_reply chain + if_replied re-engage
+    // 2. BRANCHING WITH CONDITIONS - if_no_reply chain + if_replied re-engage
     // ─────────────────────────────────────────────────────────────────────
     {
         slug: 'diagram-branching-conditions',
-        name: 'Diagram — Branching with Conditions',
+        name: 'Diagram - Branching with Conditions',
         status: 'active',
         stop_on_reply: false,
         stop_on_bounce: true,
         leadCount: 64,
         importSources: [
-            { source: 'clay', label: 'Clay — Series A CTOs (cleaned)', count: 38 },
-            { source: 'salesforce', label: 'Salesforce — Q2 inbound MQLs', count: 18 },
+            { source: 'clay', label: 'Clay - Series A CTOs (cleaned)', count: 38 },
+            { source: 'salesforce', label: 'Salesforce - Q2 inbound MQLs', count: 18 },
             { source: 'manual', count: 8 },
         ],
         steps: [
             {
                 delay_days: 0, delay_hours: 0,
                 subject: 'Bounce rate at {{company}}',
-                body_html: '<p>Hi {{first_name}},</p><p>Most CTOs don\'t track outbound bounce rate. By the time it shows up in the platform, the domain\'s already cooked. Curious what {{company}} is using today.</p><p>— Priya</p>',
+                body_html: '<p>Hi {{first_name}},</p><p>Most CTOs don\'t track outbound bounce rate. By the time it shows up in the platform, the domain\'s already cooked. Curious what {{company}} is using today.</p><p>- Priya</p>',
             },
             {
                 delay_days: 2, delay_hours: 0,
@@ -140,95 +140,95 @@ const CAMPAIGNS: CampaignSpec[] = [
             {
                 delay_days: 4, delay_hours: 0,
                 subject: 'Closing the loop',
-                body_html: '<p>{{first_name}},</p><p>Stepping back from this. If outbound deliverability ever moves up your list, our calendar is open.</p><p>— Priya</p>',
+                body_html: '<p>{{first_name}},</p><p>Stepping back from this. If outbound deliverability ever moves up your list, our calendar is open.</p><p>- Priya</p>',
                 condition: 'if_no_reply',
             },
             {
                 delay_days: 7, delay_hours: 0,
-                subject: 'Saw your reply earlier — picking back up',
-                body_html: '<p>{{first_name}},</p><p>Coming back to this. You mentioned interest earlier — want to set up a 20-min walkthrough this week or next?</p><p>— Priya</p>',
+                subject: 'Saw your reply earlier - picking back up',
+                body_html: '<p>{{first_name}},</p><p>Coming back to this. You mentioned interest earlier - want to set up a 20-min walkthrough this week or next?</p><p>- Priya</p>',
                 condition: 'if_replied',
             },
         ],
     },
 
     // ─────────────────────────────────────────────────────────────────────
-    // 3. ENGAGEMENT-CONDITIONAL — mixed if_opened, if_clicked, if_not_opened
+    // 3. ENGAGEMENT-CONDITIONAL - mixed if_opened, if_clicked, if_not_opened
     // ─────────────────────────────────────────────────────────────────────
     {
         slug: 'diagram-engagement-conditional',
-        name: 'Diagram — Engagement-Conditional',
+        name: 'Diagram - Engagement-Conditional',
         status: 'active',
         stop_on_reply: true,
         stop_on_bounce: true,
         leadCount: 50,
         importSources: [
-            { source: 'hubspot', label: 'HubSpot — webinar attendees Q2', count: 35 },
+            { source: 'hubspot', label: 'HubSpot - webinar attendees Q2', count: 35 },
             { source: 'csv', label: 'targeted-icp.csv', count: 15 },
         ],
         steps: [
             {
                 delay_days: 0, delay_hours: 0,
                 subject: 'New report: deliverability benchmarks 2026',
-                body_html: '<p>Hi {{first_name}},</p><p>We just published the 2026 deliverability benchmark report — covers 50K B2B senders, full breakdown of inbox placement rates by industry. Free download here: {{custom.report_link}}</p><p>— Marcus</p>',
+                body_html: '<p>Hi {{first_name}},</p><p>We just published the 2026 deliverability benchmark report - covers 50K B2B senders, full breakdown of inbox placement rates by industry. Free download here: {{custom.report_link}}</p><p>- Marcus</p>',
             },
             {
                 delay_days: 2, delay_hours: 0,
-                subject: 'Saw you opened the report — quick follow-up',
+                subject: 'Saw you opened the report - quick follow-up',
                 body_html: '<p>{{first_name}},</p><p>Saw you opened the benchmarks report. The most-asked question we get after people read it: "what should I actually do about my bounce rate?". Happy to walk through that for {{company}}\'s specific setup. 15 min this week?</p>',
                 condition: 'if_opened',
             },
             {
                 delay_days: 3, delay_hours: 0,
-                subject: 'Saw you clicked through — book a demo?',
-                body_html: '<p>{{first_name}},</p><p>You clicked through to our deliverability dashboard demo from the report. Want to book 20 min to see it with your real numbers?</p><p>— Marcus</p>',
+                subject: 'Saw you clicked through - book a demo?',
+                body_html: '<p>{{first_name}},</p><p>You clicked through to our deliverability dashboard demo from the report. Want to book 20 min to see it with your real numbers?</p><p>- Marcus</p>',
                 condition: 'if_clicked',
             },
             {
                 delay_days: 7, delay_hours: 0,
                 subject: 'Different angle for {{company}}',
-                body_html: '<p>{{first_name}},</p><p>Sent you our benchmark report a week ago — looks like it didn\'t land. Different angle: what\'s {{company}}\'s biggest cold email pain point right now? Even one line is useful for me.</p>',
+                body_html: '<p>{{first_name}},</p><p>Sent you our benchmark report a week ago - looks like it didn\'t land. Different angle: what\'s {{company}}\'s biggest cold email pain point right now? Even one line is useful for me.</p>',
                 condition: 'if_not_opened',
             },
         ],
     },
 
     // ─────────────────────────────────────────────────────────────────────
-    // 4. A/B VARIANT HEAVY — multiple variants per step
+    // 4. A/B VARIANT HEAVY - multiple variants per step
     // ─────────────────────────────────────────────────────────────────────
     {
         slug: 'diagram-ab-variants',
-        name: 'Diagram — A/B Variant Heavy',
+        name: 'Diagram - A/B Variant Heavy',
         status: 'active',
         stop_on_reply: true,
         stop_on_bounce: false,
         leadCount: 75,
         importSources: [
-            { source: 'apollo', label: 'Apollo — Marketing Directors NA', count: 50 },
-            { source: 'zoominfo', label: 'ZoomInfo — Series B+ marketing leaders', count: 25 },
+            { source: 'apollo', label: 'Apollo - Marketing Directors NA', count: 50 },
+            { source: 'zoominfo', label: 'ZoomInfo - Series B+ marketing leaders', count: 25 },
         ],
         steps: [
             {
                 delay_days: 0, delay_hours: 0,
-                subject: '',  // ignored — variants take over
+                subject: '',  // ignored - variants take over
                 body_html: '',
                 variants: [
                     {
                         label: 'A',
                         subject: 'Quick {{company}} question',
-                        body_html: '<p>Hi {{first_name}},</p><p>What does your team use for cold email today?</p><p>— Olivia</p>',
+                        body_html: '<p>Hi {{first_name}},</p><p>What does your team use for cold email today?</p><p>- Olivia</p>',
                         weight: 33,
                     },
                     {
                         label: 'B',
                         subject: 'Bounce rate at {{company}}',
-                        body_html: '<p>Hi {{first_name}},</p><p>Most marketing teams don\'t measure outbound bounce rate. Worth a quick check?</p><p>— Olivia</p>',
+                        body_html: '<p>Hi {{first_name}},</p><p>Most marketing teams don\'t measure outbound bounce rate. Worth a quick check?</p><p>- Olivia</p>',
                         weight: 33,
                     },
                     {
                         label: 'C',
-                        subject: '{{first_name}} — saw your post on demand gen',
-                        body_html: '<p>Hi {{first_name}},</p><p>Read your post on demand gen attribution — strong take. Curious how {{company}} handles cold email reputation alongside the rest of the channel mix.</p><p>— Olivia</p>',
+                        subject: '{{first_name}} - saw your post on demand gen',
+                        body_html: '<p>Hi {{first_name}},</p><p>Read your post on demand gen attribution - strong take. Curious how {{company}} handles cold email reputation alongside the rest of the channel mix.</p><p>- Olivia</p>',
                         weight: 34,
                     },
                 ],
@@ -255,7 +255,7 @@ const CAMPAIGNS: CampaignSpec[] = [
             {
                 delay_days: 5, delay_hours: 0,
                 subject: 'Final touch, {{first_name}}',
-                body_html: '<p>{{first_name}},</p><p>Last note from me on this. If outbound deliverability ever moves up your list, calendar is open.</p><p>— Olivia</p>',
+                body_html: '<p>{{first_name}},</p><p>Last note from me on this. If outbound deliverability ever moves up your list, calendar is open.</p><p>- Olivia</p>',
             },
         ],
     },
@@ -268,7 +268,7 @@ const CAMPAIGNS: CampaignSpec[] = [
 async function main() {
     assertStagingDb();
     console.log('═══════════════════════════════════════════════════════════════');
-    console.log('  Demo — Sequence Diagram Showcase Campaigns');
+    console.log('  Demo - Sequence Diagram Showcase Campaigns');
     console.log('═══════════════════════════════════════════════════════════════\n');
 
     const user = await prisma.user.findUnique({
@@ -286,7 +286,7 @@ async function main() {
     if (RESET) {
         console.log('Resetting prior diagram-showcase campaigns…');
         const oldCampaigns = await prisma.campaign.findMany({
-            where: { organization_id: orgId, name: { startsWith: 'Diagram — ' } },
+            where: { organization_id: orgId, name: { startsWith: 'Diagram - ' } },
             select: { id: true },
         });
         const ids = oldCampaigns.map((c) => c.id);
@@ -333,7 +333,7 @@ async function main() {
             select: { id: true },
         });
         if (existing) {
-            console.log(`↻ "${spec.name}" already exists — skipping (use --reset to recreate)`);
+            console.log(`↻ "${spec.name}" already exists - skipping (use --reset to recreate)`);
             continue;
         }
 
@@ -469,7 +469,7 @@ async function main() {
             });
         }
 
-        console.log(`✓ "${spec.name}" — ${spec.steps.length} steps, ${enrolees.length} leads, ${spec.importSources.length} sources`);
+        console.log(`✓ "${spec.name}" - ${spec.steps.length} steps, ${enrolees.length} leads, ${spec.importSources.length} sources`);
     }
 
     console.log('\n═══════════════════════════════════════════════════════════════');

@@ -1,7 +1,7 @@
 /**
  * Cross-Entity Correlation Service
  * 
- * Implements Section 4.4 (Attribution Layer — Root Cause Isolation) of the
+ * Implements Section 4.4 (Attribution Layer - Root Cause Isolation) of the
  * Implementation Plan.
  * 
  * Before pausing any entity, this service runs correlation checks to determine
@@ -74,7 +74,7 @@ export async function correlateBeforePause(
     if (!mailbox) {
         return {
             originalTarget: mailboxId,
-            recommendedAction: { action: 'pause_mailbox', entityId: mailboxId, reason: 'Mailbox not found — defaulting to direct pause' },
+            recommendedAction: { action: 'pause_mailbox', entityId: mailboxId, reason: 'Mailbox not found - defaulting to direct pause' },
             correlations: makeEmptyCorrelations(),
             message: 'Mailbox not found',
         };
@@ -103,7 +103,7 @@ export async function correlateBeforePause(
             recommendedAction: {
                 action: 'pause_domain',
                 entityId: mailbox.domain_id,
-                reason: `${siblingCheck.failingCount}/${siblingCheck.totalCount} mailboxes on domain ${mailbox.domain?.domain} are failing — escalating to domain-level pause`,
+                reason: `${siblingCheck.failingCount}/${siblingCheck.totalCount} mailboxes on domain ${mailbox.domain?.domain} are failing - escalating to domain-level pause`,
             },
             correlations: {
                 siblingMailboxesFailing: true,
@@ -139,7 +139,7 @@ export async function correlateBeforePause(
                 action: 'restrict_provider',
                 entityId: mailboxId,
                 provider: providerCheck.provider!,
-                reason: `${(providerCheck.ratio * 100).toFixed(0)}% of bounces from ${providerCheck.provider} — applying provider restriction instead of full pause`,
+                reason: `${(providerCheck.ratio * 100).toFixed(0)}% of bounces from ${providerCheck.provider} - applying provider restriction instead of full pause`,
             },
             correlations: {
                 siblingMailboxesFailing: false,
@@ -159,7 +159,7 @@ export async function correlateBeforePause(
         recommendedAction: {
             action: 'pause_mailbox',
             entityId: mailboxId,
-            reason: 'No cross-entity correlation found — proceeding with mailbox pause',
+            reason: 'No cross-entity correlation found - proceeding with mailbox pause',
         },
         correlations: {
             siblingMailboxesFailing: false,
@@ -168,7 +168,7 @@ export async function correlateBeforePause(
             campaignConcentrated: false,
             providerConcentrated: false,
         },
-        message: 'Direct mailbox issue — no escalation or redirection needed',
+        message: 'Direct mailbox issue - no escalation or redirection needed',
     };
 }
 

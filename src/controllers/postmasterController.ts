@@ -1,12 +1,12 @@
 /**
  * Postmaster Tools Controller
  *
- * - POST /api/postmaster/connect           — returns Google authorize URL
- * - GET  /oauth/callback/postmaster        — Google redirects back here (PUBLIC)
- * - POST /api/postmaster/disconnect        — revokes local tokens
- * - POST /api/postmaster/fetch-now         — admin trigger for ad-hoc fetch
- * - GET  /api/postmaster/status            — connection state for the dashboard
- * - GET  /api/dashboard/domains/:id/reputation?days=30 — time series for charts
+ * - POST /api/postmaster/connect           - returns Google authorize URL
+ * - GET  /oauth/callback/postmaster        - Google redirects back here (PUBLIC)
+ * - POST /api/postmaster/disconnect        - revokes local tokens
+ * - POST /api/postmaster/fetch-now         - admin trigger for ad-hoc fetch
+ * - GET  /api/postmaster/status            - connection state for the dashboard
+ * - GET  /api/dashboard/domains/:id/reputation?days=30 - time series for charts
  */
 
 import { Request, Response } from 'express';
@@ -35,7 +35,7 @@ export const startConnect = async (req: Request, res: Response) => {
     }
 };
 
-/** GET /oauth/callback/postmaster — public route that Google redirects to
+/** GET /oauth/callback/postmaster - public route that Google redirects to
  *  after the user grants consent. State carries the orgId. */
 export const oauthCallback = async (req: Request, res: Response) => {
     const { code, state, error } = req.query as { code?: string; state?: string; error?: string };
@@ -50,17 +50,17 @@ export const oauthCallback = async (req: Request, res: Response) => {
     }
 
     // Validate state against the server-side store (CSRF protection). Bail
-    // immediately on any failure — never trust a state we didn't mint.
+    // immediately on any failure - never trust a state we didn't mint.
     const orgId = await consumePostmasterState(state);
     if (!orgId) {
-        logger.warn('[POSTMASTER] OAuth callback rejected — invalid state');
+        logger.warn('[POSTMASTER] OAuth callback rejected - invalid state');
         return res.redirect(`${frontendBase}/dashboard/settings?postmaster=error&reason=invalid_state`);
     }
 
     try {
         await completeAuthorization(orgId, code);
 
-        // Record OAuth consent — required for GDPR Art. 7(1) auditability.
+        // Record OAuth consent - required for GDPR Art. 7(1) auditability.
         // We capture the moment Google's consent UI was completed, with the
         // exact scope string the user authorized.
         try {
@@ -84,7 +84,7 @@ export const oauthCallback = async (req: Request, res: Response) => {
             });
         } catch (consentErr) {
             logger.error(
-                '[POSTMASTER] OAuth consent record failed — manual remediation required',
+                '[POSTMASTER] OAuth consent record failed - manual remediation required',
                 consentErr instanceof Error ? consentErr : new Error(String(consentErr)),
                 { orgId },
             );
@@ -109,7 +109,7 @@ export const disconnect = async (req: Request, res: Response) => {
     }
 };
 
-/** POST /api/postmaster/fetch-now — admin-triggered ad-hoc fetch. */
+/** POST /api/postmaster/fetch-now - admin-triggered ad-hoc fetch. */
 export const fetchNow = async (req: Request, res: Response) => {
     try {
         const orgId = getOrgId(req);
@@ -121,7 +121,7 @@ export const fetchNow = async (req: Request, res: Response) => {
     }
 };
 
-/** GET /api/postmaster/status — returns connection state for the dashboard. */
+/** GET /api/postmaster/status - returns connection state for the dashboard. */
 export const getStatus = async (req: Request, res: Response) => {
     try {
         const orgId = getOrgId(req);
@@ -145,7 +145,7 @@ export const getStatus = async (req: Request, res: Response) => {
     }
 };
 
-/** GET /api/dashboard/domains/:id/reputation?days=30 — time series. */
+/** GET /api/dashboard/domains/:id/reputation?days=30 - time series. */
 export const getDomainReputation = async (req: Request, res: Response) => {
     try {
         const orgId = getOrgId(req);

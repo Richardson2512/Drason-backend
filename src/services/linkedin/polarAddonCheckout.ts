@@ -1,7 +1,7 @@
 /**
  * Polar checkout creation for LinkedIn account-slot add-ons.
  *
- * Mirrors superSenderService.createSuperSenderCheckout — one product
+ * Mirrors superSenderService.createSuperSenderCheckout - one product
  * per slot, $15/account/month, quantity on the line item via metadata.
  * The Polar webhook router reads `metadata.linkedin_addon = 'true'` and
  * dispatches the event to handleLinkedInAddonWebhook (see
@@ -9,7 +9,7 @@
  * creates the LinkedInAccountAddonPurchase row.
  *
  * Configuration:
- *   POLAR_LINKEDIN_ADDON_PRODUCT_ID — Polar product id, set in env.
+ *   POLAR_LINKEDIN_ADDON_PRODUCT_ID - Polar product id, set in env.
  *                                     When unset, the controller falls
  *                                     back to the direct-increment stub
  *                                     path so the UI still works in dev.

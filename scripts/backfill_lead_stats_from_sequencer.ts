@@ -21,16 +21,16 @@
  *                            (most-recently-sent wins; if none sent yet, most-recent created)
  *   - status transitions held → active via entityStateService for leads enrolled in
  *     a campaign (source of truth is CampaignLead existence), except when all their
- *     CampaignLeads are completed/replied/bounced — those stay put.
+ *     CampaignLeads are completed/replied/bounced - those stay put.
  *
  * Deliberately skipped:
  *   - Leads with no CampaignLead row and no SendEvent keep whatever counters/status
  *     they already have (we have no evidence they should change).
- *   - validation_* fields — owned exclusively by emailValidationService.
+ *   - validation_* fields - owned exclusively by emailValidationService.
  *
  * Usage
  * -----
- *     # Dry run (default — prints planned changes, does NOT write):
+ *     # Dry run (default - prints planned changes, does NOT write):
  *     npx ts-node backend/scripts/backfill_lead_stats_from_sequencer.ts
  *
  *     # Live apply:
@@ -52,7 +52,7 @@ import { PrismaClient } from '@prisma/client';
 
 // A dedicated PrismaClient for this script so we don't import anything from
 // src/index.ts (which would boot workers, redis, event queue, etc.). The state
-// transition logic we need is narrow enough to inline — see applyStatusTransition.
+// transition logic we need is narrow enough to inline - see applyStatusTransition.
 const prisma = new PrismaClient();
 
 // ─── CLI flag parsing ───────────────────────────────────────────────────────
@@ -131,7 +131,7 @@ async function computeChangeForLead(lead: {
         prisma.bounceEvent.count({ where: { organization_id, email_address: email } }),
     ]);
 
-    // 2. CampaignLead aggregate — opens/clicks/bounce flag + most-recent campaign link.
+    // 2. CampaignLead aggregate - opens/clicks/bounce flag + most-recent campaign link.
     const campaignLeads = await prisma.campaignLead.findMany({
         where: { email, campaign: { organization_id } },
         select: {
@@ -202,7 +202,7 @@ async function computeChangeForLead(lead: {
     //      - If lead is 'held' AND has at least one CampaignLead whose status is
     //        active/paused (i.e. still in the sequencer), transition to ACTIVE.
     //      - Leads whose only CampaignLeads are already replied/completed/bounced/unsubscribed
-    //        do NOT get transitioned to active by the backfill — the outbound lifecycle
+    //        do NOT get transitioned to active by the backfill - the outbound lifecycle
     //        is already over for them.
     const hasActiveCampaignLead = campaignLeads.some(
         (cl) => cl.status === 'active' || cl.status === 'paused',
@@ -255,7 +255,7 @@ async function computeChangeForLead(lead: {
 // Mirrors entityStateService.transitionLead's essential writes without pulling in
 // the full service (which would drag src/index.ts and every worker into the
 // script's process). Valid transitions for Lead are already enforced by the
-// validTransitions map below — matches types/index.ts STATE_TRANSITIONS.lead.
+// validTransitions map below - matches types/index.ts STATE_TRANSITIONS.lead.
 
 const VALID_LEAD_TRANSITIONS: Record<string, string[]> = {
     held: ['active', 'paused', 'blocked'],
@@ -411,7 +411,7 @@ async function main() {
             }
         } catch (err) {
             failed++;
-            console.error(`  FAILED: ${c.email} — ${(err as Error).message}`);
+            console.error(`  FAILED: ${c.email} - ${(err as Error).message}`);
         }
     }
 

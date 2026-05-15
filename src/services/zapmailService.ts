@@ -1,5 +1,5 @@
 /**
- * Zapmail integration — typed client over the Zapmail v2 API.
+ * Zapmail integration - typed client over the Zapmail v2 API.
  *
  * Ground truth from docs.zapmail.ai (2026-04-26 crawl):
  *   • Base URL:     https://api.zapmail.ai/api
@@ -8,15 +8,15 @@
  *   • Rate limits:  5 req/sec, 20 req/min global. Custom OAuth: 3/mailbox/7d.
  *
  * Used endpoints:
- *   GET  /v2/users                          — validate key (lightweight)
- *   GET  /v2/mailboxes/list                 — paginated mailbox listing, GROUPED by domain
- *   POST /v2/domains/add-client-id          — attach our Google OAuth client_id to domain IDs
- *   POST /v2/mailboxes/custom-oauth         — kick off Zapmail-orchestrated OAuth per mailbox
- *   GET  /v2/exports/status?exportId=…      — poll orchestration status
+ *   GET  /v2/users                          - validate key (lightweight)
+ *   GET  /v2/mailboxes/list                 - paginated mailbox listing, GROUPED by domain
+ *   POST /v2/domains/add-client-id          - attach our Google OAuth client_id to domain IDs
+ *   POST /v2/mailboxes/custom-oauth         - kick off Zapmail-orchestrated OAuth per mailbox
+ *   GET  /v2/exports/status?exportId=…      - poll orchestration status
  *
  * NOTE: token delivery for custom-oauth is undocumented. Best inference is that
  * Zapmail walks the consent server-side as the mailbox user; the auth code then
- * lands at the redirect_uri encoded in the OAuth URL we supplied — i.e. our
+ * lands at the redirect_uri encoded in the OAuth URL we supplied - i.e. our
  * existing OAuth callback. This is tested behavior, not a documented contract.
  */
 
@@ -36,15 +36,15 @@ export interface ZapmailMailbox {
     status?: string;
     isWarmedUp?: boolean;
     workspaceId?: string;
-    // Credential fields exposed by /v2/mailboxes/list — previously
+    // Credential fields exposed by /v2/mailboxes/list - previously
     // discarded; now captured so we can connect via SMTP/IMAP without
     // needing OAuth (which requires Restricted-scope verification + CASA).
     // All three are nullable in Zapmail's response: the mailbox may still
     // be in CREATING_PASSWORD state, or the customer may not have enabled
     // app passwords / 2FA yet.
     password?: string | null;       // Workspace user login password
-    appPassword?: string | null;    // Gmail/Outlook app password — for SMTP/IMAP
-    secret?: string | null;         // 2FA TOTP seed — generates OTPs
+    appPassword?: string | null;    // Gmail/Outlook app password - for SMTP/IMAP
+    secret?: string | null;         // 2FA TOTP seed - generates OTPs
     recoveryEmail?: string | null;
 }
 
@@ -129,7 +129,7 @@ async function zapmailFetch(
 
 /**
  * Lightweight key validation. Calling /v2/users returns the authenticated
- * user's profile — succeeds 200 if the key is valid, 401 otherwise.
+ * user's profile - succeeds 200 if the key is valid, 401 otherwise.
  */
 export async function validateZapmailKey(apiKey: string): Promise<{ ok: true }> {
     await zapmailFetch('/v2/users', apiKey);
@@ -141,7 +141,7 @@ export async function validateZapmailKey(apiKey: string): Promise<{ ok: true }> 
  * `data.domains[].mailboxes[]`, with the domain object exposing `domain` + `id`.
  *
  * We flatten and tag each row with the provider passed in (since the listing
- * itself doesn't include a provider field — provider is scoped via header).
+ * itself doesn't include a provider field - provider is scoped via header).
  *
  * Pagination: Zapmail returns `{currentPage, nextPage, totalPages, ...}`. We
  * walk all pages here so callers see a single list.
@@ -155,7 +155,7 @@ export async function listMailboxesForProvider(
     const seen = new Set<string>();
     let page = 1;
     const limit = 100;
-    const maxPages = 50; // safety net — 5k mailboxes max
+    const maxPages = 50; // safety net - 5k mailboxes max
 
     for (; page <= maxPages; page++) {
         const data = (await zapmailFetch('/v2/mailboxes/list', apiKey, {
@@ -187,7 +187,7 @@ export async function listMailboxesForProvider(
                     displayName,
                     status: m.status,
                     isWarmedUp: m.isWarmedUp,
-                    // Credential bundle. These are PLAINTEXT — caller must
+                    // Credential bundle. These are PLAINTEXT - caller must
                     // encrypt before any DB write.
                     password: m.password ?? null,
                     appPassword: m.appPassword ?? null,
@@ -207,7 +207,7 @@ export async function listMailboxesForProvider(
 
 /**
  * List both Google and Microsoft mailboxes in one call. Returns a flat list.
- * Failures on one provider don't kill the other — we log and continue.
+ * Failures on one provider don't kill the other - we log and continue.
  */
 export async function listAllMailboxes(apiKey: string, workspaceKey?: string): Promise<{
     mailboxes: ZapmailMailbox[];
@@ -230,11 +230,11 @@ export async function listAllMailboxes(apiKey: string, workspaceKey?: string): P
 
 /**
  * Attach our Google OAuth client_id to a set of customer domains. This must be
- * called BEFORE custom-oauth for Google mailboxes — it whitelists our partner
+ * called BEFORE custom-oauth for Google mailboxes - it whitelists our partner
  * client_id on those domains so the per-mailbox OAuth links are accepted.
  *
  * Response message ("Client ID will be added to the domains soon") suggests the
- * association is async — caller should wait briefly before calling custom-oauth.
+ * association is async - caller should wait briefly before calling custom-oauth.
  */
 export async function addGoogleClientIdToDomains(
     apiKey: string,
@@ -277,13 +277,13 @@ export interface CustomOAuthRequest {
  * land at the redirect_uri inside oauthLink (i.e. our existing callback).
  *
  * Retry behavior: Zapmail's `add-client-id` (which must run before this call
- * for Google mailboxes) is async — its response says "Client ID will be
+ * for Google mailboxes) is async - its response says "Client ID will be
  * added to the domains soon." If we hit `custom-oauth` before propagation
  * completes, Zapmail (or Google's OAuth server inside Zapmail's walk) returns
  * an `unauthorized_client` / `client_id` error. We retry with exponential
  * backoff up to MAX_CUSTOM_OAUTH_RETRIES, only on signals that look like
  * the propagation race. Other errors (auth, validation, rate limit) bubble
- * up immediately — no point retrying those.
+ * up immediately - no point retrying those.
  *
  * Returns Zapmail's exportId for status polling.
  */
@@ -355,7 +355,7 @@ export interface ExportStatus {
 /**
  * Poll the export-job status. Used to surface "Zapmail is authorizing your
  * mailboxes" progress in the UI. Returns the raw payload alongside best-effort
- * normalized fields — Zapmail's exact status enum isn't fully documented.
+ * normalized fields - Zapmail's exact status enum isn't fully documented.
  */
 export async function getExportStatus(
     apiKey: string,

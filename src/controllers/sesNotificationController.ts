@@ -7,11 +7,11 @@
  * The endpoint handles three SNS message types:
  *   - SubscriptionConfirmation: AWS sends this once when the SNS topic
  *     is first subscribed. We auto-confirm by GETting SubscribeURL.
- *   - Notification: the actual SES event payload (wrapped twice — once
+ *   - Notification: the actual SES event payload (wrapped twice - once
  *     by SNS, once by SES).
  *   - UnsubscribeConfirmation: logged, no action.
  *
- * Auto-pause thresholds — AWS publishes these as the levels at which
+ * Auto-pause thresholds - AWS publishes these as the levels at which
  * SES itself starts throttling. We trip a few hundred basis points
  * earlier so we never let one of our IPs degrade the whole AWS account:
  *
@@ -33,7 +33,7 @@ const COMPLAINT_PAUSE_THRESHOLD = 0.0008; // 0.08%
 const MIN_VOLUME_FOR_PAUSE = 100;         // don't pause on 1 bounce out of 5 sends
 
 // SNS message signature validator. The default host pattern only accepts
-// SigningCertURLs on `sns.<region>.amazonaws.com[.cn]` — an attacker
+// SigningCertURLs on `sns.<region>.amazonaws.com[.cn]` - an attacker
 // cannot point us at a cert they control. validate() also checks the
 // RSA signature over the canonical message string, so forged envelopes
 // (fake bounces to auto-pause a paid IP) are rejected here.
@@ -55,7 +55,7 @@ function isAwsSnsUrl(raw: string): boolean {
     return u.protocol === 'https:' && /^sns\.[a-z0-9-]{3,}\.amazonaws\.com(\.cn)?$/i.test(u.hostname);
 }
 
-// Optional pinning — when SES_SNS_TOPIC_ARN is set, reject any envelope
+// Optional pinning - when SES_SNS_TOPIC_ARN is set, reject any envelope
 // whose TopicArn doesn't match, so a different (but validly-signed) AWS
 // SNS topic can't feed us events.
 const EXPECTED_TOPIC_ARN = process.env.SES_SNS_TOPIC_ARN || null;
@@ -104,7 +104,7 @@ export const handleSesNotification = async (req: Request, res: Response): Promis
     try {
         await validateSnsSignature(envelope as unknown as Record<string, unknown>);
     } catch (err) {
-        logger.warn('[SES_SNS] signature validation failed — rejecting', {
+        logger.warn('[SES_SNS] signature validation failed - rejecting', {
             type: envelope.Type,
             topicArn: envelope.TopicArn,
             err: err instanceof Error ? err.message : String(err),
@@ -113,18 +113,18 @@ export const handleSesNotification = async (req: Request, res: Response): Promis
     }
 
     if (EXPECTED_TOPIC_ARN && envelope.TopicArn !== EXPECTED_TOPIC_ARN) {
-        logger.warn('[SES_SNS] TopicArn not in allowlist — rejecting', {
+        logger.warn('[SES_SNS] TopicArn not in allowlist - rejecting', {
             got: envelope.TopicArn,
         });
         return res.status(403).send('unexpected topic');
     }
 
-    // 1. SNS handshake — auto-confirm subscriptions. AWS will not deliver
+    // 1. SNS handshake - auto-confirm subscriptions. AWS will not deliver
     // events until SubscribeURL is fetched once. Signature is already
     // verified above; the host check is belt-and-suspenders against SSRF.
     if (envelope.Type === 'SubscriptionConfirmation' && envelope.SubscribeURL) {
         if (!isAwsSnsUrl(envelope.SubscribeURL)) {
-            logger.warn('[SES_SNS] SubscribeURL is not an AWS SNS host — refusing to fetch', {
+            logger.warn('[SES_SNS] SubscribeURL is not an AWS SNS host - refusing to fetch', {
                 topicArn: envelope.TopicArn,
             });
             return res.status(403).send('bad subscribe url');

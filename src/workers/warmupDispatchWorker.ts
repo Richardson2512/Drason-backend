@@ -1,5 +1,5 @@
 /**
- * Warmup Dispatch Worker — sends scheduled WarmupExchange rows.
+ * Warmup Dispatch Worker - sends scheduled WarmupExchange rows.
  *
  * Cadence: every 60 seconds. On each tick:
  *   1. Pull WarmupExchange rows where state='scheduled' AND
@@ -7,7 +7,7 @@
  *      doesn't blow our SMTP rate limits in one burst.
  *   2. For each:
  *      - Render subject + body fresh from the content engine.
- *        (The 3B+ permutation count is realized HERE — generation is
+ *        (The 3B+ permutation count is realized HERE - generation is
  *         per-send so two scheduled rows for the same mailbox get
  *         different rendered emails.)
  *      - Send via warmupSendService (isolated from production path).
@@ -42,11 +42,11 @@ function preview(body: string, isHtml: boolean): string {
 }
 
 async function dispatchOne(exchangeId: string): Promise<void> {
-    // Atomic claim — flip 'scheduled' → 'sent' guard so two workers
+    // Atomic claim - flip 'scheduled' → 'sent' guard so two workers
     // running concurrently can't double-send the same row.
     const claimed = await prisma.warmupExchange.updateMany({
         where: { id: exchangeId, state: 'scheduled' },
-        data: { state: 'sent' /* tentative — corrected on failure */ },
+        data: { state: 'sent' /* tentative - corrected on failure */ },
     });
     if (claimed.count === 0) return; // someone else got it
 

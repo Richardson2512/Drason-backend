@@ -5,7 +5,7 @@
  * complicates legal-doc consent records, and (most practically) makes the
  * organisation hard to identify when a sales/support conversation happens.
  *
- * Lower-cased — callers must lowercase the candidate domain before lookup.
+ * Lower-cased - callers must lowercase the candidate domain before lookup.
  * Curated to cover the providers that account for the vast majority of
  * consumer email; not exhaustive. Extend as needed; the registration
  * endpoint returns a clear error pointing to the user's IT / admin so a
@@ -81,7 +81,7 @@ export const FREE_EMAIL_DOMAINS: ReadonlySet<string> = new Set([
 
 /**
  * Returns true when the given email's domain is in the consumer-provider
- * denylist. Defensive against malformed input — anything without an `@`
+ * denylist. Defensive against malformed input - anything without an `@`
  * or with an empty local-part / empty domain returns false (the regular
  * validation path will reject those separately).
  */

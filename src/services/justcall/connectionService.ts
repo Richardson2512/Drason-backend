@@ -1,5 +1,5 @@
 /**
- * JustCall connection persistence — owns:
+ * JustCall connection persistence - owns:
  *   - Credential encryption / decryption (AES-256-GCM via utils/encryption)
  *   - Upsert on connect, soft-disconnect with credential wipe
  *   - Active-connection lookup for the export worker
@@ -115,7 +115,7 @@ export async function markJustCallConnectionFailed(
     organizationId: string,
     error: string,
 ): Promise<void> {
-    // Composite filter — `updateMany` instead of `update` so a stale
+    // Composite filter - `updateMany` instead of `update` so a stale
     // connection_id pulled from another tenant's queue payload can never
     // touch this row. Returns count=0 silently in that case.
     const result = await prisma.justCallConnection.updateMany({
@@ -123,7 +123,7 @@ export async function markJustCallConnectionFailed(
         data: { status: 'error', last_error: error.slice(0, 500) },
     });
     if (result.count === 0) {
-        logger.warn('[JUSTCALL] markJustCallConnectionFailed — no row matched (cross-tenant or deleted)', {
+        logger.warn('[JUSTCALL] markJustCallConnectionFailed - no row matched (cross-tenant or deleted)', {
             connectionId, organizationId,
         });
         return;

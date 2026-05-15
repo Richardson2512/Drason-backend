@@ -14,7 +14,7 @@
  *   { event: string, account_id: string, name?: string, timestamp: string,
  *     data?: { ... event-specific ... } }
  *
- * We respond 200 on every authenticated request — Unipile retries 5x with
+ * We respond 200 on every authenticated request - Unipile retries 5x with
  * exponential backoff on non-2xx, so persistent failures must surface only
  * via logs, never by 500ing back to Unipile.
  */
@@ -37,7 +37,7 @@ interface RawBodyRequest extends Request {
 export const ingest = async (req: RawBodyRequest, res: Response): Promise<Response> => {
     const raw = req.rawBody;
     if (!raw) {
-        logger.warn('[UNIPILE-WEBHOOK] No raw body captured — verifyRawBody whitelist missing?');
+        logger.warn('[UNIPILE-WEBHOOK] No raw body captured - verifyRawBody whitelist missing?');
         return res.status(200).json({ accepted: false, reason: 'no_raw_body' });
     }
 
@@ -85,11 +85,11 @@ export const ingest = async (req: RawBodyRequest, res: Response): Promise<Respon
         } else if (eventName === 'new message' || eventName === 'message_received') {
             await handleNewMessage(payload as unknown as NewMessagePayload);
         } else {
-            logger.info('[UNIPILE-WEBHOOK] Unhandled event type — accepting silently', { event: eventName });
+            logger.info('[UNIPILE-WEBHOOK] Unhandled event type - accepting silently', { event: eventName });
         }
         return res.status(200).json({ accepted: true });
     } catch (err) {
-        // Logging only — never 5xx Unipile, retries are not helpful here.
+        // Logging only - never 5xx Unipile, retries are not helpful here.
         logger.error('[UNIPILE-WEBHOOK] Handler failed', err instanceof Error ? err : new Error(String(err)));
         return res.status(200).json({ accepted: false, reason: 'handler_error' });
     }
@@ -108,7 +108,7 @@ function isAccountStatusEvent(name: string): boolean {
 }
 
 /**
- * new_relation — invitation accepted. Lags up to 8h per Unipile docs.
+ * new_relation - invitation accepted. Lags up to 8h per Unipile docs.
  * Flips the LinkedInConnectionEdge to CONNECTED.
  *
  * Payload fields (confirmed by Unipile docs):
@@ -178,7 +178,7 @@ async function handleNewRelation(payload: NewRelationPayload): Promise<void> {
 }
 
 /**
- * new message — incoming DM. Triggers the reply classifier when the
+ * new message - incoming DM. Triggers the reply classifier when the
  * lead's first reply lands on a campaign-initiated thread.
  *
  * The fast-path acceptance signal also lives here: if a connection
@@ -210,12 +210,12 @@ async function handleNewMessage(payload: NewMessagePayload): Promise<void> {
     const senderId = payload.sender?.public_identifier || payload.sender?.id;
     const messageText = payload.content || payload.text || '';
     if (!senderId || !messageText.trim()) {
-        logger.debug('[UNIPILE-WEBHOOK] new_message dropped — missing sender or empty body');
+        logger.debug('[UNIPILE-WEBHOOK] new_message dropped - missing sender or empty body');
         return;
     }
 
     // Upsert the profile + flip edge to CONNECTED if it was INVITE_SENT
-    // (fast-path acceptance signal — the lead's first reply means the
+    // (fast-path acceptance signal - the lead's first reply means the
     // invite must have been accepted).
     const profile = await prisma.linkedInProfile.upsert({
         where: { organization_id_public_identifier: { organization_id: acct.organization_id, public_identifier: senderId } },

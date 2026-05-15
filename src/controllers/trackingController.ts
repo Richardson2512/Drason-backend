@@ -2,7 +2,7 @@
  * Tracking Controller
  *
  * Open pixel, click redirect, and unsubscribe handling.
- * These endpoints are PUBLIC (no auth) — tracking must work without login.
+ * These endpoints are PUBLIC (no auth) - tracking must work without login.
  *
  * Every URL carries an HMAC-signed token (see utils/trackingToken.ts) produced
  * at send-time by trackingService. Incoming requests must pass verification
@@ -36,7 +36,7 @@ function verifyOrNull(token: string): TrackingPayload | null {
 /**
  * Increment a lifetime engagement counter on the Mailbox that originally sent
  * the email being tracked. Looks up the most recent SendEvent for (campaign,
- * recipient) to identify the sending mailbox — this is the sequencer-lane
+ * recipient) to identify the sending mailbox - this is the sequencer-lane
  * analog of how eventQueue.processBounceEvent updates mailbox counters for
  * platform-webhook events. Without this, the Protection Mailboxes + Domains
  * pages show 0 opens / clicks for everything the native sequencer dispatched.
@@ -120,7 +120,7 @@ async function recordEngagementEvent(args: {
 
 /**
  * GET /t/o/:token
- * Track email open — return 1x1 transparent GIF regardless of verification
+ * Track email open - return 1x1 transparent GIF regardless of verification
  * so email clients never render a broken image. Counters only fire on verify.
  */
 export const trackOpen = async (req: Request, res: Response): Promise<Response | void> => {
@@ -192,7 +192,7 @@ export const trackOpen = async (req: Request, res: Response): Promise<Response |
 
 /**
  * GET /t/c/:token
- * Track click — verify token, then redirect to its signed `url`. A tampered
+ * Track click - verify token, then redirect to its signed `url`. A tampered
  * or expired token returns 404 (no redirect) to avoid open-redirect abuse.
  */
 export const trackClick = async (req: Request, res: Response): Promise<Response | void> => {
@@ -256,7 +256,7 @@ export const trackClick = async (req: Request, res: Response): Promise<Response 
                 logger.error('[TRACKING] Failed to record click', err instanceof Error ? err : new Error(String(err)));
             });
 
-        // Token payload.u is trusted because HMAC verified — safe to redirect.
+        // Token payload.u is trusted because HMAC verified - safe to redirect.
         res.redirect(302, url);
     } catch (error: unknown) {
         logger.error('[TRACKING] Failed to track click', error instanceof Error ? error : new Error(String(error)));
@@ -267,7 +267,7 @@ export const trackClick = async (req: Request, res: Response): Promise<Response 
 /**
  * GET /t/u/:token
  * Show unsubscribe confirmation page. Invalid tokens get a generic "link
- * expired" message — same response as a legitimately expired lookup, so a
+ * expired" message - same response as a legitimately expired lookup, so a
  * probe cannot distinguish "token forged" from "token too old".
  */
 export const unsubscribe = async (req: Request, res: Response): Promise<Response> => {
@@ -312,7 +312,7 @@ export const unsubscribe = async (req: Request, res: Response): Promise<Response
 
 /**
  * POST /t/u/:token
- * Process unsubscribe — mark lead as unsubscribed only after token verification.
+ * Process unsubscribe - mark lead as unsubscribed only after token verification.
  */
 export const processUnsubscribe = async (req: Request, res: Response): Promise<Response> => {
     try {
@@ -338,18 +338,18 @@ export const processUnsubscribe = async (req: Request, res: Response): Promise<R
         const recipientEmail = campaignLead.email.toLowerCase();
         const now = new Date();
 
-        // Org-wide suppression — required by CAN-SPAM § 5(a)(4)(A), CASL § 11(3),
+        // Org-wide suppression - required by CAN-SPAM § 5(a)(4)(A), CASL § 11(3),
         // and GDPR Art. 21. Once a recipient unsubscribes, we must NEVER send to
         // them again from any campaign in this org. Three layers in one transaction:
         //
-        //   1. Lead row (org-scoped identity) — sets status + timestamp + reason.
+        //   1. Lead row (org-scoped identity) - sets status + timestamp + reason.
         //      Future enrollments check this and refuse to add the lead.
-        //   2. CampaignLead rows for ALL of this lead's campaigns in the org — every
+        //   2. CampaignLead rows for ALL of this lead's campaigns in the org - every
         //      active membership becomes 'unsubscribed' so the dispatcher won't send.
         //   3. Increment unsubscribed_count on the campaign that surfaced the link.
         try {
             await prisma.$transaction([
-                // Layer 1 — org-wide Lead suppression (idempotent: updateMany handles
+                // Layer 1 - org-wide Lead suppression (idempotent: updateMany handles
                 // the case where the Lead row doesn't exist for sequencer-only contacts)
                 prisma.lead.updateMany({
                     where: { organization_id: orgId, email: recipientEmail },
@@ -359,7 +359,7 @@ export const processUnsubscribe = async (req: Request, res: Response): Promise<R
                         unsubscribed_reason: 'recipient_request',
                     },
                 }),
-                // Layer 2 — every CampaignLead for this email across the org
+                // Layer 2 - every CampaignLead for this email across the org
                 prisma.campaignLead.updateMany({
                     where: {
                         email: recipientEmail,
@@ -368,7 +368,7 @@ export const processUnsubscribe = async (req: Request, res: Response): Promise<R
                     },
                     data: { status: 'unsubscribed', unsubscribed_at: now },
                 }),
-                // Layer 3 — analytics counter on the originating campaign
+                // Layer 3 - analytics counter on the originating campaign
                 prisma.campaign.update({
                     where: { id: campaignLead.campaign_id },
                     data: { unsubscribed_count: { increment: 1 } },
@@ -380,7 +380,7 @@ export const processUnsubscribe = async (req: Request, res: Response): Promise<R
                 txErr instanceof Error ? txErr : new Error(String(txErr)),
                 { orgId, recipientEmail },
             );
-            // Fall through — even if the cascade fails, return success to the
+            // Fall through - even if the cascade fails, return success to the
             // recipient (we'll have to remediate via a sweep job rather than
             // tell the recipient their click didn't work).
         }

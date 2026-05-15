@@ -5,17 +5,17 @@
  * one-time import flow to fetch campaigns, sequences, leads, mailboxes and
  * warmup stats from a customer's existing Smartlead workspace.
  *
- * Endpoint inventory and field names verified against api.smartlead.ai —
+ * Endpoint inventory and field names verified against api.smartlead.ai -
  * see docs/middleware-removal/17-smartlead-import-api-reference.md for the
  * full mapping and known gaps. Every type below mirrors a documented field;
  * we never invent shapes.
  *
  * Rate limits (per docs/guides/rate-limits):
- *   Standard tier — 60 req/min, 1000 req/hour, 10 req/sec burst
+ *   Standard tier - 60 req/min, 1000 req/hour, 10 req/sec burst
  *   We respect Retry-After unconditionally and exponentially back off on
  *   5xx (1s, 2s, 4s, 8s, 16s with ±20% jitter).
  *
- * The plaintext API key never leaves this module's call sites — callers pass
+ * The plaintext API key never leaves this module's call sites - callers pass
  * it in via `apiKey` and we drop it into the query string for each request.
  */
 
@@ -255,7 +255,7 @@ async function request<T>(args: RequestArgs): Promise<T> {
 
         const text = await response.text().catch(() => '');
 
-        // 429 — honor Retry-After.
+        // 429 - honor Retry-After.
         if (response.status === 429) {
             if (attempt >= MAX_RETRIES) {
                 throw new SmartleadHttpError(429, args.path, text);
@@ -263,13 +263,13 @@ async function request<T>(args: RequestArgs): Promise<T> {
             const retryAfterHeader = response.headers.get('Retry-After');
             const retryAfterSec = retryAfterHeader ? parseInt(retryAfterHeader, 10) : 30;
             const waitMs = Number.isFinite(retryAfterSec) ? retryAfterSec * 1000 : 30000;
-            logger.warn(`[SMARTLEAD] 429 on ${redactKey(url)} — waiting ${waitMs}ms`);
+            logger.warn(`[SMARTLEAD] 429 on ${redactKey(url)} - waiting ${waitMs}ms`);
             await sleep(waitMs);
             attempt++;
             continue;
         }
 
-        // 5xx — exponential backoff.
+        // 5xx - exponential backoff.
         if (response.status >= 500 && response.status < 600) {
             if (attempt >= MAX_RETRIES) {
                 throw new SmartleadHttpError(response.status, args.path, text);
@@ -278,7 +278,7 @@ async function request<T>(args: RequestArgs): Promise<T> {
             continue;
         }
 
-        // 4xx terminal — surface to caller.
+        // 4xx terminal - surface to caller.
         throw new SmartleadHttpError(response.status, args.path, text);
     }
 }
@@ -315,7 +315,7 @@ export async function fetchAllPages<T>(
 
 /**
  * Validate an API key with a single cheap call. Returns true on 200, false on
- * 401. Any other failure throws — we want the wizard to distinguish "bad key"
+ * 401. Any other failure throws - we want the wizard to distinguish "bad key"
  * from "Smartlead is down."
  */
 export async function validateKey(apiKey: string): Promise<boolean> {
@@ -332,10 +332,10 @@ export async function validateKey(apiKey: string): Promise<boolean> {
     }
 }
 
-/** GET /campaigns/ — returns ALL pages of the campaign list. */
+/** GET /campaigns/ - returns ALL pages of the campaign list. */
 export async function listCampaigns(apiKey: string): Promise<SmartleadCampaign[]> {
     // The list endpoint returns a direct array, not a wrapped object, and the
-    // docs don't formally state pagination params for it — but in practice it
+    // docs don't formally state pagination params for it - but in practice it
     // accepts offset/limit. We still drain in case of large workspaces.
     return fetchAllPages<SmartleadCampaign>(async (offset, limit) => {
         const data = await request<SmartleadCampaign[]>({
@@ -347,7 +347,7 @@ export async function listCampaigns(apiKey: string): Promise<SmartleadCampaign[]
     });
 }
 
-/** GET /campaigns/{id} — full detail including totals. */
+/** GET /campaigns/{id} - full detail including totals. */
 export async function getCampaign(apiKey: string, campaignId: number): Promise<SmartleadCampaignDetail> {
     const res = await request<{ success: boolean; data: SmartleadCampaignDetail }>({
         path: `/campaigns/${campaignId}`,
@@ -356,7 +356,7 @@ export async function getCampaign(apiKey: string, campaignId: number): Promise<S
     return res.data;
 }
 
-/** GET /campaigns/{id}/sequences — sequence steps + A/B variants. */
+/** GET /campaigns/{id}/sequences - sequence steps + A/B variants. */
 export async function getCampaignSequences(
     apiKey: string,
     campaignId: number,
@@ -368,7 +368,7 @@ export async function getCampaignSequences(
     return res.data || [];
 }
 
-/** GET /campaigns/{id}/email-accounts — mailbox pool for a campaign. */
+/** GET /campaigns/{id}/email-accounts - mailbox pool for a campaign. */
 export async function getCampaignMailboxes(
     apiKey: string,
     campaignId: number,
@@ -380,7 +380,7 @@ export async function getCampaignMailboxes(
     return Array.isArray(data) ? data : (data?.data || []);
 }
 
-/** GET /campaigns/{id}/leads — drain all pages. */
+/** GET /campaigns/{id}/leads - drain all pages. */
 export async function listCampaignLeads(
     apiKey: string,
     campaignId: number,
@@ -396,7 +396,7 @@ export async function listCampaignLeads(
     });
 }
 
-/** GET /campaigns/{id}/statistics — aggregate counters (used for import_baseline). */
+/** GET /campaigns/{id}/statistics - aggregate counters (used for import_baseline). */
 export async function getCampaignStatistics(
     apiKey: string,
     campaignId: number,
@@ -409,7 +409,7 @@ export async function getCampaignStatistics(
     return res.data;
 }
 
-/** GET /email-accounts/ — drain all pages of the org-wide mailbox list. */
+/** GET /email-accounts/ - drain all pages of the org-wide mailbox list. */
 export async function listEmailAccounts(apiKey: string): Promise<SmartleadEmailAccount[]> {
     return fetchAllPages<SmartleadEmailAccount>(async (offset, limit) => {
         const data = await request<SmartleadEmailAccount[] | { data: SmartleadEmailAccount[] }>({
@@ -421,7 +421,7 @@ export async function listEmailAccounts(apiKey: string): Promise<SmartleadEmailA
     });
 }
 
-/** GET /email-accounts/{id}/warmup-stats — last 7 days only per docs. */
+/** GET /email-accounts/{id}/warmup-stats - last 7 days only per docs. */
 export async function getWarmupStats(
     apiKey: string,
     emailAccountId: number,
@@ -432,7 +432,7 @@ export async function getWarmupStats(
             apiKey,
         });
     } catch (err) {
-        // Not every account has warmup enabled — surface as null instead of error.
+        // Not every account has warmup enabled - surface as null instead of error.
         if (err instanceof SmartleadHttpError && (err.status === 404 || err.status === 422)) {
             return null;
         }
@@ -443,7 +443,7 @@ export async function getWarmupStats(
 /**
  * Pause a Smartlead campaign. Doc Gap C: docs page says POST, llms.txt index
  * says PATCH. Try POST first, fall back to PATCH on 404/405. Both forms accept
- * `{ status: 'PAUSED' }`. STOPPED is irreversible — we never use it here.
+ * `{ status: 'PAUSED' }`. STOPPED is irreversible - we never use it here.
  */
 export async function pauseCampaign(apiKey: string, campaignId: number): Promise<void> {
     const path = `/campaigns/${campaignId}/status`;

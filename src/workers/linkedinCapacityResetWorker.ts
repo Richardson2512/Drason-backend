@@ -8,10 +8,10 @@
  * Without a periodic reset they grow unbounded and the capacity-check
  * service would never let any campaign dispatch. This worker:
  *   - Resets *_today counters daily at the account's timezone midnight
- *     (approximated to UTC midnight for v1 — per-account TZ resets land
+ *     (approximated to UTC midnight for v1 - per-account TZ resets land
  *     in Phase 5 with the CampaignSender working-hours table).
  *   - Resets invites_this_week on Monday UTC midnight (LinkedIn's
- *     weekly cap rolls over on a 7-day window — close enough; the
+ *     weekly cap rolls over on a 7-day window - close enough; the
  *     enforcement layer also tracks last_status_at for anomalies).
  *
  * Idempotent: only updates rows whose daily_reset_at / weekly_reset_at
@@ -21,7 +21,7 @@
 import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 
-const RUN_INTERVAL_MS = 30 * 60 * 1000; // 30min — granular enough to catch boundaries within a half-hour
+const RUN_INTERVAL_MS = 30 * 60 * 1000; // 30min - granular enough to catch boundaries within a half-hour
 const FIRST_RUN_DELAY_MS = 2 * 60 * 1000;
 
 let scheduled: NodeJS.Timeout | null = null;
@@ -41,7 +41,7 @@ function todayStartUtc(): Date {
 }
 
 /**
- * Most recent Monday UTC midnight — weekly cap rolls over here.
+ * Most recent Monday UTC midnight - weekly cap rolls over here.
  */
 function weekStartUtc(): Date {
     const t = todayStartUtc();

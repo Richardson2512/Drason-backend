@@ -1,23 +1,23 @@
 /**
- * Cross-channel suppression — when a lead replies on one channel (email or
+ * Cross-channel suppression - when a lead replies on one channel (email or
  * LinkedIn), this decides whether the OTHER channel's active enrollments
  * for the same lead should auto-pause.
  *
  * Four configurable modes (per Organization.cross_channel_suppression_mode):
  *
- *   OFF         — never pause cross-channel; each channel handles its own
+ *   OFF         - never pause cross-channel; each channel handles its own
  *                 reply. Useful when teams explicitly nurture multi-channel.
  *
- *   HARD        — any reply on any channel pauses every active enrollment
+ *   HARD        - any reply on any channel pauses every active enrollment
  *                 for that lead. Most conservative, prevents multi-channel
  *                 pestering after any signal of engagement.
  *
- *   CLASSIFIED  — only pause cross-channel when the reply is classified as
+ *   CLASSIFIED  - only pause cross-channel when the reply is classified as
  *                 'positive' | 'qualified' | 'hard_no' | 'angry'. Generic,
  *                 auto-replies, soft_no, objection, referral stay
  *                 channel-scoped. Default.
  *
- *   ASYMMETRIC  — email replies ALWAYS pause LinkedIn (formal reply on
+ *   ASYMMETRIC  - email replies ALWAYS pause LinkedIn (formal reply on
  *                 email = explicit signal). LinkedIn replies only pause
  *                 email when they classify as CLASSIFIED-worthy (positive,
  *                 qualified, hard_no, angry). Reflects how teams typically
@@ -42,7 +42,7 @@ const INTENT_CLASSES = new Set(['positive', 'qualified', 'hard_no', 'angry']);
 
 export interface SuppressionInput {
     organizationId: string;
-    /** lead_id from the Lead table — the canonical cross-channel identity.
+    /** lead_id from the Lead table - the canonical cross-channel identity.
      *  Used to resolve the lead's email when one isn't provided directly. */
     leadId: string;
     /** Optional contact email. When omitted we look it up from `leadId`.
@@ -88,7 +88,7 @@ export async function setSuppressionMode(organizationId: string, mode: Suppressi
 
 /**
  * Decide whether to pause the OPPOSITE channel given the configured mode +
- * the reply context. Pure function — no I/O, easy to unit-test.
+ * the reply context. Pure function - no I/O, easy to unit-test.
  */
 export function shouldPauseOtherChannel(
     mode: SuppressionMode,
@@ -100,7 +100,7 @@ export function shouldPauseOtherChannel(
             return { pause: false, reason: 'mode is OFF' };
 
         case 'HARD':
-            return { pause: true, reason: 'mode is HARD — any reply pauses both channels' };
+            return { pause: true, reason: 'mode is HARD - any reply pauses both channels' };
 
         case 'CLASSIFIED': {
             if (!replyClass) return { pause: false, reason: 'no reply class provided to CLASSIFIED mode' };
@@ -115,13 +115,13 @@ export function shouldPauseOtherChannel(
             if (!replyClass) return { pause: false, reason: 'ASYMMETRIC LinkedIn→email needs a reply class' };
             const norm = replyClass.toLowerCase();
             if (INTENT_CLASSES.has(norm)) return { pause: true, reason: `LinkedIn class=${norm} pauses email under ASYMMETRIC` };
-            return { pause: false, reason: `LinkedIn class=${norm} not intent-bearing — email stays running under ASYMMETRIC` };
+            return { pause: false, reason: `LinkedIn class=${norm} not intent-bearing - email stays running under ASYMMETRIC` };
         }
     }
 }
 
 /**
- * Main entry point — called by reply handlers after they resolve a
+ * Main entry point - called by reply handlers after they resolve a
  * `lead_id`. Reads the configured mode, evaluates the policy, and (if the
  * policy says pause) pauses every active CampaignLead enrollment for the
  * lead OTHER than the one in the source campaign.
@@ -131,8 +131,8 @@ export function shouldPauseOtherChannel(
  * leads UI.
  *
  * Note: this fans across BOTH email-only and linkedin-only campaigns.
- * CampaignLead is channel-agnostic — what determines the channel is the
- * SequenceStep.step_type inside each campaign — so pausing the lead's
+ * CampaignLead is channel-agnostic - what determines the channel is the
+ * SequenceStep.step_type inside each campaign - so pausing the lead's
  * CampaignLead row in a LinkedIn campaign correctly stops the LinkedIn
  * dispatcher and vice versa.
  */

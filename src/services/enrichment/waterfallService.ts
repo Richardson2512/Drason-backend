@@ -1,5 +1,5 @@
 /**
- * Enrichment waterfall service — runs the org's configured providers in
+ * Enrichment waterfall service - runs the org's configured providers in
  * order_index sequence until every required field is filled, or the list
  * is exhausted. First-non-null wins per field.
  *
@@ -22,7 +22,7 @@ import type {
     ProviderCredentials,
 } from './providerInterface';
 
-// Provider registry — keyed by the same code used in EnrichmentProvider.provider.
+// Provider registry - keyed by the same code used in EnrichmentProvider.provider.
 const PROVIDERS: Record<ProviderCode, ProviderImpl> = {
     APOLLO: apolloProvider,
     CLAY: clayProvider,
@@ -74,12 +74,12 @@ export async function runWaterfall(
     for (const cfg of configured) {
         const impl = PROVIDERS[cfg.provider as ProviderCode];
         if (!impl) {
-            logger.warn('[ENRICHMENT] Unknown provider — skipping', { provider: cfg.provider });
+            logger.warn('[ENRICHMENT] Unknown provider - skipping', { provider: cfg.provider });
             continue;
         }
 
         // BYOK: pull the customer-supplied credentials out of the
-        // EnrichmentProvider.config JSON. Shape is per-provider — Apollo
+        // EnrichmentProvider.config JSON. Shape is per-provider - Apollo
         // expects { api_key }, Clay expects { webhook_url, api_key }, etc.
         // We never read process.env here; the platform doesn't ship
         // shared keys for these vendors. Each provider's isConfigured()
@@ -120,7 +120,7 @@ export async function runWaterfall(
             }
         }
 
-        // Strict BYOK — no cost tracking. The vendor's own dashboard is
+        // Strict BYOK - no cost tracking. The vendor's own dashboard is
         // the source of truth for spend; we only audit what the
         // waterfall did (HIT / EMPTY / RATE_LIMITED / ERROR).
         await prisma.enrichmentAttempt.create({
@@ -155,7 +155,7 @@ export async function runWaterfall(
  * Returns `{}` (which every provider treats as "not configured") when
  * config is null / not an object / has neither shape.
  *
- * Encrypting these values at rest is a follow-up — for now we trust the
+ * Encrypting these values at rest is a follow-up - for now we trust the
  * Postgres row-level encryption + the org-scoped foreign key. When the
  * secrets-store integration lands, this helper switches to dereferencing
  * EnrichmentProvider.credentials_ref instead of reading config.

@@ -4,7 +4,7 @@
  *
  * For each registered email kind, calls the template render function
  * with realistic sample data, then dispatches via the canonical
- * dispatcher to demo@superkabe.com (forced recipient — bypasses
+ * dispatcher to demo@superkabe.com (forced recipient - bypasses
  * org-admin resolution to avoid surprising real org admins).
  *
  * Run: node scripts/test-all-emails.js
@@ -290,7 +290,7 @@ const tests = [
         }),
     },
 
-    // ─── Integrations (2 — beyond OAuth-disconnect)
+    // ─── Integrations (2 - beyond OAuth-disconnect)
     {
         name: '21 crm_sync_failed',
         category: 'integration',
@@ -357,7 +357,7 @@ const tests = [
             sendsDeltaPct: 0.12,
             topCampaigns: [
                 { name: 'Q2 SaaS Founders Outbound', replies: 47, sent: 612 },
-                { name: 'VP Marketing — Mid-Market', replies: 24, sent: 380 },
+                { name: 'VP Marketing - Mid-Market', replies: 24, sent: 380 },
                 { name: 'Enterprise Champions', replies: 12, sent: 256 },
             ],
             operationalSummary: { mailboxesPaused: 1, mailboxesRecovered: 1, domainsPaused: 0 },

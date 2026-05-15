@@ -1,10 +1,10 @@
 /**
- * Surfe enrichment provider — strict BYOK (customer supplies api_key).
+ * Surfe enrichment provider - strict BYOK (customer supplies api_key).
  *
  * POSTs to Surfe's /v2/people/enrichments endpoint with the lead's
  * LinkedIn URL OR (full name + company). Returns email, phone, title,
- * location, company metadata, and — critically for the `find_linkedin_url`
- * sequencer step — the canonical LinkedIn profile URL even when the
+ * location, company metadata, and - critically for the `find_linkedin_url`
+ * sequencer step - the canonical LinkedIn profile URL even when the
  * caller didn't pass one in.
  *
  * Surfe API: https://developers.surfe.com/api-reference/
@@ -13,7 +13,7 @@
  *   Body: { people: [{ linkedinUrl?, firstName, lastName, companyName }] }
  *
  * Strict BYOK: customer pays Surfe directly out of their own Surfe
- * account. The platform never reads SURFE_API_KEY from process.env —
+ * account. The platform never reads SURFE_API_KEY from process.env -
  * isConfigured() returns false (and the waterfall skips the provider)
  * whenever the customer hasn't entered an api_key on the Enrichment
  * settings page.

@@ -41,7 +41,7 @@ export const checkWarmupProgress = async (orgId?: string): Promise<{
     try {
         // ── MAILBOX HEALING: All phases ──────────────────────────────────
 
-        // Phase 1: QUARANTINE mailboxes — check DNS/blacklist for promotion to RESTRICTED_SEND
+        // Phase 1: QUARANTINE mailboxes - check DNS/blacklist for promotion to RESTRICTED_SEND
         const quarantinedMailboxes = await prisma.mailbox.findMany({
             where: {
                 recovery_phase: RecoveryPhase.QUARANTINE,
@@ -60,7 +60,7 @@ export const checkWarmupProgress = async (orgId?: string): Promise<{
             }
         });
 
-        // Phase 2+3: RESTRICTED_SEND and WARM_RECOVERY — check send counts for graduation.
+        // Phase 2+3: RESTRICTED_SEND and WARM_RECOVERY - check send counts for graduation.
         // Native sending: graduation criteria are computed from SendEvent/BounceEvent
         // counts directly (warmupService.checkGraduationCriteria), no external account
         // ID lookup needed.
@@ -300,7 +300,7 @@ async function checkDomainGraduation(domain: {
         const result = await healingService.transitionPhase(
             'domain', domain.id, domain.organization_id,
             RecoveryPhase.QUARANTINE, RecoveryPhase.RESTRICTED_SEND,
-            'DNS checks passed — domain entering restricted send mode',
+            'DNS checks passed - domain entering restricted send mode',
             domain.resilience_score || 50
         );
         return result.transitioned ? { fromPhase: 'quarantine', toPhase: 'restricted_send', reason: result.reason } : null;
@@ -326,7 +326,7 @@ async function checkDomainGraduation(domain: {
         const result = await healingService.transitionPhase(
             'domain', domain.id, domain.organization_id,
             RecoveryPhase.RESTRICTED_SEND, RecoveryPhase.WARM_RECOVERY,
-            `All ${childMailboxes.length} child mailboxes past restricted phase — domain entering warm recovery`,
+            `All ${childMailboxes.length} child mailboxes past restricted phase - domain entering warm recovery`,
             domain.resilience_score || 50
         );
         return result.transitioned ? { fromPhase: 'restricted_send', toPhase: 'warm_recovery', reason: result.reason } : null;
@@ -357,7 +357,7 @@ async function checkDomainGraduation(domain: {
         const result = await healingService.transitionPhase(
             'domain', domain.id, domain.organization_id,
             RecoveryPhase.WARM_RECOVERY, RecoveryPhase.HEALTHY,
-            `All child mailboxes healthy for 3+ days — domain fully recovered`,
+            `All child mailboxes healthy for 3+ days - domain fully recovered`,
             domain.resilience_score || 50
         );
         return result.transitioned ? { fromPhase: 'warm_recovery', toPhase: 'healthy', reason: result.reason } : null;
@@ -447,7 +447,7 @@ export const getWarmupStatusSummary = async (
     for (const mailbox of recoveringMailboxes) {
         try {
             if (mailbox.recovery_phase === RecoveryPhase.QUARANTINE) {
-                // Quarantine graduation depends on DNS, not send count — show as "waiting for DNS"
+                // Quarantine graduation depends on DNS, not send count - show as "waiting for DNS"
                 const daysInPhase = mailbox.phase_entered_at
                     ? Math.floor((Date.now() - mailbox.phase_entered_at.getTime()) / (1000 * 60 * 60 * 24))
                     : 0;

@@ -7,9 +7,9 @@
  * acknowledge a compromise.
  *
  * Categories:
- *   ERROR   — blocking; the user cannot launch until fixed
- *   WARN    — non-blocking; the user can launch but should know
- *   INFO    — recommendation (e.g. "this account has spare capacity")
+ *   ERROR   - blocking; the user cannot launch until fixed
+ *   WARN    - non-blocking; the user can launch but should know
+ *   INFO    - recommendation (e.g. "this account has spare capacity")
  *
  * Rules implemented:
  *   1. Sender pool capacity vs. lead count (weekly invite cap × pool size)
@@ -117,7 +117,7 @@ export async function runPreLaunchValidation(input: ValidatorInput): Promise<Pre
     } else if (hasCrStep && invitesNeeded > weeklyCapTotal * 0.8) {
         warnings.push({
             severity: 'WARN', code: 'TIGHT_CAPACITY',
-            message: `Campaign uses ${Math.round(invitesNeeded / weeklyCapTotal * 100)}% of weekly invite capacity — slowdown risk in week 1.`,
+            message: `Campaign uses ${Math.round(invitesNeeded / weeklyCapTotal * 100)}% of weekly invite capacity - slowdown risk in week 1.`,
         });
     }
 
@@ -134,7 +134,7 @@ export async function runPreLaunchValidation(input: ValidatorInput): Promise<Pre
         if (activeCampaignCount >= 2) {
             warnings.push({
                 severity: 'WARN', code: 'TOO_MANY_CAMPAIGNS_PER_ACCOUNT',
-                message: `Account "${cs.linkedin_account.display_name}" is already in ${activeCampaignCount} active campaigns. We recommend max 2 — daily caps get divided across campaigns, slowing all of them.`,
+                message: `Account "${cs.linkedin_account.display_name}" is already in ${activeCampaignCount} active campaigns. We recommend max 2 - daily caps get divided across campaigns, slowing all of them.`,
                 details: { account_id: cs.linkedin_account_id, active_count: activeCampaignCount },
             });
         }
@@ -192,7 +192,7 @@ export async function runPreLaunchValidation(input: ValidatorInput): Promise<Pre
         if (buckets.no_linkedin_profile > 0) {
             warnings.push({
                 severity: 'WARN', code: 'LEADS_MISSING_LINKEDIN',
-                message: `${buckets.no_linkedin_profile} of ${buckets.total} leads have no LinkedIn profile on file — their LinkedIn steps will be skipped (email steps continue).`,
+                message: `${buckets.no_linkedin_profile} of ${buckets.total} leads have no LinkedIn profile on file - their LinkedIn steps will be skipped (email steps continue).`,
                 details: { count: buckets.no_linkedin_profile },
             });
         }
@@ -217,7 +217,7 @@ export async function runPreLaunchValidation(input: ValidatorInput): Promise<Pre
         if (dayGap < 7) {
             warnings.push({
                 severity: 'WARN', code: 'CR_FOLLOWUP_TOO_SOON',
-                message: `Step ${next.step_number} fires ${dayGap}d after the connection request. We recommend 7-12 days — leads need time to accept; sub-7d windows move accepters out of the follow-up.`,
+                message: `Step ${next.step_number} fires ${dayGap}d after the connection request. We recommend 7-12 days - leads need time to accept; sub-7d windows move accepters out of the follow-up.`,
                 details: { step_number: next.step_number, day_gap: dayGap },
             });
         }
@@ -225,13 +225,13 @@ export async function runPreLaunchValidation(input: ValidatorInput): Promise<Pre
 
     // ── 4b. InMail step + sender tier discipline ─────────────────────
     // LinkedIn's InMail feature is tier-gated:
-    //   CLASSIC    — no InMail support at all
-    //   PREMIUM    — 5/month (Career) or 15/month (Business)
-    //   SALES_NAV  — ~50/month
-    //   RECRUITER  — 30+ (Lite) / 150+ (full)
+    //   CLASSIC    - no InMail support at all
+    //   PREMIUM    - 5/month (Career) or 15/month (Business)
+    //   SALES_NAV  - ~50/month
+    //   RECRUITER  - 30+ (Lite) / 150+ (full)
     //
     // If the campaign has an InMail step, every CLASSIC sender in the pool
-    // will skip 100% of leads on that step — block launch and tell the
+    // will skip 100% of leads on that step - block launch and tell the
     // operator which accounts need upgrading or removing. Premium senders
     // mixed with Sales Nav / Recruiter is a WARN, not an error: the
     // dispatcher will route through the higher-tier accounts first but
@@ -244,7 +244,7 @@ export async function runPreLaunchValidation(input: ValidatorInput): Promise<Pre
         if (classicSenders.length > 0) {
             errors.push({
                 severity: 'ERROR', code: 'INMAIL_REQUIRES_PAID_TIER',
-                message: `Sequence has an InMail step but ${classicSenders.length} of ${senders.length} senders are Classic (free) accounts — Classic accounts can't send InMail. Upgrade these accounts to Premium, Sales Navigator, or Recruiter, or remove them from the sender pool: ${classicSenders.map(c => `"${c.linkedin_account.display_name}"`).join(', ')}.`,
+                message: `Sequence has an InMail step but ${classicSenders.length} of ${senders.length} senders are Classic (free) accounts - Classic accounts can't send InMail. Upgrade these accounts to Premium, Sales Navigator, or Recruiter, or remove them from the sender pool: ${classicSenders.map(c => `"${c.linkedin_account.display_name}"`).join(', ')}.`,
                 details: { classic_sender_count: classicSenders.length, classic_sender_ids: classicSenders.map(c => c.linkedin_account_id) },
             });
         }
@@ -252,7 +252,7 @@ export async function runPreLaunchValidation(input: ValidatorInput): Promise<Pre
         if (classicSenders.length === 0 && tiers.size > 1) {
             warnings.push({
                 severity: 'WARN', code: 'INMAIL_MIXED_TIERS',
-                message: 'Sender pool mixes account tiers (Premium / Sales Navigator / Recruiter). Daily InMail caps differ per tier — Premium senders will exhaust their 5-15/month allotment far sooner than Sales Nav (~50/month) or Recruiter (150+/month). Consider isolating tiers across separate campaigns for steady throughput.',
+                message: 'Sender pool mixes account tiers (Premium / Sales Navigator / Recruiter). Daily InMail caps differ per tier - Premium senders will exhaust their 5-15/month allotment far sooner than Sales Nav (~50/month) or Recruiter (150+/month). Consider isolating tiers across separate campaigns for steady throughput.',
                 details: { tiers: Array.from(tiers) },
             });
         }

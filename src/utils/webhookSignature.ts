@@ -25,7 +25,7 @@ export function validateWebhookSignature(
 ): boolean {
     if (!secret) {
         if (process.env.NODE_ENV === 'production') {
-            logger.warn('[WEBHOOK] No webhook secret configured — rejecting in production');
+            logger.warn('[WEBHOOK] No webhook secret configured - rejecting in production');
             return false;
         }
         return true; // Allow unsigned in development

@@ -2,7 +2,7 @@
  * API Call Tracker
  *
  * Lightweight service to log every external platform API call.
- * Uses fire-and-forget DB writes — never blocks the actual API call.
+ * Uses fire-and-forget DB writes - never blocks the actual API call.
  */
 
 import { prisma } from '../prisma';
@@ -22,7 +22,7 @@ const FLUSH_INTERVAL_MS = 5000; // Batch-write every 5 seconds
 const MAX_QUEUE_SIZE = 500;
 
 /**
- * Track an API call. Non-blocking — queues for batch insert.
+ * Track an API call. Non-blocking - queues for batch insert.
  */
 export function trackApiCall(
     organizationId: string,
@@ -66,7 +66,7 @@ async function flushQueue(): Promise<void> {
     try {
         await prisma.apiCallLog.createMany({ data: batch });
     } catch (err) {
-        // Non-fatal — don't lose the batch, but don't retry forever
+        // Non-fatal - don't lose the batch, but don't retry forever
         logger.warn('[API_TRACKER] Failed to flush batch', {
             batchSize: batch.length,
             error: String(err),

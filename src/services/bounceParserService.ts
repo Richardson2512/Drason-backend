@@ -7,7 +7,7 @@
  * that handles sync SMTP bounces also handles async NDRs.
  *
  * Why this matters: when you send via SMTP and the server accepts the message,
- * you get a "250 OK" synchronously — but the actual delivery failure can arrive
+ * you get a "250 OK" synchronously - but the actual delivery failure can arrive
  * hours later as a bounce notification email to the sender. Those land in the
  * inbox and the reply worker picks them up.
  */
@@ -132,7 +132,7 @@ function isHardBounce(reason: string): boolean {
     const softKeywords = /mailbox full|quota|rate limit|try again|throttl|deferred|temporary/i;
     if (softKeywords.test(reason)) return false;
 
-    // Default to hard if we can't tell — safer to err on the side of protecting reputation
+    // Default to hard if we can't tell - safer to err on the side of protecting reputation
     return true;
 }
 
@@ -153,13 +153,13 @@ export async function tryProcessBounce(
             subject: email.subject.slice(0, 80),
             from: email.from,
         });
-        return true; // Still consume it — don't treat as a reply
+        return true; // Still consume it - don't treat as a reply
     }
 
     const reason = extractBounceReason(email);
     const hard = isHardBounce(reason);
 
-    // Match to a campaign — find the most recent SendEvent for this account × recipient
+    // Match to a campaign - find the most recent SendEvent for this account × recipient
     const recentSend = await prisma.sendEvent.findFirst({
         where: {
             organization_id: organizationId,
@@ -173,7 +173,7 @@ export async function tryProcessBounce(
     const campaignId = recentSend?.campaign_id || '';
 
     if (hard) {
-        // Full Protection pipeline — creates BounceEvent, checks thresholds, auto-pauses if needed
+        // Full Protection pipeline - creates BounceEvent, checks thresholds, auto-pauses if needed
         try {
             await monitoringService.recordBounce(
                 accountId,
@@ -192,7 +192,7 @@ export async function tryProcessBounce(
             data: { status: 'bounced', bounced_at: new Date(), next_send_at: null },
         }).catch(() => {});
     } else {
-        // Soft bounce — record but don't trigger pause pipeline
+        // Soft bounce - record but don't trigger pause pipeline
         await prisma.bounceEvent.create({
             data: {
                 organization_id: organizationId,

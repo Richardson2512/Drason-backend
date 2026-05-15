@@ -2,7 +2,7 @@
  * API Key Controller
  *
  * Manage API keys for external integrations and MCP server access.
- * Keys are hashed with SHA-256 before storage — the raw key is only shown once at creation.
+ * Keys are hashed with SHA-256 before storage - the raw key is only shown once at creation.
  */
 
 import crypto from 'crypto';
@@ -85,7 +85,7 @@ export const createApiKey = async (req: Request, res: Response): Promise<Respons
 
         logger.info(`[API_KEY] Created key "${name}" for org ${orgId}`, { keyId: apiKey.id, scopes: requestedScopes });
 
-        // Return the raw key ONCE — it cannot be retrieved after this
+        // Return the raw key ONCE - it cannot be retrieved after this
         return res.status(201).json({
             success: true,
             key: {

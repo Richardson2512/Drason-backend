@@ -18,10 +18,10 @@ import {
     validateStepConfig,
 } from '../src/services/sequencer/stepTypeRegistry';
 
-describe('stepTypeRegistry — STEP_TYPES contract', () => {
+describe('stepTypeRegistry - STEP_TYPES contract', () => {
     it('exposes every step type the wizard offers', () => {
         // Wizard's STEP_TYPE_META keys (campaigns/new/page.tsx). The
-        // registry must cover every wizard option — a wizard pick with no
+        // registry must cover every wizard option - a wizard pick with no
         // backend step type round-trips to a dispatcher error.
         const expected = [
             'email',
@@ -59,7 +59,7 @@ describe('stepTypeRegistry — STEP_TYPES contract', () => {
     });
 });
 
-describe('stepTypeRegistry — getStepType', () => {
+describe('stepTypeRegistry - getStepType', () => {
     it('returns the def for a known key', () => {
         const def = getStepType('linkedin_view_profile');
         expect(def?.label).toBe('View Profile');
@@ -70,7 +70,7 @@ describe('stepTypeRegistry — getStepType', () => {
     });
 });
 
-describe('stepTypeRegistry — isLinkedInStepType', () => {
+describe('stepTypeRegistry - isLinkedInStepType', () => {
     it('returns true only for channel=linkedin', () => {
         expect(isLinkedInStepType('linkedin_message')).toBe(true);
         expect(isLinkedInStepType('linkedin_view_profile')).toBe(true);
@@ -85,7 +85,7 @@ describe('stepTypeRegistry — isLinkedInStepType', () => {
     });
 });
 
-describe('stepTypeRegistry — isLinkedInDispatcherStep', () => {
+describe('stepTypeRegistry - isLinkedInDispatcherStep', () => {
     // This is the bug-prevention test for the filter/switch desync that
     // originally let find_email silently skip every dispatch tick.
     it('claims every linkedin_* step', () => {
@@ -97,7 +97,7 @@ describe('stepTypeRegistry — isLinkedInDispatcherStep', () => {
         expect(isLinkedInDispatcherStep('linkedin_inmail')).toBe(true);
     });
 
-    it('claims senderless utility steps (find_*) — these were the silently-broken ones', () => {
+    it('claims senderless utility steps (find_*) - these were the silently-broken ones', () => {
         expect(isLinkedInDispatcherStep('find_email')).toBe(true);
         expect(isLinkedInDispatcherStep('find_linkedin_url')).toBe(true);
     });
@@ -110,13 +110,13 @@ describe('stepTypeRegistry — isLinkedInDispatcherStep', () => {
         expect(isLinkedInDispatcherStep('end')).toBe(false);
     });
 
-    it('disclaims unknown step types (forward-compat — new step gets explicit dispatcher wiring)', () => {
+    it('disclaims unknown step types (forward-compat - new step gets explicit dispatcher wiring)', () => {
         expect(isLinkedInDispatcherStep('linkedin_future_step')).toBe(false);
         expect(isLinkedInDispatcherStep('not_real')).toBe(false);
     });
 });
 
-describe('stepTypeRegistry — validateStepConfig', () => {
+describe('stepTypeRegistry - validateStepConfig', () => {
     it('rejects unknown step_type', () => {
         const issues = validateStepConfig('made_up', {});
         expect(issues.length).toBeGreaterThan(0);

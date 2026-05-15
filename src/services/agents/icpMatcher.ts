@@ -1,5 +1,5 @@
 /**
- * ICP Matcher — deterministic rule engine (v1).
+ * ICP Matcher - deterministic rule engine (v1).
  *
  * Evaluates a hydrated profile snapshot against every enabled IcpProfile
  * in the organization. Returns the matching ICP(s) + a normalized score.
@@ -20,7 +20,7 @@ import { prisma } from '../../prisma';
 import { runAgent, AGENTS } from './agentRegistry';
 
 export interface ProfileSnapshot {
-    /** LinkedIn member URN or DB UUID — used for the AgentRun trigger_ref. */
+    /** LinkedIn member URN or DB UUID - used for the AgentRun trigger_ref. */
     profile_id: string;
     title?: string | null;
     headline?: string | null;
@@ -31,7 +31,7 @@ export interface ProfileSnapshot {
      *  collapses this into the same enum buckets as IcpProfile.company_sizes. */
     company_size_raw?: string | null;
     location?: string | null;
-    /** Geographic context — country or region inferred from location. */
+    /** Geographic context - country or region inferred from location. */
     country?: string | null;
 }
 
@@ -68,7 +68,7 @@ function caseInsensitiveContainsAny(haystack: string | null | undefined, needles
 
 /**
  * Match a single profile against an organization's ICP profiles.
- * Pure function — does NOT write the AgentRun audit row directly.
+ * Pure function - does NOT write the AgentRun audit row directly.
  * Callers wrap with matchProfileWithAudit() when org-level audit is wanted.
  */
 export async function matchProfile(organizationId: string, profile: ProfileSnapshot): Promise<IcpMatchResult> {
@@ -121,7 +121,7 @@ export async function matchProfile(organizationId: string, profile: ProfileSnaps
 
         // A profile is considered a match when it hits EVERY non-empty
         // filter category. Partial hits get scored but don't go into
-        // matched_icp_ids — the supervisor uses top_score for SUGGEST
+        // matched_icp_ids - the supervisor uses top_score for SUGGEST
         // mode hand-off and matched_icp_ids for ENFORCE mode actions.
         if (total > 0 && hit === total) {
             matched.push({ id: icp.id, score: 1.0, reasons });
@@ -146,10 +146,10 @@ export async function matchProfile(organizationId: string, profile: ProfileSnaps
 }
 
 /**
- * Convenience wrapper — writes the AgentRun audit row alongside the
+ * Convenience wrapper - writes the AgentRun audit row alongside the
  * match, plus a per-ICP `AgentRunIcpMatch` row for every ICP the
  * profile scored against (top_score in the AgentRun.decision JSON only
- * tells you the highest-scoring match — the SUGGEST review UI needs
+ * tells you the highest-scoring match - the SUGGEST review UI needs
  * the full breakdown to render "matched ICP A 100%, ICP C 75%").
  */
 export async function matchProfileWithAudit(
@@ -173,7 +173,7 @@ export async function matchProfileWithAudit(
     );
 
     // Write the per-ICP audit rows. We only record the matches that
-    // actually scored above zero — zero-score rows would explode the
+    // actually scored above zero - zero-score rows would explode the
     // table at scale (every profile × every ICP) without adding signal.
     const detailed = decision._detailed_matches ?? [];
     if (detailed.length > 0 && runId) {
@@ -188,7 +188,7 @@ export async function matchProfileWithAudit(
                 skipDuplicates: true,
             });
         } catch (err) {
-            // Best-effort — the AgentRun row + decision JSON still
+            // Best-effort - the AgentRun row + decision JSON still
             // carry the top match data. Failure here is an audit gap,
             // not a correctness issue.
             // eslint-disable-next-line no-console
@@ -213,8 +213,8 @@ async function matchProfileDetailed(
 ): Promise<IcpMatchResult & { _detailed_matches: Array<{ id: string; score: number; reasons: string[] }> }> {
     const result = await matchProfile(organizationId, profile);
     // matchProfile() drops the per-ICP breakdown. Re-run the inner
-    // loop logic to recover it — cheap because we already have the
-    // ICP list in memory (well, we re-fetch — see TODO). This is an
+    // loop logic to recover it - cheap because we already have the
+    // ICP list in memory (well, we re-fetch - see TODO). This is an
     // O(N_icps) recomputation, negligible at typical N=1-10 ICPs.
     const icps = await prisma.icpProfile.findMany({
         where: { organization_id: organizationId, enabled: true },

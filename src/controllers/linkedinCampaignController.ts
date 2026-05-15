@@ -1,12 +1,12 @@
 /**
- * LinkedIn campaign controller — pre-launch validation + sender management.
+ * LinkedIn campaign controller - pre-launch validation + sender management.
  *
- *   POST /api/linkedin/campaigns/:id/validate    — run the validator
- *   POST /api/linkedin/campaigns/:id/senders     — attach a sender pool
- *   GET  /api/linkedin/campaigns/:id/senders     — list senders for campaign
+ *   POST /api/linkedin/campaigns/:id/validate    - run the validator
+ *   POST /api/linkedin/campaigns/:id/senders     - attach a sender pool
+ *   GET  /api/linkedin/campaigns/:id/senders     - list senders for campaign
  *   DELETE /api/linkedin/campaigns/:id/senders/:senderId
  *
- * Campaign CRUD itself lives in the existing sequencer routes — these
+ * Campaign CRUD itself lives in the existing sequencer routes - these
  * endpoints add the LinkedIn-specific surfaces.
  */
 
@@ -59,7 +59,7 @@ export const listStepTypes = async (_req: Request, res: Response): Promise<Respo
 // POST /api/linkedin/campaigns
 //
 // Atomic LinkedIn-only campaign create:
-//   1. Validate body — name, ≥1 sender, ≥1 step, all step_types in the
+//   1. Validate body - name, ≥1 sender, ≥1 step, all step_types in the
 //      LinkedIn vocabulary
 //   2. Verify every sender_id belongs to this org
 //   3. Create Campaign (status='draft' so the dispatcher won't touch it
@@ -117,7 +117,7 @@ export const create = async (req: Request, res: Response): Promise<Response> => 
         }
 
         // Reject any non-LinkedIn step types up-front. Super LinkedIn is
-        // single-channel by design — mixed campaigns belong on the email
+        // single-channel by design - mixed campaigns belong on the email
         // side wizard.
         //
         // Also validate each step's `step_config` against the type's
@@ -144,7 +144,7 @@ export const create = async (req: Request, res: Response): Promise<Response> => 
         }
 
         // Step numbers must be unique + start at 1. Don't trust the
-        // client's ordering — sort + renumber so the dispatcher sees a
+        // client's ordering - sort + renumber so the dispatcher sees a
         // clean monotonic sequence.
         const sortedSteps = [...steps].sort((a, b) => a.step_number - b.step_number);
 
@@ -286,8 +286,8 @@ export const launch = async (req: Request, res: Response): Promise<Response> => 
  * POST /api/linkedin/campaigns/:id/pause
  *
  * Channel-scoped pause for the LinkedIn UI. The underlying Campaign
- * table is shared with email — pausing here flips status='paused' the
- * same way the sequencer route does — but the URL stays under
+ * table is shared with email - pausing here flips status='paused' the
+ * same way the sequencer route does - but the URL stays under
  * /api/linkedin/* so the frontend doesn't have to cross-talk to a
  * "foreign" controller, and the 404 path enforces that this endpoint
  * only operates on LinkedIn-channel campaigns.
@@ -331,7 +331,7 @@ export const pause = async (req: Request, res: Response): Promise<Response> => {
  *
  * Symmetric to pause. Channel-scoped. Resumes a paused LinkedIn
  * campaign by flipping status back to 'active'. Leads that were paused
- * by cross-channel suppression (replied on email) stay paused —
+ * by cross-channel suppression (replied on email) stay paused -
  * resume only affects campaign-level status.
  */
 export const resume = async (req: Request, res: Response): Promise<Response> => {
@@ -451,7 +451,7 @@ export const attachSender = async (req: Request, res: Response): Promise<Respons
 };
 
 // ────────────────────────────────────────────────────────────────────
-// GET /api/linkedin/campaigns/:id — single-campaign detail
+// GET /api/linkedin/campaigns/:id - single-campaign detail
 //
 // Returns the Campaign row + its CampaignLinkedInSender attachments +
 // the SequenceSteps it owns (filtered to LinkedIn step types). Used by
@@ -466,7 +466,7 @@ export const detail = async (req: Request, res: Response): Promise<Response> => 
 
         // Channel discipline: Super LinkedIn is LinkedIn-only by design.
         // Mixed (email + LinkedIn) and email-only campaigns belong to the
-        // Sequencer surfaces — we 404 them out of the LinkedIn detail
+        // Sequencer surfaces - we 404 them out of the LinkedIn detail
         // endpoint so the schema/detail pages never render an email step
         // under the LinkedIn module.
         const campaign = await prisma.campaign.findFirst({
@@ -493,7 +493,7 @@ export const detail = async (req: Request, res: Response): Promise<Response> => 
         });
         if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
 
-        // CampaignLead totals scoped to this campaign — gives the detail page
+        // CampaignLead totals scoped to this campaign - gives the detail page
         // its enrollment-stats row without a second request.
         const [pending, inSequence, finished, replied, totalLeads] = await Promise.all([
             prisma.campaignLead.count({ where: { campaign_id: id, status: 'pending' } }),
@@ -622,7 +622,7 @@ export const update = async (req: Request, res: Response): Promise<Response> => 
         //      active lead. Truncating below max(current_step) is
         //      irreversible data loss.
         //   2. Steps at positions [1..maxCurrentStep] must keep their
-        //      step_type — these are the steps active leads have already
+        //      step_type - these are the steps active leads have already
         //      executed, and changing their type after the fact lies to
         //      analytics + breaks branching predicates.
         //   3. Removing a sender that has in-flight invitations / threads
@@ -630,7 +630,7 @@ export const update = async (req: Request, res: Response): Promise<Response> => 
         //      adding senders, removing senders with zero outstanding
         //      sends; the rest is blocked.
         //
-        // Draft campaigns are unrestricted — nothing has dispatched yet.
+        // Draft campaigns are unrestricted - nothing has dispatched yet.
         const isMidFlight = existing.status !== 'draft';
 
         if (isMidFlight && steps) {
@@ -647,15 +647,15 @@ export const update = async (req: Request, res: Response): Promise<Response> => 
 
             const sortedNew = [...steps].sort((a, b) => a.step_number - b.step_number);
 
-            // Invariant 1 — length floor.
+            // Invariant 1 - length floor.
             if (sortedNew.length < maxCurrentStep) {
                 return res.status(400).json({
                     success: false,
-                    error: `Cannot shrink the sequence below step ${maxCurrentStep} — ${maxCurrentStep === 1 ? 'a lead has' : 'leads have'} already advanced past that point. Pause the campaign and complete or archive in-flight leads before truncating.`,
+                    error: `Cannot shrink the sequence below step ${maxCurrentStep} - ${maxCurrentStep === 1 ? 'a lead has' : 'leads have'} already advanced past that point. Pause the campaign and complete or archive in-flight leads before truncating.`,
                 });
             }
 
-            // Invariant 2 — step_type immutability up to maxCurrentStep.
+            // Invariant 2 - step_type immutability up to maxCurrentStep.
             // Compare the prefix (1-indexed) against incoming step_type.
             for (let i = 0; i < maxCurrentStep && i < sortedNew.length; i++) {
                 const oldType = existingSteps[i]?.step_type;
@@ -663,7 +663,7 @@ export const update = async (req: Request, res: Response): Promise<Response> => 
                 if (oldType && newType && oldType !== newType) {
                     return res.status(400).json({
                         success: false,
-                        error: `Step #${i + 1} type cannot change from "${oldType}" to "${newType}" — active leads have already executed it.`,
+                        error: `Step #${i + 1} type cannot change from "${oldType}" to "${newType}" - active leads have already executed it.`,
                     });
                 }
             }
@@ -684,7 +684,7 @@ export const update = async (req: Request, res: Response): Promise<Response> => 
                 // dispatched on this campaign. SequenceStepExecution
                 // stores the polymorphic sender_ref_id as the
                 // LinkedInAccount.id for linkedin_* steps (see
-                // linkedinDispatcherWorker — sender_ref_type =
+                // linkedinDispatcherWorker - sender_ref_type =
                 // 'linkedin_account'). If zero executions reference the
                 // account, the attachment is safe to drop.
                 const dispatchedCount = await prisma.sequenceStepExecution.count({
@@ -712,7 +712,7 @@ export const update = async (req: Request, res: Response): Promise<Response> => 
             }
 
             if (steps) {
-                // Full replace — drop existing steps, write new ones with
+                // Full replace - drop existing steps, write new ones with
                 // renumbered step_number. The pre-transaction guard above
                 // ensured that this is safe: on non-draft campaigns the
                 // new list preserves every step active leads have already
@@ -795,7 +795,7 @@ export const detachSender = async (req: Request, res: Response): Promise<Respons
         // Match the PATCH safety gate: a sender that's already dispatched
         // on this campaign cannot be detached on a non-draft campaign
         // without orphaning the leads it's working. Operators who really
-        // want it gone should disable it (enabled=false) — that stops new
+        // want it gone should disable it (enabled=false) - that stops new
         // sends while keeping the audit trail and connection edges intact.
         if (row.campaign.status !== 'draft') {
             const dispatchedCount = await prisma.sequenceStepExecution.count({

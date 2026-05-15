@@ -24,7 +24,7 @@ import type { LeadSourceFilter } from '../types';
 
 /**
  * Subset of Apollo URL params we know how to forward to the search API.
- * Anything not in this map is logged but ignored — keeps us from
+ * Anything not in this map is logged but ignored - keeps us from
  * silently mis-interpreting future filters Apollo adds.
  */
 const ARRAY_PARAM_MAP: Record<string, string> = {
@@ -55,7 +55,7 @@ const SCALAR_PARAM_MAP: Record<string, string> = {
 
 /**
  * Extract the params section after `#/people?`. Apollo URLs are
- * single-page-app routes — the hash carries the route AND the query.
+ * single-page-app routes - the hash carries the route AND the query.
  */
 function extractHashParams(url: string): URLSearchParams | null {
     let parsed: URL;
@@ -78,7 +78,7 @@ function extractHashParams(url: string): URLSearchParams | null {
 
 /**
  * Detect whether the URL's hash route points at a saved-list show page.
- * Format: `#/people-search/lists/show/<listId>` — the last segment is
+ * Format: `#/people-search/lists/show/<listId>` - the last segment is
  * the listId.
  */
 function extractSavedListId(url: string): string | null {
@@ -149,7 +149,7 @@ export function parseApolloUrl(input: string): LeadSourceFilter | null {
 }
 
 /**
- * Generate a human-readable summary of parsed filters — drives the
+ * Generate a human-readable summary of parsed filters - drives the
  * dashboard's "we'll search for…" preview before the user hits Import.
  */
 export function summarizeFilter(filter: LeadSourceFilter): string[] {
@@ -184,7 +184,7 @@ export function summarizeFilter(filter: LeadSourceFilter): string[] {
     }
 
     if (out.length === 0) {
-        out.push('No structured filters detected — Apollo will return broad results.');
+        out.push('No structured filters detected - Apollo will return broad results.');
     }
     return out;
 }

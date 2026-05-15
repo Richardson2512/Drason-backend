@@ -1,8 +1,8 @@
 /**
- * Weekly performance digest — sent every Monday at 09:00 UTC. Aggregates
+ * Weekly performance digest - sent every Monday at 09:00 UTC. Aggregates
  * the previous 7 days of activity for an organization.
  *
- * Operator-facing — give them the "did this week go well" answer in one
+ * Operator-facing - give them the "did this week go well" answer in one
  * email so they don't have to crawl the dashboard.
  */
 
@@ -34,7 +34,7 @@ export interface WeeklyDigestEmailParams {
 }
 
 export function weeklyDigestEmail(p: WeeklyDigestEmailParams): RenderedEmail {
-    const subject = `Your Superkabe weekly digest — ${formatDate(p.weekStart)} to ${formatDate(p.weekEnd)}`;
+    const subject = `Your Superkabe weekly digest - ${formatDate(p.weekStart)} to ${formatDate(p.weekEnd)}`;
     const replyRate = p.totals.sent > 0 ? (p.totals.replies / p.totals.sent) * 100 : 0;
     const openRate = p.totals.sent > 0 ? (p.totals.opens / p.totals.sent) * 100 : 0;
     const bounceRate = p.totals.sent > 0 ? (p.totals.bounces / p.totals.sent) * 100 : 0;
@@ -65,7 +65,7 @@ export function weeklyDigestEmail(p: WeeklyDigestEmailParams): RenderedEmail {
         ? `<br/><br/><strong style="color:#111827;">Top campaigns this week</strong><br/>` +
           p.topCampaigns.map((c, i) => {
               const reply = c.sent > 0 ? ((c.replies / c.sent) * 100).toFixed(1) : '0';
-              return `${i + 1}. <strong>${escapeHtml(c.name)}</strong> — ${c.replies} repl${c.replies === 1 ? 'y' : 'ies'} (${reply}% rate, ${c.sent} sent)`;
+              return `${i + 1}. <strong>${escapeHtml(c.name)}</strong> - ${c.replies} repl${c.replies === 1 ? 'y' : 'ies'} (${reply}% rate, ${c.sent} sent)`;
           }).join('<br/>')
         : '';
 

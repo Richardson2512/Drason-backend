@@ -1,5 +1,5 @@
 /**
- * MCP transport handler — mounted on POST /mcp.
+ * MCP transport handler - mounted on POST /mcp.
  *
  * Stateless Streamable HTTP transport: every request gets its own
  * server + transport pair, scoped to the authenticated org context

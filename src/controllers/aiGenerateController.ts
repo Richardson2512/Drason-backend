@@ -1,8 +1,8 @@
 /**
  * AI Generation Controller
  *
- * POST /api/ai/generate-step        — one email (used by templates + individual step editor)
- * POST /api/ai/generate-sequence    — N emails in one call (used by "generate whole sequence")
+ * POST /api/ai/generate-step        - one email (used by templates + individual step editor)
+ * POST /api/ai/generate-sequence    - N emails in one call (used by "generate whole sequence")
  *
  * Both require a cached BusinessProfile. If missing, return 409 with a hint
  * for the UI to prompt the user to set their company URL first.
@@ -23,7 +23,7 @@ import { getCachedLeadProfile } from '../services/leadProfileService';
 import { prisma } from '../prisma';
 
 // ────────────────────────────────────────────────────────────────────
-// In-memory per-org rate limiter — prevents runaway costs.
+// In-memory per-org rate limiter - prevents runaway costs.
 // Hard cap: 15 generations/minute per org.
 // ────────────────────────────────────────────────────────────────────
 
@@ -87,7 +87,7 @@ function coerceStepInput(body: any): CoercedStepInput | { error: string } {
     if (customInstructions !== undefined && (typeof customInstructions !== 'string' || customInstructions.length > 2000)) {
         return { error: 'custom_instructions must be a string under 2000 chars' };
     }
-    // Optional lead_id — when present, the controller will look up the
+    // Optional lead_id - when present, the controller will look up the
     // cached LeadProfileV1 and feed it into generation as recipient context.
     const leadId = body?.lead_id;
     if (leadId !== undefined && typeof leadId !== 'string') {
@@ -96,7 +96,7 @@ function coerceStepInput(body: any): CoercedStepInput | { error: string } {
 
     // lead_profile is hydrated by the controller (see generateStep), not
     // passed in by the client. We return leadId on a sibling field rather
-    // than smuggling it into the GenerateStepInput shape — keeps the
+    // than smuggling it into the GenerateStepInput shape - keeps the
     // service-layer type honest.
     const input: GenerateStepInput = {
         step_intent: intent,
@@ -172,7 +172,7 @@ export const generateStep = async (req: Request, res: Response): Promise<Respons
         logger.error('[AI_GEN] generateStep failed', err instanceof Error ? err : new Error(msg), { orgId });
         const userFacing =
             msg.includes('OPENAI_API_KEY') ? 'AI is not configured on this server.' :
-            msg.includes('rate_limit') || msg.includes('429') ? 'OpenAI is throttling requests — try again shortly.' :
+            msg.includes('rate_limit') || msg.includes('429') ? 'OpenAI is throttling requests - try again shortly.' :
             msg.includes('incomplete email') ? 'AI returned an incomplete email. Try again.' :
             'Generation failed. Try again.';
         return res.status(502).json({ success: false, error: userFacing });

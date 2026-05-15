@@ -2,19 +2,19 @@
  * Engagement rollup + intent classification for LinkedIn profiles.
  *
  * Three responsibilities:
- *   1. `recordEngagementOnProfile` — bump per-profile counters whenever a new
+ *   1. `recordEngagementOnProfile` - bump per-profile counters whenever a new
  *      EngagementEvent is written. Updates last_engaged_at, the 30d rolling
  *      count, the distinct-post count, and the composite engagement_score.
- *   2. `classifyEngagementIntent` — deterministic mapping from event_type +
+ *   2. `classifyEngagementIntent` - deterministic mapping from event_type +
  *      reaction_type to one of the same three Auto-Tag buckets used for DM
  *      replies (Interested / Generic). "Not Interested" is unreachable from
- *      engagements — LinkedIn's reaction taxonomy has no negative.
- *   3. `applyEngagementAutoTag` — write the inferred tag onto the profile,
+ *      engagements - LinkedIn's reaction taxonomy has no negative.
+ *   3. `applyEngagementAutoTag` - write the inferred tag onto the profile,
  *      but only when it currently has no tag. DM-reply classification is
  *      authoritative and must not be overridden by an engagement signal
  *      (which carries far less semantic weight than text content).
  *
- * The rollup numbers are decayed nightly by `recomputeProfileRollups` —
+ * The rollup numbers are decayed nightly by `recomputeProfileRollups` -
  * a cache-correction sweep that reads the canonical EngagementEvent rows
  * and rewrites the counters, so any missed increment or stale row from a
  * crash recovery converges to truth within 24h.
@@ -36,7 +36,7 @@ const REACTION_GENERIC    = new Set(['LIKE', 'MAYBE', 'FUNNY']);
  *   REACTION + strong subtype → Interested  (praise/empathy/interest/etc)
  *   REACTION + weak subtype   → Generic     (like/maybe/funny)
  *
- * "Not Interested" is impossible here — LinkedIn has no negative reaction.
+ * "Not Interested" is impossible here - LinkedIn has no negative reaction.
  * DM replies remain the only path to that tag.
  */
 export function classifyEngagementIntent(
@@ -55,9 +55,9 @@ export function classifyEngagementIntent(
 /**
  * Compute the engagement score from rollup inputs. Range 0-100.
  *
- *   frequency  — count_30d × 5 (capped at 60)
- *   recency    — 30 if engaged today, 20 if within 7d, 10 if within 30d, 0 older
- *   diversity  — +10 if engaged on ≥3 distinct posts in 30d
+ *   frequency  - count_30d × 5 (capped at 60)
+ *   recency    - 30 if engaged today, 20 if within 7d, 10 if within 30d, 0 older
+ *   diversity  - +10 if engaged on ≥3 distinct posts in 30d
  *
  * Tuned to keep a profile that engaged once 25 days ago around 15-20
  * (low-interest), while a profile engaging twice this week on different
@@ -87,7 +87,7 @@ export function computeEngagementScore(
  * the cached rollups on the actor's LinkedInProfile row.
  *
  * The distinct-post count is read from the DB rather than incremented
- * naively — this keeps the cached value correct even when an actor
+ * naively - this keeps the cached value correct even when an actor
  * engages multiple times on the same post (e.g. reaction + comment).
  */
 export async function recordEngagementOnProfile(
@@ -130,7 +130,7 @@ export async function recordEngagementOnProfile(
             } as unknown as Record<string, unknown>,
         });
     } catch (err) {
-        // Rollup is a cache, not the source of truth — never block ingestion
+        // Rollup is a cache, not the source of truth - never block ingestion
         // on rollup failure. Nightly recompute will fix any drift.
         logger.warn('[ENGAGEMENT-ROLLUP] update failed', { err: String(err).slice(0, 200), profileId });
     }
@@ -139,7 +139,7 @@ export async function recordEngagementOnProfile(
 /**
  * Set the profile's auto-tag based on this engagement, but only when no
  * tag exists yet. Returns the tag actually persisted, or null if the row
- * was already tagged (in which case we skipped — DM replies own the tag).
+ * was already tagged (in which case we skipped - DM replies own the tag).
  */
 export async function applyEngagementAutoTag(
     organizationId: string,
@@ -183,7 +183,7 @@ export async function applyEngagementAutoTag(
 export async function recomputeProfileRollups(): Promise<{ profilesUpdated: number; profilesDecayed: number }> {
     const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
-    // Pass 1: every profile with engagement in the window — recompute from truth.
+    // Pass 1: every profile with engagement in the window - recompute from truth.
     const activeProfiles = await prisma.engagementEvent.groupBy({
         by: ['organization_id', 'actor_profile_id'],
         where: { occurred_at: { gte: cutoff } },
@@ -216,7 +216,7 @@ export async function recomputeProfileRollups(): Promise<{ profilesUpdated: numb
         profilesUpdated += 1;
     }
 
-    // Pass 2: profiles previously rolled-up but now outside the window — clear.
+    // Pass 2: profiles previously rolled-up but now outside the window - clear.
     const decayed = await prisma.linkedInProfile.updateMany({
         where: {
             engagement_count_30d: { gt: 0 },

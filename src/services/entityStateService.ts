@@ -1,5 +1,5 @@
 /**
- * Entity State Service — THE SINGLE AUTHORITY for all status changes.
+ * Entity State Service - THE SINGLE AUTHORITY for all status changes.
  *
  * RULE: No service, controller, or worker may write `status` on Lead, Mailbox,
  *       or Domain via raw prisma.update(). ALL status changes MUST go through
@@ -96,7 +96,7 @@ export async function transitionMailbox(
         return result;
     }
 
-    // Outbound webhook fan-out — fire-and-forget. The bus maps state pairs to
+    // Outbound webhook fan-out - fire-and-forget. The bus maps state pairs to
     // the right event type (mailbox.paused / mailbox.healed) and skips when
     // the transition isn't webhook-worthy on its own.
     try {
@@ -171,7 +171,7 @@ export async function transitionDomain(
 }
 
 // ============================================================================
-// INITIAL STATE (for entity creation — bypasses transition validation)
+// INITIAL STATE (for entity creation - bypasses transition validation)
 // ============================================================================
 
 /**

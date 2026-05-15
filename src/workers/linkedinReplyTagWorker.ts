@@ -1,5 +1,5 @@
 /**
- * 15-min delayed reply-tag worker — Auto-Tag pipeline.
+ * 15-min delayed reply-tag worker - Auto-Tag pipeline.
  *
  * The Auto-Tag fires 15 minutes after the first reply (workspace-wide,
  * one tag per lead, latest-wins). This worker scans LinkedInProfile rows
@@ -7,7 +7,7 @@
  * runs the classifier, persists the tag, and clears the pending fields.
  *
  * The webhook handler writes the pending data into auto_tag_pending +
- * sets auto_tag_pending_at to now() — NOT now()+15min — so a fresh
+ * sets auto_tag_pending_at to now() - NOT now()+15min - so a fresh
  * reply landing in the window naturally pushes the due-time forward
  * (latest-text wins).
  */
@@ -22,7 +22,7 @@ import { pauseCrossChannelForLead } from '../services/crossChannelSuppressionSer
  * into the cross-channel suppression service's reply-class vocabulary so
  * the CLASSIFIED + ASYMMETRIC policy gates fire correctly. Interested maps
  * to 'positive' (intent-bearing, pauses email), Not Interested to 'hard_no'
- * (intent-bearing, also pauses email), Generic stays 'generic' (noisy —
+ * (intent-bearing, also pauses email), Generic stays 'generic' (noisy -
  * CLASSIFIED skips, ASYMMETRIC also skips for LinkedIn→email).
  */
 function mapLinkedInTagToReplyClass(tag: string): string {
@@ -59,7 +59,7 @@ export async function runOnce(): Promise<{ classified: number }> {
     for (const p of due) {
         const payload = (p.auto_tag_pending as PendingPayload) || {};
         if (!payload.text) {
-            // Stale row with no text — clear it.
+            // Stale row with no text - clear it.
             await prisma.linkedInProfile.update({
                 where: { id: p.id },
                 data: { auto_tag_pending: undefined, auto_tag_pending_at: null },
@@ -80,7 +80,7 @@ export async function runOnce(): Promise<{ classified: number }> {
             });
             classified++;
 
-            // Cross-channel fan-out — if the LinkedInProfile is linked to a
+            // Cross-channel fan-out - if the LinkedInProfile is linked to a
             // Lead, ask the suppression service whether to pause the lead's
             // email-side enrollments. Mode is org-configurable; this call
             // is idempotent + non-fatal.

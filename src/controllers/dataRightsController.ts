@@ -4,9 +4,9 @@
  * GDPR Art. 15 / Art. 17, CCPA / CPRA right-to-know + right-to-delete,
  * DPDP / PDPA equivalents. Three endpoints:
  *
- *   GET  /api/account/my-data          — JSON export of everything we hold
- *   POST /api/account/delete-request   — initiate 30-day soft-delete
- *   GET  /api/account/delete-request   — check status of a pending deletion
+ *   GET  /api/account/my-data          - JSON export of everything we hold
+ *   POST /api/account/delete-request   - initiate 30-day soft-delete
+ *   GET  /api/account/delete-request   - check status of a pending deletion
  *
  * Per the Privacy Policy, exercising these rights does not affect lawfulness
  * of prior processing and the user is not discriminated against.
@@ -27,7 +27,7 @@ import { buildFrontendUrl, summariseRequester } from '../services/emailTemplates
 import { listConsentsForUser } from '../services/consentService';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /api/account/my-data — DSAR export
+// GET /api/account/my-data - DSAR export
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -36,7 +36,7 @@ import { listConsentsForUser } from '../services/consentService';
  * GDPR Art. 15 requests; customers wanting a portable archive can save it.
  *
  * Excluded by design: encrypted secrets (OAuth tokens, SMTP passwords, import
- * keys) — exporting those would be a security risk and the user can already
+ * keys) - exporting those would be a security risk and the user can already
  * re-create them.
  */
 export const exportMyData = async (req: Request, res: Response): Promise<void> => {
@@ -87,7 +87,7 @@ export const exportMyData = async (req: Request, res: Response): Promise<void> =
             prisma.campaign.count({ where: { organization_id: orgId } }),
         ]);
 
-        // 30-day usage snapshot — the same numbers the user sees on the
+        // 30-day usage snapshot - the same numbers the user sees on the
         // billing page, included for transparency.
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
@@ -120,7 +120,7 @@ export const exportMyData = async (req: Request, res: Response): Promise<void> =
                 'Email bodies of sent messages are not retained by Superkabe; reply messages are stored only until the customer deletes them.',
         });
 
-        // Security-audit confirmation email — fire-and-forget. Single email
+        // Security-audit confirmation email - fire-and-forget. Single email
         // per export request; idempotency keyed on (user, second-precision
         // timestamp) so the rare double-click can't double-send.
         const exportedAt = new Date();
@@ -151,7 +151,7 @@ export const exportMyData = async (req: Request, res: Response): Promise<void> =
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /api/account/delete-request — initiate erasure
+// POST /api/account/delete-request - initiate erasure
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -265,7 +265,7 @@ function tryParseToken(detailsJson: string | null): string | null {
 }
 
 /**
- * GET /api/account/delete-request — return current pending status.
+ * GET /api/account/delete-request - return current pending status.
  */
 export const getDeletionStatus = async (req: Request, res: Response): Promise<void> => {
     try {
@@ -317,7 +317,7 @@ export const getDeletionStatus = async (req: Request, res: Response): Promise<vo
 };
 
 /**
- * POST /api/account/cancel-deletion — undo a pending deletion within grace.
+ * POST /api/account/cancel-deletion - undo a pending deletion within grace.
  */
 export const cancelAccountDeletion = async (req: Request, res: Response): Promise<void> => {
     try {

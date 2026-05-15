@@ -27,7 +27,7 @@ import {
 } from './types';
 
 // ────────────────────────────────────────────────────────────────────
-// Defaults (per the user's spec — do not change without sign-off):
+// Defaults (per the user's spec - do not change without sign-off):
 //   start  5/day, target 50/day, ramp over 21 days, maintenance 10/day
 // ────────────────────────────────────────────────────────────────────
 
@@ -57,7 +57,7 @@ function clampConfig(cfg: MembershipConfig): Required<MembershipConfig> {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Auto-enroll — called from connectedAccountController right after a
+// Auto-enroll - called from connectedAccountController right after a
 // ConnectedAccount + Mailbox row are created. Idempotent.
 // ────────────────────────────────────────────────────────────────────
 
@@ -138,14 +138,14 @@ export async function updateConfig(
 
 /**
  * Bulk-apply config across every membership in an org. Single SQL
- * UPDATE so it stays atomic — either every mailbox in the workspace
+ * UPDATE so it stays atomic - either every mailbox in the workspace
  * gets the new config or none do.
  *
  * Returns the number of rows touched. The caller surfaces it to the
  * UI as a toast confirmation.
  *
  * Note: only the four config columns are touched. ramp_step,
- * current_daily, health, and counters are NOT reset — operators bumping
+ * current_daily, health, and counters are NOT reset - operators bumping
  * a target should expect their mailboxes to keep their existing
  * progress, not restart from day 0.
  */
@@ -168,7 +168,7 @@ export async function bulkUpdateOrgConfig(
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Ramp computation — called nightly by warmupRampWorker.
+// Ramp computation - called nightly by warmupRampWorker.
 //
 // Formula (linear ramp, start → target over ramp_days):
 //   day 0      → start_daily
@@ -218,12 +218,12 @@ export function decideNextRamp(current: {
 
     const spam = current.spamRate30d ?? 0;
 
-    // Hard error threshold — stop sending entirely until operator clears.
+    // Hard error threshold - stop sending entirely until operator clears.
     if (spam >= SPAM_RATE_ERROR_THRESHOLD) {
         return { nextRampStep: current.rampStep, nextDaily: 0, nextHealth: 'error', rampPaused: true };
     }
 
-    // Soft pause — hold ramp but keep sending at current cap so the
+    // Soft pause - hold ramp but keep sending at current cap so the
     // mailbox doesn't idle.
     if (spam >= SPAM_RATE_PAUSE_THRESHOLD) {
         const heldDaily = computeDailyForStep(current);
@@ -242,7 +242,7 @@ export function decideNextRamp(current: {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Spam-rate computation — called nightly to recompute spam_rate_30d
+// Spam-rate computation - called nightly to recompute spam_rate_30d
 // from WarmupExchange rows.
 // ────────────────────────────────────────────────────────────────────
 

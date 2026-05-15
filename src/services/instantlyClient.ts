@@ -6,7 +6,7 @@
  * lead labels, block list, and analytics from a customer's Instantly workspace.
  *
  * Field shapes mirror what Instantly's docs (https://developer.instantly.ai/)
- * document at the time of writing — every interface below is derived from a
+ * document at the time of writing - every interface below is derived from a
  * documented field, never invented.
  *
  * Auth:
@@ -29,7 +29,7 @@
  * Two notable exceptions:
  *   1. Leads list uses POST /api/v2/leads/list (body holds filters + cursor).
  *   2. Accounts list cursor is a compound `timestamp_created&email` string,
- *      not a UUID — opaque to us, just round-trip what the server returns.
+ *      not a UUID - opaque to us, just round-trip what the server returns.
  */
 
 import { logger } from './observabilityService';
@@ -57,11 +57,11 @@ export class InstantlyRateLimitError extends Error {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Response types — one block per resource. Optional fields use `?` when the
+// Response types - one block per resource. Optional fields use `?` when the
 // docs explicitly mark them optional or when their absence is observed.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** GET /api/v2/workspaces/current — used as whoami / key validation. */
+/** GET /api/v2/workspaces/current - used as whoami / key validation. */
 export interface InstantlyWorkspace {
     id: string;
     name: string;
@@ -159,7 +159,7 @@ export interface InstantlyLead {
     esp_code?: string | null;
     esg_code?: string | null;
 
-    /** Per-lead step attribution — sufficient to reconstruct sequence state. */
+    /** Per-lead step attribution - sufficient to reconstruct sequence state. */
     last_step_id?: string | null;
     last_step_from?: string | null;             // sending mailbox email
     last_step_timestamp_executed?: string | null;
@@ -210,7 +210,7 @@ export interface InstantlyAccount {
      *   3 = Microsoft
      *   4 = AWS
      *   5 = AirMail
-     * (Numeric values inferred from docs ordering — treat unknown numbers
+     * (Numeric values inferred from docs ordering - treat unknown numbers
      *  as 'unknown' rather than crashing.)
      */
     provider_code?: number;
@@ -301,7 +301,7 @@ interface CursorEnvelope<T> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Internal request helper — handles auth, retries, 402/401/429 typing
+// Internal request helper - handles auth, retries, 402/401/429 typing
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface RequestOptions {
@@ -419,7 +419,7 @@ async function* paginate<T>(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Public surface — one function per import-relevant endpoint
+// Public surface - one function per import-relevant endpoint
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Validates the API key and returns the workspace metadata. */
@@ -437,7 +437,7 @@ export async function getCampaign(apiKey: string, campaignId: string): Promise<I
 }
 
 /**
- * Leads list — POST endpoint with filters + cursor in the body.
+ * Leads list - POST endpoint with filters + cursor in the body.
  * Yields one lead at a time; caller can short-circuit.
  */
 export async function* listLeads(
@@ -469,7 +469,7 @@ export async function* listLeads(
 }
 
 /**
- * Accounts list — same cursor mechanic as the rest of the API even though
+ * Accounts list - same cursor mechanic as the rest of the API even though
  * the cursor format is compound (`timestamp_created&email`). Opaque to us.
  */
 export async function* listAccounts(apiKey: string): AsyncGenerator<InstantlyAccount, void, unknown> {
@@ -525,8 +525,8 @@ export function mapCampaignStatus(s: InstantlyCampaignStatus | undefined): 'draf
         case 1: return 'active';
         case 2: return 'paused';
         case 3: return 'completed';
-        case 4: return 'active';     // Running Subsequences — treat as active
-        case -1:                      // Accounts Unhealthy — paused under the hood
+        case 4: return 'active';     // Running Subsequences - treat as active
+        case -1:                      // Accounts Unhealthy - paused under the hood
         case -2:                      // Bounce Protect
         case -99:                     // Account Suspended
             return 'paused';

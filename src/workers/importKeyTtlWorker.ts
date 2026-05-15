@@ -2,7 +2,7 @@
  * Import Key TTL Worker
  *
  * Sweeps every 15 minutes for expired one-time-import API keys and wipes them.
- * Belt-and-suspenders for `getDecryptedImportKey()`'s read-time expiry check —
+ * Belt-and-suspenders for `getDecryptedImportKey()`'s read-time expiry check -
  * makes sure we don't sit on plaintext-recoverable keys past their TTL even
  * if nobody happens to read them.
  *
@@ -42,7 +42,7 @@ export const scheduleImportKeyTtlSweep = (): void => {
 
     // First run after a short delay so server boot isn't blocked.
     scheduled = setTimeout(tick, 30 * 1000);
-    logger.info(`[IMPORT-KEY-TTL] Scheduled — sweep every ${INTERVAL_MS / 60000}m`);
+    logger.info(`[IMPORT-KEY-TTL] Scheduled - sweep every ${INTERVAL_MS / 60000}m`);
 };
 
 export const stopImportKeyTtlSweep = (): void => {

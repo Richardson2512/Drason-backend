@@ -1,5 +1,5 @@
 /**
- * Signal-event supervisor — the heart of the 4-agent topology.
+ * Signal-event supervisor - the heart of the 4-agent topology.
  *
  * For each unprocessed EngagementEvent:
  *   1. Resolve the applicable SignalMonitoringRule via the stackable
@@ -156,7 +156,7 @@ export async function processEvent(event: EventRow): Promise<string> {
                 return { decision: { outcome: 'suggested_for_review', rule_id: rule?.id ?? null, mode } };
             }
 
-            // ENFORCE — delegate the full lead-promotion flow to the
+            // ENFORCE - delegate the full lead-promotion flow to the
             // shared profilePromotionService. This is the same function
             // the watchlist auto-push path calls, so the rule-triggered
             // and watchlist-triggered enrollments produce identical

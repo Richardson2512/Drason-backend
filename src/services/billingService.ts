@@ -26,7 +26,7 @@ import { buildFrontendUrl } from './emailTemplates/requesterContext';
 // ============================================================================
 
 export interface WebhookEvent {
-    // NOTE: Polar webhook payloads do NOT have a top-level `id` — the prior
+    // NOTE: Polar webhook payloads do NOT have a top-level `id` - the prior
     // assumption here led to polar_event_id being undefined on every event,
     // breaking idempotency. Real shape Polar sends: { type, timestamp, data }.
     id?: string;
@@ -56,7 +56,7 @@ function buildEventIdempotencyKey(event: WebhookEvent): string {
  * Resolve the org for a webhook event. Tries metadata first (set by us at
  * checkout time), then falls back to looking up by Polar customer_id which
  * we persist on Organization.polar_customer_id @unique. Returns null only
- * if both lookups fail — the caller decides whether that's fatal.
+ * if both lookups fail - the caller decides whether that's fatal.
  */
 async function resolveOrgIdFromEvent(event: WebhookEvent): Promise<string | null> {
     const metadataOrgId = event.data?.metadata?.organization_id;
@@ -124,7 +124,7 @@ export async function processWebhook(event: WebhookEvent): Promise<void> {
         typeof d.currency_code === 'string' ? d.currency_code.toUpperCase() :
         null;
 
-    // Polar's hosted invoice link — the legally-relevant document. Polar uses
+    // Polar's hosted invoice link - the legally-relevant document. Polar uses
     // a few field names across versions; accept the common ones. Falls back
     // to the rendered PDF in our app if none are present.
     const polarInvoiceUrl: string | null =
@@ -144,19 +144,19 @@ export async function processWebhook(event: WebhookEvent): Promise<void> {
     //      every webhook to crash → outer catch returned 200 → DB never
     //      updated → paying customers stuck on trial).
     //   2. Skip event recording cleanly when we can't resolve the org
-    //      instead of crashing — some events (customer.created, system
+    //      instead of crashing - some events (customer.created, system
     //      events) legitimately have no org context and aren't relevant
     //      to subscription state.
     const resolvedOrgId = await resolveOrgIdFromEvent(event);
     const polarEventId = buildEventIdempotencyKey(event);
 
     if (!resolvedOrgId) {
-        logger.info('[BILLING] Webhook with no resolvable org — skipping recording', {
+        logger.info('[BILLING] Webhook with no resolvable org - skipping recording', {
             eventType: event.type,
             polarEventId,
         });
         // Still hand off to type-specific handlers if they can do anything
-        // useful without an org (none currently — but don't drop silently).
+        // useful without an org (none currently - but don't drop silently).
         return;
     }
 
@@ -193,14 +193,14 @@ export async function processWebhook(event: WebhookEvent): Promise<void> {
         event.data?.metadata?.super_sender === 'true' ||
         event.data?.metadata?.super_sender === true;
 
-    // Super LinkedIn account-slot add-on — separate Polar product. Routed
+    // Super LinkedIn account-slot add-on - separate Polar product. Routed
     // away from the tier-subscription handler the same way Super Sender is.
     const isLinkedInAddonEvent =
         event.data?.metadata?.linkedin_addon === 'true' ||
         event.data?.metadata?.linkedin_addon === true;
 
     // Process based on event type. Unknown types log a warn but don't
-    // throw — Polar adds new event types over time and we shouldn't 200/
+    // throw - Polar adds new event types over time and we shouldn't 200/
     // -fail every delivery just because of an unhandled kind.
     switch (event.type) {
         case 'subscription.created':
@@ -265,7 +265,7 @@ export async function processWebhook(event: WebhookEvent): Promise<void> {
 
 /**
  * Handle subscription.created and subscription.active events.
- * Activates subscription and ends trial. Idempotent — calling twice for the
+ * Activates subscription and ends trial. Idempotent - calling twice for the
  * same subscription leaves the org in the same state.
  */
 async function handleSubscriptionCreated(event: WebhookEvent, orgId: string): Promise<void> {
@@ -273,7 +273,7 @@ async function handleSubscriptionCreated(event: WebhookEvent, orgId: string): Pr
     const metadata = event.data?.metadata || {};
 
     // Tier list must mirror every SKU configured in polarClient.PRODUCT_IDS
-    // — `pro_80k` through `pro_250k` are the volume-tier Pro variants. If
+    // - `pro_80k` through `pro_250k` are the volume-tier Pro variants. If
     // any of those land here and the metadata tier isn't on this list, the
     // customer was silently downgraded to 'starter' (a $40/mo loss-per-row
     // bug). Adding a new SKU MUST also add it here.
@@ -286,7 +286,7 @@ async function handleSubscriptionCreated(event: WebhookEvent, orgId: string): Pr
         // Log loudly so unknown SKUs are caught at intake rather than
         // silently downgraded. Operators can reconcile via Polar's
         // dashboard while we patch the validTiers list.
-        logger.warn('[BILLING] Unknown tier on subscription.created — falling back to starter', {
+        logger.warn('[BILLING] Unknown tier on subscription.created - falling back to starter', {
             tier: metadata.tier,
             subscriptionId,
             orgId,
@@ -298,7 +298,7 @@ async function handleSubscriptionCreated(event: WebhookEvent, orgId: string): Pr
 
     // Plan-change flow: customer went through a fresh checkout for the new
     // tier, which created a brand-new subscription in Polar. Their previous
-    // subscription is still active in Polar's books — without canceling it,
+    // subscription is still active in Polar's books - without canceling it,
     // they'd get billed twice at next renewal. Cancel the old one at period
     // end (they keep the value of what they already paid for, but the
     // recurring billing stops). We do this BEFORE updating the org row so
@@ -323,12 +323,12 @@ async function handleSubscriptionCreated(event: WebhookEvent, orgId: string): Pr
     });
 
     // After we've switched our org to the new sub, cancel the previous one
-    // in Polar. Best-effort — failures here just leave the old sub running
+    // in Polar. Best-effort - failures here just leave the old sub running
     // until the operator reconciles, they don't break the new activation.
     if (isPlanChange) {
         try {
             const polarClient = await import('./polarClient');
-            // Direct Polar API call — using cancelSubscription() would look
+            // Direct Polar API call - using cancelSubscription() would look
             // up the org's current polar_subscription_id (which we just
             // overwrote with the NEW one), so we patch the old id directly.
             const axios = (await import('axios')).default;
@@ -348,7 +348,7 @@ async function handleSubscriptionCreated(event: WebhookEvent, orgId: string): Pr
                 newSubscriptionId: subscriptionId,
             });
         } catch (err: any) {
-            // Don't throw — the new subscription is already active. An
+            // Don't throw - the new subscription is already active. An
             // orphaned old sub is recoverable manually; failing the webhook
             // here would leave the customer in a worse state.
             console.error('[BILLING] Failed to cancel previous subscription on plan change', {
@@ -425,7 +425,7 @@ async function handleSubscriptionUpdated(event: WebhookEvent, orgId: string): Pr
 
     logger.info('[BILLING] Subscription updated', { orgId, previousTier, newTier });
 
-    // Email notification — only when the tier actually changed (Polar
+    // Email notification - only when the tier actually changed (Polar
     // sends "updated" events for many things; we don't want to spam on
     // every webhook). Idempotency keys on the (subscription, tier-pair)
     // so a duplicate webhook delivery dedupes.
@@ -453,7 +453,7 @@ async function handleSubscriptionUpdated(event: WebhookEvent, orgId: string): Pr
 }
 
 /**
- * Heuristic ordering of tiers — used to label changes as upgrade vs
+ * Heuristic ordering of tiers - used to label changes as upgrade vs
  * downgrade for copy purposes only. Unknown tiers fall through as
  * downgrade since that's the more cautious framing.
  */
@@ -554,7 +554,7 @@ async function handleInvoicePaid(event: WebhookEvent, orgId: string): Promise<vo
 
     logger.info('[BILLING] Invoice paid', { orgId, subscriptionId: subscription_id });
 
-    // Receipt email. Polar's webhook may include a hosted-invoice URL —
+    // Receipt email. Polar's webhook may include a hosted-invoice URL -
     // surface it as the CTA when present so the customer can pull a PDF.
     const orgForReceipt = await prisma.organization.findUnique({
         where: { id: orgId },
@@ -623,10 +623,10 @@ async function handlePaymentFailed(event: WebhookEvent, orgId: string): Promise<
         entityId: subscription_id,
         severity: 'critical',
         title: '💳 Payment failed',
-        message: `Superkabe could not charge your card. Update your payment method to avoid service interruption — account is now in past-due state.`,
+        message: `Superkabe could not charge your card. Update your payment method to avoid service interruption - account is now in past-due state.`,
     }).catch((err) => logger.warn('[BILLING] Slack alert failed (payment_failed)', { error: err?.message }));
 
-    // Critical email to org admins — they need to act before the next
+    // Critical email to org admins - they need to act before the next
     // retry cycle exhausts.
     const orgForFailure = await prisma.organization.findUnique({
         where: { id: orgId },
@@ -658,7 +658,7 @@ async function handlePaymentFailed(event: WebhookEvent, orgId: string): Promise<
 /**
  * Refresh usage counts for an organization. Two meters today: validation
  * credits (rolling 30 days) and monthly sends (rolling 30 days). Lead/domain/
- * mailbox counters were dropped 2026-04-27 — protection is unmetered.
+ * mailbox counters were dropped 2026-04-27 - protection is unmetered.
  */
 export async function refreshUsageCounts(orgId: string): Promise<UsageCounts> {
     const thirtyDaysAgo = new Date();
@@ -678,7 +678,7 @@ export async function refreshUsageCounts(orgId: string): Promise<UsageCounts> {
         data: { usage_last_updated_at: new Date() },
     });
 
-    // Threshold notifications — fire once per (org, period, threshold)
+    // Threshold notifications - fire once per (org, period, threshold)
     // band. The dispatcher's idempotency-key gives us per-band dedup, and
     // the period anchor (next_billing_date) rolls over naturally so the
     // band re-arms on a fresh billing cycle.
@@ -703,7 +703,7 @@ async function evaluateUsageThresholds(orgId: string, usage: UsageCounts): Promi
     const limits = TIER_LIMITS[org.subscription_tier];
     if (!limits) return;
 
-    // Period anchor — rolls over each billing cycle. Falls back to a
+    // Period anchor - rolls over each billing cycle. Falls back to a
     // 30-day calendar bucket so trial / unbilled orgs still get
     // sensible thresholds.
     const periodAnchor = org.next_billing_date

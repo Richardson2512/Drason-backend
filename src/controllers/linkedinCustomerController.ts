@@ -1,8 +1,8 @@
 /**
- * Customer registry controller — org-scoped customer list + CSV import.
+ * Customer registry controller - org-scoped customer list + CSV import.
  *
- *   GET  /api/linkedin/customers          — count + sample
- *   POST /api/linkedin/customers/import   — CSV upload (JSON-encoded rows)
+ *   GET  /api/linkedin/customers          - count + sample
+ *   POST /api/linkedin/customers/import   - CSV upload (JSON-encoded rows)
  *
  * The engager-relationship resolver consults the same table; this
  * controller is just the human-facing CRUD surface so an operator can
@@ -48,7 +48,7 @@ export const list = async (req: Request, res: Response): Promise<Response> => {
                 domain: string | null; source: string; lifecycle_stage: string | null;
                 imported_at: Date;
             }>>,
-            // CRM connection state — drives the ICP-page banner copy. If a
+            // CRM connection state - drives the ICP-page banner copy. If a
             // CRM is connected we tell the operator we'll auto-sync customer
             // accounts so they don't have to upload a CSV.
             prisma.crmConnection.findMany({
@@ -96,10 +96,10 @@ export const importFromCsv = async (req: Request, res: Response): Promise<Respon
         const rows = Array.isArray(body.rows) ? body.rows : [];
 
         if (rows.length === 0) {
-            return res.status(400).json({ success: false, error: 'No rows in upload — every row needs a company_name' });
+            return res.status(400).json({ success: false, error: 'No rows in upload - every row needs a company_name' });
         }
         if (rows.length > 50000) {
-            return res.status(400).json({ success: false, error: 'Upload too large — max 50,000 rows per request. Split the file and re-upload.' });
+            return res.status(400).json({ success: false, error: 'Upload too large - max 50,000 rows per request. Split the file and re-upload.' });
         }
 
         const result = await importCustomers(orgId, rows, 'csv');

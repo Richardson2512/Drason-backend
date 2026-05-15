@@ -12,7 +12,7 @@
  * modal for every existing user on their next authenticated request.
  *
  * The version string is the consent-record's persistent identity. We do not
- * normally store the full document text in DB — git history at this version
+ * normally store the full document text in DB - git history at this version
  * date is the canonical archive. document_hash is optional and only set when
  * we have a deterministic hash of the doc text at acceptance time.
  */

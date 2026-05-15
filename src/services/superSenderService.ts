@@ -1,19 +1,19 @@
 /**
- * Super Sender — dedicated SES IP service.
+ * Super Sender - dedicated SES IP service.
  *
  * Owns the lifecycle of a DedicatedIp row from Polar checkout creation
  * through SES provisioning, warmup ramp, allocation, and cancellation.
  *
- * State machine — see DedicatedIp model in schema.prisma. Transitions
+ * State machine - see DedicatedIp model in schema.prisma. Transitions
  * happen in three places:
- *   1. Checkout creation — service.createCheckout() inserts a
+ *   1. Checkout creation - service.createCheckout() inserts a
  *      `pending_payment` row keyed to the Polar checkout id.
- *   2. Webhook arrival — webhook handler fans the line-item quantity into
+ *   2. Webhook arrival - webhook handler fans the line-item quantity into
  *      N rows. The first row is the existing pending_payment row (matched
  *      by checkout id), additional rows are inserted in `pending_payment`
  *      and immediately moved to `provisioning` once the agency owner
  *      assigns them to a workspace.
- *   3. Workers — provisioning poller flips provisioning → warming once
+ *   3. Workers - provisioning poller flips provisioning → warming once
  *      SES reports the IP active; ramp worker advances warmup_day and
  *      flips warming → active on day 30.
  *
@@ -66,7 +66,7 @@ export async function canPurchaseSuperSender(orgId: string): Promise<{ ok: boole
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Account resolution — Super Sender is billed at the Account level so
+// Account resolution - Super Sender is billed at the Account level so
 // every IP an agency owner buys lands in one pool regardless of which
 // workspace they were viewing when they clicked Buy.
 // ────────────────────────────────────────────────────────────────────
@@ -82,14 +82,14 @@ async function resolveAccountIdForOrg(orgId: string): Promise<string | null> {
 /**
  * Lazy-create an Account for a legacy single-org user.
  *
- * The Account model was added with the agency-mode rollout — orgs that
+ * The Account model was added with the agency-mode rollout - orgs that
  * existed before that have `account_id = NULL`. Super Sender requires
  * an Account because IPs live in an agency-level pool, so on first
  * purchase we auto-provision one for the legacy org. The newly-created
  * Account is owned by the calling user, agency_mode_enabled=false (we
  * don't accidentally turn on the agency UX), and named after the org.
  *
- * Idempotent — racing two callers for the same org is safe because we
+ * Idempotent - racing two callers for the same org is safe because we
  * re-read after acquiring the row and skip if account_id is already set.
  */
 async function ensureAccountForOrg(orgId: string, userId: string): Promise<string> {
@@ -120,7 +120,7 @@ async function ensureAccountForOrg(orgId: string, userId: string): Promise<strin
     });
 
     if (linked.count === 0) {
-        // Lost the race — read the winner's account_id and use that.
+        // Lost the race - read the winner's account_id and use that.
         const fresh = await prisma.organization.findUnique({
             where: { id: orgId },
             select: { account_id: true },
@@ -141,7 +141,7 @@ async function ensureAccountForOrg(orgId: string, userId: string): Promise<strin
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Checkout creation — option B from the product spec: a single Polar
+// Checkout creation - option B from the product spec: a single Polar
 // line item with `quantity = N`, where N = number of workspaces the
 // agency owner ticked. Webhook fans the quantity out into N rows.
 // ────────────────────────────────────────────────────────────────────
@@ -156,7 +156,7 @@ export interface CreateCheckoutInput {
     quantity: number;
     /**
      * Workspaces the agency owner ticked. Carried in Polar metadata so the
-     * webhook can pre-allocate IPs straight to the chosen workspaces — no
+     * webhook can pre-allocate IPs straight to the chosen workspaces - no
      * manual allocation step needed when the user pre-selected.
      *
      * Empty array = unallocated; rows land in the account pool and the user
@@ -185,11 +185,11 @@ export async function createSuperSenderCheckout(input: CreateCheckoutInput): Pro
     }
 
     // Lazy-create an Account for legacy single-org users that pre-date
-    // agency mode. agency_mode_enabled stays false — we don't accidentally
+    // agency mode. agency_mode_enabled stays false - we don't accidentally
     // flip on the multi-workspace UX.
     const accountId = await ensureAccountForOrg(input.orgId, input.userId);
 
-    // Validate every workspace belongs to this account — never let a
+    // Validate every workspace belongs to this account - never let a
     // user smuggle in a workspace_id from another tenant.
     if (input.workspaceIds.length > 0) {
         const owned = await prisma.organization.findMany({
@@ -212,7 +212,7 @@ export async function createSuperSenderCheckout(input: CreateCheckoutInput): Pro
         // Polar does not currently expose a `quantity` parameter on the
         // public Checkouts API for the legacy single-line shape, so we
         // pass it through metadata. The webhook handler reads
-        // `metadata.super_sender_quantity` to size the fan-out — same
+        // `metadata.super_sender_quantity` to size the fan-out - same
         // mechanism that carries workspace_ids.
         success_url: `${process.env.APP_URL || process.env.FRONTEND_URL}/dashboard/sequencer/super-sender?checkout=success`,
         cancel_url: `${process.env.APP_URL || process.env.FRONTEND_URL}/dashboard/sequencer/super-sender?checkout=canceled`,
@@ -259,7 +259,7 @@ export async function createSuperSenderCheckout(input: CreateCheckoutInput): Pro
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Webhook fan-out — called from billingService when the event metadata
+// Webhook fan-out - called from billingService when the event metadata
 // carries super_sender=true. Idempotent on (subscription_id, account_id).
 // ────────────────────────────────────────────────────────────────────
 
@@ -299,7 +299,7 @@ export async function handleSuperSenderWebhook(event: WebhookEventLike, resolved
         .map(s => s.trim())
         .filter(Boolean);
 
-    // Idempotency guard — if any row already exists for this subscription,
+    // Idempotency guard - if any row already exists for this subscription,
     // assume the fan-out already happened. (Polar can fire .created and
     // .active for the same sub_id; without this guard we'd 2x the rows.)
     const existing = await prisma.dedicatedIp.findFirst({
@@ -307,7 +307,7 @@ export async function handleSuperSenderWebhook(event: WebhookEventLike, resolved
         select: { id: true },
     });
     if (existing) {
-        logger.info('[SUPER_SENDER] Webhook idempotency hit — fan-out already done', {
+        logger.info('[SUPER_SENDER] Webhook idempotency hit - fan-out already done', {
             subscriptionId,
             accountId,
         });
@@ -352,7 +352,7 @@ export async function handleSuperSenderWebhook(event: WebhookEventLike, resolved
     // Atomic fan-out. Promoting the pre-created row (which stamps
     // polar_subscription_id) and inserting the remaining rows must both
     // commit or neither. Without the transaction, a createMany failure
-    // after the update leaves subscription_id set on row 1 — the
+    // after the update leaves subscription_id set on row 1 - the
     // idempotency guard above then trips on Polar's retry and the
     // customer is permanently short the IPs they paid for. On rollback,
     // row 1 keeps subscription_id = null so the retry re-runs cleanly.
@@ -393,7 +393,7 @@ async function handleCancellation(subscriptionId: string, accountId: string): Pr
             canceled_at: new Date(),
         },
     });
-    logger.info('[SUPER_SENDER] Subscription canceled — IPs marked', {
+    logger.info('[SUPER_SENDER] Subscription canceled - IPs marked', {
         accountId,
         subscriptionId,
         rowsUpdated: updated.count,
@@ -401,7 +401,7 @@ async function handleCancellation(subscriptionId: string, accountId: string): Pr
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Allocation — assigning a pending IP to a workspace, reassigning, or
+// Allocation - assigning a pending IP to a workspace, reassigning, or
 // returning it to the pool. Reassignment cooldown is enforced here.
 // ────────────────────────────────────────────────────────────────────
 
@@ -473,7 +473,7 @@ export async function assignIpToWorkspace(opts: {
 }
 
 /**
- * Manual pause — agency owner can hold sends on an IP without canceling
+ * Manual pause - agency owner can hold sends on an IP without canceling
  * the Polar subscription. The send-path skips paused IPs (paused_reason
  * IS NOT NULL → routing resolver falls back to native), so this is the
  * operator-controllable lever to stop bleeding reputation while they
@@ -486,7 +486,7 @@ export async function pauseIp(opts: { ipId: string; accountId: string; reason?: 
     });
     if (!ip) throw new AllocationError('IP not found in this account', 'NOT_FOUND');
     if (ip.paused_reason) {
-        // Already paused — keep the existing reason (don't overwrite an
+        // Already paused - keep the existing reason (don't overwrite an
         // auto-pause indicator with a manual one).
         return;
     }
@@ -500,7 +500,7 @@ export async function pauseIp(opts: { ipId: string; accountId: string; reason?: 
     logger.info('[SUPER_SENDER] IP paused', { ipId: ip.id, reason: opts.reason || 'manual' });
 }
 
-/** Manual resume — clears any pause flag. Counters are NOT reset (the
+/** Manual resume - clears any pause flag. Counters are NOT reset (the
  *  worker decays them daily); resuming an IP whose 24h aggregates still
  *  exceed thresholds is the operator's call. */
 export async function resumeIp(opts: { ipId: string; accountId: string }): Promise<void> {
@@ -534,7 +534,7 @@ export async function unassignIp(opts: { ipId: string; accountId: string }): Pro
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Read APIs — for the Super Sender page UI.
+// Read APIs - for the Super Sender page UI.
 // ────────────────────────────────────────────────────────────────────
 
 export interface DedicatedIpView {
@@ -592,7 +592,7 @@ export async function listAccountIps(accountId: string): Promise<DedicatedIpView
     }));
 }
 
-/** Lightweight check used by the banner — does this account have an IP yet? */
+/** Lightweight check used by the banner - does this account have an IP yet? */
 export async function accountHasAnyIp(accountId: string): Promise<boolean> {
     const count = await prisma.dedicatedIp.count({
         where: {

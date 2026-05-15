@@ -4,7 +4,7 @@
  * Handles lead ingestion from direct API calls and Clay webhooks.
  * All leads are created with organization context for multi-tenancy.
  *
- * ARCHITECTURE: Both endpoints delegate to processLead() — a single shared
+ * ARCHITECTURE: Both endpoints delegate to processLead() - a single shared
  * pipeline for health gate → upsert → routing → assignment → platform push.
  * Bug fixes apply once. Source is just a parameter.
  */
@@ -59,7 +59,7 @@ interface ProcessResult {
 }
 
 /**
- * Single pipeline for all lead ingestion — health gate → upsert → route → assign → push.
+ * Single pipeline for all lead ingestion - health gate → upsert → route → assign → push.
  * Both API and Clay endpoints call this. Bug fixes apply once.
  */
 export async function processLead(
@@ -91,7 +91,7 @@ export async function processLead(
     });
     logger.info(`[HEALTH GATE] Lead: ${email} | Classification: ${healthResult.classification} | Score: ${healthResult.score}`);
 
-    // Store raw event (Section 5.1 — store before processing)
+    // Store raw event (Section 5.1 - store before processing)
     const idempotencyKey = input.idempotencyKey || `${organizationId}:${source}:${email}`;
     await eventService.storeEvent({
         organizationId,
@@ -126,7 +126,7 @@ export async function processLead(
             persona,
             lead_score,
             source,
-            // Contact fields — only overwrite when caller supplies a value, so re-ingests
+            // Contact fields - only overwrite when caller supplies a value, so re-ingests
             // don't blow away enrichment from CRM/Apollo workers.
             ...(first_name !== undefined ? { first_name } : {}),
             ...(last_name !== undefined ? { last_name } : {}),
@@ -332,7 +332,7 @@ export async function processLead(
     });
 
     // === 7. SEQUENCER ENROLLMENT ===
-    // Native sending — every campaign is a sequencer campaign. We create a
+    // Native sending - every campaign is a sequencer campaign. We create a
     // CampaignLead row idempotently; the dispatcher picks it up on its next tick.
     // ESP-aware mailbox routing happens at dispatch time inside sendQueueService.
     let pushedToPlatform = false;
@@ -359,7 +359,7 @@ export async function processLead(
             // Enrollment failed. Keep the lead HELD with its campaign assignment so the
             // Lead Processor (processor.ts, runs every 10s) can retry.
             const attempts = await redisUtils.incrementPushRetry(createdLead.id).catch(() => 1);
-            logger.warn(`[${logTag}] Failed to enroll lead ${email} — leaving HELD for retry (attempt ${attempts}): ${result.error}`);
+            logger.warn(`[${logTag}] Failed to enroll lead ${email} - leaving HELD for retry (attempt ${attempts}): ${result.error}`);
             await auditLogService.logAction({
                 organizationId,
                 entity: 'lead',
@@ -371,7 +371,7 @@ export async function processLead(
         }
     } catch (enrollError: any) {
         const attempts = await redisUtils.incrementPushRetry(createdLead.id).catch(() => 1);
-        logger.error(`[${logTag}] Error enrolling lead in campaign — leaving HELD for retry (attempt ${attempts})`, enrollError, { campaignId });
+        logger.error(`[${logTag}] Error enrolling lead in campaign - leaving HELD for retry (attempt ${attempts})`, enrollError, { campaignId });
     }
 
     return {
@@ -443,7 +443,7 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
 
     const payload = req.body;
 
-    // Get organization context (manual extraction — middleware skips public routes)
+    // Get organization context (manual extraction - middleware skips public routes)
     let organizationId = req.headers['x-organization-id'] as string || req.query.orgId as string;
 
     if (!organizationId) {
@@ -466,13 +466,13 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
 
     // === SECURITY: validate webhook auth ===
     // Two acceptable forms, in priority order:
-    //   1. X-Clay-Secret: <secret>            — bearer-style direct compare
+    //   1. X-Clay-Secret: <secret>            - bearer-style direct compare
     //      Clay's HTTP API column doesn't have a built-in HMAC primitive,
     //      so requiring HMAC realistically blocks every Clay user. Sending
     //      the per-org secret as a header value (same security model as a
     //      bearer token) is the standard webhook pattern and what Clay
     //      users can actually configure in 30 seconds.
-    //   2. X-Clay-Signature: <hex HMAC-SHA256> — HMAC of raw body
+    //   2. X-Clay-Signature: <hex HMAC-SHA256> - HMAC of raw body
     //      Kept for callers who can produce HMAC (custom ingestion script,
     //      a different webhook source pretending to be Clay, etc.).
     //
@@ -498,12 +498,12 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
     if (org.clay_webhook_secret) {
         const cryptoMod = await import('crypto');
 
-        // Try X-Clay-Secret first — easiest to set up in Clay.
+        // Try X-Clay-Secret first - easiest to set up in Clay.
         if (secretHeader) {
             authMethod = 'secret-header';
             const a = Buffer.from(secretHeader);
             const b = Buffer.from(org.clay_webhook_secret);
-            // timingSafeEqual demands equal length — short-circuit here so
+            // timingSafeEqual demands equal length - short-circuit here so
             // a wrong-length header just returns 401 instead of crashing.
             authPassed = a.length === b.length && cryptoMod.timingSafeEqual(a, b);
         }
@@ -554,7 +554,7 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
         return undefined;
     };
 
-    // Both spaced ("Work Email") and underscored ("Work_Email") forms —
+    // Both spaced ("Work Email") and underscored ("Work_Email") forms -
     // Clay's HTTP-action editor recommends underscored JSON keys (with
     // spaced `{{ Column Name }}` references), so `work_email` is what
     // arrives in the payload by default per Clay's docs.

@@ -50,7 +50,7 @@ const RETENTION_POLICIES: RetentionPolicy[] = [
         description: 'Metrics retained for 90 days'
     },
     // PII-bearing tables. We don't keep recipient personal data longer than
-    // necessary — Privacy Policy commits to "as long as needed to provide the
+    // necessary - Privacy Policy commits to "as long as needed to provide the
     // service" and the per-table caps below align with that.
     {
         entityType: 'BounceEvent',
@@ -336,7 +336,7 @@ export async function softDeleteMailbox(
     mailboxId: string,
     reason: string
 ): Promise<void> {
-    // 'deleted' is not a standard MailboxState — use setInitial for admin override
+    // 'deleted' is not a standard MailboxState - use setInitial for admin override
     await entityStateService.setInitialMailboxStatus(
         organizationId, mailboxId, 'deleted' as MailboxState,
         `Soft delete: ${reason}`, TriggerType.MANUAL
@@ -501,7 +501,7 @@ export function startRetentionJob(): void {
 
     retentionJobInterval = setInterval(async () => {
         if (isRetentionRunning) {
-            logger.warn('Retention cycle skipped — previous still running');
+            logger.warn('Retention cycle skipped - previous still running');
             return;
         }
 

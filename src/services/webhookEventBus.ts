@@ -5,7 +5,7 @@
  * `webhookService.dispatchEvent`. Each emit* function:
  *   1. Maps the domain change → the correct event type from WEBHOOK_EVENTS
  *   2. Builds a consistent payload shape every event of that type uses
- *   3. Fires-and-forgets — never throws, never blocks the caller
+ *   3. Fires-and-forgets - never throws, never blocks the caller
  *
  * Why a layer? It keeps payload shapes uniform across the codebase. If
  * `mailbox.paused` should always carry { mailbox_id, mailbox_email,
@@ -47,7 +47,7 @@ interface MailboxLite {
  * Maps the new status to either `mailbox.paused` or `mailbox.healed`.
  *
  * Phase transitions (quarantine/restricted_send/warm_recovery) come from
- * `emitMailboxPhaseChange` instead — those fire from healingService.
+ * `emitMailboxPhaseChange` instead - those fire from healingService.
  */
 export function emitMailboxStateChange(
     orgId: string,
@@ -123,7 +123,7 @@ export function emitDomainStateChange(
     toState: string,
     reason: string,
 ): void {
-    // Domain status transitions don't all map to webhook events — only
+    // Domain status transitions don't all map to webhook events - only
     // dnsbl listing/clearing and DNS failures do. The state change itself
     // is intentionally a no-op here unless those specific reasons apply.
     if (/dnsbl/i.test(reason) && /list/i.test(reason)) {
@@ -297,7 +297,7 @@ interface ReplyContext extends Record<string, unknown> {
 
 export function emitReplyReceived(orgId: string, reply: ReplyContext): void {
     safeFire(orgId, 'reply.received', reply);
-    // A reply also implies the lead engaged — fire `lead.replied` so
+    // A reply also implies the lead engaged - fire `lead.replied` so
     // subscribers that only care about lead state machine state changes
     // don't have to listen to both event types.
     safeFire(orgId, 'lead.replied', {

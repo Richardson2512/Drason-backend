@@ -4,17 +4,17 @@
  * Simulates how a cold email will look to the recipient across mainstream
  * clients. Three concerns:
  *
- *   1. INBOX LIST — sender name, subject line, preview text, all truncated
+ *   1. INBOX LIST - sender name, subject line, preview text, all truncated
  *      to each client's actual width. The first thing the recipient sees.
- *   2. OPENED VIEW — HTML normalized to each client's quirks (Gmail strips
+ *   2. OPENED VIEW - HTML normalized to each client's quirks (Gmail strips
  *      <style> blocks, Outlook re-renders via Word, Apple Mail keeps most).
- *   3. AI SUMMARY — what Gmail's "Summarize" / Apple Intelligence / Superhuman
+ *   3. AI SUMMARY - what Gmail's "Summarize" / Apple Intelligence / Superhuman
  *      produce when they auto-summarize the message. By 2026 a meaningful
  *      share of mobile readers see the summary BEFORE the email itself.
  *
  * This is approximate, not pixel-truth. Litmus charges for actual rendering.
  * What we deliver is: "looks like the client" + "AI summary the recipient
- * would likely see" — enough to surprise senders into rewriting their copy.
+ * would likely see" - enough to surprise senders into rewriting their copy.
  */
 
 import { safeCompletion } from './openaiClient';
@@ -98,7 +98,7 @@ export const CLIENT_PROFILES: Record<ClientKey, ClientProfile> = {
         pixelPreloaded: true,
     },
     apple_mail_macos: {
-        // Apple Mail on macOS — three-pane layout with sidebar + message list
+        // Apple Mail on macOS - three-pane layout with sidebar + message list
         // + reading pane. Wider than iOS since the list pane can show two
         // lines of preview text under the subject. Mail Privacy Protection
         // applies on macOS too when enabled in Settings.
@@ -201,7 +201,7 @@ export function truncate(s: string, max: number): string {
 /**
  * Apply each client's known HTML quirks to the source body so the rendered
  * preview behaves more like what the recipient actually sees. Best-effort
- * — known to be incomplete; calibrated up over time as we hit edge cases.
+ * - known to be incomplete; calibrated up over time as we hit edge cases.
  */
 export function normalizeHtmlForClient(bodyHtml: string, profile: ClientProfile): string {
     let html = bodyHtml || '';
@@ -245,7 +245,7 @@ export function normalizeHtmlForClient(bodyHtml: string, profile: ClientProfile)
 //                     keeps its source colors.
 //   - none            (Gmail Desktop): no dark transform at all.
 //
-// We DO NOT fully simulate every quirk — that requires a real client. We
+// We DO NOT fully simulate every quirk - that requires a real client. We
 // produce a "this is roughly what you'd see" view good enough for catching
 // "my email is unreadable in dark mode" disasters before they ship.
 
@@ -290,14 +290,14 @@ export function renderDarkForClient(bodyHtml: string, profile: ClientProfile): D
         }
         case 'partial_invert': {
             // Outlook desktop dark mode: backgrounds invert but text colors
-            // do not — explicit dark text on default white surface ends up
+            // do not - explicit dark text on default white surface ends up
             // as dark text on dark surface = unreadable.
             return {
                 html: base,
                 chromeBg: '#1F2937',
                 chromeFg: '#9CA3AF',
                 note: explicit
-                    ? 'Partial-invert client: your explicit text colors were NOT flipped — risk of dark-on-dark text.'
+                    ? 'Partial-invert client: your explicit text colors were NOT flipped - risk of dark-on-dark text.'
                     : 'Partial-invert client: background darkened, default text colors kept.',
             };
         }
@@ -325,7 +325,7 @@ export function renderDarkForClient(bodyHtml: string, profile: ClientProfile): D
 /**
  * Predict the AI summary the recipient's client would generate. Gmail's
  * Summarize, Apple Intelligence's "Summary" line, and Superhuman's
- * Instant-Summary all have distinct voices — concise / helpful / punchy.
+ * Instant-Summary all have distinct voices - concise / helpful / punchy.
  *
  * We approximate by prompting GPT-4o-mini with a style guide for each
  * client. Output is short on purpose because the real clients are short.
@@ -341,7 +341,7 @@ export async function predictAiSummary(
     const styleInstructions: Record<typeof style, string> = {
         gmail: `You are Gmail's "Summarize" feature. Generate a single declarative sentence (≤18 words) that captures the email's core ask. Use passive observational tone. No greeting, no quotes, no marketing language. Start with the verb or "Sender" or the action. Examples: "Sales rep proposing a 15-minute call to discuss outbound infrastructure." or "Vendor requesting feedback on their pricing tiers."`,
         apple: `You are Apple Intelligence's email summary. Produce ONE concise sentence (≤16 words), respectful tone, third-person. Surface the action being requested. Avoid superlatives. Example: "A request for a meeting to discuss email deliverability tools."`,
-        superhuman: `You are Superhuman's Instant Summary. Output a 4-7 word noun phrase capturing the email's core intent. Punchy, action-oriented, all lowercase. Examples: "cold pitch — outbound infra demo", "follow-up on pricing question", "intro w/ shared connection".`,
+        superhuman: `You are Superhuman's Instant Summary. Output a 4-7 word noun phrase capturing the email's core intent. Punchy, action-oriented, all lowercase. Examples: "cold pitch - outbound infra demo", "follow-up on pricing question", "intro w/ shared connection".`,
     };
 
     const prompt = `Email metadata:
@@ -367,11 +367,11 @@ Output ONLY the summary text. No prefixes, no quotation marks, no explanation.`;
         );
         return (res.choices[0]?.message?.content || '').trim().replace(/^["']|["']$/g, '');
     } catch (err) {
-        // Graceful — better to return a placeholder than fail the whole preview.
+        // Graceful - better to return a placeholder than fail the whole preview.
         // But the failure is real and we need to see it in logs to know whether
         // the AI summary box is silently degraded for users.
         const e = err as { status?: number; code?: string; message?: string };
-        logger.warn('[RECIPIENT_PREVIEW] predictAiSummary failed — returning placeholder', {
+        logger.warn('[RECIPIENT_PREVIEW] predictAiSummary failed - returning placeholder', {
             style,
             status: e?.status,
             code: e?.code,
@@ -411,31 +411,31 @@ export function detectIssues(subject: string, bodyHtml: string): PreviewIssue[] 
     const subj = (subject || '').toLowerCase();
 
     if (!subject || !subject.trim()) {
-        issues.push({ severity: 'error', code: 'subject_empty', message: 'Subject line is empty — most clients will show "(no subject)" which kills open rates.' });
+        issues.push({ severity: 'error', code: 'subject_empty', message: 'Subject line is empty - most clients will show "(no subject)" which kills open rates.' });
     }
     // Gmail mobile clips at ~36 chars; if longer, the truncated preview omits the value prop
     if (subject && subject.length > 60) {
         issues.push({
             severity: 'warning',
             code: 'subject_too_long',
-            message: `Subject is ${subject.length} chars — Gmail mobile cuts off at ~36, Apple Mail iOS at ~30. Front-load the value.`,
+            message: `Subject is ${subject.length} chars - Gmail mobile cuts off at ~36, Apple Mail iOS at ~30. Front-load the value.`,
             affectsClients: ['gmail_mobile', 'apple_mail_ios', 'outlook_mobile'],
         });
     }
 
     if (!plain) {
-        issues.push({ severity: 'warning', code: 'preview_empty', message: 'No preview text — clients will fall back to header noise. Add a real first sentence.' });
+        issues.push({ severity: 'warning', code: 'preview_empty', message: 'No preview text - clients will fall back to header noise. Add a real first sentence.' });
     } else if (plain.length < 30) {
-        issues.push({ severity: 'warning', code: 'preview_short', message: `Preview text is only ${plain.length} chars — most of the inbox-row preview will be empty.` });
+        issues.push({ severity: 'warning', code: 'preview_short', message: `Preview text is only ${plain.length} chars - most of the inbox-row preview will be empty.` });
     }
 
-    // Dark-mode contrast — common breakage: white background, dark text in inline styles
+    // Dark-mode contrast - common breakage: white background, dark text in inline styles
     // Heuristic: any inline style with background:white|#fff|#ffffff combined with explicit dark text
     if (/background:\s*(?:#fff|#ffffff|white)/i.test(bodyHtml || '') && /color:\s*(?:#000|#000000|black|#1\w{2})/i.test(bodyHtml || '')) {
         issues.push({
             severity: 'warning',
             code: 'dark_mode_contrast',
-            message: 'Hard-coded white-on-dark or black-on-light styling detected — Gmail Android/iOS will force-invert and may make this unreadable.',
+            message: 'Hard-coded white-on-dark or black-on-light styling detected - Gmail Android/iOS will force-invert and may make this unreadable.',
             affectsClients: ['gmail_mobile', 'outlook_mobile'],
         });
     }
@@ -446,7 +446,7 @@ export function detectIssues(subject: string, bodyHtml: string): PreviewIssue[] 
         issues.push({
             severity: 'warning',
             code: 'image_no_alt',
-            message: `${imgsNoAlt.length} image${imgsNoAlt.length === 1 ? '' : 's'} without alt text — when blocked or in a screen reader, recipient sees nothing.`,
+            message: `${imgsNoAlt.length} image${imgsNoAlt.length === 1 ? '' : 's'} without alt text - when blocked or in a screen reader, recipient sees nothing.`,
         });
     }
 
@@ -455,7 +455,7 @@ export function detectIssues(subject: string, bodyHtml: string): PreviewIssue[] 
         issues.push({
             severity: 'warning',
             code: 'links_no_protocol',
-            message: 'Link href without https:// — many clients silently drop or break these.',
+            message: 'Link href without https:// - many clients silently drop or break these.',
         });
     }
 
@@ -502,7 +502,7 @@ export interface PreviewRequest {
     subject: string;
     bodyHtml: string;
     /** Inbox preview text. When non-empty, takes precedence over the
-     *  body-derived snippet in every client's inbox-list view — matching
+     *  body-derived snippet in every client's inbox-list view - matching
      *  real Gmail/Outlook/Apple Mail behavior where the preheader, when
      *  present, replaces the auto-extracted snippet. */
     preheader?: string;
@@ -539,7 +539,7 @@ export async function buildRecipientPreview(req: PreviewRequest): Promise<Previe
     const plain = preheader || extractPreviewText(req.bodyHtml || '');
     const issues = detectIssues(subject, req.bodyHtml || '');
 
-    // Run AI summary calls in parallel — typical 1–3 clients have hasAiSummary,
+    // Run AI summary calls in parallel - typical 1–3 clients have hasAiSummary,
     // and we only call when includeAiSummary=true (caller controls cost).
     const summaryPromises: Promise<{ key: ClientKey; summary: string }>[] = [];
     if (req.includeAiSummary) {

@@ -2,33 +2,33 @@
  * LinkedIn Contacts controller.
  *
  * Super LinkedIn shares the workspace-level `Lead` table with Super
- * Sequencer — there's no separate `LinkedInContact` model. The LinkedIn
+ * Sequencer - there's no separate `LinkedInContact` model. The LinkedIn
  * contacts page renders the subset of Leads that carry a `linkedin_url`
  * plus three LinkedIn-specific facets joined from the connection-edge
  * graph and campaign-enrollment counts:
  *
- *   - `connection_status` — derived from LinkedInConnectionEdge with any
+ *   - `connection_status` - derived from LinkedInConnectionEdge with any
  *     of the org's connected LinkedIn accounts (priority: CONNECTED >
  *     INVITE_ACCEPTED > INVITE_SENT > NOT_CONNECTED > unknown).
- *   - `via_account` — the LinkedInAccount that last issued an invite or
+ *   - `via_account` - the LinkedInAccount that last issued an invite or
  *     established the connection (display_name).
- *   - `linkedin_campaign_count` — number of LinkedIn-channel campaigns
+ *   - `linkedin_campaign_count` - number of LinkedIn-channel campaigns
  *     this lead is enrolled in.
  *
  * Endpoints:
- *   GET    /api/linkedin/contacts                 — paginated list
- *   GET    /api/linkedin/contacts/facets          — distinct filter values
- *   POST   /api/linkedin/contacts                 — add single contact
- *   POST   /api/linkedin/contacts/bulk            — CSV / batch import
- *   POST   /api/linkedin/contacts/delete          — bulk delete
+ *   GET    /api/linkedin/contacts                 - paginated list
+ *   GET    /api/linkedin/contacts/facets          - distinct filter values
+ *   POST   /api/linkedin/contacts                 - add single contact
+ *   POST   /api/linkedin/contacts/bulk            - CSV / batch import
+ *   POST   /api/linkedin/contacts/delete          - bulk delete
  *   POST   /api/linkedin/contacts/enroll-in-campaign
- *                                                 — push existing leads
+ *                                                 - push existing leads
  *                                                   into a LinkedIn
  *                                                   campaign (the "From
  *                                                   Sequencer" flow)
  *
  * Tag operations (per-row PUT + bulk-tag) reuse the unified sequencer
- * endpoints — leads are shared identity, so /api/sequencer/contacts/:id/
+ * endpoints - leads are shared identity, so /api/sequencer/contacts/:id/
  * tags works for both channels.
  */
 
@@ -303,9 +303,9 @@ export const facets = async (req: Request, res: Response): Promise<Response> => 
 };
 
 // ────────────────────────────────────────────────────────────────────
-// POST /api/linkedin/contacts — single contact create
+// POST /api/linkedin/contacts - single contact create
 //
-// A LinkedIn contact MUST carry a linkedin_url. Email is optional —
+// A LinkedIn contact MUST carry a linkedin_url. Email is optional -
 // many LinkedIn-only contacts won't have one (enrichment lands later).
 // We follow the same Lead-row contract as the sequencer create, just
 // with relaxed email validation.
@@ -334,7 +334,7 @@ function normalizeIncoming(c: IncomingContact, orgId: string): any {
 
     // Email is optional. If absent we synthesize a sentinel one so the
     // CampaignLead.email FK + the unique (campaign_id, email) index
-    // still work — the dispatcher already understands @unresolved.local
+    // still work - the dispatcher already understands @unresolved.local
     // as "pre-enrichment placeholder" (see signal-promotion path).
     const slug = slugFromUrl(linkedin_url) ?? `unknown-${Date.now()}`;
     const email = (c.email && c.email.includes('@')) ? c.email.trim().toLowerCase() : `lin_${slug}@unresolved.local`;
@@ -366,7 +366,7 @@ export const create = async (req: Request, res: Response): Promise<Response> => 
             where: { organization_id_email: { organization_id: orgId, email: data.email } },
             create: data,
             update: {
-                // Only fill in fields the operator provided — don't blow
+                // Only fill in fields the operator provided - don't blow
                 // away enriched values with placeholder nulls.
                 ...(data.first_name ? { first_name: data.first_name } : {}),
                 ...(data.last_name ? { last_name: data.last_name } : {}),
@@ -378,7 +378,7 @@ export const create = async (req: Request, res: Response): Promise<Response> => 
             },
         });
 
-        // Tags — validate they belong to this org, then upsert link rows.
+        // Tags - validate they belong to this org, then upsert link rows.
         if (Array.isArray(body.tags) && body.tags.length > 0) {
             const validTags = await prisma.tag.findMany({
                 where: { id: { in: body.tags }, organization_id: orgId },
@@ -402,7 +402,7 @@ export const create = async (req: Request, res: Response): Promise<Response> => 
 };
 
 // ────────────────────────────────────────────────────────────────────
-// POST /api/linkedin/contacts/bulk — CSV / batch import
+// POST /api/linkedin/contacts/bulk - CSV / batch import
 // ────────────────────────────────────────────────────────────────────
 
 export const bulk = async (req: Request, res: Response): Promise<Response> => {
@@ -464,7 +464,7 @@ export const bulk = async (req: Request, res: Response): Promise<Response> => {
 };
 
 // ────────────────────────────────────────────────────────────────────
-// POST /api/linkedin/contacts/delete — bulk delete
+// POST /api/linkedin/contacts/delete - bulk delete
 //
 // Deletes Lead rows by id. Cascading FKs (LeadTag, CampaignLead) clear
 // automatically. This is hard delete (matches the sequencer behavior);
@@ -493,7 +493,7 @@ export const remove = async (req: Request, res: Response): Promise<Response> => 
 //
 // The "From Super Sequencer" workflow. Takes a list of lead ids + a
 // target LinkedIn campaign and upserts CampaignLead rows for each.
-// Idempotent — leads already enrolled are skipped (not duplicated).
+// Idempotent - leads already enrolled are skipped (not duplicated).
 //
 // Body:
 //   { lead_ids: string[], campaign_id: string }
@@ -527,7 +527,7 @@ export const enrollInCampaign = async (req: Request, res: Response): Promise<Res
             return res.status(400).json({ success: false, error: 'Campaign not found or is not a LinkedIn campaign in this org' });
         }
 
-        // Fetch the leads — must be org-owned + have a linkedin_url.
+        // Fetch the leads - must be org-owned + have a linkedin_url.
         const leads = await prisma.lead.findMany({
             where: { id: { in: leadIds }, organization_id: orgId },
             select: { id: true, email: true, first_name: true, last_name: true, company: true, title: true, linkedin_url: true },
@@ -535,7 +535,7 @@ export const enrollInCampaign = async (req: Request, res: Response): Promise<Res
         const enrollable = leads.filter(l => l.linkedin_url);
         const skipped_no_linkedin = leads.length - enrollable.length;
 
-        // Existing enrollments — avoid double-counting.
+        // Existing enrollments - avoid double-counting.
         const existingByEmail = new Set(
             (await prisma.campaignLead.findMany({
                 where: { campaign_id: campaignId, email: { in: enrollable.map(l => l.email) } },
@@ -559,7 +559,7 @@ export const enrollInCampaign = async (req: Request, res: Response): Promise<Res
                         title: l.title,
                         status: 'active',
                         current_step: 0,
-                        // next_send_at left null — the launch endpoint
+                        // next_send_at left null - the launch endpoint
                         // seeds it on first start, and the dispatcher
                         // ignores nulls.
                     },

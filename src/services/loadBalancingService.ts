@@ -4,7 +4,7 @@
  * Analyzes mailbox-campaign distribution and suggests optimal rebalancing.
  * Considers mailbox health, domain health, and campaign load.
  *
- * Load is measured by "effective load share" — the fraction of each campaign's
+ * Load is measured by "effective load share" - the fraction of each campaign's
  * sending burden that falls on a single mailbox. A mailbox in 5 campaigns that
  * each have 20 mailboxes carries 5 × (1/20) = 0.25 effective load. A mailbox
  * that is the sole sender in 3 campaigns carries 3.0 effective load.
@@ -289,7 +289,7 @@ export const analyzeLoadBalancing = async (
                     from_campaign_name: campaign.name || undefined,
                     to_campaign_id: undefined,
                     to_campaign_name: undefined,
-                    reason: `Mailbox ${overloadedMailbox.email} has high effective load (${overloadedMailbox.effective_load} — equivalent to being sole sender in ${overloadedMailbox.effective_load} campaigns). Campaign "${campaign.name}" only has ${mailboxesInCampaign} mailbox(es). Add ${targetMailbox.email} (effective load: ${targetMailbox.effective_load}) to share the burden.`,
+                    reason: `Mailbox ${overloadedMailbox.email} has high effective load (${overloadedMailbox.effective_load} - equivalent to being sole sender in ${overloadedMailbox.effective_load} campaigns). Campaign "${campaign.name}" only has ${mailboxesInCampaign} mailbox(es). Add ${targetMailbox.email} (effective load: ${targetMailbox.effective_load}) to share the burden.`,
                     expected_impact: `Reduces effective load on ${overloadedMailbox.email} and adds redundancy to "${campaign.name}"`,
                     priority: overloadedMailbox.effective_load >= 4.0 ? 'high' : 'medium'
                 });
@@ -374,7 +374,7 @@ export const analyzeLoadBalancing = async (
     const highPrioritySuggestions = suggestions.filter(s => s.priority === 'high');
     if (highPrioritySuggestions.length > 0) {
         const suggestionLines = highPrioritySuggestions
-            .map(s => `• *${s.type.replace('_', ' ')}* — \`${s.mailbox_email}\`: ${s.reason}`)
+            .map(s => `• *${s.type.replace('_', ' ')}* - \`${s.mailbox_email}\`: ${s.reason}`)
             .join('\n');
 
         SlackAlertService.sendAlert({
@@ -420,7 +420,7 @@ export const applySuggestion = async (
                     }
                 });
 
-                // Native sending — DB connect already done above; the
+                // Native sending - DB connect already done above; the
                 // dispatcher picks up the new mailbox on its next 60s tick.
                 SlackAlertService.sendAlert({
                     organizationId,
@@ -449,7 +449,7 @@ export const applySuggestion = async (
                         }
                     }
                 });
-                // Native sending — DB disconnect already done above; the
+                // Native sending - DB disconnect already done above; the
                 // dispatcher excludes the mailbox on its next 60s tick.
                 SlackAlertService.sendAlert({
                     organizationId,

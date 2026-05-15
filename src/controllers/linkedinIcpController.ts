@@ -1,19 +1,19 @@
 /**
  * ICP profile CRUD for the LinkedIn /icp surface.
  *
- *   GET    /api/linkedin/icp          — list with matched-profile count (30d)
- *   POST   /api/linkedin/icp          — create
- *   GET    /api/linkedin/icp/:id      — read single
- *   PATCH  /api/linkedin/icp/:id      — partial update
- *   DELETE /api/linkedin/icp/:id      — delete
- *   POST   /api/linkedin/icp/:id/toggle — enable/disable shortcut
+ *   GET    /api/linkedin/icp          - list with matched-profile count (30d)
+ *   POST   /api/linkedin/icp          - create
+ *   GET    /api/linkedin/icp/:id      - read single
+ *   PATCH  /api/linkedin/icp/:id      - partial update
+ *   DELETE /api/linkedin/icp/:id      - delete
+ *   POST   /api/linkedin/icp/:id/toggle - enable/disable shortcut
  *
  * All endpoints are scoped by getOrgId(req). Schema in v1 is structured-only
  * (titles / industries / company_sizes / geos as multi-select string[]).
  *
  * The matched_30d figure is computed from LinkedInProfile.icp_match_score
  * rows that landed in the last 30 days for the org. We don't currently
- * persist WHICH icp matched a profile — that's a v2 schema addition — so
+ * persist WHICH icp matched a profile - that's a v2 schema addition - so
  * for now matched_30d returns the total icp-matched profile count per
  * workspace, surfaced identically on every row. Comment marks the
  * approximation so the frontend doesn't read more into the number.
@@ -34,7 +34,7 @@ function sanitiseStringArray(v: unknown): string[] {
 }
 
 /** Returns `{ kept, dropped }` so callers can surface invalid sizes in
- *  the response payload — previously these silently disappeared which
+ *  the response payload - previously these silently disappeared which
  *  left operators confused when their selected bucket didn't persist. */
 function sanitiseSizesWithDropped(v: unknown): { kept: string[]; dropped: string[] } {
     const all = sanitiseStringArray(v);
@@ -129,14 +129,14 @@ export const create = async (req: Request, res: Response): Promise<Response> => 
         const geos       = sanitiseStringArray(body.geos);
 
         // Reject ICPs with every filter empty unless explicit opt-in.
-        // An ICP with no filters matches every profile — usually a mis-
+        // An ICP with no filters matches every profile - usually a mis-
         // configuration. The operator can override by sending
         // `match_all: true` in the body to confirm they meant it.
         const allEmpty = titles.length === 0 && industries.length === 0 && companySizes.length === 0 && geos.length === 0;
         if (allEmpty && body.match_all !== true) {
             return res.status(400).json({
                 success: false,
-                error: 'ICP has no filters configured — it would match every profile. Add at least one title/industry/company-size/geo, or pass match_all: true to confirm.',
+                error: 'ICP has no filters configured - it would match every profile. Add at least one title/industry/company-size/geo, or pass match_all: true to confirm.',
                 code: 'icp_empty_filters',
             });
         }
@@ -218,7 +218,7 @@ export const update = async (req: Request, res: Response): Promise<Response> => 
         if (allEmpty && body.match_all !== true) {
             return res.status(400).json({
                 success: false,
-                error: 'Saving these changes would leave the ICP with no filters — it would match every profile. Restore at least one filter, or pass match_all: true to confirm.',
+                error: 'Saving these changes would leave the ICP with no filters - it would match every profile. Restore at least one filter, or pass match_all: true to confirm.',
                 code: 'icp_empty_filters',
             });
         }
@@ -244,7 +244,7 @@ export const update = async (req: Request, res: Response): Promise<Response> => 
 
 /**
  * Soft-delete. Hard-deleting an ICP cascade-deleted every
- * AgentRunIcpMatch row that referenced it — that nuked the audit
+ * AgentRunIcpMatch row that referenced it - that nuked the audit
  * trail of "which ICPs were considered for this signal." We tombstone
  * the row instead so historical queries stay accurate, and every read
  * path filters `deleted_at: null` to keep tombstoned rows out of the
@@ -283,7 +283,7 @@ export const remove = async (req: Request, res: Response): Promise<Response> => 
 };
 
 /**
- * Diagnostic for the delete-confirmation modal — tells the UI how many
+ * Diagnostic for the delete-confirmation modal - tells the UI how many
  * AgentRunIcpMatch rows reference this ICP. With soft-delete in place
  * these rows survive, but the count is still useful context for the
  * operator: "This ICP has been evaluated against 47 profiles in the
@@ -307,7 +307,7 @@ export const deleteImpact = async (req: Request, res: Response): Promise<Respons
             prisma.agentRunIcpMatch.count({ where: { icp_profile_id: id } }),
         ]);
 
-        // Rule reference check — SignalMonitoringRule.icp_profile_ids
+        // Rule reference check - SignalMonitoringRule.icp_profile_ids
         // is a text array, not a FK, so we just look for ICPs in the
         // array. Postgres `has` operator.
         const referencingRules = await prisma.signalMonitoringRule.findMany({
@@ -353,7 +353,7 @@ export const toggle = async (req: Request, res: Response): Promise<Response> => 
  *                company_size_raw?, location?, country? } }
  *
  * For convenience the test endpoint also accepts on-the-fly filter
- * overrides — the operator can preview "what if I added 'CFO' to the
+ * overrides - the operator can preview "what if I added 'CFO' to the
  * titles list?" without saving. When `overrides` is set we run the
  * matcher against a synthetic ICP made by merging the saved ICP with
  * the override fields.
@@ -385,7 +385,7 @@ export const testIcp = async (req: Request, res: Response): Promise<Response> =>
         // If overrides supplied, temporarily replace the ICP's filter
         // arrays for the duration of the match. We do this by writing a
         // throwaway transaction that updates the ICP, runs matchProfile,
-        // and rolls back — keeps matchProfile's "fetch enabled ICPs
+        // and rolls back - keeps matchProfile's "fetch enabled ICPs
         // from DB" contract intact without needing a parameter.
         //
         // matchProfile reads ALL enabled ICPs for the org and returns
@@ -394,7 +394,7 @@ export const testIcp = async (req: Request, res: Response): Promise<Response> =>
         const result = await matchProfile(orgId, snapshot);
         const isMatched = result.matched_icp_ids.includes(id);
 
-        // Detailed score for this specific ICP — re-run the per-filter
+        // Detailed score for this specific ICP - re-run the per-filter
         // scoring inline so the response shows "title ✓, industry ✗,
         // size ✓, geo: no filter set" breakdown.
         const titles     = (body.overrides?.titles     as string[]) ?? icp.titles;
@@ -409,7 +409,7 @@ export const testIcp = async (req: Request, res: Response): Promise<Response> =>
             industry:  industries.length === 0 ? 'no_filter' as const : (industries.some(i => industryHay.includes(i.toLowerCase())) ? 'hit' as const : 'miss' as const),
             // For sizes we'd need the bucket logic; the matcher's
             // bucketCompanySize is internal. The breakdown approximates
-            // by exact contains — close enough for preview.
+            // by exact contains - close enough for preview.
             company_size: sizes.length === 0 ? 'no_filter' as const : (sizes.some(s => (snapshot.company_size_raw || '').includes(s)) ? 'hit' as const : 'miss' as const),
             geo:       geos.length === 0    ? 'no_filter' as const : (geos.some(g => geoHay.includes(g.toLowerCase()))               ? 'hit' as const : 'miss' as const),
         };

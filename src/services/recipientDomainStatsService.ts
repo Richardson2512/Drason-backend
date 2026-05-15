@@ -67,7 +67,7 @@ export async function getRecipientDomainComplaintRate(
             }),
             // Spam-complaint signal: PROVIDER_SPAM_REJECTION classification or
             // explicit "spam" / "abuse" reason text. Hard bounces alone aren't
-            // complaints — only spam rejections / FBL events are.
+            // complaints - only spam rejections / FBL events are.
             prisma.bounceEvent.count({
                 where: {
                     organization_id: organizationId,
@@ -115,7 +115,7 @@ export function invalidateRecipientDomain(organizationId: string, recipientDomai
     cache.delete(cacheKey(organizationId, recipientDomain));
 }
 
-/** Test/diagnostic only — clears the entire cache. */
+/** Test/diagnostic only - clears the entire cache. */
 export function _clearCacheForTesting(): void {
     cache.clear();
 }

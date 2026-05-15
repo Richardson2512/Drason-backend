@@ -3,10 +3,10 @@
  *
  * Polls CrmSyncJob rows in `pending` or `running` state with type
  * `initial_import` (or `incremental_import`) and pulls contacts from
- * the CRM into Superkabe leads. Provider-blind — uses the registry to
+ * the CRM into Superkabe leads. Provider-blind - uses the registry to
  * resolve the right CrmClient.
  *
- * Resumes mid-flight via the cursor column. Idempotent on email — if a
+ * Resumes mid-flight via the cursor column. Idempotent on email - if a
  * lead already exists for the org/email, we update it rather than dupe.
  */
 
@@ -32,7 +32,7 @@ async function applyFieldMapping(
         where: { crm_connection_id: connectionId, direction: { in: ['import', 'bidirectional'] } },
     });
 
-    // Defaults — these always import even if the user didn't add a mapping.
+    // Defaults - these always import even if the user didn't add a mapping.
     const out: Record<string, string | undefined> = {
         email: contact.email,
         first_name: contact.firstName,
@@ -68,7 +68,7 @@ async function processJob(jobId: string): Promise<void> {
     }
 
     const factory = getFactory(conn.provider as any);
-    if (!factory) return; // wrong process — skip
+    if (!factory) return; // wrong process - skip
 
     const decrypted = await getConnection(conn.id, conn.organization_id);
     if (!decrypted) {
@@ -106,7 +106,7 @@ async function processJob(jobId: string): Promise<void> {
     let totalFailed = job.records_failed;
 
     try {
-        // Pull one page per tick — keeps the worker responsive and bounds
+        // Pull one page per tick - keeps the worker responsive and bounds
         // the per-job work between polls. The same job re-enters on next tick.
         const page = await client.listContacts({
             filter,
@@ -240,7 +240,7 @@ async function upsertLink(connectionId: string, leadId: string, crmContactId: st
             },
         });
     } catch (err) {
-        // P2002 on (connectionId, crmContactId) — link to a different lead in
+        // P2002 on (connectionId, crmContactId) - link to a different lead in
         // the same org for the same CRM contact. Rare. Log and move on.
         if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
             logger.warn('[CRM_IMPORT] crmContactLink unique conflict', { leadId, crmContactId });

@@ -1,5 +1,5 @@
 /**
- * OpenAI Client — single canonical wrapper around chat.completions calls.
+ * OpenAI Client - single canonical wrapper around chat.completions calls.
  *
  * Two responsibilities, one entry point:
  *
@@ -12,7 +12,7 @@
  *
  *   2. SEMAPHORE on concurrent in-flight calls.
  *      Caps how many OpenAI requests this Node process holds open at
- *      once. Configurable via OPENAI_MAX_CONCURRENT (default 25 — chosen
+ *      once. Configurable via OPENAI_MAX_CONCURRENT (default 25 - chosen
  *      to stay comfortably inside Tier-2 RPM/TPM budgets at typical
  *      gpt-4o-mini token sizes; bump if you're on a higher tier).
  *      The (max+1)th call waits in-process for a slot; user latency
@@ -42,7 +42,7 @@ export function getOpenAIClient(): OpenAI {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Semaphore — caps concurrent in-flight OpenAI calls per Node process.
+// Semaphore - caps concurrent in-flight OpenAI calls per Node process.
 //
 // FIFO queue: requests waiting for a slot are served in arrival order so
 // no caller can be indefinitely starved by a steady stream of new
@@ -75,14 +75,14 @@ function acquireSlot(): Promise<() => void> {
     });
 }
 
-/** Diagnostic — exposed for the /api/ai/status endpoint or future
+/** Diagnostic - exposed for the /api/ai/status endpoint or future
  *  metrics. Not used by callers. */
 export function getOpenAIStats() {
     return { inFlight, waiting: waitQueue.length, maxConcurrent: MAX_CONCURRENT };
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Retry helper — exponential backoff with full jitter.
+// Retry helper - exponential backoff with full jitter.
 // ────────────────────────────────────────────────────────────────────
 
 const RETRY_DELAYS_MS = [2_000, 4_000, 8_000]; // 3 attempts after the first
@@ -112,7 +112,7 @@ function jitter(baseMs: number): number {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Public API — `safeCompletion`
+// Public API - `safeCompletion`
 //
 // Drop-in replacement for `client.chat.completions.create`. Same input,
 // same output, plus retry + semaphore behavior.
@@ -141,7 +141,7 @@ export async function safeCompletion(
                 const baseDelay = RETRY_DELAYS_MS[attempt];
                 const wait = jitter(baseDelay);
                 const e = err as OpenAIErrorLike;
-                logger.warn('[OPENAI] Retryable failure — backing off', {
+                logger.warn('[OPENAI] Retryable failure - backing off', {
                     tag,
                     attempt: attempt + 1,
                     of: RETRY_DELAYS_MS.length + 1,
@@ -154,7 +154,7 @@ export async function safeCompletion(
             }
         }
 
-        // Unreachable — the loop either returns or throws — but TS needs
+        // Unreachable - the loop either returns or throws - but TS needs
         // the explicit fall-through.
         throw lastError;
     } finally {

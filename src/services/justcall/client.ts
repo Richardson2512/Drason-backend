@@ -1,5 +1,5 @@
 /**
- * JustCall.io REST client — wraps every API call we need and centralizes:
+ * JustCall.io REST client - wraps every API call we need and centralizes:
  *
  *   - Authentication. JustCall takes credentials as
  *       Authorization: <api_key>:<api_secret>
@@ -81,12 +81,12 @@ export class JustCallClient {
             const wait = burstReset > nowSec
                 ? Math.min(burstReset - nowSec + 1, 70)   // never wait > 70s
                 : 5;                                       // fallback if header missing
-            logger.warn('[JUSTCALL] 429 rate-limit — backing off', { waitSec: wait, path });
+            logger.warn('[JUSTCALL] 429 rate-limit - backing off', { waitSec: wait, path });
             await new Promise(resolve => setTimeout(resolve, wait * 1000));
             return this.fetch(path, init, attempt + 1);
         }
 
-        // Preemptive throttle — if we have 1 burst-call left and need to
+        // Preemptive throttle - if we have 1 burst-call left and need to
         // make multiple, give the per-minute window a moment to refill.
         const burstRemaining = Number(res.headers.get('X-Rate-Limit-Burst-Remaining'));
         if (Number.isFinite(burstRemaining) && burstRemaining <= 1) {
@@ -94,7 +94,7 @@ export class JustCallClient {
             const nowSec = Math.floor(Date.now() / 1000);
             const wait = burstReset > nowSec ? Math.min(burstReset - nowSec + 1, 65) : 0;
             if (wait > 0) {
-                logger.debug('[JUSTCALL] burst window almost exhausted — pausing', { waitSec: wait });
+                logger.debug('[JUSTCALL] burst window almost exhausted - pausing', { waitSec: wait });
                 await new Promise(resolve => setTimeout(resolve, wait * 1000));
             }
         }
@@ -144,10 +144,10 @@ export class JustCallClient {
         return (json ?? {}) as T;
     }
 
-    // ── Identity probe — also serves as key validation ───────────────
+    // ── Identity probe - also serves as key validation ───────────────
 
     /**
-     * GET /users — returns the account's user list. We treat a 200 as
+     * GET /users - returns the account's user list. We treat a 200 as
      * "the credentials work" and surface the first user's identity so
      * the dashboard can show "Connected as you@your.co".
      */
@@ -162,7 +162,7 @@ export class JustCallClient {
                 : [];
         const first = list[0];
         if (!first) {
-            // 200 with empty list still proves the key works — surface what we can.
+            // 200 with empty list still proves the key works - surface what we can.
             return { userId: 'unknown', userEmail: '', accountName: null };
         }
         return {
@@ -175,7 +175,7 @@ export class JustCallClient {
     // ── Sales dialer campaigns ───────────────────────────────────────
 
     /**
-     * GET /sales_dialer/campaigns — list dialer campaigns the connected
+     * GET /sales_dialer/campaigns - list dialer campaigns the connected
      * account can push contacts into. JustCall paginates with `page` +
      * `per_page` (max 100). We walk all pages internally; a customer
      * with thousands of campaigns is a pathological case we don't expect
@@ -210,7 +210,7 @@ export class JustCallClient {
                 });
             }
 
-            // Detect "no more pages" — either by page meta or short page.
+            // Detect "no more pages" - either by page meta or short page.
             const totalPages = Number(json?.total_pages ?? json?.pages ?? 0);
             if (totalPages > 0 && page >= totalPages) break;
             if (rows.length < perPage) break;
@@ -219,7 +219,7 @@ export class JustCallClient {
     }
 
     /**
-     * POST /sales_dialer/campaigns — create a brand-new dialer campaign.
+     * POST /sales_dialer/campaigns - create a brand-new dialer campaign.
      * Required fields: name + country_code. We default the type to
      * Autodial because that's JustCall's own default and the safest for
      * a freshly-created campaign.
@@ -252,12 +252,12 @@ export class JustCallClient {
     // ── Bulk contact import ──────────────────────────────────────────
 
     /**
-     * POST /sales_dialer/contacts/bulk_import — push up to 250 contacts
+     * POST /sales_dialer/contacts/bulk_import - push up to 250 contacts
      * into a campaign in one call. JustCall returns aggregate counts;
      * the precise field names aren't documented uniformly across the
      * v2.1 spec, so we accept several plausible aliases per metric.
      *
-     * The caller is responsible for chunking >250 — see chunk() below.
+     * The caller is responsible for chunking >250 - see chunk() below.
      */
     async bulkImportContacts(opts: {
         campaignId: string;
@@ -268,7 +268,7 @@ export class JustCallClient {
         }
         if (opts.contacts.length > 250) {
             throw new JustCallError(
-                `bulkImportContacts received ${opts.contacts.length} rows — JustCall caps at 250 per request`,
+                `bulkImportContacts received ${opts.contacts.length} rows - JustCall caps at 250 per request`,
                 false,
                 'batch_too_large',
             );
@@ -308,7 +308,7 @@ export class JustCallClient {
 /**
  * Split a contact list into ≤250-row chunks for bulk import. JustCall's
  * suggested minimum is 10 rows per call, so the last chunk may be small
- * but that's the customer's reality — we don't bunch undersized batches.
+ * but that's the customer's reality - we don't bunch undersized batches.
  */
 export function chunk<T>(items: T[], size: number): T[][] {
     if (size <= 0) throw new Error('chunk size must be > 0');

@@ -4,7 +4,7 @@
  * Once every 24 hours per active connection, queues an
  * `incremental_import` CrmSyncJob that re-pulls the same source filter
  * the last completed import used. The contact-import worker handles
- * the actual fetching and is idempotent on email — net-new contacts
+ * the actual fetching and is idempotent on email - net-new contacts
  * land as new Superkabe leads, existing leads update in place.
  *
  * Webhooks (object.creation / object.propertyChange) provide near-
@@ -34,7 +34,7 @@ async function tick(): Promise<void> {
             if (stopped) break;
 
             // Find the most recent completed import (initial OR incremental)
-            // — we reuse its source_filter so the cadence keeps pulling
+            // - we reuse its source_filter so the cadence keeps pulling
             // from the same HubSpot list / Salesforce view.
             const lastImport = await prisma.crmSyncJob.findFirst({
                 where: {

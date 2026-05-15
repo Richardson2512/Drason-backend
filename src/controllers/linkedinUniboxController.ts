@@ -1,10 +1,10 @@
 /**
- * LinkedIn Unibox controller — REST surface for the Unibox page.
+ * LinkedIn Unibox controller - REST surface for the Unibox page.
  *
- *   GET    /api/linkedin/unibox/threads           — list threads across accounts
- *   GET    /api/linkedin/unibox/threads/:id       — get messages in a thread
- *   POST   /api/linkedin/unibox/threads/:id/reply — send a DM
- *   POST   /api/linkedin/unibox/threads/:id/read  — mark thread read
+ *   GET    /api/linkedin/unibox/threads           - list threads across accounts
+ *   GET    /api/linkedin/unibox/threads/:id       - get messages in a thread
+ *   POST   /api/linkedin/unibox/threads/:id/reply - send a DM
+ *   POST   /api/linkedin/unibox/threads/:id/read  - mark thread read
  */
 
 import { Request, Response } from 'express';
@@ -61,7 +61,7 @@ export const sendReply = async (req: Request, res: Response): Promise<Response> 
         const orgId = getOrgId(req);
         const text = String(req.body?.text || '').trim();
         if (!text) return res.status(400).json({ success: false, error: 'text is required' });
-        // Optional UI hint — the thread list already carries the
+        // Optional UI hint - the thread list already carries the
         // counterparty's public identifier, so the frontend passes it on
         // reply so the service can resolve LinkedInProfile → lead_id
         // for cross-channel suppression without an extra round-trip.
@@ -76,7 +76,7 @@ export const sendReply = async (req: Request, res: Response): Promise<Response> 
         );
         return res.json({ success: true, data: result });
     } catch (err) {
-        // Map typed service errors to proper HTTP codes — the UI surfaces
+        // Map typed service errors to proper HTTP codes - the UI surfaces
         // 'cap_reached' as a "daily cap reached" banner separate from
         // generic send failures.
         if (err instanceof uniboxService.SendReplyError) {
@@ -95,7 +95,7 @@ export const markRead = async (req: Request, res: Response): Promise<Response> =
         const orgId = getOrgId(req);
         const result = await uniboxService.markRead(orgId, String(req.params.id));
         if (!result.success) {
-            // Mark-as-read failing isn't a critical operational error —
+            // Mark-as-read failing isn't a critical operational error -
             // the message is still readable, just the read flag won't
             // sync. Return 200 with success:false so the UI can ignore
             // it or show a subtle indicator without an alarming red bar.

@@ -1,5 +1,5 @@
 /**
- * Warmup Sender Worker — schedules warmup sends across the pool.
+ * Warmup Sender Worker - schedules warmup sends across the pool.
  *
  * Cadence: every 15 minutes. On each tick:
  *   1. Find all opted-in memberships whose org has consent on AND who
@@ -56,7 +56,7 @@ function nextRandomScheduleAt(): Date {
 
 /** Coarse "is sender within business hours" gate. Future polish: pull
  *  the mailbox's timezone from the existing mailbox/Sequencer settings.
- *  v1 uses the server's local TZ as a proxy — fine for a single-region
+ *  v1 uses the server's local TZ as a proxy - fine for a single-region
  *  deployment, doesn't break correctness if wrong. */
 function isWithinBusinessHours(now: Date): boolean {
     const hour = now.getHours();
@@ -76,7 +76,7 @@ async function scheduleForMembership(membership: {
     current_daily: number;
 }): Promise<number> {
     // Count how many sends were already scheduled / sent today for this
-    // mailbox (warmup only — production sends accounted separately).
+    // mailbox (warmup only - production sends accounted separately).
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const sentToday = await prisma.warmupExchange.count({
@@ -106,11 +106,11 @@ async function scheduleForMembership(membership: {
             senderDomainId: senderMailbox.domain_id,
         });
         if (!recipient) {
-            // Pool exhausted for now — try again next tick.
+            // Pool exhausted for now - try again next tick.
             break;
         }
 
-        // Subject + body are NOT generated here — they're rendered at
+        // Subject + body are NOT generated here - they're rendered at
         // dispatch time by the dispatch worker, so each scheduled send
         // gets a fresh permutation right before going out. We only store
         // a placeholder subject; dispatch overwrites it with the real
@@ -139,7 +139,7 @@ async function tick(): Promise<void> {
     running = true;
     try {
         if (!isWithinBusinessHours(new Date())) {
-            // Outside business hours — don't schedule. Existing scheduled
+            // Outside business hours - don't schedule. Existing scheduled
             // rows from earlier today will still be dispatched by the
             // other worker as long as their scheduled_at has arrived.
             return;
@@ -160,7 +160,7 @@ async function tick(): Promise<void> {
             // Process oldest first so newer pool joiners don't steal
             // pair slots from members already deep into their ramp.
             orderBy: { joined_at: 'asc' },
-            take: 200, // cap per-tick batch — large pools spread across ticks
+            take: 200, // cap per-tick batch - large pools spread across ticks
         });
 
         let totalScheduled = 0;

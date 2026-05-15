@@ -1,4 +1,4 @@
-# Drason / Superkabe — Customer Onboarding Guide
+# Drason / Superkabe - Customer Onboarding Guide
 
 **Version**: v1 (Design Partner)
 **Last updated**: 2026-05-15
@@ -12,12 +12,12 @@ This doc is the honest, scoped tour of what the platform does today, what's road
 
 Drason is a self-healing cold-email + LinkedIn outreach platform. You bring your own mailboxes, your own LinkedIn accounts (via Unipile), and your own enrichment provider keys. We provide:
 
-1. **Native sending engine** — not a wrapper over Smartlead/Instantly. We own the SMTP transport, the send queue, the per-mailbox capacity tracker, the spam-rate detector, and the recovery pipeline.
-2. **5-phase healing pipeline** — when a mailbox burns out (bounce rate ≥3%, blacklist hit, ISP feedback loop), we automatically (a) pause it, (b) move it to quarantine, (c) ramp it back through a paired-warmup cycle, (d) gate it to a restricted send window, (e) graduate it back to full throughput. **Zero manual reconnects in steady state.**
-3. **Multi-channel sequences with one identity** — a lead is a workspace-level record. Email reply on a campaign pauses any in-flight LinkedIn touchpoints for the same person. Configurable per-org via 4 cross-channel modes (OFF / HARD / CLASSIFIED / ASYMMETRIC).
-4. **Reply intelligence** — Kimi K2.5 classifies inbound replies into 9 categories (positive / qualified / objection / referral / soft_no / hard_no / angry / auto-OOO / unclassified). Per-class auto-actions: suppress, pause-lead, alert.
-5. **CAN-SPAM + Yahoo/Gmail bulk-sender compliant by default** — mandatory mailing address, RFC 8058 one-click unsubscribe, List-Unsubscribe-Post headers, EU compliance mode.
-6. **BYOK enrichment waterfall** — Apollo + Surfe + Clay (inbound-webhook only) + 3 stub providers. No vendor markup; you pay your enrichment vendor directly.
+1. **Native sending engine** - not a wrapper over Smartlead/Instantly. We own the SMTP transport, the send queue, the per-mailbox capacity tracker, the spam-rate detector, and the recovery pipeline.
+2. **5-phase healing pipeline** - when a mailbox burns out (bounce rate ≥3%, blacklist hit, ISP feedback loop), we automatically (a) pause it, (b) move it to quarantine, (c) ramp it back through a paired-warmup cycle, (d) gate it to a restricted send window, (e) graduate it back to full throughput. **Zero manual reconnects in steady state.**
+3. **Multi-channel sequences with one identity** - a lead is a workspace-level record. Email reply on a campaign pauses any in-flight LinkedIn touchpoints for the same person. Configurable per-org via 4 cross-channel modes (OFF / HARD / CLASSIFIED / ASYMMETRIC).
+4. **Reply intelligence** - Kimi K2.5 classifies inbound replies into 9 categories (positive / qualified / objection / referral / soft_no / hard_no / angry / auto-OOO / unclassified). Per-class auto-actions: suppress, pause-lead, alert.
+5. **CAN-SPAM + Yahoo/Gmail bulk-sender compliant by default** - mandatory mailing address, RFC 8058 one-click unsubscribe, List-Unsubscribe-Post headers, EU compliance mode.
+6. **BYOK enrichment waterfall** - Apollo + Surfe + Clay (inbound-webhook only) + 3 stub providers. No vendor markup; you pay your enrichment vendor directly.
 
 ---
 
@@ -32,10 +32,10 @@ Drason is a self-healing cold-email + LinkedIn outreach platform. You bring your
 | Cross-channel reply pause | ✅ Production-shaped | 4 modes, configurable per org |
 | Reply classifier + auto-actions | ✅ Production-shaped | Per-class rules: suppress / pause-lead / alert |
 | CAN-SPAM compliance | ✅ Production-shaped | Mailing address required; one-click unsubscribe enforced |
-| BYOK enrichment — Apollo | ✅ Production-shaped | Sync. Returns LinkedIn URL + email + phone + company metadata |
-| BYOK enrichment — Surfe | ✅ Production-shaped | Sync. Same coverage as Apollo |
-| Inbound enrichment — Clay | ✅ Production-shaped | Webhook-based. Push from Clay table → Drason auto-creates Leads |
-| Polar billing — Starter / Pro / Pro tiers / Growth / Scale | ✅ Production-shaped | Webhook-validated, idempotent |
+| BYOK enrichment - Apollo | ✅ Production-shaped | Sync. Returns LinkedIn URL + email + phone + company metadata |
+| BYOK enrichment - Surfe | ✅ Production-shaped | Sync. Same coverage as Apollo |
+| Inbound enrichment - Clay | ✅ Production-shaped | Webhook-based. Push from Clay table → Drason auto-creates Leads |
+| Polar billing - Starter / Pro / Pro tiers / Growth / Scale | ✅ Production-shaped | Webhook-validated, idempotent |
 | Dedicated IPs (Super Sender) | ✅ Production-shaped | AWS SES-powered, 30-day ramp, $39/IP/mo |
 | LinkedIn account add-on slots | ✅ Production-shaped | $X/slot/month via Polar, auto-released on disconnect |
 | Production frontend build (`next build`) | ✅ Clean | 355 static pages generate without error |
@@ -47,11 +47,11 @@ Drason is a self-healing cold-email + LinkedIn outreach platform. You bring your
 
 ---
 
-## 3. What's still roadmap — don't promise
+## 3. What's still roadmap - don't promise
 
 | Item | Why it's not customer-blocking | ETA |
 |---|---|---|
-| Enrichment providers — Lusha, Hunter, ZoomInfo | Apollo + Surfe cover the same use cases; if customer's only stack is Lusha, this matters | Q3 |
+| Enrichment providers - Lusha, Hunter, ZoomInfo | Apollo + Surfe cover the same use cases; if customer's only stack is Lusha, this matters | Q3 |
 | LastCheckMap Redis backing for IMAP worker | Survives single-instance restart fine; only matters at multi-instance horizontal scale | Q3 |
 | MIME body parsing via library (currently regex) | Works for ~95% of real-world emails; corner cases (multipart with embedded base64) may show truncated bodies | Q4 |
 | Reply-action audit trail UI | Notifications + Slack alerts cover it for now; full audit table TBD | Q3 |
@@ -68,7 +68,7 @@ Run through these in order during concierge onboarding:
 
 ### 4.1 Provision the workspace
 1. Operator creates a Drason account; we provision the Organization row.
-2. Set `mailing_address` on the org (required for every commercial email — CAN-SPAM § 5(a)(5)).
+2. Set `mailing_address` on the org (required for every commercial email - CAN-SPAM § 5(a)(5)).
 3. Pick subscription tier in Settings → Billing → Polar checkout.
 
 ### 4.2 Connect sending infrastructure
@@ -86,22 +86,22 @@ Run through these in order during concierge onboarding:
 ### 4.4 First campaign
 1. New campaign → wizard walks 7 steps (Basics, Leads, Sequence, Mailboxes, Schedule, Settings, Review).
 2. Import contacts via CSV / manual paste / Clay sync.
-3. Build a sequence — mix of email + LinkedIn steps (e.g., view-profile → connection-request → DM → email).
+3. Build a sequence - mix of email + LinkedIn steps (e.g., view-profile → connection-request → DM → email).
 4. **Use a `find_linkedin_url` step BEFORE any LinkedIn touchpoint** if your contacts don't all have LinkedIn URLs in the CSV. The wizard's review screen tells you the coverage % and warns when missing.
 5. Launch from the detail page. The status flips to `active` and the dispatcher picks it up on the next 60s tick.
 
 ### 4.5 Day-2 operations
-- **Unibox** (`/dashboard/sequencer/unibox`) — triage replies. Per-class auto-actions are configurable in Settings → Reply Actions.
-- **Infrastructure** (`/dashboard/infrastructure`) — DNS + blacklist status, refreshed every 24h in background. Doesn't block sends.
-- **Analytics** (`/dashboard/sequencer/analytics`) — per-campaign open/click/reply/bounce funnel.
-- **Mailbox health** — auto-paused mailboxes show on the Sequencer dashboard. Auto-resume happens after the healing pipeline graduates them; no operator action needed in steady state.
+- **Unibox** (`/dashboard/sequencer/unibox`) - triage replies. Per-class auto-actions are configurable in Settings → Reply Actions.
+- **Infrastructure** (`/dashboard/infrastructure`) - DNS + blacklist status, refreshed every 24h in background. Doesn't block sends.
+- **Analytics** (`/dashboard/sequencer/analytics`) - per-campaign open/click/reply/bounce funnel.
+- **Mailbox health** - auto-paused mailboxes show on the Sequencer dashboard. Auto-resume happens after the healing pipeline graduates them; no operator action needed in steady state.
 
 ---
 
 ## 5. Gotchas (read these before launch)
 
 ### 5.1 Apollo / Surfe API rate limits are yours, not ours
-We're strict BYOK — your enrichment vendor sees your API calls under your account, your rate limits, your spend. Spike protection on the platform side is a 10s timeout per call + waterfall short-circuit on first hit; we never retry against a 429.
+We're strict BYOK - your enrichment vendor sees your API calls under your account, your rate limits, your spend. Spike protection on the platform side is a 10s timeout per call + waterfall short-circuit on first hit; we never retry against a 429.
 
 ### 5.2 LinkedIn step "view profile / follow / like" count against the 100/day "other actions" cap
 LinkedIn's API groups view/follow/like under one daily bucket. We track this per LinkedIn account; if your sequence has 4 LinkedIn warm-up steps before the DM, you'll burn 4× per lead against that cap. Plan accordingly.
@@ -110,12 +110,12 @@ LinkedIn's API groups view/follow/like under one daily bucket. We track this per
 The reply classifier runs on every inbound, but the AI re-classification fires only when the rule-based pass returns low confidence. First-time upgrades may have a cache-warmup delay of ~30s. The Unibox shows the final class after the AI pass; the per-class actions correctly fire on the AI-final result, not the rule result.
 
 ### 5.4 Mixed-channel campaigns require LinkedIn senders to be in `OK` status at launch time
-We re-validate at launch — if your LinkedIn account is in `CREDENTIALS` (re-auth required) or `ERROR` state, the campaign launch is blocked with a clear error message. Reconnect on Settings → LinkedIn → Reconnect.
+We re-validate at launch - if your LinkedIn account is in `CREDENTIALS` (re-auth required) or `ERROR` state, the campaign launch is blocked with a clear error message. Reconnect on Settings → LinkedIn → Reconnect.
 
 ### 5.5 The dedicated IP ramps over 30 days
 Day 1: 50 sends/day. Day 30: full tier limit. Don't expect immediate full throughput; this is the AWS SES warmup curve and accelerating it would tank deliverability.
 
-### 5.6 Healing pipeline holds outbound during recovery — that's the point
+### 5.6 Healing pipeline holds outbound during recovery - that's the point
 When a mailbox drops into `restricted_send` or `warm_recovery` phase, daily caps drop (10/day, then 50/day). This is by design. Visible on the Mailboxes page; auto-resume on graduation.
 
 ### 5.7 Cross-channel reply pause is configurable but defaults to ASYMMETRIC
@@ -127,7 +127,7 @@ When a mailbox drops into `restricted_send` or `warm_recovery` phase, daily caps
 Set the mode in Settings → Reply Actions → Cross-channel.
 
 ### 5.8 Out-of-office (OOO) auto-replies don't clear ramp progress
-When Kimi classifies a reply as `auto` (OOO), the lead is paused via `ooo_until` extracted from the message. The campaign resumes automatically after that date. We don't clear the OOO hold on subsequent low-confidence replies (objection / soft_no / unclassified) — only on definitive human reply classes (positive / qualified / hard_no / angry / referral).
+When Kimi classifies a reply as `auto` (OOO), the lead is paused via `ooo_until` extracted from the message. The campaign resumes automatically after that date. We don't clear the OOO hold on subsequent low-confidence replies (objection / soft_no / unclassified) - only on definitive human reply classes (positive / qualified / hard_no / angry / referral).
 
 ### 5.9 Sending is NOT blocked by the daily infrastructure assessment
 The DNS + DNSBL snapshot runs every 24h in the background. It shows on the dashboard as a small floater toast, never blocks the UI, and never gates the dispatcher. Real-time protection is the executionGate at send time (mailbox status, domain status, bounce rate, recipient-domain complaints, healing caps). The assessment is informational; it tells you what's drifting.
@@ -141,7 +141,7 @@ A read-only viewer (e.g., agency-mode client guest) cannot list or read template
 
 For a design-partner customer, you should expect:
 - **40–60% off list**, locked for 12 months
-- **Concierge onboarding** — your engineering contact walks you through the first campaign
+- **Concierge onboarding** - your engineering contact walks you through the first campaign
 - **Weekly check-in** until you're at steady state
 - **48h response on any platform issue you hit**
 
@@ -157,7 +157,7 @@ In return, we ask:
 - We're not yet horizontally-scaled. Single-instance staging. Latency is fine for design partners but multi-instance hardening is on roadmap.
 - We don't yet have an external uptime monitor or status page. Use the Slack channel we'll share for incident communication.
 - Some surfaces (Reply Actions config, Analytics deep-dives) are functional but not polished. We'll be iterating fast.
-- The first paying customer is, by definition, the production canary. We've audited deeply across LinkedIn (Campaigns/Contacts/Accounts/Unibox/Signals/ICP/Overview) and Sequencer (Campaigns/Unibox/Templates/Warmup/Mailboxes/Domains/Analytics/Settings/Reply Actions/Super-Sender/Infrastructure) and shipped 30+ documented P0/P1 fixes — but you may still find sharp edges. We will move fast on whatever you hit.
+- The first paying customer is, by definition, the production canary. We've audited deeply across LinkedIn (Campaigns/Contacts/Accounts/Unibox/Signals/ICP/Overview) and Sequencer (Campaigns/Unibox/Templates/Warmup/Mailboxes/Domains/Analytics/Settings/Reply Actions/Super-Sender/Infrastructure) and shipped 30+ documented P0/P1 fixes - but you may still find sharp edges. We will move fast on whatever you hit.
 
 ---
 
@@ -170,4 +170,4 @@ In return, we ask:
 
 ---
 
-*This document is intentionally honest. If something doesn't work as described, it's a bug — please flag it.*
+*This document is intentionally honest. If something doesn't work as described, it's a bug - please flag it.*

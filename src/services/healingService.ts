@@ -57,7 +57,7 @@ function formatDuration(ms: number): string {
  * in try/catch so an email-send failure can never crash the healing
  * pipeline. 15-min coalescing bucket on the auto-pause/quarantine emails
  * collapses storms (multiple mailboxes pausing in sequence) to one
- * email per (org, alert kind, 15-min) window — operators consult the
+ * email per (org, alert kind, 15-min) window - operators consult the
  * dashboard for the full inventory.
  */
 async function dispatchHealingTransitionEmail(args: {
@@ -149,7 +149,7 @@ async function dispatchHealingTransitionEmail(args: {
                     audience: { kind: 'org-admins', organizationId: args.organizationId },
                     category: 'operational_alert',
                     eventKind: 'mailbox_recovered',
-                    // Per-recovery key — once-per-graduation. A future
+                    // Per-recovery key - once-per-graduation. A future
                     // relapse + re-graduation gets a fresh email because
                     // this key only matches THIS recovery instant.
                     idempotencyKey: `mailbox-recovered:${args.entityId}:${Date.now()}`,
@@ -224,7 +224,7 @@ const RESILIENCE_ADJUSTMENTS = {
 } as const;
 
 // ============================================================================
-// HARD FLOOR — TRANSITION GATE SAFETY
+// HARD FLOOR - TRANSITION GATE SAFETY
 // ============================================================================
 
 /**
@@ -306,7 +306,7 @@ export async function checkMailboxGraduation(mailboxId: string): Promise<PhaseTr
             return checkWarmToHealthy(mailbox, isRehab, now);
 
         default:
-            return null; // Already healthy or warning — no graduation path
+            return null; // Already healthy or warning - no graduation path
     }
 }
 
@@ -327,7 +327,7 @@ async function checkPausedToQuarantine(
         mailbox.organization_id,
         RecoveryPhase.PAUSED,
         RecoveryPhase.QUARANTINE,
-        'Cooldown expired — entering quarantine (no sending)',
+        'Cooldown expired - entering quarantine (no sending)',
         mailbox.resilience_score
     );
     return result;
@@ -365,7 +365,7 @@ async function checkQuarantineToRestricted(
     // DNS-failure backoff with jitter: if a recent attempt failed, wait at
     // least DNS_CHECK_FAILURE_DEFER_MS (± 20% jitter) before retrying.
     // Jitter is keyed on domain.id so each domain has a stable but distinct
-    // backoff window — prevents the thundering-herd retry pattern when many
+    // backoff window - prevents the thundering-herd retry pattern when many
     // domains queue up against the same DNS service.
     if (domain.dns_check_failure_count > 0 && domain.last_dns_check_attempt_at) {
         const baseDeferMs = MONITORING_THRESHOLDS.DNS_CHECK_FAILURE_DEFER_MS;
@@ -419,13 +419,13 @@ async function checkQuarantineToRestricted(
                 last_dns_check_attempt_at: new Date(),
                 ...(escalate && {
                     manual_intervention_required: true,
-                    manual_intervention_reason: `DNS check failed ${newFailureCount} consecutive times — operator review required`,
+                    manual_intervention_reason: `DNS check failed ${newFailureCount} consecutive times - operator review required`,
                     manual_intervention_set_at: new Date(),
                 }),
             },
         });
 
-        logger.warn('[HEALING] Live DNS check failed — fail-closed (deferring graduation)', {
+        logger.warn('[HEALING] Live DNS check failed - fail-closed (deferring graduation)', {
             domainId: domain.id,
             domain: domain.domain,
             failureCount: newFailureCount,
@@ -437,7 +437,7 @@ async function checkQuarantineToRestricted(
             try {
                 await notificationService.createNotification(mailbox.organization_id, {
                     type: 'ERROR',
-                    title: 'Domain Escalated — Manual Intervention Required',
+                    title: 'Domain Escalated - Manual Intervention Required',
                     message: `Domain ${domain.domain} has had ${newFailureCount} consecutive DNS check failures during graduation. Operator review required to proceed.`,
                 });
             } catch { /* non-fatal */ }
@@ -453,7 +453,7 @@ async function checkQuarantineToRestricted(
     });
     if (!freshDomain) return null;
 
-    // DNS must be healthy — no blacklists, SPF/DKIM present
+    // DNS must be healthy - no blacklists, SPF/DKIM present
     const dnsHealthy = freshDomain.spf_valid === true
         && freshDomain.dkim_valid === true
         && !isBlacklisted(freshDomain.blacklist_results);
@@ -468,7 +468,7 @@ async function checkQuarantineToRestricted(
         mailbox.organization_id,
         RecoveryPhase.QUARANTINE,
         RecoveryPhase.RESTRICTED_SEND,
-        'DNS checks passed — entering restricted send mode',
+        'DNS checks passed - entering restricted send mode',
         mailbox.resilience_score
     );
     return result;
@@ -480,7 +480,7 @@ async function checkQuarantineToRestricted(
  * truth for phase-scoped graduation (SendEvent/BounceEvent counts since
  * phase_entered_at, time-in-phase floor, manual-intervention gate).
  *
- * The legacy isRehab/clean_sends_since_phase logic is no longer used here —
+ * The legacy isRehab/clean_sends_since_phase logic is no longer used here -
  * warmupService handles those conditions consistently across both phases.
  */
 async function checkRestrictedToWarm(
@@ -504,7 +504,7 @@ async function checkRestrictedToWarm(
 /**
  * Warm Recovery → Healthy.
  * Delegates to warmupService.checkGraduationCriteria. Bounce-rate and
- * complaint-rate gates are enforced inside warmupService — see
+ * complaint-rate gates are enforced inside warmupService - see
  * GRADUATION_CRITERIA.warm_to_healthy.
  */
 async function checkWarmToHealthy(
@@ -528,7 +528,7 @@ async function checkWarmToHealthy(
             resilience_score: resAdj.newScore,
             healing_origin: null,         // Clear healing origin
             relapse_count: 0,             // Reset on full recovery
-            consecutive_pauses: 0,        // Reset offense counter — fix for healing-pipeline leak
+            consecutive_pauses: 0,        // Reset offense counter - fix for healing-pipeline leak
             consecutive_pauses_decayed_at: null,
         },
     });
@@ -549,7 +549,7 @@ async function checkWarmToHealthy(
 // ============================================================================
 
 /**
- * Handle a relapse — entity was recovering but degraded again.
+ * Handle a relapse - entity was recovering but degraded again.
  * Returns the target phase after relapse penalties are applied.
  */
 export async function handleRelapse(
@@ -665,7 +665,7 @@ export async function handleRelapse(
         logger.warn('Failed to create relapse notification', { entityId });
     }
 
-    // Manual-intervention email — fires once per (entity, escalation
+    // Manual-intervention email - fires once per (entity, escalation
     // event). Idempotency keyed on (entity, relapse count) so a second
     // relapse at the same count doesn't re-notify, but the next escalation
     // (relapseCount + 1) does.
@@ -714,7 +714,7 @@ export async function handleRelapse(
 }
 
 // ============================================================================
-// TRANSITION GATE (Section 3.5 — Phase 0 → Phase 1)
+// TRANSITION GATE (Section 3.5 - Phase 0 → Phase 1)
 // ============================================================================
 
 interface TransitionGateResult {
@@ -759,7 +759,7 @@ export async function checkTransitionGate(organizationId: string): Promise<Trans
     // Below TRANSITION_HARD_FLOOR, operator override is IMPOSSIBLE.
     // Infrastructure is too damaged to operate safely.
     if (overallScore > 0 && overallScore < TRANSITION_HARD_FLOOR) {
-        logger.warn('[HEALING] Infrastructure below hard floor — no override possible', {
+        logger.warn('[HEALING] Infrastructure below hard floor - no override possible', {
             organizationId,
             overallScore,
             hardFloor: TRANSITION_HARD_FLOOR,
@@ -768,7 +768,7 @@ export async function checkTransitionGate(organizationId: string): Promise<Trans
             canTransition: false,
             requiresAcknowledgment: false,
             overallScore,
-            message: `Infrastructure scored ${overallScore}/100 — below the safety floor of ${TRANSITION_HARD_FLOOR}. Manual infrastructure repair required (fix SPF/DKIM/DMARC, resolve blacklistings). Operator override is not available at this level.`,
+            message: `Infrastructure scored ${overallScore}/100 - below the safety floor of ${TRANSITION_HARD_FLOOR}. Manual infrastructure repair required (fix SPF/DKIM/DMARC, resolve blacklistings). Operator override is not available at this level.`,
         };
     }
 
@@ -806,7 +806,7 @@ export async function checkTransitionGate(organizationId: string): Promise<Trans
         };
     }
 
-    // Score is 0 — everything paused
+    // Score is 0 - everything paused
     return {
         canTransition: false,
         requiresAcknowledgment: false,
@@ -821,9 +821,9 @@ export async function checkTransitionGate(organizationId: string): Promise<Trans
 export async function acknowledgeTransition(organizationId: string): Promise<boolean> {
     const gateResult = await checkTransitionGate(organizationId);
 
-    // Hard floor check — reject below safety threshold
+    // Hard floor check - reject below safety threshold
     if (gateResult.overallScore < TRANSITION_HARD_FLOOR) {
-        logger.warn('[HEALING] Transition acknowledgment rejected — below hard floor', {
+        logger.warn('[HEALING] Transition acknowledgment rejected - below hard floor', {
             organizationId,
             score: gateResult.overallScore,
             floor: TRANSITION_HARD_FLOOR,
@@ -899,7 +899,7 @@ export async function recordCleanSend(
 }
 
 /**
- * Apply the periodic "stable streak" resilience boost — closes the
+ * Apply the periodic "stable streak" resilience boost - closes the
  * one-way ratchet where resilience could only ever decrease (PAUSE −15,
  * RELAPSE −25) and increase on a one-shot graduation (+10). Without this
  * tick, mailboxes/domains that have been healthy for weeks accumulate no
@@ -912,7 +912,7 @@ export async function recordCleanSend(
  *     reward dormant inboxes)
  *   - Are below the RESILIENCE_ADJUSTMENTS.MAX_SCORE ceiling
  *   - Have not received a stable-streak boost within the same window
- *     (idempotency via audit log — no schema change required)
+ *     (idempotency via audit log - no schema change required)
  *
  * Designed to be called once per warmup-worker tick (every 4h). The audit
  * log idempotency guard ensures it's safe to invoke more frequently.
@@ -939,7 +939,7 @@ export async function applyStableStreakBoosts(orgId?: string): Promise<{
                 { last_pause_at: null },
                 { last_pause_at: { lt: cutoff } },
             ],
-            // Active sender within the window — don't reward dormant mailboxes
+            // Active sender within the window - don't reward dormant mailboxes
             last_activity_at: { gte: cutoff },
             ...(orgId ? { organization_id: orgId } : {}),
         },
@@ -1044,7 +1044,7 @@ export async function applyStableStreakBoosts(orgId?: string): Promise<{
 }
 
 /**
- * Reset clean send counter — called when a health-degrading bounce occurs
+ * Reset clean send counter - called when a health-degrading bounce occurs
  * during a recovery phase.
  */
 export async function resetCleanSends(
@@ -1198,7 +1198,7 @@ export async function transitionPhase(
         }),
     });
 
-    // Email dispatch — fire-and-forget. Covers paused/quarantine/recovered
+    // Email dispatch - fire-and-forget. Covers paused/quarantine/recovered
     // for mailboxes and paused for domains. See dispatchHealingTransitionEmail
     // for coalescing + idempotency notes.
     void dispatchHealingTransitionEmail({
@@ -1284,7 +1284,7 @@ export async function transitionPhase(
             // Step 1: Fully clear the warmup volume cap. The dispatcher takes
             //   min(daily_send_limit, warmup_limit) when warmup_limit > 0, so a
             //   non-zero "maintenance" value (the previous 10/day default) caps
-            //   a fully-graduated mailbox at 10 sends per day forever — exactly
+            //   a fully-graduated mailbox at 10 sends per day forever - exactly
             //   the bug the integration audit caught. Pass `false` so
             //   warmup_limit is nulled and the dispatcher uses the
             //   ConnectedAccount.daily_send_limit cleanly.
@@ -1307,7 +1307,7 @@ export async function transitionPhase(
                 });
             }
 
-            // Step 2: Native sending — send queue reads Mailbox.status directly,
+            // Step 2: Native sending - send queue reads Mailbox.status directly,
             // so a healed mailbox is automatically eligible for dispatch again.
             // No external platform re-add needed.
             let campaigns: Array<{ id: string; name: string }> = [];
@@ -1317,7 +1317,7 @@ export async function transitionPhase(
                     select: { id: true, name: true }
                 });
 
-                logger.info(`[HEALING] Mailbox ${entityId} graduated to healthy — eligible for dispatch`, {
+                logger.info(`[HEALING] Mailbox ${entityId} graduated to healthy - eligible for dispatch`, {
                     organizationId,
                     entityId,
                 });
@@ -1334,13 +1334,13 @@ export async function transitionPhase(
 
         // ── PLATFORM INTEGRATION: Re-add domain mailboxes when domain recovers ──
         if (entityType === 'domain') {
-            // Native sending — once domain mailboxes flip to 'healthy',
+            // Native sending - once domain mailboxes flip to 'healthy',
             // sendQueueService picks them up automatically. No external
             // platform re-add required.
             const mailboxCount = await prisma.mailbox.count({
                 where: { domain_id: entityId, status: 'healthy' }
             });
-            logger.info(`[HEALING] Domain ${entityId} graduated — ${mailboxCount} mailboxes eligible for dispatch`, {
+            logger.info(`[HEALING] Domain ${entityId} graduated - ${mailboxCount} mailboxes eligible for dispatch`, {
                 organizationId,
                 domainId: entityId,
                 mailboxCount
@@ -1362,7 +1362,7 @@ export async function transitionPhase(
         }).catch(err => logger.warn('[HEALING] Non-fatal alert error', { error: String(err) }));
     }
 
-    // Outbound webhook fan-out — only mailbox phase changes carry their own
+    // Outbound webhook fan-out - only mailbox phase changes carry their own
     // webhook events (mailbox.entered_quarantine / restricted_send / warm_recovery
     // / mailbox.healed). Domain phase changes ride domain.* events from
     // entityStateService instead.
@@ -1503,7 +1503,7 @@ export async function getOrgAggregateLimit(organizationId: string): Promise<numb
  * CONSECUTIVE_PAUSES_DECAY_DAYS. Decrements by 1 per decay window (min 0).
  *
  * Called by metricsWorker on a daily tick. The 30-day window is a defensible
- * practitioner choice — no authoritative source publishes a forgiveness curve
+ * practitioner choice - no authoritative source publishes a forgiveness curve
  * for past offenses, but Apollo/Smartlead's "60+ days inactive = restart
  * warmup" precedent suggests reputation memory has a multi-week half-life.
  */
@@ -1701,7 +1701,7 @@ async function checkAndRestartWaitingCampaigns(
                     healthyMailboxCount: campaignData.mailboxes.length
                 });
 
-                // Native sending — resume by flipping Campaign.status. The
+                // Native sending - resume by flipping Campaign.status. The
                 // sequencer dispatcher reads this on its next 60s tick.
                 try {
                     await prisma.campaign.update({

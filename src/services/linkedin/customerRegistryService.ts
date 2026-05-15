@@ -1,5 +1,5 @@
 /**
- * Customer registry — resolves whether an engager on a LinkedIn post
+ * Customer registry - resolves whether an engager on a LinkedIn post
  * works at a company that is already our customer (and the wider
  * relationship: active prospect, past lead, or net-new).
  *
@@ -7,7 +7,7 @@
  * account/company, not an individual person. The resolver matches the
  * engager's current company against the Customer table by:
  *
- *   1. Company LinkedIn slug — most reliable, exact match
+ *   1. Company LinkedIn slug - most reliable, exact match
  *   2. Normalised company_name (lowercased, trimmed)
  *
  * The table is populated from three sources:
@@ -19,14 +19,14 @@
  * label the card and the operator knows whether to enroll, re-engage,
  * or skip:
  *
- *   - 'customer'         — Engager's company is in the Customer table.
- *   - 'active_prospect'  — Has Lead row + at least one ACTIVE CampaignLead.
- *   - 'past_lead'        — Has Lead row but no active CampaignLead.
- *   - 'new'              — No company match, no Lead row.
+ *   - 'customer'         - Engager's company is in the Customer table.
+ *   - 'active_prospect'  - Has Lead row + at least one ACTIVE CampaignLead.
+ *   - 'past_lead'        - Has Lead row but no active CampaignLead.
+ *   - 'new'              - No company match, no Lead row.
  *
  * A `confidence_note` string explains how the bucket was reached so the
  * operator can trust or interrogate the label ("matched Acme Corp via
- * HubSpot lifecycle_stage", "no CRM connected — inferred from outreach
+ * HubSpot lifecycle_stage", "no CRM connected - inferred from outreach
  * history").
  */
 
@@ -40,7 +40,7 @@ export interface RelationshipInfo {
     confidence_note: string;
     /** Which source labelled this person a customer. NULL when not a customer. */
     customer_source?: 'hubspot' | 'salesforce' | 'csv' | 'manual' | null;
-    /** The matched customer company name — surfaced on the engager card. */
+    /** The matched customer company name - surfaced on the engager card. */
     matched_company?: string | null;
 }
 
@@ -68,7 +68,7 @@ function normalizeCompany(name: string | null | undefined): string | null {
 
 /**
  * Bulk-resolve relationships for a batch of LinkedInProfile ids. Single
- * pass per data source — DO NOT call this per-row in a loop.
+ * pass per data source - DO NOT call this per-row in a loop.
  */
 export async function resolveRelationships(
     organizationId: string,
@@ -87,7 +87,7 @@ export async function resolveRelationships(
         : [];
     const leadById = new Map(leads.map(l => [l.id, l]));
 
-    // Active campaign membership — pending/active/paused on this lead's
+    // Active campaign membership - pending/active/paused on this lead's
     // email counts as "still being worked." Suppressed/replied/completed
     // do not. Scoped via campaign.organization_id to stay tenant-safe.
     const activeRows = leadIds.length > 0
@@ -103,7 +103,7 @@ export async function resolveRelationships(
         : [];
     const activeEmailSet = new Set(activeRows.map(r => r.email.toLowerCase()));
 
-    // Customer lookup — load all rows for this org once. Keyed by
+    // Customer lookup - load all rows for this org once. Keyed by
     // normalised company name (primary) and company LinkedIn slug
     // (secondary). At org-scale we expect <50k customer rows.
     const customers = await prisma.customer.findMany({
@@ -177,7 +177,7 @@ export async function resolveRelationships(
 
         out.set(p.id, {
             relationship: 'new',
-            confidence_note: 'No customer-company match and no prior outreach — net-new engager',
+            confidence_note: 'No customer-company match and no prior outreach - net-new engager',
             customer_source: null,
             matched_company: null,
         });
@@ -190,7 +190,7 @@ export async function resolveRelationships(
 // CSV ingest
 //
 // Accepts the parsed rows the controller has already extracted from the
-// uploaded CSV. We do not parse the CSV here — keeping the multipart
+// uploaded CSV. We do not parse the CSV here - keeping the multipart
 // parsing in the controller layer.
 //
 // Match rule on re-import: source='csv' upserts by external_id when

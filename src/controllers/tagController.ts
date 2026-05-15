@@ -1,16 +1,16 @@
 /**
- * Tag Controller — operator-defined contact tags.
+ * Tag Controller - operator-defined contact tags.
  *
  * Endpoints (all under /api/sequencer/tags):
- *   GET  /            — list tags + count of leads carrying each
- *   POST /            — create a tag (name + optional color)
- *   PATCH /:id        — rename / recolor a tag
- *   DELETE /:id       — delete a tag (cascade-clears it from all leads)
+ *   GET  /            - list tags + count of leads carrying each
+ *   POST /            - create a tag (name + optional color)
+ *   PATCH /:id        - rename / recolor a tag
+ *   DELETE /:id       - delete a tag (cascade-clears it from all leads)
  *
  * Lead tagging endpoints live on contactController to keep lead-mutation
  * surface area in one place:
- *   PUT  /api/sequencer/contacts/:id/tags    — replace a lead's tags
- *   POST /api/sequencer/contacts/bulk-tag    — add/remove a tag from many leads
+ *   PUT  /api/sequencer/contacts/:id/tags    - replace a lead's tags
+ *   POST /api/sequencer/contacts/bulk-tag    - add/remove a tag from many leads
  */
 
 import { Request, Response } from 'express';
@@ -29,7 +29,7 @@ function validName(raw: unknown): string | null {
 }
 
 function validColor(raw: unknown): string | null | undefined {
-    if (raw === undefined) return undefined;       // not provided — leave alone
+    if (raw === undefined) return undefined;       // not provided - leave alone
     if (raw === null || raw === '') return null;   // explicit clear
     if (typeof raw !== 'string') return undefined; // ignore non-strings
     return HEX_RE.test(raw) ? raw : undefined;

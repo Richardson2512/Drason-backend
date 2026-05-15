@@ -51,7 +51,7 @@ export const listTemplates = async (req: Request, res: Response): Promise<Respon
         // Folder filter: 'all' (default) → no filter; 'uncategorized' → folder_id is null;
         // any other string → folder_id matches.
         const folder = (req.query.folder as string) || undefined;
-        // Pagination — list payload includes the full body_html column,
+        // Pagination - list payload includes the full body_html column,
         // which for image-rich templates can be hundreds of KB per row. An
         // org with 10k templates and no `take` cap would pull tens of MB
         // into memory and time out the request. 200 is the practical UI
@@ -114,7 +114,7 @@ export const getTemplate = async (req: Request, res: Response): Promise<Response
  * POST /api/sequencer/templates
  * Create a new template.
  */
-// Hard cap on template body size — Postgres TEXT has no inherent limit,
+// Hard cap on template body size - Postgres TEXT has no inherent limit,
 // but loading a 50 MB body into the editor every time the operator opens
 // the template would brick the UI and tank the dispatcher (templates are
 // loaded per-send for variable substitution). 1 MB is generous for any
@@ -249,7 +249,7 @@ export const duplicateTemplate = async (req: Request, res: Response): Promise<Re
                 body_text: template.body_text,
                 category: template.category,
                 // Preserve folder so operators don't lose organizational
-                // structure when duplicating — the original behaviour was
+                // structure when duplicating - the original behaviour was
                 // to drop everything into Uncategorized.
                 folder_id: template.folder_id,
             },

@@ -33,7 +33,7 @@ interface JwtPayload {
 }
 
 /**
- * Get JWT secret — same logic as authController.
+ * Get JWT secret - same logic as authController.
  */
 function getJwtSecret(): string {
     const secret = process.env.JWT_SECRET;
@@ -60,7 +60,7 @@ function verifyJwt(token: string): JwtPayload | null {
         }
         return null;
     } catch {
-        // Invalid or expired token — not a JWT (might be an API key)
+        // Invalid or expired token - not a JWT (might be an API key)
         return null;
     }
 }
@@ -108,12 +108,12 @@ export const extractOrgContext = async (
         // PUBLIC ROUTES: Skip context check for auth endpoints and webhooks
         // Note: req.path is relative to the mount point ('/api')
         const publicPaths = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout', '/auth/google', '/auth/onboarding', '/auth/legal-versions', '/auth/forgot-password', '/auth/reset-password',
-            // Workspace invite magic-link flow — pre-auth by design.
+            // Workspace invite magic-link flow - pre-auth by design.
             '/auth/invite',           // GET /auth/invite?token= validates a magic link
             '/auth/invite/complete',  // POST sets password + creates the User row
             '/auth/login/client',     // workspace-scoped client login
             '/ingest/clay', '/billing/polar-webhook', '/sequencer/accounts/google/callback', '/sequencer/accounts/microsoft/callback', '/oauth/callback/postmaster', '/oauth/consent/details', '/oauth/consent/deny', '/consent/cookies', '/integrations/hubspot/callback', '/integrations/salesforce/callback', '/integrations/outreach/callback', '/integrations/hubspot/webhooks',
-            // SES SNS posts to this endpoint without our auth — verified by AWS
+            // SES SNS posts to this endpoint without our auth - verified by AWS
             // signing keys at the controller layer (TODO: add signature check).
             '/super-sender/ses-notification'];
         if (publicPaths.some(path => req.path.startsWith(path))) {
@@ -136,7 +136,7 @@ export const extractOrgContext = async (
                 // points at still exist. Without this, a JWT signed with a
                 // valid secret but referencing a deleted user (re-seed,
                 // schema reset, account deletion, restored backup, org
-                // moved) is accepted by the middleware — every controller
+                // moved) is accepted by the middleware - every controller
                 // below us then hits a null findUnique and returns 404
                 // "User not found" / "Organization not found", and the
                 // frontend (which only auto-redirects on 401) traps the
@@ -153,7 +153,7 @@ export const extractOrgContext = async (
                     },
                 });
                 if (!user) {
-                    logger.warn('[ORG_CONTEXT] JWT references unknown user — clearing cookie + 401', {
+                    logger.warn('[ORG_CONTEXT] JWT references unknown user - clearing cookie + 401', {
                         userId: jwtPayload.userId,
                     });
                     clearTokenCookie(res);
@@ -170,7 +170,7 @@ export const extractOrgContext = async (
                 // re-parented to a different agency must not be able to act
                 // against the new agency's resources.
                 if (jwtPayload.accountId !== undefined && jwtPayload.accountId !== user.account_id) {
-                    logger.warn('[ORG_CONTEXT] JWT accountId no longer matches user — clearing cookie + 401', {
+                    logger.warn('[ORG_CONTEXT] JWT accountId no longer matches user - clearing cookie + 401', {
                         userId: jwtPayload.userId,
                         jwtAccountId: jwtPayload.accountId,
                         currentAccountId: user.account_id,
@@ -184,7 +184,7 @@ export const extractOrgContext = async (
                     return;
                 }
                 if (user.organization_id !== jwtPayload.orgId) {
-                    logger.warn('[ORG_CONTEXT] JWT orgId no longer matches user — clearing cookie + 401', {
+                    logger.warn('[ORG_CONTEXT] JWT orgId no longer matches user - clearing cookie + 401', {
                         userId: jwtPayload.userId,
                         jwtOrgId: jwtPayload.orgId,
                         currentOrgId: user.organization_id,
@@ -200,7 +200,7 @@ export const extractOrgContext = async (
                 if (user.password_changed_at && jwtPayload.iat) {
                     const tokenIssuedAt = new Date(jwtPayload.iat * 1000);
                     if (tokenIssuedAt < user.password_changed_at) {
-                        logger.warn('[ORG_CONTEXT] JWT issued before password change — rejected', {
+                        logger.warn('[ORG_CONTEXT] JWT issued before password change - rejected', {
                             userId: jwtPayload.userId,
                         });
                         clearTokenCookie(res);
@@ -213,7 +213,7 @@ export const extractOrgContext = async (
                     }
                 }
 
-                // JWT authentication — trusted source for userId, role, orgId
+                // JWT authentication - trusted source for userId, role, orgId
                 userId = jwtPayload.userId;
                 role = jwtPayload.role as UserRole;
                 organizationId = jwtPayload.orgId;
@@ -246,11 +246,11 @@ export const extractOrgContext = async (
                 if (oat) {
                     organizationId = oat.organizationId;
                     userId = oat.userId;
-                    authMethod = 'api_key'; // Reuse api_key path — same scope-based authz model
+                    authMethod = 'api_key'; // Reuse api_key path - same scope-based authz model
                     (req as any)._apiKeyScopes = oat.scopes;
                 }
             } else {
-                // Not a valid JWT — try API key
+                // Not a valid JWT - try API key
                 const keyData = await validateApiKey(token);
                 if (keyData) {
                     organizationId = keyData.organizationId;
@@ -270,7 +270,7 @@ export const extractOrgContext = async (
             // a broken /dashboard. Return 401 so the global frontend handler
             // redirects to /login, and clear the stale cookie on the way out.
             if (!organizationId) {
-                logger.warn('[ORG_CONTEXT] Token present but unverifiable — clearing cookie + 401');
+                logger.warn('[ORG_CONTEXT] Token present but unverifiable - clearing cookie + 401');
                 if (req.cookies?.token) {
                     clearTokenCookie(res);
                 }
@@ -283,9 +283,9 @@ export const extractOrgContext = async (
             }
         }
 
-        // Development fallback — ONLY when NO token was provided at all and
+        // Development fallback - ONLY when NO token was provided at all and
         // we're not in production. (If a token was present but unverifiable,
-        // the block above already returned 401 — we never reach this.)
+        // the block above already returned 401 - we never reach this.)
         if (!organizationId && process.env.NODE_ENV !== 'production') {
             organizationId = DEFAULT_ORG_ID;
             role = UserRole.ADMIN; // Dev gets admin for convenience
@@ -431,7 +431,7 @@ export const requireRole = (requiredRole: UserRole) => {
 
 /**
  * Require super admin role for the route.
- * Unlike requireRole, this checks for exact super_admin match — no hierarchy fallback.
+ * Unlike requireRole, this checks for exact super_admin match - no hierarchy fallback.
  */
 export const requireSuperAdmin = (req: Request, res: Response, next: NextFunction) => {
     if (!req.orgContext?.role || req.orgContext.role !== 'super_admin') {
@@ -457,7 +457,7 @@ export function getOrgId(req: Request): string {
  * resolved by extractOrgContext was issued for the org named in the URL.
  *
  * Why a separate middleware rather than baking this into extractOrgContext:
- * the bare `/mcp` path is back-compat — any valid token works there, with
+ * the bare `/mcp` path is back-compat - any valid token works there, with
  * the org coming from the token alone. The per-org URL is the new shape
  * that lets one user (one Superkabe account) hold separate Claude.ai
  * connectors per org without the cached-token cross-talk we hit before.
@@ -466,7 +466,7 @@ export function getOrgId(req: Request): string {
  *   - 404 if the slug doesn't resolve to an org (bad URL, never authorize
  *     a connector against it).
  *   - 403 if the resolved token's org doesn't match the slug. The caller
- *     is presenting a token for a different org — this is the audience
+ *     is presenting a token for a different org - this is the audience
  *     mismatch we explicitly want to reject.
  *   - Pass-through otherwise; downstream sees req.orgContext as today.
  */
@@ -507,7 +507,7 @@ export const enforceOrgSlug = async (
     }
 
     if (tokenOrgId !== org.id) {
-        logger.warn('[MCP] Per-org URL mismatch — token org does not match URL slug', {
+        logger.warn('[MCP] Per-org URL mismatch - token org does not match URL slug', {
             urlSlug: slug,
             urlOrgId: org.id,
             tokenOrgId,

@@ -170,7 +170,7 @@ export const canExecuteLead = async (
     // Filter out mailboxes that have hit their warmup/recovery daily send cap.
     // warmup_limit > 0 means a daily cap is configured (set by warmupService
     // during 5-phase recovery); window_sent_count tracks today's sends.
-    // Honored unconditionally for native sending — there is no upstream
+    // Honored unconditionally for native sending - there is no upstream
     // warmup engine, so the cap IS the throttle.
     const afterWarmupFilter = healthyMailboxes.filter(mb => {
         if (mb.warmup_limit > 0) {
@@ -205,7 +205,7 @@ export const canExecuteLead = async (
                 healthyTotal: healthyMailboxes.length,
             });
         } else if (warmupCappedCount > 0 && healthyMailboxes.length > 0) {
-            // All healthy mailboxes have hit their warmup daily limit — soft block
+            // All healthy mailboxes have hit their warmup daily limit - soft block
             recommendations.push(`All ${warmupCappedCount} healthy mailbox(es) have reached their warmup send limit for today. Leads will be deferred until tomorrow.`);
             logger.info('[GATE] All mailboxes at warmup capacity', {
                 organizationId,
@@ -274,7 +274,7 @@ export const canExecuteLead = async (
             recommendations,
             mode: systemMode,
             checks,
-            // Warmup cap is a transient condition — deferrable until tomorrow
+            // Warmup cap is a transient condition - deferrable until tomorrow
             failureType: isWarmupCapBlock ? FailureType.HEALTH_ISSUE
                 : totalMailboxes === 0 ? FailureType.SYNC_ISSUE : FailureType.HEALTH_ISSUE,
             retryable: false,
@@ -285,7 +285,7 @@ export const canExecuteLead = async (
     checks.domainHealthy = true;
 
     // =========================================================================
-    // 2.3 LEAD HEALTH GATE — YELLOW differential treatment (M3AAWG BCP §4.2)
+    // 2.3 LEAD HEALTH GATE - YELLOW differential treatment (M3AAWG BCP §4.2)
     // YELLOW leads (catch-all, role, risky) are capped at first 2 sequence
     // steps. Industry guidance: segment risky addresses to limited exposure.
     // =========================================================================
@@ -313,7 +313,7 @@ export const canExecuteLead = async (
             });
             return {
                 allowed: false,
-                reason: `YELLOW lead has reached max sequence step (${YELLOW_LEAD_MAX_STEP}) — risky addresses are capped to limit reputation exposure`,
+                reason: `YELLOW lead has reached max sequence step (${YELLOW_LEAD_MAX_STEP}) - risky addresses are capped to limit reputation exposure`,
                 riskScore: 70,
                 recommendations: ['YELLOW leads should not progress beyond step 2; complete or block this lead'],
                 mode: systemMode,
@@ -349,7 +349,7 @@ export const canExecuteLead = async (
                     });
                     return {
                         allowed: false,
-                        reason: `Recipient domain ${recipientDomain} has high complaint rate (${(stats.rate * 100).toFixed(3)}%) — sending paused to protect sender reputation`,
+                        reason: `Recipient domain ${recipientDomain} has high complaint rate (${(stats.rate * 100).toFixed(3)}%) - sending paused to protect sender reputation`,
                         riskScore: 90,
                         recommendations: [
                             `Pause new sends to ${recipientDomain} until complaint rate drops below ${(RECIPIENT_DOMAIN_THROTTLE_THRESHOLD * 100).toFixed(2)}%`,
@@ -470,14 +470,14 @@ export const canExecuteLead = async (
             entityId: leadId,
             trigger: 'gate_check',
             action: 'gate_deferred',
-            details: `Soft risk score ${avgSoftScore.toFixed(1)} ≥ ${SOFT_RISK_DEFER_THRESHOLD} — deferring lead 1h`
+            details: `Soft risk score ${avgSoftScore.toFixed(1)} ≥ ${SOFT_RISK_DEFER_THRESHOLD} - deferring lead 1h`
         });
         return {
             allowed: false,
             reason: `Soft risk elevated (${avgSoftScore.toFixed(1)}); deferring 1h to let velocity/escalation signals settle`,
             riskScore: avgSoftScore,
             recommendations: [
-                `Soft risk indicates accumulated velocity/escalation pressure — wait 1h before retry`
+                `Soft risk indicates accumulated velocity/escalation pressure - wait 1h before retry`
             ],
             mode: systemMode,
             checks,
@@ -576,7 +576,7 @@ export const canExecuteLead = async (
 /**
  * Per-send protection gate.
  *
- * Lighter than canExecuteLead — runs immediately before each individual
+ * Lighter than canExecuteLead - runs immediately before each individual
  * send to (a) close the TOCTOU window between dispatcher snapshot and
  * BullMQ worker pickup (a paused mailbox can keep sending its in-flight
  * batch otherwise), and (b) enforce caps that only make sense at send
@@ -607,7 +607,7 @@ export const canSendNow = async (
     // state-change happened after the dispatch snapshot.
     //
     // Hard skip (non-deferrable) because both are operator-driven
-    // states — there's no value in retrying.
+    // states - there's no value in retrying.
     const campaignLead = await prisma.campaignLead.findFirst({
         where: {
             campaign_id: campaignId,
@@ -673,7 +673,7 @@ export const canSendNow = async (
         };
     }
 
-    // 2. Aggregate caps — domain + org. Closes the gap where follow-up
+    // 2. Aggregate caps - domain + org. Closes the gap where follow-up
     // sequence steps for already-enrolled leads bypass DOMAIN_RECOVERY_CAP
     // (30/day) and ORG_RECOVERY_CAP (100/day) because canExecuteLead only
     // runs at enrollment.
@@ -722,7 +722,7 @@ export const canSendNow = async (
 
     // 4. YELLOW lead checks: max-step + per-mailbox window cap.
     // The lead lookup is case-insensitive on email; the campaignLead lookup
-    // joins by composite (campaign_id, email) — the same convention
+    // joins by composite (campaign_id, email) - the same convention
     // canExecuteLead uses.
     const lead = await prisma.lead.findFirst({
         where: {

@@ -1,5 +1,5 @@
 /**
- * Topics watchlist runner — picks up due SignalWatchlist rows and runs
+ * Topics watchlist runner - picks up due SignalWatchlist rows and runs
  * a scan against each via runWatchlistScan().
  *
  * Cadence:
@@ -63,7 +63,7 @@ export async function runOnce(): Promise<{ scanned: number; errored: number }> {
             logger.error('[WATCHLIST-RUNNER] Scan failed', err instanceof Error ? err : new Error(msg), {
                 watchlist_id: wl.id, organization_id: wl.organization_id, name: wl.name,
             });
-            // Back off — don't hot-loop on a broken watchlist.
+            // Back off - don't hot-loop on a broken watchlist.
             try {
                 await prisma.signalWatchlist.update({
                     where: { id: wl.id },

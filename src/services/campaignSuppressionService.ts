@@ -4,15 +4,15 @@
  * Resolves the set of emails that should be skipped when inserting leads
  * into a campaign. Reads CampaignSuppression rules and expands each kind:
  *
- *   'all_campaigns' — every email present in any other campaign in the org.
+ *   'all_campaigns' - every email present in any other campaign in the org.
  *                     Functionally identical to the legacy
  *                     skipDuplicatesAcrossCampaigns boolean.
- *   'campaign'      — every email present in the named source campaign.
+ *   'campaign'      - every email present in the named source campaign.
  *                     Multiple rules union into one set.
- *   'email'         — the literal email value, lowercased.
+ *   'email'         - the literal email value, lowercased.
  *
  * The resolver is the only path the wizard, the edit flow, and any future
- * automation should call before inserting leads — so suppressions are
+ * automation should call before inserting leads - so suppressions are
  * enforced uniformly without per-call-site logic drift.
  */
 
@@ -25,7 +25,7 @@ export interface SuppressionInput {
     suppressed_email?: string | null;
 }
 
-/** Prisma client OR a transaction client — both expose the same model
+/** Prisma client OR a transaction client - both expose the same model
  *  surface, so the helper accepts either to compose cleanly with outer
  *  transactions (createCampaign) or run standalone (updateCampaign). */
 type PrismaLike = PrismaClient | Prisma.TransactionClient;
@@ -35,7 +35,7 @@ function normalizeEmail(s: string): string {
 }
 
 /**
- * Replace this campaign's suppression rules. Idempotent — wipes prior
+ * Replace this campaign's suppression rules. Idempotent - wipes prior
  * rules and inserts the new set in a single transaction so the campaign
  * never has half-applied rules visible to a concurrent lead insert.
  *
@@ -71,7 +71,7 @@ export async function setSuppressionRules(opts: {
         }
 
         // Cycle detection. The 'campaign' rule references the source's
-        // CampaignLead set, not its rules — so a true infinite loop is
+        // CampaignLead set, not its rules - so a true infinite loop is
         // impossible. But a graph where A→B and B→A is still a smell
         // (operator probably meant exclusive list, not mutual suppression)
         // and during getSuppressedEmails the all_campaigns mode silently
@@ -179,7 +179,7 @@ export async function getSuppressedEmails(opts: {
     for (const e of literalEmails) suppressed.add(normalizeEmail(e));
 
     if (allCampaigns) {
-        // Every email across all of the org's campaigns (excluding self —
+        // Every email across all of the org's campaigns (excluding self -
         // a lead can be re-added to its own campaign via the normal flow).
         const all = await db.campaignLead.findMany({
             where: {

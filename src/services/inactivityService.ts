@@ -1,9 +1,9 @@
 /**
  * Inactivity & Recovery Intelligence Service (Layer 7)
  *
- * 1. Inactivity Watchdog — detects domains/mailboxes that have gone cold (30+ days inactive)
- * 2. Recovery Timeline Estimator — predicts recovery duration based on damage severity
- * 3. Provider Volume Caps — enforces Gmail/Microsoft/Yahoo daily sending limits
+ * 1. Inactivity Watchdog - detects domains/mailboxes that have gone cold (30+ days inactive)
+ * 2. Recovery Timeline Estimator - predicts recovery duration based on damage severity
+ * 3. Provider Volume Caps - enforces Gmail/Microsoft/Yahoo daily sending limits
  */
 
 import { prisma } from '../prisma';
@@ -18,7 +18,7 @@ import { RecoveryPhase, TriggerType, MailboxState } from '../types';
 /** Domains/mailboxes with no sends for this many days are flagged as cold */
 const INACTIVITY_THRESHOLD_DAYS = 30;
 
-/** Provider daily sending limits (conservative — below actual limits for safety margin) */
+/** Provider daily sending limits (conservative - below actual limits for safety margin) */
 const PROVIDER_VOLUME_CAPS: Record<string, { dailyLimit: number; label: string }> = {
     google_workspace: { dailyLimit: 1800, label: 'Google Workspace' },     // Actual: 2000, 10% safety margin
     google_free: { dailyLimit: 400, label: 'Gmail (Free)' },               // Actual: 500
@@ -151,7 +151,7 @@ export async function flagColdEntities(
                     organizationId,
                     mb.id,
                     MailboxState.WARNING,
-                    `Inactive for ${mb.daysSinceActivity} days — needs re-warmup before resuming full sends`,
+                    `Inactive for ${mb.daysSinceActivity} days - needs re-warmup before resuming full sends`,
                     TriggerType.SYSTEM
                 );
 
@@ -295,7 +295,7 @@ export function detectProvider(email: string): string {
     // For custom domains, assume Google Workspace or Microsoft 365 (most common for business)
     // The actual provider detection would need MX record lookup, but for sending caps
     // we use a conservative default since custom domains go through Google/Microsoft hosting
-    return 'google_workspace'; // Conservative default — Google Workspace is most common for cold email
+    return 'google_workspace'; // Conservative default - Google Workspace is most common for cold email
 }
 
 /**
@@ -338,6 +338,6 @@ export async function updateDomainLastSent(domainId: string): Promise<void> {
             data: { last_sent_at: new Date() },
         });
     } catch {
-        // Non-critical — don't block sends if this fails
+        // Non-critical - don't block sends if this fails
     }
 }

@@ -3,7 +3,7 @@
 ## Problem
 When a mailbox is flagged and enters recovery (warmup), the campaign it was on loses a sender.
 If all mailboxes on a campaign get flagged, the campaign pauses entirely.
-There is no automatic replacement — the campaign just degrades.
+There is no automatic replacement - the campaign just degrades.
 
 ## What Already Exists
 
@@ -17,9 +17,9 @@ When a mailbox is flagged:
 6. All 3 platforms (Smartlead, EmailBison, Instantly) support `updateWarmupSettings()` via adapter interface
 
 ### Campaign-Mailbox Management (COMPLETE)
-- `adapter.removeMailboxFromCampaign()` — removes flagged mailbox from campaign on platform
-- `adapter.addMailboxToCampaign()` — adds mailbox back to campaign on platform
-- `smartleadInfrastructureMutator` — executes these for Smartlead specifically
+- `adapter.removeMailboxFromCampaign()` - removes flagged mailbox from campaign on platform
+- `adapter.addMailboxToCampaign()` - adds mailbox back to campaign on platform
+- `smartleadInfrastructureMutator` - executes these for Smartlead specifically
 
 ### Load Balancing Analysis (READ-ONLY)
 - `loadBalancingService.ts` suggests moves but never executes them
@@ -28,7 +28,7 @@ When a mailbox is flagged:
 
 ### Concept
 When a mailbox is paused and removed from a campaign:
-1. Identify a **standby mailbox** — healthy, not assigned to any active campaign (or under-utilized)
+1. Identify a **standby mailbox** - healthy, not assigned to any active campaign (or under-utilized)
 2. Prefer a standby mailbox from the **same domain** (maintains domain reputation consistency)
 3. **Swap**: remove flagged mailbox from campaign, add standby mailbox in its place
 4. Log the rotation for audit trail
@@ -49,7 +49,7 @@ HAVING COUNT(cm.A) = 0
 ```
 
 #### 2. Rotation Trigger
-Hook into `healingService.transitionPhase()` — when a mailbox transitions to `paused`:
+Hook into `healingService.transitionPhase()` - when a mailbox transitions to `paused`:
 - Call `removeMailboxFromCampaign()` (already happens)
 - NEW: Call `rotationService.findAndSwapStandby(campaignId, flaggedMailboxId)`
 
@@ -65,7 +65,7 @@ export async function findAndSwapStandby(
 
 Logic:
 - Find standby mailbox (same domain preferred, then any healthy standby)
-- Check campaign health — don't assign to a toxic campaign
+- Check campaign health - don't assign to a toxic campaign
 - Call `adapter.addMailboxToCampaign()` to add standby
 - Update DB relationship
 - Create notification: "Mailbox X rotated in to replace Y on Campaign Z"
@@ -73,7 +73,7 @@ Logic:
 
 #### 4. Guard Rails
 - Don't rotate a freshly-recovered mailbox into a campaign that caused the original flag
-- Check the campaign's bounce rate before assigning — if campaign is unhealthy, skip rotation
+- Check the campaign's bounce rate before assigning - if campaign is unhealthy, skip rotation
 - Respect domain-level mailbox limits (don't over-concentrate)
 - Rate limit rotations (max 1 per campaign per hour)
 
@@ -86,10 +86,10 @@ When the original mailbox recovers to `healthy`:
 ### Files to Create/Modify
 | File | Action |
 |------|--------|
-| `backend/src/services/rotationService.ts` | NEW — rotation logic |
-| `backend/src/services/healingService.ts` | MODIFY — call rotation on pause |
-| `backend/src/services/campaignHealthService.ts` | MODIFY — consider rotation before pausing campaign |
-| `prisma/schema.prisma` | OPTIONAL — add rotation history model |
+| `backend/src/services/rotationService.ts` | NEW - rotation logic |
+| `backend/src/services/healingService.ts` | MODIFY - call rotation on pause |
+| `backend/src/services/campaignHealthService.ts` | MODIFY - consider rotation before pausing campaign |
+| `prisma/schema.prisma` | OPTIONAL - add rotation history model |
 
 ### Priority
-High — this is the missing link between healing (which already works) and campaign uptime.
+High - this is the missing link between healing (which already works) and campaign uptime.

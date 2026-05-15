@@ -84,7 +84,7 @@ export class OutreachClient {
         if (res.status === 429 && attempt === 0) {
             const retryAfter = Number(res.headers.get('Retry-After') ?? 5);
             const delayMs = Math.min(Math.max(retryAfter, 1), 30) * 1000;
-            logger.warn('[OUTREACH] 429 rate-limit — backing off', { delayMs, path });
+            logger.warn('[OUTREACH] 429 rate-limit - backing off', { delayMs, path });
             await new Promise(resolve => setTimeout(resolve, delayMs));
             return this.fetch(path, init, attempt + 1);
         }
@@ -110,7 +110,7 @@ export class OutreachClient {
         return json as T;
     }
 
-    // ── /me — account info ───────────────────────────────────────────
+    // ── /me - account info ───────────────────────────────────────────
 
     async whoami(): Promise<OutreachAccountInfo> {
         // Outreach exposes the current user via filter on /users.
@@ -131,7 +131,7 @@ export class OutreachClient {
 
     /**
      * List enabled sequences the current user can add prospects to.
-     * Outreach supports filter[shareType]=read_only,shared — but we just
+     * Outreach supports filter[shareType]=read_only,shared - but we just
      * return all enabled ones and let the picker show share status.
      */
     async listSequences(opts: {
@@ -244,7 +244,7 @@ export class OutreachClient {
             // Phones must use phone-number sub-objects on Prospect.
             // Add only if present, on an existing-prospect path the
             // /prospects/:id/relationships/phoneNumbers endpoint is the
-            // proper home — keeping create-only is the simpler v1.
+            // proper home - keeping create-only is the simpler v1.
             if (input.phone) {
                 attributes.workPhones = [input.phone];
             }
@@ -268,11 +268,11 @@ export class OutreachClient {
         };
     }
 
-    // ── SequenceStates — add prospect to sequence ────────────────────
+    // ── SequenceStates - add prospect to sequence ────────────────────
 
     /**
      * Add a prospect to a sequence under a specific mailbox. Outreach
-     * dedupes by (prospect, sequence, mailbox) — re-adding the same
+     * dedupes by (prospect, sequence, mailbox) - re-adding the same
      * prospect to the same sequence + mailbox returns 422 with
      * `code: not_unique`. We treat that as success-already-in.
      */

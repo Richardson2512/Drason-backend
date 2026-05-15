@@ -3,7 +3,7 @@
  *
  * Polls CrmActivityPushItem for `state='pending' AND next_attempt_at<=NOW()`,
  * resolves the right CrmClient via the provider registry, and pushes the
- * activity to the CRM. Provider-blind — no HubSpot or Salesforce code
+ * activity to the CRM. Provider-blind - no HubSpot or Salesforce code
  * here. Per-provider clients implement the actual HTTP.
  *
  * Retry policy (CrmPushError.retryable=true): exponential backoff up to
@@ -17,7 +17,7 @@ import { CrmPushError } from '../services/crm/types';
 import { getFactory } from '../services/crm/registry';
 import { getConnection, updateRefreshedTokens, markConnectionFailed } from '../services/crm/connectionService';
 
-const POLL_INTERVAL_MS = 15_000; // every 15s — low enough to feel responsive, high enough to be cheap
+const POLL_INTERVAL_MS = 15_000; // every 15s - low enough to feel responsive, high enough to be cheap
 const BATCH_SIZE = 25;
 const MAX_ATTEMPTS = 6;
 const RETRY_BACKOFF_MS = [
@@ -47,7 +47,7 @@ async function processOne(itemId: string): Promise<void> {
 
     const factory = getFactory(conn.provider as any);
     if (!factory) {
-        // Provider not registered in this process. Skip silently — another
+        // Provider not registered in this process. Skip silently - another
         // pod with the right factory will pick it up. Don't burn an attempt.
         return;
     }
@@ -70,7 +70,7 @@ async function processOne(itemId: string): Promise<void> {
         },
     });
 
-    // Resolve CRM contact ID — if we don't have a link yet, try to find
+    // Resolve CRM contact ID - if we don't have a link yet, try to find
     // the contact by email and create the link.
     let contactExternalId = item.crm_contact_id;
     if (!contactExternalId) {

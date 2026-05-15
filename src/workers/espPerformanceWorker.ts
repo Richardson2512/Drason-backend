@@ -46,7 +46,7 @@ async function aggregateEspPerformance(): Promise<{ updated: number; orgs: numbe
             });
 
             // Aggregate bounces per mailbox × recipient ESP
-            // BounceEvent has email_address — we need to classify its ESP
+            // BounceEvent has email_address - we need to classify its ESP
             // Since we may not have recipient_esp on BounceEvent, join via domain insight.
             // $queryRawUnsafe + positional args because newer Prisma client versions
             // reject Date objects in tagged-template form ("Expected Flat JSON array").

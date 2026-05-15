@@ -37,7 +37,7 @@ export const ingestLead = async (req: Request, res: Response): Promise<void> => 
             company: req.body.company,
         });
 
-        // No per-tier lead cap — pricing meters monthly send volume + validation
+        // No per-tier lead cap - pricing meters monthly send volume + validation
         // credits, not lead count. (Counter column dropped 2026-04-27.)
         res.status(201).json({ success: true, data: result });
     } catch (error) {
@@ -48,7 +48,7 @@ export const ingestLead = async (req: Request, res: Response): Promise<void> => 
 
 /**
  * Get all campaigns a lead is enrolled in.
- * Platform-agnostic — queries local DB for all campaigns across all platforms.
+ * Platform-agnostic - queries local DB for all campaigns across all platforms.
  */
 export const getLeadCampaigns = async (req: Request, res: Response): Promise<void> => {
     try {
@@ -72,7 +72,7 @@ export const getLeadCampaigns = async (req: Request, res: Response): Promise<voi
         }
 
         // Get the assigned campaign. Campaign table is unified post-Phase-B
-        // (2026-04-26) — all rows are native sequencer campaigns.
+        // (2026-04-26) - all rows are native sequencer campaigns.
         const assignedCampaign = lead.assigned_campaign_id
             ? await prisma.campaign.findUnique({
                 where: { id: lead.assigned_campaign_id },
@@ -81,7 +81,7 @@ export const getLeadCampaigns = async (req: Request, res: Response): Promise<voi
             : null;
 
         // Also surface sequencer campaigns this lead's email is enrolled in via
-        // CampaignLead — authoritative multi-campaign link for the sequencer,
+        // CampaignLead - authoritative multi-campaign link for the sequencer,
         // since CampaignLead has no legacy-platform analog (legacy campaigns use
         // BounceEvent / Lead.assigned_campaign_id instead).
         const sequencerEnrollments = await prisma.campaignLead.findMany({

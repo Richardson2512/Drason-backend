@@ -1,12 +1,12 @@
 /**
- * LinkedIn account controller — REST surface for the Super LinkedIn
+ * LinkedIn account controller - REST surface for the Super LinkedIn
  * Accounts page.
  *
- *   GET    /api/linkedin/accounts                 — list connected accounts
- *   POST   /api/linkedin/accounts/connect-link    — hosted-auth URL (new)
- *   POST   /api/linkedin/accounts/:id/reconnect   — hosted-auth URL (reconnect)
- *   PATCH  /api/linkedin/accounts/:id             — update caps / display name
- *   DELETE /api/linkedin/accounts/:id             — disconnect
+ *   GET    /api/linkedin/accounts                 - list connected accounts
+ *   POST   /api/linkedin/accounts/connect-link    - hosted-auth URL (new)
+ *   POST   /api/linkedin/accounts/:id/reconnect   - hosted-auth URL (reconnect)
+ *   PATCH  /api/linkedin/accounts/:id             - update caps / display name
+ *   DELETE /api/linkedin/accounts/:id             - disconnect
  */
 
 import { Request, Response } from 'express';
@@ -89,7 +89,7 @@ export const purchaseAddonSlot = async (req: Request, res: Response): Promise<Re
             });
         }
 
-        // Stub mode — direct increment + audit row.
+        // Stub mode - direct increment + audit row.
         const summary = await purchaseAddon({ organizationId: orgId, userId, quantity });
         return res.status(201).json({
             success: true,
@@ -160,7 +160,7 @@ export const reconnect = async (req: Request, res: Response): Promise<Response> 
  * Validate + normalize the PATCH body for an account update. Without
  * this, a client could send `{ max_invites_per_day: -1000 }` or a non-
  * numeric value and the dispatcher would later compare against NaN or
- * a negative cap — both produce broken capacity behavior:
+ * a negative cap - both produce broken capacity behavior:
  *   - Negative cap → `used >= cap` is always true → account gets
  *     starved forever, no sends.
  *   - NaN cap → comparison always false → account dispatches
@@ -168,7 +168,7 @@ export const reconnect = async (req: Request, res: Response): Promise<Response> 
  *
  * Caps are clamped to LinkedIn's published ceilings + a safe floor so
  * an operator can't shoot themselves in the foot. We're intentionally
- * conservative — Drason chooses safe defaults over flexibility here.
+ * conservative - Drason chooses safe defaults over flexibility here.
  */
 const CAP_LIMITS = {
     max_invites_per_day:        { min: 0, max: 100  },
@@ -255,11 +255,11 @@ export const remove = async (req: Request, res: Response): Promise<Response> => 
 };
 
 // ────────────────────────────────────────────────────────────────────
-// GET /api/linkedin/accounts/:id — single account detail
+// GET /api/linkedin/accounts/:id - single account detail
 //
 // Returns the account row + a summary of the cached LinkedInPost rows
 // (count, last_polled_at, post-type breakdown). The full post list is
-// fetched separately via the /posts route below — keeps this endpoint
+// fetched separately via the /posts route below - keeps this endpoint
 // small for the page header.
 // ────────────────────────────────────────────────────────────────────
 
@@ -320,7 +320,7 @@ export const detail = async (req: Request, res: Response): Promise<Response> => 
 };
 
 // ────────────────────────────────────────────────────────────────────
-// GET /api/linkedin/accounts/:id/posts — proxy Unipile's post listing
+// GET /api/linkedin/accounts/:id/posts - proxy Unipile's post listing
 //
 // Two-tier strategy:
 //   1. Fetch live from Unipile (the source of truth for engagement counts)
@@ -330,9 +330,9 @@ export const detail = async (req: Request, res: Response): Promise<Response> => 
 //      use the diff-tracked snapshot if Unipile is rate-limited.
 //
 // Filters:
-//   ?type=all|post|article|repost   — server-side filter on post kind
-//   ?cursor=...                     — Unipile cursor for pagination
-//   ?limit=N                        — Unipile page size (default 25, max 100)
+//   ?type=all|post|article|repost   - server-side filter on post kind
+//   ?cursor=...                     - Unipile cursor for pagination
+//   ?limit=N                        - Unipile page size (default 25, max 100)
 // ────────────────────────────────────────────────────────────────────
 
 export const listPosts = async (req: Request, res: Response): Promise<Response> => {
@@ -420,7 +420,7 @@ export const listPosts = async (req: Request, res: Response): Promise<Response> 
             };
         });
 
-        // Client-side filter — Unipile doesn't expose a server-side `type`
+        // Client-side filter - Unipile doesn't expose a server-side `type`
         // query parameter, so we infer (post / article / repost) from the
         // post body shape, and derive thought_leadership from the post +
         // engagement heuristic. When the operator picks the "post" bucket
@@ -466,7 +466,7 @@ function inferPostKind(p: { post_urn?: string; text?: string }): 'post' | 'artic
 /**
  * Thought-leadership heuristic.
  *
- * Thought-leadership ≠ a distinct LinkedIn post type — it's an editorial
+ * Thought-leadership ≠ a distinct LinkedIn post type - it's an editorial
  * subset of plain posts (the long-form, opinion-bearing pieces that
  * generate meaningful conversation). v1 heuristic: kind='post', text is
  * substantive (≥ 500 chars), and the post earned meaningful engagement
@@ -493,13 +493,13 @@ function isThoughtLeadership(p: {
 //
 // Per-post engagement drill-down. Takes the Unipile post id (the same
 // id we surface in /posts) and returns the list of engagers we've
-// observed for that post via the signal poller — the EngagementEvent
+// observed for that post via the signal poller - the EngagementEvent
 // rows joined with the actor LinkedInProfile, grouped per actor.
 //
 // One actor may have multiple events on the same post (reaction +
 // comment counts separately under the schema's composite unique key).
 // We collapse to one row per actor with an `events[]` summary so the
-// UI shows "Priya — reacted PRAISE + commented" rather than two rows.
+// UI shows "Priya - reacted PRAISE + commented" rather than two rows.
 //
 // Includes ICP match status, engagement score, connection state, and
 // lead linkage so the page can render rich actor cards with single-
@@ -525,7 +525,7 @@ export const listPostEngagements = async (req: Request, res: Response): Promise<
         });
 
         if (!post) {
-            // Post not yet polled — we have no engagement events. Surface a
+            // Post not yet polled - we have no engagement events. Surface a
             // soft empty rather than a 404 so the UI can render an explanation.
             return res.json({
                 success: true,
@@ -586,12 +586,12 @@ export const listPostEngagements = async (req: Request, res: Response): Promise<
             : [];
         const edgeByProfileId = new Map(edges.map(e => [e.linkedin_profile_id, e]));
 
-        // Relationship resolution — joins each actor against the Customer
+        // Relationship resolution - joins each actor against the Customer
         // table, the Lead table, and active CampaignLead rows to bucket
         // them as customer / active_prospect / past_lead / new. Done in
         // bulk to keep this endpoint O(1) DB-roundtrips on the lookup.
         const { resolveRelationships } = await import('../services/linkedin/customerRegistryService');
-        // Dedup by profile id — multiple events from the same actor on one
+        // Dedup by profile id - multiple events from the same actor on one
         // post would otherwise drive duplicate resolver entries.
         const uniqueProfiles = new Map<string, { id: string; public_identifier: string; lead_id: string | null; company: string | null }>();
         for (const e of events) {
@@ -608,7 +608,7 @@ export const listPostEngagements = async (req: Request, res: Response): Promise<
             Array.from(uniqueProfiles.values()),
         );
 
-        // Collapse per actor — one row each, with an events[] summary.
+        // Collapse per actor - one row each, with an events[] summary.
         interface EngagerRow {
             actor_profile_id: string;
             name: string;
@@ -628,7 +628,7 @@ export const listPostEngagements = async (req: Request, res: Response): Promise<
             engagement_score: number | null;
             connection_status: string;
             connection_accepted_at: string | null;
-            /** Customer / active_prospect / past_lead / new — see customerRegistryService. */
+            /** Customer / active_prospect / past_lead / new - see customerRegistryService. */
             relationship: 'customer' | 'active_prospect' | 'past_lead' | 'new';
             relationship_note: string;
             customer_source: string | null;

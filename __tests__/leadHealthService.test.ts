@@ -3,7 +3,7 @@
  *
  * classifyLeadHealth is the GREEN/YELLOW/RED gate that decides whether a
  * lead can enter a campaign at all. It's pure (no DB) but its scoring
- * model directly controls how many leads get blocked at import — small
+ * model directly controls how many leads get blocked at import - small
  * threshold changes cascade. These tests pin the contract.
  */
 
@@ -14,7 +14,7 @@ import {
     hasSuspiciousTLD,
 } from '../src/services/leadHealthService';
 
-describe('classifyLeadHealth — disposable domains are instant RED', () => {
+describe('classifyLeadHealth - disposable domains are instant RED', () => {
     it('blocks mailinator', async () => {
         const result = await classifyLeadHealth('test@mailinator.com');
         expect(result.classification).toBe('red');
@@ -28,7 +28,7 @@ describe('classifyLeadHealth — disposable domains are instant RED', () => {
     });
 });
 
-describe('classifyLeadHealth — role-based emails take a major penalty', () => {
+describe('classifyLeadHealth - role-based emails take a major penalty', () => {
     it('flags info@ as role-based', async () => {
         const result = await classifyLeadHealth('info@acme.io');
         expect(result.checks.isRoleEmail).toBe(true);
@@ -45,7 +45,7 @@ describe('classifyLeadHealth — role-based emails take a major penalty', () => 
     });
 });
 
-describe('classifyLeadHealth — invalid format', () => {
+describe('classifyLeadHealth - invalid format', () => {
     it('returns RED for missing @', async () => {
         const result = await classifyLeadHealth('not-an-email');
         expect(result.classification).toBe('red');
@@ -53,7 +53,7 @@ describe('classifyLeadHealth — invalid format', () => {
     });
 });
 
-describe('classifyLeadHealth — validation context narrows the score', () => {
+describe('classifyLeadHealth - validation context narrows the score', () => {
     it('applies validation penalty when score is low', async () => {
         const result = await classifyLeadHealth('jane@acme.io', {
             validationScore: 30,
@@ -111,7 +111,7 @@ describe('isRoleBasedEmail', () => {
     });
 
     it('does not match personal names that contain a role substring', () => {
-        // "information" starts with "info" but isn't role-based — guard
+        // "information" starts with "info" but isn't role-based - guard
         // ensures we only match exact prefix or prefix + delimiter.
         expect(isRoleBasedEmail('information')).toBe(false);
         expect(isRoleBasedEmail('infomania')).toBe(false);

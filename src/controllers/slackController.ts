@@ -372,7 +372,7 @@ export const saveSlackChannel = async (req: Request, res: Response) => {
 
         // not_in_channel: bot has channels:read but isn't a member yet.
         // Auto-join public channels via conversations.join (requires channels:join scope).
-        // Private channels can't be joined — bot must be invited manually.
+        // Private channels can't be joined - bot must be invited manually.
         if (!testRes.data.ok && testRes.data.error === 'not_in_channel') {
             const joinRes = await axios.post('https://slack.com/api/conversations.join', null, {
                 headers: { Authorization: `Bearer ${token}` },

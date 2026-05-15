@@ -2,7 +2,7 @@
  * Circuit Breaker
  * 
  * Prevents cascading failures when external services (Smartlead API) go down.
- * Zero dependencies — uses in-memory state.
+ * Zero dependencies - uses in-memory state.
  * 
  * States:
  *   CLOSED → Normal operation. Failures counted.
@@ -94,10 +94,10 @@ export class CircuitBreaker {
             const openedTime = this.openedAt?.getTime() || 0;
 
             if (now - openedTime >= this.options.resetTimeout) {
-                // Timeout expired — try half-open
+                // Timeout expired - try half-open
                 this.transitionTo(CircuitState.HALF_OPEN);
             } else {
-                // Still in cooldown — reject immediately
+                // Still in cooldown - reject immediately
                 const nextAttempt = new Date(openedTime + this.options.resetTimeout);
                 throw new CircuitOpenError(
                     this.options.name,
@@ -117,7 +117,7 @@ export class CircuitBreaker {
             // Check if this error should count as a circuit failure
             // (e.g., 404s might not mean the service is down)
             if (this.options.isFailure && !this.options.isFailure(err)) {
-                throw err; // Not a circuit failure — just rethrow
+                throw err; // Not a circuit failure - just rethrow
             }
 
             this.onFailure(err);
@@ -136,7 +136,7 @@ export class CircuitBreaker {
         if (this.state === CircuitState.HALF_OPEN) {
             this.halfOpenSuccesses++;
             if (this.halfOpenSuccesses >= this.options.halfOpenSuccessThreshold) {
-                // Enough successful test calls — service recovered
+                // Enough successful test calls - service recovered
                 this.transitionTo(CircuitState.CLOSED);
             }
         }
@@ -160,7 +160,7 @@ export class CircuitBreaker {
             this.state === CircuitState.CLOSED &&
             this.consecutiveFailures >= this.options.failureThreshold
         ) {
-            // Too many failures — open the circuit
+            // Too many failures - open the circuit
             logger.error(`[CIRCUIT] ${this.options.name}: Failure threshold reached, opening circuit`, error, {
                 consecutiveFailures: this.consecutiveFailures,
                 threshold: this.options.failureThreshold,
@@ -239,7 +239,7 @@ export class CircuitBreaker {
 // doesn't trip dispatch for the others.
 //
 // Shared 404/400/429-aware isFailure: those statuses are NOT service-health
-// signals — 404 = recipient not found, 400 = malformed request, 429 = the
+// signals - 404 = recipient not found, 400 = malformed request, 429 = the
 // provider asking us to back off (we honor it via rate limiters, not by
 // tripping the breaker).
 

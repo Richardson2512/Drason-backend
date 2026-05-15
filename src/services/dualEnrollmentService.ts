@@ -9,14 +9,14 @@
  * the operator decide whether to exclude already-enrolled leads.
  *
  * Two categories of conflict:
- *  - ACTIVE conflicts (status in [active, paused]) — lead is currently
+ *  - ACTIVE conflicts (status in [active, paused]) - lead is currently
  *    being sent to in another campaign. Default exclusion target.
  *  - HISTORICAL conflicts (status in [completed, replied, bounced, unsubscribed])
- *    — lead has prior engagement (opens/clicks/replies) from a finished sequence.
+ *    - lead has prior engagement (opens/clicks/replies) from a finished sequence.
  *    Surfaced for context but not excluded by default.
  *
  * Hard-blocked leads (Lead.bounced=true OR Lead.unsubscribed_at != null) are
- * separately reported — they should not be enrolled in any campaign.
+ * separately reported - they should not be enrolled in any campaign.
  */
 
 import { prisma } from '../prisma';
@@ -70,7 +70,7 @@ export interface DualEnrollmentReport {
 const ACTIVE_STATUSES = ['active', 'paused'];
 const HISTORICAL_STATUSES = ['completed', 'replied', 'bounced', 'unsubscribed'];
 
-// Chunk size for IN(...) queries — prevents pathological query plans on
+// Chunk size for IN(...) queries - prevents pathological query plans on
 // uploads with tens of thousands of emails.
 const QUERY_BATCH_SIZE = 1000;
 
@@ -92,7 +92,7 @@ export async function checkDualEnrollment(
         return emptyReport();
     }
 
-    // Step 1 — load the source leads (to get their emails + suppression status)
+    // Step 1 - load the source leads (to get their emails + suppression status)
     const sourceLeads = await prisma.lead.findMany({
         where: {
             id: { in: leadIds },
@@ -114,7 +114,7 @@ export async function checkDualEnrollment(
     const emails = Array.from(new Set(sourceLeads.map(l => l.email.toLowerCase())));
     const emailToLeadId = new Map(sourceLeads.map(l => [l.email.toLowerCase(), l.id]));
 
-    // Step 2 — fetch all CampaignLead rows for these emails in this org,
+    // Step 2 - fetch all CampaignLead rows for these emails in this org,
     // excluding the target campaign. Batched in chunks to keep query plans sane.
     const allConflicts: Array<CampaignLeadRow> = [];
     for (let i = 0; i < emails.length; i += QUERY_BATCH_SIZE) {
@@ -146,7 +146,7 @@ export async function checkDualEnrollment(
         allConflicts.push(...(rows as unknown as CampaignLeadRow[]));
     }
 
-    // Step 3 — group conflicts by email
+    // Step 3 - group conflicts by email
     const byEmail = new Map<string, CampaignConflict[]>();
     for (const row of allConflicts) {
         const status = (row.status || '').toLowerCase();
@@ -170,7 +170,7 @@ export async function checkDualEnrollment(
         byEmail.get(key)!.push(conflict);
     }
 
-    // Step 4 — build per-lead records
+    // Step 4 - build per-lead records
     const records: LeadConflictRecord[] = [];
     for (const lead of sourceLeads) {
         const emailKey = lead.email.toLowerCase();
@@ -195,7 +195,7 @@ export async function checkDualEnrollment(
         });
     }
 
-    // Step 5 — sort: active conflicts first, then historical, then clean.
+    // Step 5 - sort: active conflicts first, then historical, then clean.
     records.sort((a, b) => {
         const aRank = a.activeConflicts.length > 0 ? 0
             : a.historicalConflicts.length > 0 ? 1
@@ -223,7 +223,7 @@ export async function checkDualEnrollment(
 /**
  * Resolve which lead IDs to exclude from enrollment given a report and the
  * operator's toggle choice. Suppressed leads (bounced/unsubscribed) are
- * always excluded regardless of toggle — they're org-wide blocked and
+ * always excluded regardless of toggle - they're org-wide blocked and
  * enrolling them would violate CAN-SPAM/GDPR.
  */
 export function resolveExclusions(

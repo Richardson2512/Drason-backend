@@ -22,7 +22,7 @@ export const LINKEDIN_ADDON_PRICE_USD = 15;
  * The upsell ladder is shaped so Growth ($199) is the entry point for
  * 2 bundled LinkedIn slots without piling onto higher Pro send tiers,
  * and Scale ($349) is the only path to 3 bundled slots. Pro is capped
- * at 2 — at or above the 150K send variant — to keep the ladder
+ * at 2 - at or above the 150K send variant - to keep the ladder
  * orderly:
  *
  *   tier             slots  notes
@@ -35,7 +35,7 @@ export const LINKEDIN_ADDON_PRICE_USD = 15;
  *   pro_200k           2
  *   pro_250k           2    matches Growth's bundled count
  *   growth             2    org-scale email-first motion
- *   scale              3    multi-rep cadence — only path to 3 bundled
+ *   scale              3    multi-rep cadence - only path to 3 bundled
  *   enterprise         5    sales-motion comfort
  *
  * Add-on slots beyond the bundled count cost $15/mo each regardless of
@@ -122,7 +122,7 @@ export class AccountLimitExceededError extends Error {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Add-on purchase (stub — Polar webhook integration is a follow-up).
+// Add-on purchase (stub - Polar webhook integration is a follow-up).
 //
 // Today this is a direct increment + audit row; the controller is
 // expected to gate on user role (admin) and to swap in a Polar
@@ -160,13 +160,13 @@ export async function purchaseAddon(input: PurchaseAddonInput): Promise<LinkedIn
 
 /**
  * Release one addon slot when the account that was occupying paid
- * capacity gets disconnected. This is a CAPACITY RELEASE — not a money
+ * capacity gets disconnected. This is a CAPACITY RELEASE - not a money
  * refund. Nothing is refunded; the operator simply stops being billed
  * for that slot on the next cycle (or, with Polar wired in Phase 5,
  * the recurring subscription is cancelled).
  *
  * Without this, an org buys 1 addon ($15/mo), deletes the account it
- * added, and the addon counter stays at 1 forever — they keep paying
+ * added, and the addon counter stays at 1 forever - they keep paying
  * for capacity they can't use without buying *another* addon. That's a
  * one-way revenue trap, which is the bug we're fixing.
  *
@@ -175,11 +175,11 @@ export async function purchaseAddon(input: PurchaseAddonInput): Promise<LinkedIn
  *     paid capacity. That's true when (accounts_before_delete >
  *     base_limit). If the org was within their bundled tier limit, no
  *     addon slot was in use by this account, so nothing to release.
- *   - We never decrement below zero (defensive — the counter should
+ *   - We never decrement below zero (defensive - the counter should
  *     always reflect the org's actual paid commitments).
  *   - We mark the most-recent active `LinkedInAccountAddonPurchase`
  *     row as `status='released'` + stamp `refunded_at` (column name is
- *     legacy — it just means "lifecycle ended"). Audit trail; Polar
+ *     legacy - it just means "lifecycle ended"). Audit trail; Polar
  *     reconciliation (Phase 5) reads from this table to cancel the
  *     recurring subscription on the next webhook tick.
  *
@@ -221,7 +221,7 @@ export async function releaseAddonSlotOnDisconnect(
             ? [prisma.linkedInAccountAddonPurchase.update({
                 where: { id: candidate.id },
                 // status='released' marks the lifecycle as ended.
-                // refunded_at is the legacy column name — see docstring;
+                // refunded_at is the legacy column name - see docstring;
                 // a future migration can rename it to released_at when
                 // Polar integration lands.
                 data: { status: 'released', refunded_at: new Date() },

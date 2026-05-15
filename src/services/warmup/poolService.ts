@@ -1,5 +1,5 @@
 /**
- * Warmup Pool — pair selection (cross-tenant).
+ * Warmup Pool - pair selection (cross-tenant).
  *
  * Picks a recipient mailbox for a given sender, with these rules:
  *
@@ -23,7 +23,7 @@
  *
  * Pool size assumption: at MVP we expect ~10s-1000s of mailboxes. Random
  * sampling with a few rejections is fine. If the pool grows past 100K
- * we'd want a Redis-backed weighted index — out of scope today.
+ * we'd want a Redis-backed weighted index - out of scope today.
  */
 
 import { prisma } from '../../prisma';
@@ -70,7 +70,7 @@ export async function pickRecipient(opts: {
         return null;
     }
 
-    // 2. Random-skip sampling — pick MAX_CANDIDATE_SAMPLES candidates
+    // 2. Random-skip sampling - pick MAX_CANDIDATE_SAMPLES candidates
     //    via random offset and reject any that fail the cross-domain
     //    or rotation-window guard.
     const recentlyPairedSince = new Date(Date.now() - ROTATION_WINDOW_HOURS * 60 * 60 * 1000);
@@ -103,7 +103,7 @@ export async function pickRecipient(opts: {
         // Skip mailboxes currently in healing pipeline (paused / quarantine etc.)
         if (found.mailbox.status !== 'healthy' && found.mailbox.status !== 'active') continue;
 
-        // Rotation-window guard — skip if we've sent (sender → recipient)
+        // Rotation-window guard - skip if we've sent (sender → recipient)
         // in the last ROTATION_WINDOW_HOURS.
         const recentPair = await prisma.warmupExchange.findFirst({
             where: {
@@ -125,7 +125,7 @@ export async function pickRecipient(opts: {
     }
 
     // Pool too small or saturated for this sender right now.
-    logger.debug('[WARMUP_POOL] sampling exhausted — skipping send for this tick', {
+    logger.debug('[WARMUP_POOL] sampling exhausted - skipping send for this tick', {
         senderMailboxId: opts.senderMailboxId,
         attempts: MAX_CANDIDATE_SAMPLES,
     });
@@ -134,7 +134,7 @@ export async function pickRecipient(opts: {
 
 /** Org-level consent gate. Used by the sender-side query before any of
  *  this org's mailboxes can SEND warmup. (Receive consent is the same
- *  flag — joining the pool means both directions.) */
+ *  flag - joining the pool means both directions.) */
 export async function setOrgConsent(orgId: string, consent: boolean): Promise<void> {
     await prisma.organization.update({
         where: { id: orgId },

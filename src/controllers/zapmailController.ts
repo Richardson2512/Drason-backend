@@ -1,18 +1,18 @@
 /**
- * Zapmail integration controller — server-orchestrated OAuth flow.
+ * Zapmail integration controller - server-orchestrated OAuth flow.
  *
  * Endpoints (all under /api/sequencer/integrations/zapmail):
  *
- *   POST   /connect             — save API key (validated against /v2/users)
- *   DELETE /connect             — clear stored key
- *   GET    /status              — { connected, connectedAt }
- *   GET    /mailboxes           — list both Google + Microsoft mailboxes from Zapmail,
+ *   POST   /connect             - save API key (validated against /v2/users)
+ *   DELETE /connect             - clear stored key
+ *   GET    /status              - { connected, connectedAt }
+ *   GET    /mailboxes           - list both Google + Microsoft mailboxes from Zapmail,
  *                                 annotated with alreadyImported / connectionStatus
- *   POST   /import              — kick off Custom OAuth orchestration via Zapmail.
+ *   POST   /import              - kick off Custom OAuth orchestration via Zapmail.
  *                                 Pre-creates ConnectedAccount rows in oauth_pending,
  *                                 calls /v2/domains/add-client-id (Google), then
  *                                 /v2/mailboxes/custom-oauth. Returns exportId.
- *   GET    /import/:exportId    — proxy /v2/exports/status for progress polling.
+ *   GET    /import/:exportId    - proxy /v2/exports/status for progress polling.
  *
  * Token landing: Zapmail walks our standard Google/Microsoft consent URL on the
  * mailbox side. The auth code lands at our existing OAuth callback, which
@@ -41,12 +41,12 @@ import { getMicrosoftAuthorizationUrl } from '../services/microsoftSendService';
 const MAX_IMPORT = 200;
 
 // The `app` field Zapmail uses to identify our partner integration. Zapmail's
-// docs don't enumerate accepted values for the add-client-id endpoint — open
+// docs don't enumerate accepted values for the add-client-id endpoint - open
 // question to support. Until confirmed we send a stable identifier.
 const SUPERKABE_APP_NAME = process.env.ZAPMAIL_APP_NAME || 'SUPERKABE';
 
 // Zapmail's documented quota: max 3 Custom-OAuth attempts per mailbox per
-// rolling 7-day window. Hitting it returns a generic 429 — we pre-check and
+// rolling 7-day window. Hitting it returns a generic 429 - we pre-check and
 // surface an actionable error code instead.
 const ZAPMAIL_OAUTH_MAX_ATTEMPTS = 3;
 const ZAPMAIL_OAUTH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -206,11 +206,11 @@ export const importMailboxes = async (req: Request, res: Response): Promise<Resp
             return res.status(500).json({ success: false, error: 'Server is missing GOOGLE_CLIENT_ID' });
         }
 
-        // Source-of-truth re-fetch — user can't fabricate emails not in Zapmail
+        // Source-of-truth re-fetch - user can't fabricate emails not in Zapmail
         const { mailboxes: remoteMailboxes } = await listAllMailboxes(apiKey);
         const remoteByEmail = new Map<string, ZapmailMailbox>(remoteMailboxes.map((m) => [m.email, m]));
 
-        // Mailbox count is unmetered — no per-row tier-cap check.
+        // Mailbox count is unmetered - no per-row tier-cap check.
         const orgSettings = await getSequencerSettings(orgId);
         const defaultDailyLimit = orgSettings.default_daily_limit;
 
@@ -336,7 +336,7 @@ export const importMailboxes = async (req: Request, res: Response): Promise<Resp
         }
 
         // Phase 2 (Google): attach our client_id to the affected domains.
-        // Zapmail doc says "Client ID will be added to the domains soon" — best
+        // Zapmail doc says "Client ID will be added to the domains soon" - best
         // effort, we don't currently wait/poll for confirmation.
         if (queuedGoogle.length > 0) {
             const googleDomainIds = Array.from(new Set(queuedGoogle.map(({ mailbox }) => mailbox.domainId).filter(Boolean)));
@@ -473,7 +473,7 @@ export const importStatus = async (req: Request, res: Response): Promise<Respons
 
         // Scope the freshness check to rows belonging to THIS export. If the
         // newest oauth_initiated_at is past the 60-min bound, stop polling
-        // Zapmail — the front-end loop is unbounded otherwise. Reconciler
+        // Zapmail - the front-end loop is unbounded otherwise. Reconciler
         // sweeps the abandoned oauth_pending rows server-side.
         const exportRows = await prisma.connectedAccount.findMany({
             where: { organization_id: orgId, zapmail_export_id: exportId },

@@ -41,7 +41,7 @@ export async function handleLinkedInAddonWebhook(event: WebhookEventLike, resolv
         return;
     }
 
-    // .created / .active — bump the counter + flip the audit row.
+    // .created / .active - bump the counter + flip the audit row.
     // Idempotency: look up the pending purchase row by polar_subscription_id
     // OR by polar_checkout_id (the latter is what we pre-created in
     // polarAddonCheckout.ts when the user clicked Buy).
@@ -58,14 +58,14 @@ export async function handleLinkedInAddonWebhook(event: WebhookEventLike, resolv
     });
 
     if (existing?.status === 'completed') {
-        logger.info('[LINKEDIN-ADDON] Already completed — skipping', { subscriptionId });
+        logger.info('[LINKEDIN-ADDON] Already completed - skipping', { subscriptionId });
         return;
     }
 
     // Atomic "claim and bump". Two simultaneous webhook deliveries can
     // both pass the line-60 guard (both see status='pending'); without a
     // database-level CAS, both would increment the counter. We claim the
-    // pending row first via updateMany-with-status-guard — only ONE
+    // pending row first via updateMany-with-status-guard - only ONE
     // tick's updateMany returns count > 0; the loser bails before
     // touching the counter.
     if (existing) {
@@ -78,7 +78,7 @@ export async function handleLinkedInAddonWebhook(event: WebhookEventLike, resolv
             },
         });
         if (claim.count === 0) {
-            logger.info('[LINKEDIN-ADDON] Race lost — another delivery already completed this purchase', { subscriptionId });
+            logger.info('[LINKEDIN-ADDON] Race lost - another delivery already completed this purchase', { subscriptionId });
             return;
         }
     } else {

@@ -7,7 +7,7 @@
  *
  * The set-builder helpers (`getSuppressedEmails`, `setSuppressionRules`,
  * cycle detection) are DB-bound and live in the integration-test backlog
- * — they need a Prisma mock or test database.
+ * - they need a Prisma mock or test database.
  */
 
 import { applySuppression } from '../src/services/campaignSuppressionService';
@@ -28,7 +28,7 @@ describe('applySuppression', () => {
     it('returns the input unchanged when the suppression set is empty', () => {
         const leads = [{ email: 'a@a.com' }, { email: 'b@b.com' }];
         const { kept, skipped } = applySuppression(leads, new Set());
-        expect(kept).toBe(leads); // identity — no copy
+        expect(kept).toBe(leads); // identity - no copy
         expect(skipped).toBe(0);
     });
 

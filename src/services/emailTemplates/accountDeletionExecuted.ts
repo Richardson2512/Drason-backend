@@ -1,5 +1,5 @@
 /**
- * Account-deletion-executed email — final confirmation, sent right after
+ * Account-deletion-executed email - final confirmation, sent right after
  * the hard-delete worker erases all PII. This is the LAST email this
  * recipient will ever get from Superkabe; the User row (and inbox in our
  * system) is gone by the time they read it.
@@ -42,11 +42,11 @@ export function accountDeletionExecutedEmail(params: AccountDeletionExecutedEmai
             `<br/><br/>` +
             `If you ever want to come back, you can sign up again at ` +
             `<a href="https://www.superkabe.com" style="color:#1C4532;text-decoration:underline;">superkabe.com</a> ` +
-            `— it'll be a fresh start. Thanks for trying Superkabe.` +
+            `- it'll be a fresh start. Thanks for trying Superkabe.` +
             `<br/><br/>` +
             `Questions about this confirmation? Reach the privacy team at ` +
             `<a href="mailto:privacy@superkabe.com" style="color:#1C4532;text-decoration:underline;">privacy@superkabe.com</a>.`,
-        signOff: '— The Superkabe team',
+        signOff: '- The Superkabe team',
     };
 
     return {

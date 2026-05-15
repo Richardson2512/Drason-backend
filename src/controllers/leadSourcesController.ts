@@ -1,5 +1,5 @@
 /**
- * Lead-source integrations controller — provider-blind read endpoints.
+ * Lead-source integrations controller - provider-blind read endpoints.
  *
  *   GET    /api/integrations/lead-sources/connections
  *   GET    /api/integrations/lead-sources/connections/:id

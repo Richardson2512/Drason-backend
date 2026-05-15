@@ -23,7 +23,7 @@ interface EngagementData {
     lastEngagementDate?: Date;
 }
 
-/// Built-in scoring weights — every knob exposed in the Lead Scoring config
+/// Built-in scoring weights - every knob exposed in the Lead Scoring config
 /// UI. Defaults match the original hardcoded formula so an org that never
 /// touches the config sees identical behavior. Stored as JSON on
 /// LeadScoringConfig.builtin_weights and merged with these defaults so older
@@ -161,7 +161,7 @@ export function calculateFinalScore(breakdown: LeadScore['breakdown']): number {
 /**
  * Recalculate lead_score from engagement counters using the proper formula.
  * Called after each open/click/reply webhook to keep scores accurate in real-time.
- * Platform-agnostic — works for all platforms (Smartlead, EmailBison, Instantly).
+ * Platform-agnostic - works for all platforms (Smartlead, EmailBison, Instantly).
  */
 export async function recalculateLeadScore(leadId: string): Promise<void> {
     const lead = await prisma.lead.findUnique({
@@ -462,7 +462,7 @@ export async function getLeadScoreBreakdown(
     const rawBreakdown = calculateEngagementScore(engagement);
     const score = calculateFinalScore(rawBreakdown);
 
-    // Breakdown components now directly sum to the score — no transformation needed
+    // Breakdown components now directly sum to the score - no transformation needed
     return {
         score,
         breakdown: {
@@ -479,7 +479,7 @@ export async function getLeadScoreBreakdown(
     };
 }
 
-/// Update the scoring config for an org. Replaces whatever's stored — the
+/// Update the scoring config for an org. Replaces whatever's stored - the
 /// frontend always sends the full weights + custom events list. Defaults
 /// fill in any missing keys so legacy payloads stay safe.
 export async function updateScoringConfig(
@@ -529,7 +529,7 @@ export async function recordLeadScoreEvent(opts: {
     /// Optional explicit override. If omitted, the points are looked up from
     /// the org's current custom_events config.
     points?: number;
-    /// Optional override for the label snapshot — useful for "manual one-off"
+    /// Optional override for the label snapshot - useful for "manual one-off"
     /// adjustments that aren't tied to a configured event.
     label?: string;
 }): Promise<{ event: { id: string; event_key: string; label: string; points: number; created_at: Date }; lead_score: number }> {

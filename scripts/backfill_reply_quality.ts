@@ -2,7 +2,7 @@
  * Backfill Reply Quality classification.
  *
  * Iterates every inbound EmailMessage that doesn't yet have a quality_class
- * and runs it through the rule-based replyClassifierService. Idempotent —
+ * and runs it through the rule-based replyClassifierService. Idempotent -
  * rerun whenever the lexicons are tuned to refresh historical data without
  * affecting the live IMAP worker hot path.
  *
@@ -28,7 +28,7 @@ async function main() {
     const reclassifyAll = !!flag('--all');
     const dryRun = !!flag('--dry');
 
-    console.log('Reply Quality backfill —', JSON.stringify({ orgId, reclassifyAll, dryRun }, null, 2));
+    console.log('Reply Quality backfill -', JSON.stringify({ orgId, reclassifyAll, dryRun }, null, 2));
 
     // Build the where clause:
     //   - inbound only
@@ -103,7 +103,7 @@ async function main() {
         .sort((a, b) => b[1] - a[1])
         .forEach(([k, v]) => console.log(`  ${k.padEnd(14)} ${v}`));
 
-    console.log('\nDone.', dryRun ? '(dry run — no rows updated)' : `${processed} rows updated.`);
+    console.log('\nDone.', dryRun ? '(dry run - no rows updated)' : `${processed} rows updated.`);
 }
 
 main()

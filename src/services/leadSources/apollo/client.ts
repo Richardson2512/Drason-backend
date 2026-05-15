@@ -1,15 +1,15 @@
 /**
- * Apollo.io REST client — implements LeadSourceClient.
+ * Apollo.io REST client - implements LeadSourceClient.
  *
  * Authenticates with API key in the `X-Api-Key` header (Apollo's
  * Sept-2024 header-only auth). Endpoints used:
  *
- *   POST /v1/auth/health       — connection validation
- *   POST /v1/mixed_people/search  — paginated people search
- *   POST /v1/people/match      — single-record enrichment + email reveal
- *   POST /v1/people/bulk_match — up to 10 enrichments per call
- *   GET  /v1/contact_lists/:id/contacts — saved-list pull
- *   POST /v1/saved_searches/:id/run     — saved-search execution
+ *   POST /v1/auth/health       - connection validation
+ *   POST /v1/mixed_people/search  - paginated people search
+ *   POST /v1/people/match      - single-record enrichment + email reveal
+ *   POST /v1/people/bulk_match - up to 10 enrichments per call
+ *   GET  /v1/contact_lists/:id/contacts - saved-list pull
+ *   POST /v1/saved_searches/:id/run     - saved-search execution
  *
  * Rate limits are per-plan + per-endpoint + per-window (minute, hour,
  * day). Apollo returns `429` with `Retry-After`. We honor it once.
@@ -113,7 +113,7 @@ export class ApolloLeadSourceClient implements LeadSourceClient {
         const orgId = String(org?.id ?? data?.user?.organization_id ?? '');
         const orgName = org?.name ?? data?.user?.email ?? 'Apollo workspace';
 
-        // Credits — Apollo wraps these inside a credits object on some plans.
+        // Credits - Apollo wraps these inside a credits object on some plans.
         const creditsBlock = org?.credits || data?.credits || {};
         const used = Number(creditsBlock?.used ?? creditsBlock?.consumed_credits ?? 0);
         const limit = Number(creditsBlock?.total ?? creditsBlock?.granted_credits ?? 0);
@@ -172,7 +172,7 @@ export class ApolloLeadSourceClient implements LeadSourceClient {
 
         const ids = (data.people ?? []).map(p => p?.id).filter((x): x is string => typeof x === 'string');
 
-        // Email reveal — bulk_match for up to 10 per call.
+        // Email reveal - bulk_match for up to 10 per call.
         let enrichedById: Map<string, any> = new Map();
         if (revealEmails && ids.length > 0) {
             enrichedById = await this.bulkRevealByIds(ids);
@@ -265,7 +265,7 @@ export class ApolloLeadSourceClient implements LeadSourceClient {
     }
 
     /**
-     * Bulk-match by Apollo person id — reveals personal emails. Returns
+     * Bulk-match by Apollo person id - reveals personal emails. Returns
      * a map keyed by the input id so callers can join enriched fields
      * back to the original list response.
      *
@@ -294,7 +294,7 @@ export class ApolloLeadSourceClient implements LeadSourceClient {
                     sliceSize: slice.length,
                     err: (err as Error).message?.slice(0, 200),
                 });
-                // Continue with the other slices — partial enrichment is
+                // Continue with the other slices - partial enrichment is
                 // better than failing the whole import.
             }
         }

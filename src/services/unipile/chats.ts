@@ -1,9 +1,9 @@
 /**
- * Unipile chats API — list LinkedIn threads + messages.
+ * Unipile chats API - list LinkedIn threads + messages.
  *
  * Endpoint paths inferred from Unipile docs (`chats`, `chats/{id}/messages`)
  * and the messaging API page. Used by the Unibox service (Phase 6) to
- * power the inbox UI without us maintaining a separate thread store —
+ * power the inbox UI without us maintaining a separate thread store -
  * Unipile already syncs every thread server-side, we just paginate.
  */
 
@@ -90,7 +90,7 @@ export async function markChatRead(threadId: string): Promise<void> {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Phase 5.2 step send surfaces — view_profile / follow / like_post.
+// Phase 5.2 step send surfaces - view_profile / follow / like_post.
 // These don't belong in `chats` semantically but they share the same
 // "no result body needed" return shape so they're grouped here for now.
 // Will split out when each gets richer config.

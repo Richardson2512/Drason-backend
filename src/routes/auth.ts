@@ -6,10 +6,10 @@ import { validateBody, loginSchema, registerSchema, forgotPasswordSchema, resetP
 
 const router = Router();
 
-// Public — current Terms / Privacy version identifiers (no auth required)
+// Public - current Terms / Privacy version identifiers (no auth required)
 router.get('/legal-versions', authController.getLegalVersions);
 
-// Authenticated — resolves the requireFreshConsent 412 by recording one or two
+// Authenticated - resolves the requireFreshConsent 412 by recording one or two
 // new Consent rows for the current ToS / Privacy versions.
 router.post('/accept-current-terms', authController.acceptCurrentTerms);
 
@@ -21,7 +21,7 @@ router.post('/register', validateBody(registerSchema), authController.register);
 router.post('/refresh', authController.refreshToken);
 router.post('/logout', authController.logout);
 
-// Password reset (public — no auth required)
+// Password reset (public - no auth required)
 router.post('/forgot-password', validateBody(forgotPasswordSchema), authController.forgotPassword);
 router.get('/reset-password/verify', authController.verifyResetToken);
 router.post('/reset-password', validateBody(resetPasswordSchema), authController.resetPassword);
@@ -36,7 +36,7 @@ router.get('/google/callback', googleAuthController.handleGoogleCallback);
 // and redirected to the email/password signup form (which has its own
 // work-email gate).
 
-// Workspace invite magic-link flow (public — no auth required).
+// Workspace invite magic-link flow (public - no auth required).
 // 1. Validate token (used by /set-password to render the form).
 router.get('/invite', inviteController.validateInviteToken);
 // 2. Complete the invite (set password, create user + membership).

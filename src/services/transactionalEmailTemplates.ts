@@ -5,7 +5,7 @@
  *   - Webhook auto-disable alerts
  *   - (future) Trial expiry, password reset, weekly reports, etc.
  *
- * DESIGN BRIEF — "Vercel-style restraint, Superkabe brand"
+ * DESIGN BRIEF - "Vercel-style restraint, Superkabe brand"
  *   • Vercel patterns we mirror:
  *       - single column, max-width 600px
  *       - generous whitespace between sections
@@ -55,9 +55,9 @@ export interface RenderEmailParams {
     heading: string;
     /** Optional smaller H2 / kicker above the heading. */
     eyebrow?: string;
-    /** Lead paragraph — first thing the reader sees. May contain inline HTML. */
+    /** Lead paragraph - first thing the reader sees. May contain inline HTML. */
     intro?: string;
-    /** Optional fact rows — rendered as a striped key/value table. */
+    /** Optional fact rows - rendered as a striped key/value table. */
     facts?: EmailFact[];
     /** Body paragraphs after the facts. May contain inline HTML. */
     body?: string;
@@ -67,14 +67,14 @@ export interface RenderEmailParams {
     /** Optional secondary text-link below the CTA (e.g. "View delivery log"). */
     secondaryLinkLabel?: string;
     secondaryLinkUrl?: string;
-    /** Final sign-off line. Defaults to "— The Superkabe team". */
+    /** Final sign-off line. Defaults to "- The Superkabe team". */
     signOff?: string;
     /** Company tagline / footer line. Defaults to brand boilerplate. */
     footerNote?: string;
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Color tokens — single source of truth, mirrors light-theme CSS
+// Color tokens - single source of truth, mirrors light-theme CSS
 // ────────────────────────────────────────────────────────────────────
 
 const C = {
@@ -93,11 +93,11 @@ const C = {
 };
 
 // ────────────────────────────────────────────────────────────────────
-// Public — render the full email
+// Public - render the full email
 // ────────────────────────────────────────────────────────────────────
 
 export function renderEmailTemplate(p: RenderEmailParams): string {
-    const sign = p.signOff || '— The Superkabe team';
+    const sign = p.signOff || '- The Superkabe team';
     const footer = p.footerNote || 'Sent by Superkabe · AI-powered cold email with deliverability protection';
 
     return `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
@@ -111,7 +111,7 @@ export function renderEmailTemplate(p: RenderEmailParams): string {
   <meta name="supported-color-schemes" content="light" />
   <title>${escapeHtml(p.heading)}</title>
   <style>
-    /* Mobile tweaks — Gmail / Apple Mail respect <style> blocks. */
+    /* Mobile tweaks - Gmail / Apple Mail respect <style> blocks. */
     @media only screen and (max-width: 600px) {
       .container { width: 100% !important; }
       .px-32 { padding-left: 24px !important; padding-right: 24px !important; }
@@ -227,7 +227,7 @@ export function renderEmailTemplate(p: RenderEmailParams): string {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Facts table — Vercel's "key:value" detail block, dashboard colors
+// Facts table - Vercel's "key:value" detail block, dashboard colors
 // ────────────────────────────────────────────────────────────────────
 
 function renderFacts(facts: EmailFact[]): string {
@@ -254,7 +254,7 @@ function renderFacts(facts: EmailFact[]): string {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// CTA button — bulletproof for Outlook (VML fallback)
+// CTA button - bulletproof for Outlook (VML fallback)
 // ────────────────────────────────────────────────────────────────────
 
 function renderButton(label: string, url: string): string {
@@ -294,7 +294,7 @@ function escapeHtml(s: string): string {
  *
  *   - Production: should be set to the customer-facing CDN/origin
  *     via EMAIL_LOGO_URL or FRONTEND_URL env.
- *   - Local dev: degrades to localhost:3000 — the logo won't render in
+ *   - Local dev: degrades to localhost:3000 - the logo won't render in
  *     a real inbox (recipient can't reach localhost), but everything
  *     else still works and the alt text + wordmark appear instead.
  */
@@ -309,7 +309,7 @@ function escapeAttr(s: string): string {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Plain-text companion — Resend auto-derives if not provided, but a
+// Plain-text companion - Resend auto-derives if not provided, but a
 // hand-written version reads better and avoids the "this email is best
 // viewed in HTML" tax. Caller can pass through SendTransactionalEmail.text.
 // ────────────────────────────────────────────────────────────────────
@@ -326,7 +326,7 @@ export function renderEmailPlainText(p: RenderEmailParams): string {
     if (p.body) lines.push(stripTags(p.body), '');
     if (p.ctaLabel && p.ctaUrl) lines.push(`${p.ctaLabel}: ${p.ctaUrl}`, '');
     if (p.secondaryLinkLabel && p.secondaryLinkUrl) lines.push(`${p.secondaryLinkLabel}: ${p.secondaryLinkUrl}`, '');
-    lines.push(p.signOff || '— The Superkabe team', '');
+    lines.push(p.signOff || '- The Superkabe team', '');
     lines.push(p.footerNote || 'Sent by Superkabe · AI-powered cold email with deliverability protection');
     lines.push('https://www.superkabe.com');
     return lines.join('\n');

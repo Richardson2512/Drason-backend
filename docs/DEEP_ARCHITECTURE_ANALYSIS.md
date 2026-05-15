@@ -1,4 +1,4 @@
-# Deep Architecture Analysis — Drason Backend
+# Deep Architecture Analysis - Drason Backend
 
 > Produced by distributed systems analysis. Covers dependency graphs, state writers,
 > critical execution paths, redundancy, coupling, and a simplified architecture proposal.
@@ -21,7 +21,7 @@ SlackAlertService:
   imports: [prisma, axios, crypto, observabilityService]
   reads: [slackIntegration, slackAlertLog]
   writes: [slackIntegration, slackAlertLog]
-  external_calls: [Slack API — POST chat.postMessage, retry backoff 5s→30s→120s]
+  external_calls: [Slack API - POST chat.postMessage, retry backoff 5s→30s→120s]
   called_by: [healingService, monitoringService, executionGateService, eventQueue, notificationService]
 
 billingService:
@@ -91,7 +91,7 @@ infrastructureAssessmentService:
   imports: [dns, prisma, auditLogService, notificationService, observabilityService]
   reads: [domain, mailbox, campaign, mailboxMetrics]
   writes: [domain (health fields), mailbox (cooldown), organization (assessment_completed)]
-  external_calls: [DNS lookups — SPF/DKIM/DMARC/blacklist]
+  external_calls: [DNS lookups - SPF/DKIM/DMARC/blacklist]
   called_by: [Scheduled assessment workers]
 
 leadAssignmentService:
@@ -140,7 +140,7 @@ smartleadClient:
   imports: [axios, prisma, auditLogService, eventService, assessmentService, notificationService, types, observabilityService, circuitBreaker, rateLimiter, redis, leadScoringService, syncProgressService, polarClient, encryption]
   reads: [organizationSetting, lead, campaign, mailbox, domain, organization]
   writes: [lead, campaign, mailbox, domain, syncProgress]
-  external_calls: [Smartlead API — campaigns, email-accounts, leads, engagement; rate limit 10 req/2s, circuit breaker]
+  external_calls: [Smartlead API - campaigns, email-accounts, leads, engagement; rate limit 10 req/2s, circuit breaker]
   called_by: [smartleadSyncWorker, ingestionController]
 
 smartleadEventParserService:
@@ -378,14 +378,14 @@ Step 3: THRESHOLD CHECK (3% bounce rate)
 
 Step 4: ZERO TOLERANCE during recovery
   → IF recovery_phase IN (restricted_send, warm_recovery):
-    → healingService.transitionPhase(→paused) — REGRESSION
+    → healingService.transitionPhase(→paused) - REGRESSION
     → Cooldown doubled, resilience_score -25
 
 Step 5: Campaign + Lead updates
   → DB: Campaign.update(total_bounced +1, bounce_rate recalculated)
   → DB: Lead.update(status=paused, health_state=unhealthy, health_classification=red)
 
-Step 6: [metricsWorker — async graduation check]
+Step 6: [metricsWorker - async graduation check]
   → IF cooldown_until < now: transition paused→quarantine
   → DB: Mailbox.update(recovery_phase=quarantine, clean_sends_since_phase=0)
   → DB: StateTransition.create(paused→quarantine)
@@ -397,19 +397,19 @@ Step 6: [metricsWorker — async graduation check]
 Step 1: Acquire Redis lock: sync:smartlead:org:{id} (TTL 15min)
 
 Step 2: CAMPAIGN SYNC
-  → API: GET /campaigns — fetch all campaigns
-  → API: GET /campaigns/{id}/analytics — per-campaign stats
-  → DB: Campaign.upsert (batch 50) — name, status, bounce_rate, engagement counts/rates
+  → API: GET /campaigns - fetch all campaigns
+  → API: GET /campaigns/{id}/analytics - per-campaign stats
+  → DB: Campaign.upsert (batch 50) - name, status, bounce_rate, engagement counts/rates
 
 Step 3: MAILBOX SYNC
-  → API: GET /email-accounts — all mailboxes
+  → API: GET /email-accounts - all mailboxes
   → Domain auto-creation: extract domain, check capacity
   → DB: Domain.createMany (new domains)
-  → DB: Mailbox.upsert (batch 50) — email, status, smtp/imap, warmup fields
+  → DB: Mailbox.upsert (batch 50) - email, status, smtp/imap, warmup fields
   → DB: Organization.update (domain_count, mailbox_count)
 
 Step 4: CAMPAIGN-MAILBOX LINKING
-  → API: GET /campaigns/{id}/email-accounts — per-campaign mailbox IDs
+  → API: GET /campaigns/{id}/email-accounts - per-campaign mailbox IDs
   → DB: Campaign.update(mailboxes.connect [ids])
 
 Step 5: RESET ENGAGEMENT STATS
@@ -475,8 +475,8 @@ RELAPSE PATH (any bounce during phase 3-4):
 
 ### 4.1 Duplicate Ingestion Logic (ingestLead vs ingestClayWebhook)
 
-**File A:** `ingestionController.ts:47` — `classifyLeadHealth(email)` for API leads
-**File B:** `ingestionController.ts:364` — `classifyLeadHealth(email)` for Clay leads
+**File A:** `ingestionController.ts:47` - `classifyLeadHealth(email)` for API leads
+**File B:** `ingestionController.ts:364` - `classifyLeadHealth(email)` for Clay leads
 
 Both endpoints execute identical health classification, lead upsert, routing, assignment, and Smartlead push logic. The ONLY difference is `source: 'api'` vs `source: 'clay'`.
 
@@ -544,7 +544,7 @@ Campaign statuses flow from Smartlead (uppercase: 'COMPLETED', 'DRAFTED') throug
 
 ### 5.4 External ID Null Assumption
 
-`campaignController.ts` fallback: `external_id || campaignId` — assumes our internal ID is valid as a Smartlead campaign ID when external_id is null. This will silently fail if Smartlead's ID format differs.
+`campaignController.ts` fallback: `external_id || campaignId` - assumes our internal ID is valid as a Smartlead campaign ID when external_id is null. This will silently fail if Smartlead's ID format differs.
 
 ### 5.5 Shared Database State Without Interface
 
@@ -592,7 +592,7 @@ During the sync window between engagement reset (counters→0) and recalculation
 
 **Location:** `ingestionController.ts:386-413`
 
-Two concurrent Clay webhooks for the same email produce indeterminate state — persona, score, and classification may come from different requests.
+Two concurrent Clay webhooks for the same email produce indeterminate state - persona, score, and classification may come from different requests.
 
 **Fix:** Add optimistic locking with version field or timestamp comparison.
 
@@ -624,12 +624,12 @@ Lead health update and audit log creation are separate operations. If notificati
 
 ### Current Pain Points
 
-1. **17 writers for Lead, 13 for Mailbox** — impossible to reason about state
-2. **300+ lines of duplicated ingestion logic** — double maintenance burden
-3. **Engagement counters managed two ways** (sync resets + webhook increments) — race conditions
+1. **17 writers for Lead, 13 for Mailbox** - impossible to reason about state
+2. **300+ lines of duplicated ingestion logic** - double maintenance burden
+3. **Engagement counters managed two ways** (sync resets + webhook increments) - race conditions
 4. **No transaction boundaries** around multi-step operations
 5. **Magic strings** for status values across 10+ files
-6. **monitoringService imports 12 services** — god service
+6. **monitoringService imports 12 services** - god service
 
 ### Proposed Simplifications
 

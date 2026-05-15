@@ -5,7 +5,7 @@
  * warmupTrackingWorker / espPerformanceWorker). For each organization, the
  * worker checks: is it currently 06:00 in this org's local timezone AND has
  * a snapshot not yet been created for today's local date? If both, generate
- * the snapshot. Idempotent — re-running for an org that's already snapshotted
+ * the snapshot. Idempotent - re-running for an org that's already snapshotted
  * today is a no-op (handled inside generateDailySnapshot).
  *
  * One worker, one interval, all orgs. Same shape as scheduleWarmupTracking.
@@ -20,7 +20,7 @@ import {
     workspaceLocalHour,
 } from '../services/coldCallListService';
 
-const TARGET_HOUR = 6; // 06:00 local — matches spec
+const TARGET_HOUR = 6; // 06:00 local - matches spec
 const RUN_INTERVAL_MS = 60 * 60 * 1000; // hourly
 
 /**

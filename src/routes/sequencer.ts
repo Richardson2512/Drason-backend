@@ -29,7 +29,7 @@ accountRoutes.get('/tracking-domain/check', connectedAccountController.checkTrac
 accountRoutes.post('/:id/tracking-domain', requireCapability('connect_domains'), connectedAccountController.setTrackingDomain);
 accountRoutes.post('/:id/tracking-domain/verify', requireCapability('connect_domains'), connectedAccountController.verifyTrackingDomain);
 
-// OAuth flows (Google + Microsoft) — mailbox connection is gated; the OAuth
+// OAuth flows (Google + Microsoft) - mailbox connection is gated; the OAuth
 // dance itself MUST stay open because the callback URL is hit by the OAuth
 // provider, not the user. The capability check happens at the persist step
 // (createAccount above is what the callback ultimately calls).
@@ -43,7 +43,7 @@ router.use('/accounts', accountRoutes);
 // --- Campaigns ---
 const campaignRoutes = Router();
 campaignRoutes.get('/', campaignController2.listCampaigns);
-// Lead-picker for the suppression modal — MUST come before `/:id` so the
+// Lead-picker for the suppression modal - MUST come before `/:id` so the
 // literal path doesn't get captured as an id parameter.
 campaignRoutes.get('/lead-picker', campaignController2.listLeadsForSuppression);
 campaignRoutes.get('/:id', campaignController2.getCampaign);
@@ -79,7 +79,7 @@ templateRoutes.post('/:id/duplicate', requireCapability('edit_sequences'), templ
 router.use('/templates', templateRoutes);
 
 // --- Mailbox Import (Zapmail / Premium Inboxes / Mission Inbox / Scaled Mail) ---
-// Provider-agnostic bulk import — no Google OAuth scopes required for the
+// Provider-agnostic bulk import - no Google OAuth scopes required for the
 // mailboxes themselves. See controllers/mailboxImportController.ts.
 const mailboxImportRoutes = Router();
 mailboxImportRoutes.get('/providers', mailboxImportController.listProviders);
@@ -143,12 +143,12 @@ router.use('/tags', tagRoutes);
 
 // --- Settings ---
 // Sequencer settings are workspace-wide knobs (default sending hours,
-// throttle, etc.) — agency owners only. Clients shouldn't be reaching here
+// throttle, etc.) - agency owners only. Clients shouldn't be reaching here
 // even with edit_sequences; that capability is for content (campaigns/templates).
 const settingsRoutes = Router();
 settingsRoutes.get('/', sequencerSettingsController.getSettings);
 settingsRoutes.patch('/', requireAgencyOwner, sequencerSettingsController.updateSettings);
-// Cross-channel suppression mode — agency-owner write, anyone in org reads.
+// Cross-channel suppression mode - agency-owner write, anyone in org reads.
 settingsRoutes.get('/suppression-mode', sequencerSettingsController.getSuppressionModeHandler);
 settingsRoutes.patch('/suppression-mode', requireAgencyOwner, sequencerSettingsController.updateSuppressionModeHandler);
 router.use('/settings', settingsRoutes);
@@ -194,7 +194,7 @@ router.use('/warmup', warmupRoutes);
 import * as sequenceController from '../controllers/sequenceController';
 const sequenceRoutes = Router();
 sequenceRoutes.get('/', sequenceController.list);
-// AI generate — register before /:id so the literal path doesn't get
+// AI generate - register before /:id so the literal path doesn't get
 // captured as an id parameter.
 sequenceRoutes.post('/generate', requireCapability('edit_sequences'), sequenceController.generate);
 sequenceRoutes.get('/:id', requireCapability('edit_sequences'), sequenceController.get);

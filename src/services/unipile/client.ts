@@ -1,5 +1,5 @@
 /**
- * Unipile REST client — single canonical wrapper for the Unipile LinkedIn
+ * Unipile REST client - single canonical wrapper for the Unipile LinkedIn
  * API. All Super LinkedIn modules go through this client so retry/throttle/
  * auth behavior is consistent.
  *
@@ -11,9 +11,9 @@
  * Documentation lives at https://developer.unipile.com/reference.
  *
  * Configuration (env):
- *   UNIPILE_API_BASE_URL — full base URL incl. port and /api/v1 prefix
- *   UNIPILE_API_KEY      — workspace API key (X-API-KEY header)
- *   UNIPILE_WEBHOOK_SECRET — HMAC secret for inbound webhook verification
+ *   UNIPILE_API_BASE_URL - full base URL incl. port and /api/v1 prefix
+ *   UNIPILE_API_KEY      - workspace API key (X-API-KEY header)
+ *   UNIPILE_WEBHOOK_SECRET - HMAC secret for inbound webhook verification
  *
  * Design parallels the existing kimiClient/geminiClient: stub mode when
  * UNIPILE_API_KEY is unset, retry on transient failures, FIFO-queued
@@ -34,7 +34,7 @@ export function isUnipileConfigured(): boolean {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Semaphore — Unipile pre-rate-limits requests before they reach
+// Semaphore - Unipile pre-rate-limits requests before they reach
 // LinkedIn. Staying under their cap prevents request queuing latency.
 // ────────────────────────────────────────────────────────────────────
 
@@ -63,7 +63,7 @@ export function getUnipileStats() {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Retry helper — matches the kimi/gemini client pattern
+// Retry helper - matches the kimi/gemini client pattern
 // ────────────────────────────────────────────────────────────────────
 
 import { recordUnipile429 } from './rateLimitTracker';
@@ -86,7 +86,7 @@ function jitter(baseMs: number): number {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// HTTP error class — preserved through retries so callers can introspect
+// HTTP error class - preserved through retries so callers can introspect
 // ────────────────────────────────────────────────────────────────────
 
 export class UnipileHttpError extends Error {
@@ -102,7 +102,7 @@ export class UnipileHttpError extends Error {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Request primitive — direct fetch (no axios dep) with retry + semaphore
+// Request primitive - direct fetch (no axios dep) with retry + semaphore
 // ────────────────────────────────────────────────────────────────────
 
 export interface UnipileRequest {
@@ -120,7 +120,7 @@ export interface UnipileRequest {
 
 export async function unipileRequest<T = unknown>(req: UnipileRequest): Promise<T> {
     if (!isUnipileConfigured()) {
-        logger.info('[UNIPILE] Stub mode — returning empty result', { tag: req.tag, path: req.path });
+        logger.info('[UNIPILE] Stub mode - returning empty result', { tag: req.tag, path: req.path });
         return {} as T;
     }
 
@@ -133,15 +133,15 @@ export async function unipileRequest<T = unknown>(req: UnipileRequest): Promise<
             } catch (err) {
                 lastError = err;
                 const e = err as { status?: number; message?: string };
-                // Record every 429 we observe — even on the terminal
-                // attempt where we're about to give up — so the operator
+                // Record every 429 we observe - even on the terminal
+                // attempt where we're about to give up - so the operator
                 // sees the throttling in the UI banner.
                 if (e?.status === 429 && req.accountId) {
                     recordUnipile429(req.accountId);
                 }
                 if (!isRetryable(err) || attempt === RETRY_DELAYS_MS.length) throw err;
                 const wait = jitter(RETRY_DELAYS_MS[attempt]);
-                logger.warn('[UNIPILE] Retryable failure — backing off', {
+                logger.warn('[UNIPILE] Retryable failure - backing off', {
                     tag: req.tag,
                     path: req.path,
                     attempt: attempt + 1,
@@ -206,14 +206,14 @@ function buildUrl(path: string, query?: UnipileRequest['query']): string {
 //
 // Unipile signs each webhook POST with HMAC-SHA256 of the raw body using
 // the shared secret. The signature is sent as an `x-unipile-signature`
-// header (hex-encoded). Verification MUST happen on the raw body bytes —
+// header (hex-encoded). Verification MUST happen on the raw body bytes -
 // re-serializing parsed JSON breaks the comparison.
 // ────────────────────────────────────────────────────────────────────
 
 /**
  * Header names Unipile (or any reasonable webhook system) may carry the
  * HMAC signature in. Multiple are accepted because Unipile's public docs
- * say only "a signature header" without naming it — the first non-empty
+ * say only "a signature header" without naming it - the first non-empty
  * candidate that matches our computation passes verification.
  */
 const SIGNATURE_HEADER_CANDIDATES = [
@@ -228,14 +228,14 @@ const SIGNATURE_HEADER_CANDIDATES = [
  * HMAC-SHA256 verifier for Unipile webhooks.
  *
  * Accepts either a single header string (back-compat) or the full headers
- * bag — when the latter, every known signature-header name is tried.
+ * bag - when the latter, every known signature-header name is tried.
  *
  * Encoding-tolerant: real signatures from major webhook providers use
  * either hex or base64. We compute both and accept whichever matches.
  * Also strips the common `sha256=` prefix some providers (GitHub-style)
  * include before the digest.
  *
- * SHA-256 is the algorithm assumption — the only widely-used HMAC variant
+ * SHA-256 is the algorithm assumption - the only widely-used HMAC variant
  * for webhooks in 2025+. If Unipile turns out to use SHA-1 we'll see
  * persistent verification failures in logs and flip to a dual-compute.
  */
@@ -245,7 +245,7 @@ export function verifyUnipileWebhook(
 ): boolean {
     const secret = process.env.UNIPILE_WEBHOOK_SECRET;
     if (!secret) {
-        logger.warn('[UNIPILE] Webhook received but UNIPILE_WEBHOOK_SECRET is unset — rejecting');
+        logger.warn('[UNIPILE] Webhook received but UNIPILE_WEBHOOK_SECRET is unset - rejecting');
         return false;
     }
 

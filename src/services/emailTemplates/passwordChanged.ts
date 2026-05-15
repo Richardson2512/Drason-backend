@@ -1,5 +1,5 @@
 /**
- * Password changed email — sent immediately after a successful
+ * Password changed email - sent immediately after a successful
  * /api/user/change-password OR /api/auth/reset-password. Lets the user
  * know their password was changed and gives them an emergency contact
  * if it wasn't them.
@@ -15,9 +15,9 @@ export interface PasswordChangedEmailParams {
     name: string | null;
     /** When the password was changed. Defaults to now. */
     changedAt?: Date;
-    /** "Chrome on macOS · 1.2.3.4" — boosts trust. */
+    /** "Chrome on macOS · 1.2.3.4" - boosts trust. */
     requesterContext?: string | null;
-    /** Source of the change — affects copy slightly. */
+    /** Source of the change - affects copy slightly. */
     source: 'self_service' | 'reset_link';
     /** /forgot-password URL in case the user wasn't the one who changed it. */
     forgotPasswordUrl: string;
@@ -44,7 +44,7 @@ export function passwordChangedEmail(params: PasswordChangedEmailParams): Render
         preheader,
         eyebrow: 'Account security',
         heading: 'Your password was changed',
-        intro: `${greeting} ${sourceLine} All previously signed-in sessions have been signed out — you'll need to sign in again with your new password.`,
+        intro: `${greeting} ${sourceLine} All previously signed-in sessions have been signed out - you'll need to sign in again with your new password.`,
         facts,
         body:
             `<strong style="color:#111827;">If this was you</strong>, no further action is needed. You can keep using Superkabe normally.` +

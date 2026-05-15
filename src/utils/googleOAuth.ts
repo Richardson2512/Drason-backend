@@ -4,15 +4,15 @@
  * Centralizes three things that were previously missing or duplicated across
  * the Postmaster / Sequencer Gmail / user-login flows:
  *
- *   1. revokeGoogleToken — call Google's revocation endpoint on disconnect
+ *   1. revokeGoogleToken - call Google's revocation endpoint on disconnect
  *      so the grant is killed on Google's side, not just locally.
- *   2. verifyGrantedScopes — Google's web-server doc step 6: "users may not
+ *   2. verifyGrantedScopes - Google's web-server doc step 6: "users may not
  *      grant your app access to all of them. Your app must verify which
  *      scopes were actually granted." Returns a list of missing required
  *      scopes (empty if all granted).
- *   3. assertHttpsBackendUrlInProd — Google requires HTTPS for non-localhost
+ *   3. assertHttpsBackendUrlInProd - Google requires HTTPS for non-localhost
  *      redirect URIs. Catch the misconfig at boot, not at OAuth time.
- *   4. verifyIdTokenEmail — extract a verified email from a Google id_token
+ *   4. verifyIdTokenEmail - extract a verified email from a Google id_token
  *      JWT without an extra HTTP call to userinfo. Validates signature
  *      against Google's published JWKS.
  */
@@ -24,7 +24,7 @@ import { logger } from '../services/observabilityService';
 const REVOKE_URL = 'https://oauth2.googleapis.com/revoke';
 
 /**
- * Revoke a Google OAuth token (refresh or access). Idempotent — Google
+ * Revoke a Google OAuth token (refresh or access). Idempotent - Google
  * returns 200 on success, 400 if already revoked/invalid; we treat both as
  * "the grant is gone" and never throw upward.
  *
@@ -43,7 +43,7 @@ export async function revokeGoogleToken(token: string): Promise<{ revoked: boole
         if (res.status === 200) return { revoked: true, status: 200 };
         // Google returns 400 with `invalid_token` for already-revoked / unknown
         // tokens. From our perspective the grant is gone, which is what we
-        // want — treat as success.
+        // want - treat as success.
         if (res.status === 400) return { revoked: true, status: 400 };
         logger.warn('[GOOGLE_OAUTH] Revoke returned unexpected status', { status: res.status, body: typeof res.data === 'string' ? res.data.slice(0, 200) : res.data });
         return { revoked: false, status: res.status };
@@ -58,7 +58,7 @@ export async function revokeGoogleToken(token: string): Promise<{ revoked: boole
 
 /**
  * Compare the `scope` string Google returned in the token response against
- * the scopes the app required. Returns the list of missing scopes — empty
+ * the scopes the app required. Returns the list of missing scopes - empty
  * if all granted. Caller should reject the connection on any miss rather
  * than silently writing a half-broken row to the DB.
  *
@@ -71,11 +71,11 @@ export function verifyGrantedScopes(returnedScope: string | null | undefined, re
 
 /**
  * Verify a Google id_token JWT and return the verified email. Faster and
- * MitM-safer than calling oauth2.userinfo.get over HTTP — id_token is signed
+ * MitM-safer than calling oauth2.userinfo.get over HTTP - id_token is signed
  * by Google and includes the email + verified_email claim directly.
  *
  * Throws if the token is unsigned, expired, or doesn't include a verified
- * email — caller should treat as a hard failure and refuse the connection.
+ * email - caller should treat as a hard failure and refuse the connection.
  */
 export async function verifyIdTokenEmail(
     idToken: string,

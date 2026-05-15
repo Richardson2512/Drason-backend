@@ -1,12 +1,12 @@
 /**
- * Agent registry — codifies the 5-agent topology described in
+ * Agent registry - codifies the 5-agent topology described in
  * project_linkedin_outreach_initiative memory:
  *
- *   supervisor          — routes events; decides which agent handles what
- *   signal_monitoring   — owns the poller; emits engagement_event objects
- *   icp_matcher         — deterministic rule engine (v1); becomes LLM in v2
- *   enrichment          — runs the waterfall providers; merges fields
- *   reply_classifier    — auto-tag equivalent (Interested / Not Interested / Generic)
+ *   supervisor          - routes events; decides which agent handles what
+ *   signal_monitoring   - owns the poller; emits engagement_event objects
+ *   icp_matcher         - deterministic rule engine (v1); becomes LLM in v2
+ *   enrichment          - runs the waterfall providers; merges fields
+ *   reply_classifier    - auto-tag equivalent (Interested / Not Interested / Generic)
  *
  * Each agent invocation writes an AgentRun audit row so cost + latency
  * are queryable and replayable. The dispatcher (Phase 4 cont.) reads
@@ -33,7 +33,7 @@ export type ModelName =
 
 export interface AgentDef {
     name: AgentName;
-    /** Default model — overridable at call site. */
+    /** Default model - overridable at call site. */
     model: ModelName;
     description: string;
     /** What the agent's structured output looks like. Used for schema-checking
@@ -69,23 +69,23 @@ export const AGENTS: Record<AgentName, AgentDef> = {
     reply_classifier: {
         name: 'reply_classifier',
         model: 'kimi-k2-0905-preview',
-        description: 'Auto-Tag — classifies the first reply into Interested / Not Interested / Generic.',
+        description: 'Auto-Tag - classifies the first reply into Interested / Not Interested / Generic.',
         output_keys: ['class', 'confidence', 'reasoning'],
     },
 };
 
 // ────────────────────────────────────────────────────────────────────
-// Audit-row writer — every agent call goes through this so cost,
+// Audit-row writer - every agent call goes through this so cost,
 // latency, and decisions are queryable from one table.
 // ────────────────────────────────────────────────────────────────────
 
 export interface AgentRunInput {
     organization_id: string;
-    /** What triggered the run (event type — e.g. 'engagement_event'). */
+    /** What triggered the run (event type - e.g. 'engagement_event'). */
     trigger: string;
     trigger_ref_id?: string;
     agent_name: AgentName;
-    /** Model used for THIS specific call — may differ from the default. */
+    /** Model used for THIS specific call - may differ from the default. */
     model?: ModelName;
 }
 

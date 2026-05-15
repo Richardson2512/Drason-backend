@@ -73,11 +73,11 @@ export const validateKey = async (req: Request, res: Response): Promise<void> =>
         }
         res.json({ success: true });
     } catch (err: any) {
-        // Distinguish infra failure from auth failure — wizard surfaces "Smartlead unavailable".
+        // Distinguish infra failure from auth failure - wizard surfaces "Smartlead unavailable".
         logger.error('[MIGRATION] validateKey infra error', err);
         res.status(503).json({
             success: false,
-            error: 'Could not reach Smartlead — try again in a few minutes',
+            error: 'Could not reach Smartlead - try again in a few minutes',
         });
     }
 };
@@ -107,7 +107,7 @@ export const storeKey = async (req: Request, res: Response): Promise<void> => {
     }
     try {
         const orgId = getOrgId(req);
-        // Re-validate before storing — never persist a bad key.
+        // Re-validate before storing - never persist a bad key.
         const ok = await smartlead.validateKey(apiKey);
         if (!ok) {
             res.status(401).json({ success: false, error: 'Invalid Smartlead API key' });
@@ -140,7 +140,7 @@ export const storeKey = async (req: Request, res: Response): Promise<void> => {
             });
         } catch (consentErr) {
             logger.error(
-                '[MIGRATION] import-key consent record failed — manual remediation required',
+                '[MIGRATION] import-key consent record failed - manual remediation required',
                 consentErr instanceof Error ? consentErr : new Error(String(consentErr)),
                 { orgId },
             );
@@ -187,13 +187,13 @@ export const start = async (req: Request, res: Response): Promise<void> => {
         const orgId = getOrgId(req);
 
         // Customer-chosen import strategy (read from wizard step 2).
-        // Default conservative if missing — never silently aggressive.
+        // Default conservative if missing - never silently aggressive.
         const rawMode = String(req.body?.mode || 'conservative').toLowerCase();
         const mode: 'conservative' | 'aggressive' =
             rawMode === 'aggressive' ? 'aggressive' : 'conservative';
         const includeRecentContacts = !!req.body?.includeRecentContacts && mode === 'aggressive';
 
-        // Guard against concurrent imports — if a job is already running for
+        // Guard against concurrent imports - if a job is already running for
         // this org, return its id rather than starting a parallel one.
         const latest = await importJob.getLatestImportJob(orgId);
         if (latest && (latest.status === 'pending' || latest.status === 'running' || latest.status === 'paused_source')) {

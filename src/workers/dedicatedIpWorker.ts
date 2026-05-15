@@ -1,24 +1,24 @@
 /**
- * Dedicated-IP worker — drives the Super Sender state machine.
+ * Dedicated-IP worker - drives the Super Sender state machine.
  *
  * Two responsibilities, one tick loop:
  *
- *   1. PROVISIONING — for every row in `state='provisioning'`:
+ *   1. PROVISIONING - for every row in `state='provisioning'`:
  *        a. If ses_pool_name is null, call SES provisionDedicatedIp.
  *        b. Else, poll getDedicatedIpStatus. AVAILABLE → state='warming',
  *           activated_at=NOW, warmup_day=0, daily_cap=initial cap.
  *
- *   2. WARMING — for every row in `state='warming'`:
+ *   2. WARMING - for every row in `state='warming'`:
  *        a. If activated_at is yesterday or earlier, increment warmup_day.
  *        b. Recompute daily_cap from the ramp curve.
  *        c. warmup_day >= WARMUP_DAYS → state='active', daily_cap=full,
  *           warmup_completed_at=NOW.
  *
- * Cancellation is event-driven (webhook handler) — not polled here.
+ * Cancellation is event-driven (webhook handler) - not polled here.
  *
  * Tick cadence: every 5 minutes. Provisioning shouldn't take more than
  * an hour in real mode; warmup is a daily increment so any cadence is
- * fine. 5min is a sweet spot — fast enough that the UI feels live in
+ * fine. 5min is a sweet spot - fast enough that the UI feels live in
  * stub mode (where provisioning completes in 10s), slow enough that
  * SES rate limits don't matter.
  */
@@ -49,7 +49,7 @@ let stopped = false;
 function rampCap(day: number): number {
     if (day <= 0) return INITIAL_DAILY_CAP;
     if (day >= WARMUP_DAYS) return FULL_DAILY_CAP;
-    // Geometric ramp — doubles roughly every 3 days, lands at FULL_DAILY_CAP
+    // Geometric ramp - doubles roughly every 3 days, lands at FULL_DAILY_CAP
     // on day WARMUP_DAYS. SES's published guidance is non-linear; geometric
     // is the closest single-line approximation.
     const ratio = day / WARMUP_DAYS;
@@ -66,7 +66,7 @@ async function processProvisioning(): Promise<{ moved: number }> {
     let moved = 0;
     for (const row of rows) {
         try {
-            // First-touch — call SES to create the pool.
+            // First-touch - call SES to create the pool.
             if (!row.ses_pool_name) {
                 const result = await provisionDedicatedIp({
                     accountId: row.account_id,
@@ -83,7 +83,7 @@ async function processProvisioning(): Promise<{ moved: number }> {
                 continue;
             }
 
-            // Subsequent ticks — poll readiness.
+            // Subsequent ticks - poll readiness.
             let status: SesIpStatus;
             try {
                 status = await getDedicatedIpStatus(row.ses_pool_name);
@@ -113,7 +113,7 @@ async function processProvisioning(): Promise<{ moved: number }> {
                 });
                 moved += 1;
             }
-            // PENDING / IN_PROGRESS — leave for next tick.
+            // PENDING / IN_PROGRESS - leave for next tick.
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             logger.error('[DEDICATED_IP_WORKER] provisioning row failed', err instanceof Error ? err : new Error(msg), { ipId: row.id });
@@ -180,7 +180,7 @@ async function processWarming(): Promise<{ advanced: number }> {
 
 /** Decay 24h aggregate counters once a day so the bounce/complaint pause
  *  decision uses a rolling window. We don't store per-event timestamps
- *  in the aggregate — DedicatedIpEvent has the raw events for forensics —
+ *  in the aggregate - DedicatedIpEvent has the raw events for forensics -
  *  so this is a flat reset, executed when sends_reset_at rolls. Conservative
  *  but correct: a paused IP stays paused until manually unpaused even if
  *  counters reset. */
@@ -219,7 +219,7 @@ export function startDedicatedIpWorker(): void {
     stopped = false;
     timer = setInterval(() => { tick().catch(() => undefined); }, TICK_INTERVAL_MS);
     // Run once at startup so a fresh deploy doesn't wait 5min for the
-    // first transitions — this matters most in stub mode where the
+    // first transitions - this matters most in stub mode where the
     // entire provisioning cycle is ~10s.
     tick().catch(() => undefined);
     logger.info('[DEDICATED_IP_WORKER] started', { intervalMs: TICK_INTERVAL_MS });

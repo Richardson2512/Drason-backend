@@ -15,7 +15,7 @@ interface CreateLeadDTO {
 }
 
 export const createLead = async (organizationId: string, data: CreateLeadDTO) => {
-    // 1. Upsert Lead (Held) — prevents duplicate constraint violations on re-ingestion
+    // 1. Upsert Lead (Held) - prevents duplicate constraint violations on re-ingestion
     const lead = await prisma.lead.upsert({
         where: {
             organization_id_email: {

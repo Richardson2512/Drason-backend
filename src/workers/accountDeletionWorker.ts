@@ -8,7 +8,7 @@
  * row. For each, calls `eraseOrganization` and writes a `deletion_executed`
  * AuditLog row when complete.
  *
- * Required for GDPR Art. 17 compliance — without this worker, deletion
+ * Required for GDPR Art. 17 compliance - without this worker, deletion
  * requests would queue forever and we'd be in violation.
  */
 
@@ -18,7 +18,7 @@ import { eraseOrganization } from '../services/piiErasureService';
 import { dispatchEmail } from '../services/emailTemplates/dispatcher';
 import { accountDeletionExecutedEmail } from '../services/emailTemplates/accountDeletionExecuted';
 
-const RUN_INTERVAL_MS = 6 * 60 * 60 * 1000;     // 6h — deletion is not time-critical
+const RUN_INTERVAL_MS = 6 * 60 * 60 * 1000;     // 6h - deletion is not time-critical
 const FIRST_RUN_DELAY_MS = 5 * 60 * 1000;       // 5min after boot
 
 let scheduled: NodeJS.Timeout | null = null;
@@ -42,7 +42,7 @@ function tryParseDetails(json: string | null): { cancellation_token?: string; gr
 }
 
 /**
- * Scan + execute one cycle. Idempotent — if it crashes mid-run, the next
+ * Scan + execute one cycle. Idempotent - if it crashes mid-run, the next
  * cycle will retry whatever didn't complete (we write `deletion_executed`
  * only on success).
  */
@@ -127,7 +127,7 @@ export async function runOnce(): Promise<{ executed: number; errors: number }> {
             continue;
         }
 
-        // Snapshot identity before erasure — once eraseOrganization runs,
+        // Snapshot identity before erasure - once eraseOrganization runs,
         // both the User and Organization rows are gone, so we can't look
         // them up to send the confirmation email.
         const requester = req.entity_id ? await prisma.user.findUnique({
@@ -160,7 +160,7 @@ export async function runOnce(): Promise<{ executed: number; errors: number }> {
                 },
             });
 
-            // Final confirmation email — sent AFTER erasure since we already
+            // Final confirmation email - sent AFTER erasure since we already
             // snapshotted identity above. Recipient address is the only PII
             // we still hold, and it's intentional: GDPR Art. 12(3) requires
             // confirmation that the request was carried out.
@@ -211,7 +211,7 @@ export function scheduleAccountDeletionWorker(): void {
     };
 
     scheduled = setTimeout(tick, FIRST_RUN_DELAY_MS);
-    logger.info(`[ACCOUNT-DELETION-WORKER] Scheduled — sweep every ${RUN_INTERVAL_MS / 3600_000}h`);
+    logger.info(`[ACCOUNT-DELETION-WORKER] Scheduled - sweep every ${RUN_INTERVAL_MS / 3600_000}h`);
 }
 
 export function stopAccountDeletionWorker(): void {

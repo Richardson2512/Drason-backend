@@ -4,12 +4,12 @@
  * Centralized counter the Unipile HTTP client increments every time it
  * observes a 429 response. We keep a rolling 60-minute ring of timestamps
  * per LinkedInAccount id so the account-detail UI can surface a banner
- * like "5 rate-limit events in the last hour — Unipile is throttling
+ * like "5 rate-limit events in the last hour - Unipile is throttling
  * this account; expect delays". This is the surface that lets operators
  * spot a per-account rate-limit issue before it turns into a CONNECTING
  * / ERROR account-status event.
  *
- * Memory-only by design — the data is operational signal, not historical
+ * Memory-only by design - the data is operational signal, not historical
  * record. If the process restarts, the counter resets; the longer-form
  * audit lives in the worker logs.
  *
@@ -20,7 +20,7 @@
  */
 
 const WINDOW_MS = 60 * 60 * 1000;
-const MAX_EVENTS_PER_ACCOUNT = 200; // safety cap — keep the ring bounded
+const MAX_EVENTS_PER_ACCOUNT = 200; // safety cap - keep the ring bounded
 
 interface AccountRing {
     timestamps: number[]; // unix ms, append-only until prune
@@ -57,7 +57,7 @@ export function recordUnipile429(accountId: string | undefined | null): void {
 export interface Unipile429Stats {
     /** Count of 429s in the last hour. */
     count_60m: number;
-    /** Count of 429s in the last 5 minutes — surfaces the "hot" state
+    /** Count of 429s in the last 5 minutes - surfaces the "hot" state
      *  even when the hourly count has decayed. */
     count_5m: number;
     /** ISO timestamp of the most recent 429, or null. */
@@ -97,7 +97,7 @@ export function getUnipile429Aggregate(): { total_60m: number; accounts_affected
     return { total_60m: total, accounts_affected: affected };
 }
 
-/** Test/dev helper — wipes all rings. */
+/** Test/dev helper - wipes all rings. */
 export function resetUnipile429Tracker(): void {
     byAccount.clear();
 }

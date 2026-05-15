@@ -1,5 +1,5 @@
 /**
- * Signal Watchlist controller — CRUD + scan trigger + match review.
+ * Signal Watchlist controller - CRUD + scan trigger + match review.
  *
  * Routes (mounted under /api/linkedin):
  *   GET    /watchlists
@@ -12,7 +12,7 @@
  *   POST   /watchlists/:id/matches/:matchId/push
  *   POST   /watchlists/:id/matches/:matchId/skip
  *
- * Server-side ceilings — protect operators from accidentally configuring
+ * Server-side ceilings - protect operators from accidentally configuring
  * a watchlist that would burn through LinkedIn's daily action ceiling
  * (and risk an account block):
  *   - keywords: max 5
@@ -185,7 +185,7 @@ export const remove = async (req: Request, res: Response): Promise<Response> => 
 /**
  * Schedule the watchlist for an immediate run.
  *
- * We don't execute synchronously here — a full keyword sweep can take
+ * We don't execute synchronously here - a full keyword sweep can take
  * 20-60s and an HTTP request blocking that long is fragile (proxies time
  * out, browsers retry, load balancers reset). Instead we set
  * `next_run_at = now` and return 202; the watchlist cron worker
@@ -204,7 +204,7 @@ export const runNow = async (req: Request, res: Response): Promise<Response> => 
         });
         if (!existing) return res.status(404).json({ success: false, error: 'Watchlist not found' });
         if (!existing.enabled) {
-            return res.status(400).json({ success: false, error: 'Watchlist is disabled — enable it before triggering a run' });
+            return res.status(400).json({ success: false, error: 'Watchlist is disabled - enable it before triggering a run' });
         }
 
         await prisma.signalWatchlist.update({

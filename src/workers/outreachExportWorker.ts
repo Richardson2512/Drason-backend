@@ -6,7 +6,7 @@
  * Outreach prospect, and adds the prospect to the chosen sequence
  * under the chosen mailbox. Resumes mid-flight via the cursor index.
  *
- * Idempotent on email — re-exporting the same lead returns the existing
+ * Idempotent on email - re-exporting the same lead returns the existing
  * prospect, and re-adding to the same sequence/mailbox is a no-op.
  */
 
@@ -21,7 +21,7 @@ import { OutreachClient } from '../services/outreach/client';
 import { OutreachError } from '../services/outreach/types';
 
 const POLL_INTERVAL_MS = 15_000;
-const CHUNK_PER_TICK = 25; // ~25 prospects per tick — keeps worker responsive
+const CHUNK_PER_TICK = 25; // ~25 prospects per tick - keeps worker responsive
 
 let running = false;
 let stopped = false;
@@ -139,7 +139,7 @@ async function processJob(jobId: string): Promise<void> {
             } catch (err) {
                 totalFailed += 1;
                 if (err instanceof OutreachError && (err.providerCode === 'unauthorized' || err.status === 401)) {
-                    // Auth dead — bail the whole job, don't burn through the chunk.
+                    // Auth dead - bail the whole job, don't burn through the chunk.
                     throw err;
                 }
                 logger.warn('[OUTREACH_EXPORT] per-prospect failure', {

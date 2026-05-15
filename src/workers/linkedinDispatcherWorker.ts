@@ -77,7 +77,7 @@ interface DispatchCandidate {
  *     (invites_today / messages_today / inmails_today). Each successful
  *     pickSender increments the in-memory counter so two candidates in
  *     the same cycle can't double-book a sender that only has one slot
- *     left. The DB counters are still authoritative across cycles —
+ *     left. The DB counters are still authoritative across cycles -
  *     sendService writes them, the next cycle reads fresh values.
  */
 interface CachedSender {
@@ -103,7 +103,7 @@ interface CachedSender {
 interface CycleCache {
     /** campaign_id → ordered (rotation_priority asc) sender list. */
     sendersByCampaign: Map<string, CachedSender[]>;
-    /** Shared across campaigns — one account can power multiple campaigns,
+    /** Shared across campaigns - one account can power multiple campaigns,
      *  and the daily cap is account-wide, not campaign-wide. Keyed by
      *  account_id. */
     accountUsage: Map<string, { invites: number; messages: number; inmails: number; invites_this_week: number }>;
@@ -167,7 +167,7 @@ async function loadSenderPoolForCampaign(campaignId: string, cache: CycleCache):
  * Strategy: in v1 we naïvely scan ongoing LinkedIn campaigns and walk
  * each lead's current_step + 1 to find the next step. For high-volume
  * scale (10k+ leads/campaign) we'll need a denormalized
- * "next_due_at" column on CampaignLead — flagged as Phase 5.2.
+ * "next_due_at" column on CampaignLead - flagged as Phase 5.2.
  */
 async function findDueCandidates(): Promise<DispatchCandidate[]> {
     const campaigns = await prisma.campaign.findMany({
@@ -194,7 +194,7 @@ async function findDueCandidates(): Promise<DispatchCandidate[]> {
 
         // Find leads whose current_step has a LinkedIn next-step due.
         // CampaignLead joins to Lead via email (not a FK), so we fetch
-        // the Lead rows in one batch keyed by email — previously this was
+        // the Lead rows in one batch keyed by email - previously this was
         // a per-row findFirst inside the loop (N+1).
         const leads = await prisma.campaignLead.findMany({
             where: {
@@ -213,7 +213,7 @@ async function findDueCandidates(): Promise<DispatchCandidate[]> {
         // Pre-filter to leads whose next step is owned by this dispatcher.
         // Derived from STEP_TYPES via isLinkedInDispatcherStep() so a newly
         // registered LinkedIn or utility step automatically becomes
-        // dispatchable — no risk of the filter and the dispatch switch
+        // dispatchable - no risk of the filter and the dispatch switch
         // below drifting out of sync (which is exactly how `find_email`
         // ended up silently broken before this refactor).
         const eligible = leads.filter(l => {
@@ -268,7 +268,7 @@ interface WorkingHours {
  * Check whether `now` falls inside the working-hours window for a sender.
  * Returns true when no working_hours is set (24/7) or when within window.
  * Behavior: senders outside their working window are SKIPPED at dispatch
- * time — we don't queue for later.
+ * time - we don't queue for later.
  */
 function isWithinWorkingHours(wh: WorkingHours | null | undefined, now: Date): boolean {
     if (!wh || typeof wh !== 'object') return true;
@@ -309,7 +309,7 @@ function isWithinWorkingHours(wh: WorkingHours | null | undefined, now: Date): b
  * Cache-aware: the sender pool is loaded once per campaign per cycle,
  * and capacity is decremented in-memory on a successful pick so a
  * second candidate in the same cycle sees the slot already taken. The
- * actual DB counter increments happen later inside sendService —
+ * actual DB counter increments happen later inside sendService -
  * across cycles, the DB is authoritative.
  */
 async function pickSender(
@@ -326,14 +326,14 @@ async function pickSender(
         const cap  = kind === 'invite' ? s.cap_invites : kind === 'message' ? s.cap_messages : s.cap_inmails;
         if (used >= cap) continue;
         if (kind === 'invite' && usage.invites_this_week >= s.cap_invites_per_week) continue;
-        // Working hours — "out of working hours" is a skip-now-don't-
+        // Working hours - "out of working hours" is a skip-now-don't-
         // queue-later. If senders are all outside hours, the next
         // dispatcher cycle will re-evaluate.
         if (!isWithinWorkingHours(s.working_hours as WorkingHours | null, now)) continue;
 
         // Reserve the slot in this cycle so the next candidate sees it
         // consumed. The DB counters update through sendService on actual
-        // dispatch — on the next cycle (60s) those updates plus this
+        // dispatch - on the next cycle (60s) those updates plus this
         // reservation will agree.
         if (kind === 'invite') {
             usage.invites += 1;
@@ -354,11 +354,11 @@ async function pickSender(
  * skip or branch.
  *
  * Predicate vocabulary (per SequenceStep.condition schema docs):
- *   - if_no_reply / if_replied        — CampaignLead.replied_at
- *   - if_opened / if_not_opened       — CampaignLead.opened_count
- *   - if_clicked / if_not_clicked     — CampaignLead.clicked_count
- *   - if_connection / if_not_connection — LinkedInConnectionEdge.status
- *   - if_email_found / if_not_email_found — Lead.email present
+ *   - if_no_reply / if_replied        - CampaignLead.replied_at
+ *   - if_opened / if_not_opened       - CampaignLead.opened_count
+ *   - if_clicked / if_not_clicked     - CampaignLead.clicked_count
+ *   - if_connection / if_not_connection - LinkedInConnectionEdge.status
+ *   - if_email_found / if_not_email_found - Lead.email present
  */
 async function evaluateCondition(
     condition: string,
@@ -368,7 +368,7 @@ async function evaluateCondition(
 ): Promise<boolean> {
     // Runtime predicates read off the candidate snapshot taken at
     // findDueCandidates time. The lead row is at most ~60s stale (one
-    // dispatcher cycle) which is fine for opens/clicks/replies — the
+    // dispatcher cycle) which is fine for opens/clicks/replies - the
     // reply-tag worker has a 15min Auto-Tag delay anyway, so this is
     // never the binding latency.
     switch (condition) {
@@ -391,7 +391,7 @@ async function evaluateCondition(
         case 'if_email_found':     return Boolean(cand.lead_email && !cand.lead_email.endsWith('@unresolved.local'));
         case 'if_not_email_found': return !cand.lead_email || cand.lead_email.endsWith('@unresolved.local');
         default:
-            logger.warn('[LINKEDIN-DISPATCHER] Unknown condition — treating as true', { condition });
+            logger.warn('[LINKEDIN-DISPATCHER] Unknown condition - treating as true', { condition });
             return true;
     }
 }
@@ -440,7 +440,7 @@ async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<
             step_number: step.step_number, step_type: step.step_type,
             skip_reason: 'no_sender_capacity_or_out_of_hours',
         });
-        // Do NOT advance the lead — try again on the next cycle when caps
+        // Do NOT advance the lead - try again on the next cycle when caps
         // reset or working hours roll in. Working-hours skips need to be
         // retryable; advancing here would orphan the step.
         return 'SKIPPED';
@@ -620,7 +620,7 @@ async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<
                 break;
             }
             case 'find_linkedin_url': {
-                // Skip cheaply when the lead already has a URL on file —
+                // Skip cheaply when the lead already has a URL on file -
                 // this step is "best-effort fill if missing", not "force
                 // re-enrich".
                 if (cand.lead_linkedin_url) {
@@ -639,7 +639,7 @@ async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<
                 }
 
                 // Need the lead's name + company so the providers have
-                // something to query — without those most enrichment APIs
+                // something to query - without those most enrichment APIs
                 // can't resolve a profile.
                 const leadRow = await prisma.lead.findUnique({
                     where: { id: cand.lead_id },
@@ -663,7 +663,7 @@ async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<
                 // Three outcomes:
                 //   (a) no enrichment provider configured for the org
                 //   (b) providers ran but none returned a URL
-                //   (c) hit — persist linkedin_url onto the Lead row so
+                //   (c) hit - persist linkedin_url onto the Lead row so
                 //       downstream linkedin_* steps see it on their next tick
                 if (result.no_provider_available) {
                     await stepAudit.markSkipped({
@@ -747,7 +747,7 @@ async function advanceLead(cand: DispatchCandidate, completedStepNumber: number)
         where: { campaign_id: cand.campaign_id, step_number: completedStepNumber + 1 },
     });
     if (!next) {
-        // No more steps — mark lead completed.
+        // No more steps - mark lead completed.
         await prisma.campaignLead.update({
             where: { id: cand.campaign_lead_id },
             data: { status: 'completed', current_step: completedStepNumber + 1 },
@@ -766,10 +766,10 @@ async function advanceLead(cand: DispatchCandidate, completedStepNumber: number)
 }
 
 /**
- * Branch jump — used when a step's condition evaluates false AND
+ * Branch jump - used when a step's condition evaluates false AND
  * branch_to_step_number is set. We move the lead to the target step
  * with that step's own delay applied from NOW (the branch target
- * shouldn't fire immediately — it has its own delay relative to the
+ * shouldn't fire immediately - it has its own delay relative to the
  * branching step's intended fire date).
  */
 async function jumpLeadToStep(cand: DispatchCandidate, targetStepNumber: number): Promise<void> {
@@ -777,7 +777,7 @@ async function jumpLeadToStep(cand: DispatchCandidate, targetStepNumber: number)
         where: { campaign_id: cand.campaign_id, step_number: targetStepNumber },
     });
     if (!target) {
-        // Branch target missing — mark completed rather than loop.
+        // Branch target missing - mark completed rather than loop.
         await prisma.campaignLead.update({
             where: { id: cand.campaign_lead_id },
             data: { status: 'completed', current_step: targetStepNumber },

@@ -18,7 +18,7 @@ function getJwtSecret(): string {
         if (process.env.NODE_ENV === 'production') {
             throw new Error('FATAL: JWT_SECRET is not set in production');
         }
-        logger.warn('JWT_SECRET not set — using dev-only fallback. NEVER use this in production.');
+        logger.warn('JWT_SECRET not set - using dev-only fallback. NEVER use this in production.');
         return 'drason_dev_only_secret_DO_NOT_USE_IN_PROD';
     }
     return secret;
@@ -182,8 +182,8 @@ export const initiateGoogleAuth = async (req: Request, res: Response) => {
  *      account OR email/password signup with their work email
  */
 export const handleGoogleCallback = async (req: Request, res: Response) => {
-    // FRONTEND_URL = marketing host (superkabe.com) — used for /signup, /login error redirects
-    // APP_URL = app subdomain host (app.superkabe.com) — used for /dashboard, /onboarding
+    // FRONTEND_URL = marketing host (superkabe.com) - used for /signup, /login error redirects
+    // APP_URL = app subdomain host (app.superkabe.com) - used for /dashboard, /onboarding
     // In single-domain mode just leave APP_URL unset; we fall back to FRONTEND_URL.
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     const appUrl = process.env.APP_URL || frontendUrl;
@@ -208,7 +208,7 @@ export const handleGoogleCallback = async (req: Request, res: Response) => {
             return res.redirect(`${frontendUrl}/signup?error=${encodeURIComponent('Invalid state parameter')}`);
         }
 
-        // Validate state to prevent CSRF — now returns metadata.
+        // Validate state to prevent CSRF - now returns metadata.
         // Async because the underlying store is the database.
         const stateMetadata = await googleOAuth.validateState(state);
         if (!stateMetadata) {
@@ -242,7 +242,7 @@ export const handleGoogleCallback = async (req: Request, res: Response) => {
         });
 
         if (user) {
-            // Existing user — update Google OAuth fields and log in
+            // Existing user - update Google OAuth fields and log in
             logger.info('[GoogleAuth] Existing user found', { userId: user.id });
 
             const expiresAt = tokens.expiry_date ? new Date(tokens.expiry_date) : null;
@@ -278,7 +278,7 @@ export const handleGoogleCallback = async (req: Request, res: Response) => {
         if (googleOAuth.isWorkspaceAccount(googleUser.hd)) {
             const orgName = googleOAuth.deriveOrgNameFromDomain(googleUser.hd!);
 
-            logger.info('[GoogleAuth] Workspace account detected — auto-creating org', {
+            logger.info('[GoogleAuth] Workspace account detected - auto-creating org', {
                 hd: googleUser.hd,
                 derivedOrgName: orgName
             });
@@ -299,7 +299,7 @@ export const handleGoogleCallback = async (req: Request, res: Response) => {
 
             setTokenCookie(res, token);
 
-            // Internal alert — Google Workspace auto-org path.
+            // Internal alert - Google Workspace auto-org path.
             const internalAlertTo = process.env.INTERNAL_SIGNUP_ALERT_TO || 'richardson@superkabe.com';
             void dispatchEmail({
                 rendered: internalNewSignupAlert({
@@ -321,7 +321,7 @@ export const handleGoogleCallback = async (req: Request, res: Response) => {
             return res.redirect(`${appUrl}/dashboard`);
         }
 
-        // ─── NEW USER: NON-WORKSPACE — REJECT ───────────────────────────
+        // ─── NEW USER: NON-WORKSPACE - REJECT ───────────────────────────
         // Superkabe is B2B. The only Google sign-up path we support for new
         // users is Google Workspace (the branch above auto-creates an org
         // from the verified `hd` domain). A non-Workspace Google account is
@@ -330,7 +330,7 @@ export const handleGoogleCallback = async (req: Request, res: Response) => {
         // tie an Organization to. Direct them to email/password signup
         // where the work-email gate runs anyway.
         //
-        // Existing users with personal Google accounts are NOT affected —
+        // Existing users with personal Google accounts are NOT affected -
         // they hit the "Existing user found" branch above and log in
         // normally.
         logger.info('[GoogleAuth] Blocking new non-Workspace Google signup', {
@@ -351,6 +351,6 @@ export const handleGoogleCallback = async (req: Request, res: Response) => {
 // The `completeOnboarding` endpoint + `PendingRegistration` workflow used
 // to support new signups from personal Google accounts (Gmail, etc.). That
 // flow was removed when we made Google Workspace the only supported Google
-// signup path — personal-Google users now fall through to email/password
+// signup path - personal-Google users now fall through to email/password
 // signup with the work-email gate. The route was deleted from auth.ts at
 // the same time.

@@ -213,7 +213,7 @@ export const downloadCustomListCsv = async (req: Request, res: Response): Promis
         const prospects = await generateProspectList({ organizationId: orgId, rules, excludeCampaignLeadIds: exclude });
 
         // Persist a custom snapshot so subsequent runs can dedup the user's
-        // prior downloads (separate from system-list snapshots — a prospect
+        // prior downloads (separate from system-list snapshots - a prospect
         // can appear on both list types independently).
         await prisma.coldCallCustomSnapshot.create({
             data: {

@@ -5,12 +5,12 @@
  * Superkabe. Drives the wizard preview + the long-running ingest job.
  *
  * Source-API constraints (verified against developer.instantly.ai):
- *   • Mailbox credentials are write-only across the entire Instantly v2 API —
+ *   • Mailbox credentials are write-only across the entire Instantly v2 API -
  *     no OAuth tokens, no SMTP/IMAP passwords are returned. Imported mailboxes
  *     land in `connection_status='disconnected'` and the customer must
  *     re-authenticate them in Superkabe before any sending happens.
  *   • `/api/v2/emails` is rate-limited at 20 req/min (5x tighter than the
- *     global 100 req/sec). We don't pull email bodies in this v1 — the lead
+ *     global 100 req/sec). We don't pull email bodies in this v1 - the lead
  *     object already carries every step-attribution field we need
  *     (last_step_id, last_step_from, email_replied_step, etc.).
  *   • Bounce reason and per-event open/click history are not exposed via REST.
@@ -21,12 +21,12 @@
  *
  * Idempotency: every imported entity (Campaign, SequenceStep, StepVariant,
  * Mailbox, ConnectedAccount, Lead, CampaignLead) carries `import_external_id`.
- * Re-running the import upserts on `(scope, import_external_id)` — safe to
+ * Re-running the import upserts on `(scope, import_external_id)` - safe to
  * retry inside the 72h key TTL window.
  *
  * Campaign policy: every imported campaign lands `status='paused'` regardless
  * of source state. Customer must explicitly relaunch in Superkabe after they
- * reconnect mailboxes — guarantees no double-sending during the cutover.
+ * reconnect mailboxes - guarantees no double-sending during the cutover.
  */
 
 import { randomUUID } from 'crypto';
@@ -49,7 +49,7 @@ import {
 const LOG_TAG = 'INSTANTLY-IMPORT';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Lead classification — same five-bucket taxonomy as the Smartlead pipeline
+// Lead classification - same five-bucket taxonomy as the Smartlead pipeline
 // so the wizard UI can render counts uniformly across import sources.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -64,7 +64,7 @@ export type LeadBucket =
     | 'completed';
 
 export const classifyLead = (lead: InstantlyLead, now: number = Date.now()): LeadBucket => {
-    // Hard opt-outs first — Instantly's `Bounced` and `Unsubscribed` lead
+    // Hard opt-outs first - Instantly's `Bounced` and `Unsubscribed` lead
     // statuses are terminal: never re-engage these regardless of mode.
     if (lead.status === 'Bounced' || lead.status === 'Unsubscribed') return 'opted_out';
     // `Skipped` and `Paused` are also customer-initiated halts.
@@ -141,7 +141,7 @@ export const previewImport = async (orgId: string): Promise<PreviewResult> => {
     const apiKey = keyEntry.key;
     const now = Date.now();
 
-    // Whoami — this is also the canonical key-validation call.
+    // Whoami - this is also the canonical key-validation call.
     const workspace = await instantly.getCurrentWorkspace(apiKey);
 
     const result: PreviewResult = {
@@ -162,7 +162,7 @@ export const previewImport = async (orgId: string): Promise<PreviewResult> => {
         leadLabels: 0,
         recentContactThresholdDays: RECENT_CONTACT_THRESHOLD_DAYS,
         warnings: [
-            'Instantly does not expose mailbox credentials. Every imported mailbox will land disconnected — you must re-authenticate via Google/Microsoft OAuth (or re-enter SMTP credentials) before sending.',
+            'Instantly does not expose mailbox credentials. Every imported mailbox will land disconnected - you must re-authenticate via Google/Microsoft OAuth (or re-enter SMTP credentials) before sending.',
             'Instantly does not expose bounce reasons or per-event open/click history. Imported leads carry status flags only; granular event timelines are not transferable.',
         ],
     };
@@ -202,7 +202,7 @@ export const previewImport = async (orgId: string): Promise<PreviewResult> => {
         }
     }
 
-    // Mailboxes — every one needs reconnection in our system.
+    // Mailboxes - every one needs reconnection in our system.
     for await (const acc of instantly.listAccounts(apiKey)) {
         result.mailboxes.total++;
         const provider = instantly.mapProviderCode(acc.provider_code);
@@ -210,7 +210,7 @@ export const previewImport = async (orgId: string): Promise<PreviewResult> => {
         result.mailboxes.reconnectRequired++;
     }
 
-    // Block list — soft import; not gating.
+    // Block list - soft import; not gating.
     try {
         for await (const _entry of instantly.listBlockListEntries(apiKey)) {
             void _entry;
@@ -220,7 +220,7 @@ export const previewImport = async (orgId: string): Promise<PreviewResult> => {
         logger.warn(`[${LOG_TAG}] preview: block-list scan failed`, { err: err?.message });
     }
 
-    // Custom tags + lead labels — soft.
+    // Custom tags + lead labels - soft.
     try {
         for await (const _t of instantly.listCustomTags(apiKey)) { void _t; result.customTags++; }
     } catch (err: any) {
@@ -236,7 +236,7 @@ export const previewImport = async (orgId: string): Promise<PreviewResult> => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Field translators — Instantly → Superkabe
+// Field translators - Instantly → Superkabe
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DAY_KEY_TO_SHORT: Record<string, string> = {
@@ -258,7 +258,7 @@ const mapScheduleDays = (days: Record<string, boolean> | undefined): string[] =>
  * imported HTML so they don't double-fire alongside Superkabe's tracking
  * domain on relaunch. Domains observed in Instantly footers:
  *   • instantly.ai (primary tracking + unsubscribe)
- *   • mlsend.com / sendinginstantly.com (less common — defensively included)
+ *   • mlsend.com / sendinginstantly.com (less common - defensively included)
  */
 export const stripTracking = (html: string): string => {
     if (!html) return html;
@@ -274,7 +274,7 @@ const delayToDaysHours = (
     const unit = step.delay_unit || 'days';
     if (unit === 'days') return { days: value, hours: 0 };
     if (unit === 'hours') return { days: Math.floor(value / 24), hours: value % 24 };
-    // minutes — round up to the nearest hour to keep the schema simple
+    // minutes - round up to the nearest hour to keep the schema simple
     if (unit === 'minutes') return { days: 0, hours: Math.max(1, Math.ceil(value / 60)) };
     return { days: value, hours: 0 };
 };
@@ -285,7 +285,7 @@ const delayToDaysHours = (
 
 const ensureDomain = async (orgId: string, email: string): Promise<string> => {
     const domainPart = email.split('@')[1]?.toLowerCase();
-    if (!domainPart) throw new Error(`Invalid email — no @ in ${email}`);
+    if (!domainPart) throw new Error(`Invalid email - no @ in ${email}`);
 
     const existing = await prisma.domain.findUnique({
         where: { organization_id_domain: { organization_id: orgId, domain: domainPart } },
@@ -337,7 +337,7 @@ const ingestMailbox = async (
         select: { id: true },
     });
 
-    // ConnectedAccount — sending-side row. Lands DISCONNECTED with a clear
+    // ConnectedAccount - sending-side row. Lands DISCONNECTED with a clear
     // last_error explaining why; the dispatcher's accounts filter
     // (`if (acct.connection_status !== 'active') continue`) skips these
     // automatically so no send attempts happen until the customer reconnects.
@@ -351,7 +351,7 @@ const ingestMailbox = async (
             display_name: [acc.first_name, acc.last_name].filter(Boolean).join(' ') || null,
             provider,
             connection_status: 'disconnected',
-            last_error: 'Reconnect via OAuth — Instantly does not export mailbox credentials.',
+            last_error: 'Reconnect via OAuth - Instantly does not export mailbox credentials.',
             daily_send_limit: acc.daily_limit || 50,
             signature_html: acc.signature || null,
         },
@@ -365,7 +365,7 @@ const ingestMailbox = async (
                 select: { connection_status: true },
             }).then(r => r?.connection_status === 'active' ? {} : {
                 connection_status: 'disconnected',
-                last_error: 'Reconnect via OAuth — Instantly does not export mailbox credentials.',
+                last_error: 'Reconnect via OAuth - Instantly does not export mailbox credentials.',
             })),
             daily_send_limit: acc.daily_limit || 50,
             signature_html: acc.signature || null,
@@ -383,7 +383,7 @@ const ingestCampaign = async (
     inst: InstantlyCampaign,
 ): Promise<IngestCampaignResult> => {
     const externalId = inst.id;
-    // Schedule blob — Instantly stores per-day flags + window per "schedule".
+    // Schedule blob - Instantly stores per-day flags + window per "schedule".
     // We pick the FIRST schedule (most workspaces use one); multi-schedule
     // setups will lose the secondary on import, surfaced via `warnings`.
     const sched = inst.campaign_schedule?.schedules?.[0];
@@ -399,7 +399,7 @@ const ingestCampaign = async (
             id: randomUUID(),
             name: inst.name,
             channel: 'email',
-            // Always paused — customer launches manually after mailbox handoff.
+            // Always paused - customer launches manually after mailbox handoff.
             status: 'paused',
             paused_reason: 'imported_from_instantly',
             paused_by: 'system',
@@ -447,7 +447,7 @@ const ingestSequence = async (
     if (!sequences) return { stepsImported, variantsImported };
 
     // Instantly nests `steps` inside `sequences[]`. We flatten because our
-    // schema treats the campaign as one ordered sequence — multi-sequence
+    // schema treats the campaign as one ordered sequence - multi-sequence
     // campaigns concatenate in the order Instantly returns them.
     let stepNumber = 1;
     for (const seq of sequences) {
@@ -487,7 +487,7 @@ const ingestSequence = async (
             });
             stepsImported++;
 
-            // Variants: A/B/C labels by index. Even split — our rotation owns
+            // Variants: A/B/C labels by index. Even split - our rotation owns
             // assignment going forward.
             const labels = ['A', 'B', 'C', 'D', 'E', 'F'];
             for (let i = 0; i < variants.length; i++) {
@@ -616,7 +616,7 @@ const ingestLeads = async (
             },
         });
 
-        // CampaignLead — preserve step attribution in aggressive mode so
+        // CampaignLead - preserve step attribution in aggressive mode so
         // resumed sequences pick up where Instantly left off rather than
         // restarting from step 1. Instantly's `email_replied_step` is 1-indexed
         // matching our `current_step` semantics (0 = not started).
@@ -671,11 +671,11 @@ const ingestLeads = async (
 /**
  * Instantly's `last_step_id` is an opaque step UUID, not a 1-based index. In
  * aggressive mode we prefer `email_replied_step` (which IS a 1-based index)
- * and fall back to 0 when only the UUID is available — i.e. we don't try to
+ * and fall back to 0 when only the UUID is available - i.e. we don't try to
  * resolve UUID → index without the step list in scope.
  */
 function extractStepIndex(_stepId: string): number | null {
-    // Placeholder — see comment above. Caller should prefer
+    // Placeholder - see comment above. Caller should prefer
     // `email_replied_step` / `email_opened_step` which are numeric.
     return null;
 }
@@ -694,13 +694,13 @@ function sanitizePayload(p: Record<string, unknown> | null | undefined): Record<
         if (t === 'string' || t === 'number' || t === 'boolean') {
             out[k] = v as string | number | boolean;
         }
-        // silently drop arrays / nested objects — schema doesn't allow them
+        // silently drop arrays / nested objects - schema doesn't allow them
     }
     return out;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// runImport — long-running orchestration entry point
+// runImport - long-running orchestration entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const runImport = async (orgId: string, jobId: string): Promise<void> => {
@@ -730,13 +730,13 @@ export const runImport = async (orgId: string, jobId: string): Promise<void> => 
     });
 
     try {
-        // 0. Whoami — confirm key still works before doing any work.
+        // 0. Whoami - confirm key still works before doing any work.
         const workspace = await instantly.getCurrentWorkspace(apiKey);
         await importJob.updateImportJob(jobId, {
             statsPatch: { workspaceId: workspace.id, workspaceName: workspace.name },
         });
 
-        // 1. Mailboxes first — everything else references them.
+        // 1. Mailboxes first - everything else references them.
         const sourceEmailToLocal = new Map<string, { mailboxId: string; accountId: string }>();
         let mailboxesImported = 0;
         for await (const acc of instantly.listAccounts(apiKey)) {
@@ -749,7 +749,7 @@ export const runImport = async (orgId: string, jobId: string): Promise<void> => 
         }
         await importJob.updateImportJob(jobId, { statsPatch: { mailboxesImported } });
 
-        // 2. Campaigns — list first, then per-campaign deep import.
+        // 2. Campaigns - list first, then per-campaign deep import.
         const campaigns: InstantlyCampaign[] = [];
         for await (const c of instantly.listCampaigns(apiKey)) campaigns.push(c);
         await importJob.updateImportJob(jobId, { statsPatch: { campaignsFound: campaigns.length } });
@@ -765,7 +765,7 @@ export const runImport = async (orgId: string, jobId: string): Promise<void> => 
         };
 
         for (const summary of campaigns) {
-            // Status 3 = Completed. Skip — bringing closed campaigns over has no
+            // Status 3 = Completed. Skip - bringing closed campaigns over has no
             // value (their leads either replied or finished the sequence).
             if (summary.status === 3) continue;
 
@@ -785,14 +785,14 @@ export const runImport = async (orgId: string, jobId: string): Promise<void> => 
             stepsImportedTotal += seqResult.stepsImported;
             variantsImportedTotal += seqResult.variantsImported;
 
-            // Mailbox pool — link via email match against the imported
+            // Mailbox pool - link via email match against the imported
             // ConnectedAccount/Mailbox set.
             const linkedMailboxIds = (detail.email_list || [])
                 .map(e => sourceEmailToLocal.get(e.toLowerCase())?.mailboxId)
                 .filter((id): id is string => !!id);
             await linkCampaignMailboxes(localId, linkedMailboxIds);
 
-            // Leads — streamed via POST /leads/list to limit memory pressure.
+            // Leads - streamed via POST /leads/list to limit memory pressure.
             const leadResult = await ingestLeads(
                 orgId,
                 localId,
@@ -819,7 +819,7 @@ export const runImport = async (orgId: string, jobId: string): Promise<void> => 
             });
         }
 
-        // 3. Block list — domain + email blocks become Lead.status='unsubscribed'
+        // 3. Block list - domain + email blocks become Lead.status='unsubscribed'
         //    rows so the org-wide suppression filter in sendQueueService picks
         //    them up automatically. Email entries upsert; domain entries get
         //    materialized into the org's Lead table only on encounter (we don't
@@ -898,6 +898,6 @@ export const runImport = async (orgId: string, jobId: string): Promise<void> => 
             error: errMsg,
             markCompleted: true,
         });
-        // Do NOT shrink TTL on failure — customer needs the full 72h window to retry.
+        // Do NOT shrink TTL on failure - customer needs the full 72h window to retry.
     }
 };

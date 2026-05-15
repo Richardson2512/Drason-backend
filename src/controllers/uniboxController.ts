@@ -1,7 +1,7 @@
 /**
  * Unibox Controller
  *
- * Unified inbox API — list threads, get conversation, send reply,
+ * Unified inbox API - list threads, get conversation, send reply,
  * mark read/unread, star/unstar, archive.
  */
 
@@ -28,13 +28,13 @@ export const listThreads = async (req: Request, res: Response): Promise<Response
         const unread = req.query.unread === 'true' ? true : undefined;
         const search = (req.query.search as string) || undefined;
         // `view` selects which slice of Unibox the user is looking at:
-        //   'inbox'  (default) — threads where a reply has been received (i.e. needs
+        //   'inbox'  (default) - threads where a reply has been received (i.e. needs
         //                        attention). Excludes send-only threads.
-        //   'sent'             — every thread we initiated (one entry per contact per
+        //   'sent'             - every thread we initiated (one entry per contact per
         //                        campaign), regardless of whether they replied.
-        //   'all'              — no direction discrimination (inbox + sent merged).
+        //   'all'              - no direction discrimination (inbox + sent merged).
         const view = (req.query.view as string) || 'inbox';
-        // Reply-quality filter — comma-separated class names. Shows threads
+        // Reply-quality filter - comma-separated class names. Shows threads
         // whose latest inbound message has a quality_class in the set. The
         // canonical column (quality_class) is kept in sync with the AI verdict
         // by the worker, so this filter sees the final answer either way.
@@ -55,7 +55,7 @@ export const listThreads = async (req: Request, res: Response): Promise<Response
         // traffic, vendor broadcasts, newsletter noise, and cold inbound to the mailbox
         // have no CampaignLead match and so carry campaign_id = null; those must never
         // appear here. (imapReplyWorker now skips creating orphan threads in the first
-        // place — this filter also covers any legacy threads created before that fix.)
+        // place - this filter also covers any legacy threads created before that fix.)
         const where: any = {
             organization_id: orgId,
             campaign_id: { not: null },
@@ -83,7 +83,7 @@ export const listThreads = async (req: Request, res: Response): Promise<Response
             where.messages = { some: { direction: 'outbound' } };
         }
 
-        // Quality-class filter — applies on top of the direction filter so
+        // Quality-class filter - applies on top of the direction filter so
         // "Sent" tab never gets accidentally narrowed by it. Empty class list
         // is a no-op so the unibox renders identically to before for users
         // who haven't enabled any chips.
@@ -111,7 +111,7 @@ export const listThreads = async (req: Request, res: Response): Promise<Response
             prisma.emailThread.count({ where }),
         ]);
 
-        // Unread count always reflects the Inbox slice (threads waiting on the user) —
+        // Unread count always reflects the Inbox slice (threads waiting on the user) -
         // the Sent tab's "unread" concept isn't meaningful, so don't let view=sent
         // wipe the badge.
         const unreadCount = await prisma.emailThread.count({
@@ -184,7 +184,7 @@ export const getThread = async (req: Request, res: Response): Promise<Response> 
             }
         }
 
-        // Nest leadContext inside `data` — apiClient auto-unwraps `data`, so
+        // Nest leadContext inside `data` - apiClient auto-unwraps `data`, so
         // siblings at the top level get stripped by the frontend.
         return res.json({ success: true, data: { ...thread, is_read: true, leadContext } });
     } catch (error: any) {
@@ -195,7 +195,7 @@ export const getThread = async (req: Request, res: Response): Promise<Response> 
 
 /**
  * POST /api/unibox/threads/:id/reply
- * Send a reply — actually sends via SMTP, then records in DB.
+ * Send a reply - actually sends via SMTP, then records in DB.
  */
 export const sendReply = async (req: Request, res: Response): Promise<Response> => {
     try {
@@ -279,7 +279,7 @@ export const sendReply = async (req: Request, res: Response): Promise<Response> 
         // Insert a 'pending' message row BEFORE the SMTP send so we have
         // durable proof the operator clicked Send. If SMTP succeeds but the
         // DB write below fails, we still have a record of the message and
-        // its Message-ID — re-submitting won't fire a duplicate because the
+        // its Message-ID - re-submitting won't fire a duplicate because the
         // unique-on-message_id constraint kicks in.
         const message = await prisma.emailMessage.create({
             data: {
@@ -299,7 +299,7 @@ export const sendReply = async (req: Request, res: Response): Promise<Response> 
             },
         });
 
-        // Send the email — provider adapter injects In-Reply-To / References into the
+        // Send the email - provider adapter injects In-Reply-To / References into the
         // outgoing MIME (SMTP via nodemailer, Gmail via MIME headers + threadId lookup,
         // Graph via internetMessageHeaders).
         const sendResult = await sendEmail(account, thread.contact_email, subject, bodyHtml, {
@@ -322,7 +322,7 @@ export const sendReply = async (req: Request, res: Response): Promise<Response> 
 
         // Flip the row to 'sent' now that the provider confirmed delivery.
         // If this update fails the message still exists with status='pending'
-        // — a retention worker / manual reconcile can correct it later.
+        // - a retention worker / manual reconcile can correct it later.
         await prisma.emailMessage.update({
             where: { id: message.id },
             data: { send_status: 'sent' },
@@ -344,7 +344,7 @@ export const sendReply = async (req: Request, res: Response): Promise<Response> 
         // SendCampaign.total_sent deliberately NOT incremented here. total_sent
         // represents campaign-sequence emails dispatched (automated step sends
         // from sendQueueService), not every outbound message. A Unibox reply is
-        // the user responding inside an existing thread — it must not inflate
+        // the user responding inside an existing thread - it must not inflate
         // campaign-level sent analytics. Mailbox-level + SendEvent tracking
         // below DOES still fire because ESP reputation and mailbox sends_today
         // care about every real SMTP/API send the mailbox performed, reply or
@@ -395,7 +395,7 @@ export const sendReply = async (req: Request, res: Response): Promise<Response> 
 
 /**
  * PATCH /api/unibox/threads/:id
- * Update thread — mark read/unread, star/unstar, archive.
+ * Update thread - mark read/unread, star/unstar, archive.
  */
 export const updateThread = async (req: Request, res: Response): Promise<Response> => {
     try {
@@ -423,7 +423,7 @@ export const updateThread = async (req: Request, res: Response): Promise<Respons
 
 /**
  * PATCH /api/unibox/threads/bulk
- * Bulk update — mark multiple threads read/unread/archived.
+ * Bulk update - mark multiple threads read/unread/archived.
  */
 export const bulkUpdateThreads = async (req: Request, res: Response): Promise<Response> => {
     try {
@@ -439,7 +439,7 @@ export const bulkUpdateThreads = async (req: Request, res: Response): Promise<Re
         if (typeof is_starred === 'boolean') data.is_starred = is_starred;
         if (status) data.status = status;
 
-        // updateMany returns the actual affected row count — surface it so
+        // updateMany returns the actual affected row count - surface it so
         // the FE can detect partial success (e.g. some threadIds didn't
         // belong to this org and were silently filtered out by the
         // organization_id scope). The old `updated: threadIds.length` lied

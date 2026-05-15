@@ -1,9 +1,9 @@
 /**
- * LinkedIn Unibox service — proxies the per-account Unipile chats API
+ * LinkedIn Unibox service - proxies the per-account Unipile chats API
  * up to our org-scoped REST surface, merging threads across every
  * connected LinkedIn account for the workspace.
  *
- * We DO NOT mirror every message into our DB — Unipile already does the
+ * We DO NOT mirror every message into our DB - Unipile already does the
  * sync server-side and we'd be duplicating their work + handling sync
  * conflicts. We DO read the per-profile auto-tag (written by the reply
  * classifier worker) so the Unibox can render the Interested / Not
@@ -18,7 +18,7 @@ import { isUnipileConfigured, chats as unipileChats, invitations as unipileInvit
 import { pauseCrossChannelForLead } from '../crossChannelSuppressionService';
 
 export interface UniboxThread {
-    /** Composite ID (account.id + ':' + unipile thread id) — unique across the workspace. */
+    /** Composite ID (account.id + ':' + unipile thread id) - unique across the workspace. */
     id: string;
     linkedin_account_id: string;
     sender_display_name: string;
@@ -32,7 +32,7 @@ export interface UniboxThread {
     last_message_at: string | null;
     /** Direction of the most recent message in the thread. INBOUND = lead
      *  sent last; OUTBOUND = our account sent last. The UI's "Inbox /
-     *  Sent / Replied" tabs derive from this — without it those filters
+     *  Sent / Replied" tabs derive from this - without it those filters
      *  are guesses based on unread_count which is unreliable (an
      *  operator can open a thread without replying, dropping unread to
      *  zero without sending). */
@@ -101,7 +101,7 @@ export async function listThreadsForOrg(
     }
 
     // ── Step 2: batch the auto-tag lookup (fixes the N+1 we used to
-    // run inside the per-thread loop — one findUnique per thread on
+    // run inside the per-thread loop - one findUnique per thread on
     // 100 threads = 100 sequential round-trips). One findMany with
     // a unique-key `in` clause replaces it. ──────────────────────────
     const slugSet = new Set<string>();
@@ -146,7 +146,7 @@ export async function listThreadsForOrg(
             auto_tag: autoTag,
             preview: r.chat.last_message_preview || '',
             last_message_at: r.chat.last_message_at || null,
-            // Unipile is inconsistent across API revisions — accept
+            // Unipile is inconsistent across API revisions - accept
             // either `last_message_direction` or `direction`. Falls
             // back to null on payloads that omit both; the UI treats
             // null as "unknown" rather than guessing.
@@ -197,7 +197,7 @@ export async function getThreadMessages(organizationId: string, compositeId: str
     const parsed = parseCompositeId(compositeId);
     if (!parsed) return [];
 
-    // Verify the account belongs to this org — never leak Unipile data
+    // Verify the account belongs to this org - never leak Unipile data
     // across tenants via a forged thread id.
     const acct = await prisma.linkedInAccount.findFirst({
         where: { id: parsed.accountRowId, organization_id: organizationId },
@@ -235,10 +235,10 @@ export interface SendReplyResult {
  *
  * Suppression: per the org's configured stop intelligence, an operator's
  * outbound reply on LinkedIn is treated as the strongest possible
- * engagement signal — we model it as replyClass='positive' so it pauses
+ * engagement signal - we model it as replyClass='positive' so it pauses
  * any parallel email enrollments under HARD / CLASSIFIED / ASYMMETRIC
  * modes. Under OFF mode the service no-ops. We catch any suppression
- * failure and log it without breaking the send — a successful Unipile
+ * failure and log it without breaking the send - a successful Unipile
  * dispatch with a stale cross-channel state is recoverable; the inverse
  * (suppression fired but the message never sent) is worse.
  *
@@ -247,13 +247,13 @@ export interface SendReplyResult {
  * proper 429 to the UI instead of a generic 500 from a swallowed
  * Unipile error.
  *
- * @param counterpartyPublicIdentifier — optional hint from the UI. The
+ * @param counterpartyPublicIdentifier - optional hint from the UI. The
  *   thread list already carries this, so the frontend passes it on
  *   reply. We use it to resolve the LinkedInProfile → lead_id for
  *   suppression. Spoofing risk is org-bounded (the lookup is
  *   organization-scoped) and the worst case is "operator pauses their
  *   own org's campaigns for a lead they don't actually own a thread
- *   with" — annoying, not a security incident.
+ *   with" - annoying, not a security incident.
  */
 export async function sendReply(
     organizationId: string,
@@ -272,7 +272,7 @@ export async function sendReply(
     });
     if (!acct) throw new SendReplyError('invalid', 'Account not found');
     if (acct.status !== 'OK' && acct.status !== 'SYNC_SUCCESS') {
-        throw new SendReplyError('send_failed', `Account is in ${acct.status} state — reconnect before sending.`);
+        throw new SendReplyError('send_failed', `Account is in ${acct.status} state - reconnect before sending.`);
     }
 
     // Rate-limit precheck. The dispatcher uses the same counter so this
@@ -303,7 +303,7 @@ export async function sendReply(
 
     // ── Cross-channel suppression ──────────────────────────────────
     // Resolve the lead from the counterparty profile (if known). Skip
-    // silently when there's no LinkedInProfile or no linked Lead — the
+    // silently when there's no LinkedInProfile or no linked Lead - the
     // suppression service has nothing to act on in that case.
     let suppression: SendReplyResult['suppression'] = null;
     if (counterpartyPublicIdentifier) {

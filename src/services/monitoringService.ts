@@ -156,14 +156,14 @@ export const recordBounce = async (
             entityId: mailboxId,
             trigger: 'monitor_bounce',
             action: 'transient_bounce',
-            details: `${classification.failureType} from ${classification.provider} — not degrading health. Reason: ${classification.rawReason}`
+            details: `${classification.failureType} from ${classification.provider} - not degrading health. Reason: ${classification.rawReason}`
         });
 
         // ── SOFT-BOUNCE SPIKE: Provider throttling IS a reputation signal ──
         // Microsoft documents 4xx throttling (RP-001/002/003) as reputation-driven.
         // A cluster of PROVIDER_THROTTLE soft bounces (>SOFT_BOUNCE_SPIKE_RATE
         // over the last SOFT_BOUNCE_SPIKE_WINDOW sends) escalates the mailbox
-        // to WARNING — not full pause, since soft bounces self-resolve.
+        // to WARNING - not full pause, since soft bounces self-resolve.
         if (classification.failureType === BounceFailureType.PROVIDER_THROTTLE
             && mailbox.status === 'healthy') {
             try {
@@ -213,7 +213,7 @@ export const recordBounce = async (
             }
         });
     } catch (bounceEventErr) {
-        // Non-fatal — counter increment below is the critical path
+        // Non-fatal - counter increment below is the critical path
         logger.warn('[MONITOR] Failed to create BounceEvent record', { error: String(bounceEventErr) });
     }
 
@@ -297,7 +297,7 @@ export const recordBounce = async (
     }
 
     // ── Standard threshold logic for healthy/warning mailboxes ──
-    // PAUSE CHECK: 5 bounces within window — but TIGHTEN for freshly-imported,
+    // PAUSE CHECK: 5 bounces within window - but TIGHTEN for freshly-imported,
     // baseline-shaky mailboxes during their cold-start window. The execution
     // gate's warmup_limit cap already throttles initial volume; this gives the
     // state machine an early-pause path so a shaky import doesn't hit the
@@ -407,7 +407,7 @@ const slideWindow = async (mailboxId: string): Promise<void> => {
         details: `Window slid: kept ${newBounceCount}/${newSentCount} (50% of previous). Sliding heal.`
     });
 
-    // Legacy RECOVERING check removed — recovery is now handled by the
+    // Legacy RECOVERING check removed - recovery is now handled by the
     // 5-phase healing pipeline (QUARANTINE → RESTRICTED_SEND → WARM_RECOVERY → HEALTHY)
     // managed by the warmupTrackingWorker. Any mailboxes still in RECOVERING
     // are auto-migrated to QUARANTINE by the metricsWorker.
@@ -465,7 +465,7 @@ export const warnMailbox = async (mailboxId: string, reason: string): Promise<vo
             entityId: mailboxId,
             severity: 'warning',
             title: '⚠️ Mailbox Warning Recommended',
-            message: `Mailbox \`${mailbox.email || mailboxId}\` is showing early warning signs.\n*Reason:* ${reason}\n_No action taken — review recommended._`
+            message: `Mailbox \`${mailbox.email || mailboxId}\` is showing early warning signs.\n*Reason:* ${reason}\n_No action taken - review recommended._`
         }).catch(err => logger.warn('[MONITOR] Non-fatal alert error', { error: String(err) }));
 
         return;
@@ -542,7 +542,7 @@ export const pauseMailbox = async (mailboxId: string, reason: string): Promise<v
             entityId: mailboxId,
             severity: 'critical',
             title: '🛑 Mailbox Pause Recommended',
-            message: `Mailbox \`${mailbox.email || mailboxId}\` has exceeded bounce threshold and should be paused.\n*Reason:* ${reason}\n_No action taken — manual intervention recommended._`
+            message: `Mailbox \`${mailbox.email || mailboxId}\` has exceeded bounce threshold and should be paused.\n*Reason:* ${reason}\n_No action taken - manual intervention recommended._`
         }).catch(err => logger.warn('[MONITOR] Non-fatal alert error', { error: String(err) }));
 
         return;
@@ -557,14 +557,14 @@ export const pauseMailbox = async (mailboxId: string, reason: string): Promise<v
     const action = correlation.recommendedAction;
 
     if (action.action === 'pause_domain') {
-        // Escalate to domain-level pause — skip individual mailbox pause
+        // Escalate to domain-level pause - skip individual mailbox pause
         logger.info(`[MONITOR] ↑ Escalating to domain pause: ${correlation.message}`);
         await pauseDomain(action.entityId, `Cross-entity correlation: ${action.reason}`);
         return;
     }
 
     if (action.action === 'pause_campaign') {
-        // Redirect to campaign pause — mailbox stays active
+        // Redirect to campaign pause - mailbox stays active
         logger.info(`[MONITOR] → Redirecting to campaign pause: ${correlation.message}`);
         await pauseCampaign(action.entityId, orgId, `Cross-entity correlation: ${action.reason}`);
         return;
@@ -601,7 +601,7 @@ export const pauseMailbox = async (mailboxId: string, reason: string): Promise<v
     );
 
     if (transitionResult.success) {
-        // Set operational fields not managed by state machine — bundled with
+        // Set operational fields not managed by state machine - bundled with
         // a status re-check to keep status and recovery_phase atomic.
         await prisma.$transaction(async (tx) => {
             const current = await tx.mailbox.findUnique({
@@ -610,9 +610,9 @@ export const pauseMailbox = async (mailboxId: string, reason: string): Promise<v
             });
             if (current?.status !== 'paused') {
                 // State drifted between transitionMailbox returning and this tx
-                // running — abort the recovery_phase write rather than create
+                // running - abort the recovery_phase write rather than create
                 // a status/recovery_phase mismatch.
-                logger.warn('[MONITOR] Pause aborted in tx — status drifted', { mailboxId });
+                logger.warn('[MONITOR] Pause aborted in tx - status drifted', { mailboxId });
                 return;
             }
             await tx.mailbox.update({
@@ -637,7 +637,7 @@ export const pauseMailbox = async (mailboxId: string, reason: string): Promise<v
         message: `Mailbox \`${mailbox.email || mailboxId}\` has been auto-paused.\n*Reason:* ${reason}`
     }).catch(err => logger.warn('[MONITOR] Non-fatal alert error', { error: String(err) }));
 
-    // Native sending — Mailbox.status is the source of truth for the dispatcher.
+    // Native sending - Mailbox.status is the source of truth for the dispatcher.
     // Once status flips to 'paused', sendQueueService skips this mailbox on its
     // next 60s tick. No external platform call needed.
     const campaigns = await prisma.campaign.findMany({
@@ -861,7 +861,7 @@ const checkDomainHealth = async (domainId: string): Promise<void> => {
                 entityId: domainId,
                 severity: 'warning',
                 title: '⚠️ Domain Warning Recommended',
-                message: `Domain \`${domain.domain}\` is showing warning signs.\n*Reason:* ${reason}\n_No action taken — review recommended._`
+                message: `Domain \`${domain.domain}\` is showing warning signs.\n*Reason:* ${reason}\n_No action taken - review recommended._`
             }).catch(err => logger.warn('[MONITOR] Non-fatal alert error', { error: String(err) }));
 
             return;
@@ -961,7 +961,7 @@ const checkDomainHealth = async (domainId: string): Promise<void> => {
                 entityId: domainId,
                 severity: 'critical',
                 title: '🛑 Domain Pause Recommended',
-                message: `Domain \`${domain.domain}\` has ${freshUnhealthyCount}/${freshTotalMailboxes} unhealthy mailboxes and should be paused.\n*Reason:* ${reason}\n_No action taken — manual intervention recommended._`
+                message: `Domain \`${domain.domain}\` has ${freshUnhealthyCount}/${freshTotalMailboxes} unhealthy mailboxes and should be paused.\n*Reason:* ${reason}\n_No action taken - manual intervention recommended._`
             }).catch(err => logger.warn('[MONITOR] Non-fatal alert error', { error: String(err) }));
 
             return;
@@ -1077,7 +1077,7 @@ const pauseDomain = async (domainId: string, reason: string): Promise<void> => {
             entityId: domainId,
             severity: 'critical',
             title: '🛑 Domain Pause Recommended',
-            message: `Domain \`${domain.domain}\` has critical health issues and should be paused.\n*Reason:* ${reason}\n_No action taken — immediate review recommended._`
+            message: `Domain \`${domain.domain}\` has critical health issues and should be paused.\n*Reason:* ${reason}\n_No action taken - immediate review recommended._`
         }).catch(err => logger.warn('[MONITOR] Non-fatal alert error', { error: String(err) }));
 
         return;
@@ -1094,7 +1094,7 @@ const pauseDomain = async (domainId: string, reason: string): Promise<void> => {
     );
 
     if (domainTransition.success) {
-        // Set operational fields not managed by state machine — atomic
+        // Set operational fields not managed by state machine - atomic
         // recovery_phase write guarded by a status re-check, same pattern
         // as pauseMailbox.
         await prisma.$transaction(async (tx) => {
@@ -1103,7 +1103,7 @@ const pauseDomain = async (domainId: string, reason: string): Promise<void> => {
                 select: { status: true },
             });
             if (current?.status !== 'paused') {
-                logger.warn('[MONITOR] Domain pause aborted in tx — status drifted', { domainId });
+                logger.warn('[MONITOR] Domain pause aborted in tx - status drifted', { domainId });
                 return;
             }
             await tx.domain.update({
@@ -1142,7 +1142,7 @@ const pauseDomain = async (domainId: string, reason: string): Promise<void> => {
         }
     }
 
-    // Native sending — Mailbox.recovery_phase='paused' is enough for the
+    // Native sending - Mailbox.recovery_phase='paused' is enough for the
     // dispatcher to skip these mailboxes. No external platform call needed.
 };
 
@@ -1195,7 +1195,7 @@ const pauseCampaign = async (campaignId: string, organizationId: string, reason:
             entityId: campaignId,
             severity: 'critical',
             title: '🛑 Campaign Pause Recommended',
-            message: `Campaign \`${campaign.name || campaignId}\` should be paused due to health correlation.\n*Reason:* ${reason}\n_No action taken — review recommended._`
+            message: `Campaign \`${campaign.name || campaignId}\` should be paused due to health correlation.\n*Reason:* ${reason}\n_No action taken - review recommended._`
         }).catch(err => logger.warn('[MONITOR] Non-fatal alert error', { error: String(err) }));
 
         return;

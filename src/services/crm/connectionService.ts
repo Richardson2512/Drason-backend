@@ -1,5 +1,5 @@
 /**
- * CRM connection persistence — the only thing in Phase 1 that touches
+ * CRM connection persistence - the only thing in Phase 1 that touches
  * the database for CRM concerns. Owns:
  *
  *   - Token encryption / decryption on the way to and from Postgres
@@ -78,7 +78,7 @@ function decryptConnection(row: any): DecryptedConnection {
 /**
  * Insert or update the (org, provider) connection. Called from the
  * OAuth callback handler in Phase 2/3. Existing rows for the same
- * (org, provider) pair are updated in place — there's never more than
+ * (org, provider) pair are updated in place - there's never more than
  * one active connection per provider per org.
  */
 export async function upsertConnection(input: ConnectionUpsertInput): Promise<DecryptedConnection> {
@@ -126,7 +126,7 @@ export async function getConnection(id: string, organizationId: string): Promise
     return row ? decryptConnection(row) : null;
 }
 
-/** All connections for an org (active and disconnected) — for the dashboard. */
+/** All connections for an org (active and disconnected) - for the dashboard. */
 export async function listConnectionsForOrg(organizationId: string): Promise<DecryptedConnection[]> {
     const rows = await prisma.crmConnection.findMany({
         where: { organization_id: organizationId },
@@ -136,7 +136,7 @@ export async function listConnectionsForOrg(organizationId: string): Promise<Dec
 }
 
 /**
- * Active connections only — used by the activity-push subscriber on
+ * Active connections only - used by the activity-push subscriber on
  * the hot path. `status='active'` AND `disconnected_at IS NULL`. Returns
  * a minimal shape (no decrypted tokens) since the subscriber only
  * needs the connection ID + provider.
@@ -158,7 +158,7 @@ export async function listActiveConnectionIdsForOrg(organizationId: string): Pro
 
 /**
  * Persist a refreshed token bundle. Called by clients that detect a 401
- * and successfully refresh against the provider — keeps Postgres in sync
+ * and successfully refresh against the provider - keeps Postgres in sync
  * with the live token state so the next request doesn't re-refresh.
  */
 export async function updateRefreshedTokens(
@@ -194,7 +194,7 @@ export async function markConnectionFailed(
     logger.warn('[CRM] connection marked failed', { connectionId, status, error });
 
     // Notify org admins. Per-day idempotency bucket so successive retries
-    // inside a 24-hour window collapse to one email — admins fix the
+    // inside a 24-hour window collapse to one email - admins fix the
     // connection, count resets next time it fails. Dynamic imports keep
     // this service decoupled from email-template module loading order.
     try {
@@ -214,7 +214,7 @@ export async function markConnectionFailed(
         const providerLabel = conn.provider === 'hubspot' ? 'HubSpot'
             : conn.provider === 'salesforce' ? 'Salesforce'
             : conn.provider;
-        // Day bucket — UTC date. Same connection failing 50× today
+        // Day bucket - UTC date. Same connection failing 50× today
         // collapses to one email; tomorrow's first failure re-notifies.
         const dayBucket = new Date().toISOString().slice(0, 10);
         void dispatchEmail({
@@ -271,7 +271,7 @@ export async function disconnect(connectionId: string, organizationId: string): 
 }
 
 /**
- * Activity-push counts for the dashboard. Cheap aggregate — backs
+ * Activity-push counts for the dashboard. Cheap aggregate - backs
  * the connection-card status pills.
  */
 export async function getActivityPushSummary(connectionId: string): Promise<{

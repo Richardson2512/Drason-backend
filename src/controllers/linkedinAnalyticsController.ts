@@ -1,24 +1,24 @@
 /**
  * LinkedIn analytics controller.
  *
- *   GET /api/linkedin/analytics/kpi                      — top-line numbers
- *   GET /api/linkedin/analytics/sender-perf              — per-account stats
- *   GET /api/linkedin/analytics/campaign-perf            — per-campaign stats
- *   GET /api/linkedin/analytics/daily-sent               — daily sent series
- *   GET /api/linkedin/analytics/signal-funnel            — engagement → ICP → enrich → lead
- *   GET /api/linkedin/analytics/acceptance-funnel        — 4-stage waterfall
- *   GET /api/linkedin/analytics/reply-quality            — DM reply classification breakdown
- *   GET /api/linkedin/analytics/step-level               — per-step send / skip / fail / branch
- *   GET /api/linkedin/analytics/sender-capacity          — sender × action heatmap
- *   GET /api/linkedin/analytics/auto-tag-distribution    — Interested / Not Interested / Generic / Untagged
- *   GET /api/linkedin/analytics/signal-lead-funnel       — funnel segmented by event_type
- *   GET /api/linkedin/analytics/account-status           — status tile counts + per-account detail
- *   GET /api/linkedin/analytics/acceptance-by-type       — accept rate by account_type
- *   GET /api/linkedin/analytics/working-hours-compliance — % sends inside configured working hours
- *   GET /api/linkedin/analytics/campaign-sender-affinity — campaign × sender heatmap
- *   GET /api/linkedin/analytics/failure-taxonomy         — skip_reason + error_message counts
- *   GET /api/linkedin/analytics/agent-telemetry          — per-agent latency / cost / count
- *   GET /api/linkedin/analytics/sender-comparison        — daily series for picked senders
+ *   GET /api/linkedin/analytics/kpi                      - top-line numbers
+ *   GET /api/linkedin/analytics/sender-perf              - per-account stats
+ *   GET /api/linkedin/analytics/campaign-perf            - per-campaign stats
+ *   GET /api/linkedin/analytics/daily-sent               - daily sent series
+ *   GET /api/linkedin/analytics/signal-funnel            - engagement → ICP → enrich → lead
+ *   GET /api/linkedin/analytics/acceptance-funnel        - 4-stage waterfall
+ *   GET /api/linkedin/analytics/reply-quality            - DM reply classification breakdown
+ *   GET /api/linkedin/analytics/step-level               - per-step send / skip / fail / branch
+ *   GET /api/linkedin/analytics/sender-capacity          - sender × action heatmap
+ *   GET /api/linkedin/analytics/auto-tag-distribution    - Interested / Not Interested / Generic / Untagged
+ *   GET /api/linkedin/analytics/signal-lead-funnel       - funnel segmented by event_type
+ *   GET /api/linkedin/analytics/account-status           - status tile counts + per-account detail
+ *   GET /api/linkedin/analytics/acceptance-by-type       - accept rate by account_type
+ *   GET /api/linkedin/analytics/working-hours-compliance - % sends inside configured working hours
+ *   GET /api/linkedin/analytics/campaign-sender-affinity - campaign × sender heatmap
+ *   GET /api/linkedin/analytics/failure-taxonomy         - skip_reason + error_message counts
+ *   GET /api/linkedin/analytics/agent-telemetry          - per-agent latency / cost / count
+ *   GET /api/linkedin/analytics/sender-comparison        - daily series for picked senders
  *
  * Common filters (accepted by every handler, ignored when irrelevant):
  *   range            '7d' | '30d' | '90d' | 'ytd' (default 30d)
@@ -287,7 +287,7 @@ export const dailySent = async (req: Request, res: Response): Promise<Response> 
         const f = parseFilters(req);
         const scopedSenderIds = await senderIdsScopedToFilters(orgId, f);
 
-        // Build the where clause for prisma then aggregate by day in JS — keeps
+        // Build the where clause for prisma then aggregate by day in JS - keeps
         // the filter logic in one place and avoids hand-rolling a long SQL
         // CTE per filter combination.
         const where: Prisma.SequenceStepExecutionWhereInput = {
@@ -359,7 +359,7 @@ export const signalFunnel = async (req: Request, res: Response): Promise<Respons
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 6. Acceptance funnel — 4-stage waterfall with drop-off rates
+// 6. Acceptance funnel - 4-stage waterfall with drop-off rates
 // ──────────────────────────────────────────────────────────────────────────────
 
 export const acceptanceFunnel = async (req: Request, res: Response): Promise<Response> => {
@@ -413,7 +413,7 @@ export const acceptanceFunnel = async (req: Request, res: Response): Promise<Res
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 7. Reply quality — 9-class breakdown from AgentRun(reply_classifier).decision
+// 7. Reply quality - 9-class breakdown from AgentRun(reply_classifier).decision
 // ──────────────────────────────────────────────────────────────────────────────
 
 const REPLY_CLASSES = ['positive', 'qualified', 'objection', 'referral', 'soft_no', 'hard_no', 'angry', 'auto', 'unclassified'] as const;
@@ -544,7 +544,7 @@ export const stepLevelPerformance = async (req: Request, res: Response): Promise
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 9. Sender capacity heatmap — current today/cap per sender per action
+// 9. Sender capacity heatmap - current today/cap per sender per action
 // ──────────────────────────────────────────────────────────────────────────────
 
 export const senderCapacity = async (req: Request, res: Response): Promise<Response> => {
@@ -854,7 +854,7 @@ export const workingHoursCompliance = async (req: Request, res: Response): Promi
             select: { id: true, display_name: true, account_type: true },
         });
 
-        // Per-account working_hours can vary by campaign — pick the most
+        // Per-account working_hours can vary by campaign - pick the most
         // specific working_hours window for each (campaign, sender) pair.
         const campaignSenders = await prisma.campaignLinkedInSender.findMany({
             where: { linkedin_account_id: { in: accounts.map(a => a.id) } },
@@ -1045,7 +1045,7 @@ export const failureTaxonomy = async (req: Request, res: Response): Promise<Resp
             .sort((a, b) => b.count - a.count);
 
         // Normalize free-text error messages into buckets by their first
-        // ~60 chars so we don't show 4000 unique strings — the prefix is
+        // ~60 chars so we don't show 4000 unique strings - the prefix is
         // typically the error class.
         const errorBuckets = new Map<string, number>();
         for (const r of failRows) {
@@ -1136,7 +1136,7 @@ export const agentTelemetry = async (req: Request, res: Response): Promise<Respo
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 18. Sender comparison — daily series for selected senders
+// 18. Sender comparison - daily series for selected senders
 // ──────────────────────────────────────────────────────────────────────────────
 
 export const senderComparison = async (req: Request, res: Response): Promise<Response> => {
@@ -1196,6 +1196,6 @@ export const senderComparison = async (req: Request, res: Response): Promise<Res
     }
 };
 
-// Unused helpers (kept for completeness — referenced via exports). Eliminates
+// Unused helpers (kept for completeness - referenced via exports). Eliminates
 // dead-code warnings if a future handler needs them.
 void safeNumber;

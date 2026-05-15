@@ -155,7 +155,7 @@ async function queryDnsbl(
         });
       });
 
-      // A record found — domain is listed
+      // A record found - domain is listed
       return { status: 'CONFIRMED', responseCode: addresses[0] || null };
     } catch (err: any) {
       const code = err?.code;
@@ -241,7 +241,7 @@ export async function checkDomainBlacklists(
   const ip = await resolveToIp(domainName);
 
   if (!ip) {
-    console.log(`[DNSBL] Could not resolve ${domainName} to IP — skipping all lists`);
+    console.log(`[DNSBL] Could not resolve ${domainName} to IP - skipping all lists`);
     const skippedResults: SingleListResult[] = lists.map((list) => ({
       listId: list.id,
       listName: list.name,
@@ -307,10 +307,10 @@ export async function checkDomainBlacklists(
 
 /**
  * Check a pre-resolved IP directly. Mirrors checkDomainBlacklists but
- * skips the DNS resolution step — used by the mailbox-IP blacklist worker
+ * skips the DNS resolution step - used by the mailbox-IP blacklist worker
  * which has the IP already and doesn't need to re-resolve.
  *
- * `entityId` is opaque to this function — it goes straight into the result
+ * `entityId` is opaque to this function - it goes straight into the result
  * envelope so the caller can correlate (mailboxId in the IP-worker case,
  * domainId in the domain-worker case).
  */

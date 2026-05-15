@@ -10,7 +10,7 @@
  *   - campaign_insufficient_leads
  *   - campaign_failed
  *   - lead_tagged
- *   - icp_match                 (high-confidence ICP match — our addition)
+ *   - icp_match                 (high-confidence ICP match - our addition)
  *
  * Each event triggers in-app + (Slack | email) delivery per the workspace's
  * preferences. v1 writes in-app rows via the existing notificationService;
@@ -78,7 +78,7 @@ export async function dispatch(input: DispatchInput): Promise<void> {
         logger.warn('[LINKEDIN-NOTIF] in-app create failed', { event: input.event, err: String(err).slice(0, 200) });
     }
 
-    // Slack delivery — SlackAlertService respects the org's
+    // Slack delivery - SlackAlertService respects the org's
     // SlackNotificationPreference table (per-event opt-in + optional
     // channel override). If the user hasn't enabled this event we
     // still log to slack_alert_log with suppressed_by_pref=true so the
@@ -97,7 +97,7 @@ export async function dispatch(input: DispatchInput): Promise<void> {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Convenience wrappers — typed helpers per event so callers can't
+// Convenience wrappers - typed helpers per event so callers can't
 // mis-spell the event key.
 // ────────────────────────────────────────────────────────────────────
 
@@ -147,6 +147,6 @@ export async function notifyIcpMatch(orgId: string, leadName: string, score: num
         organization_id: orgId,
         event: 'icp_match',
         title: `${leadName} matched "${icpName}" ICP (${(score * 100).toFixed(0)}%)`,
-        message: 'High-confidence ICP match — review the Signal Feed for context.',
+        message: 'High-confidence ICP match - review the Signal Feed for context.',
     });
 }

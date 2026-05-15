@@ -4,16 +4,16 @@
  * Groups synced LinkedIn data into 4 property buckets on the HubSpot
  * Contact object:
  *
- *   1. Attribution — set ONCE at first contact creation. Captures
+ *   1. Attribution - set ONCE at first contact creation. Captures
  *      original lead source, first-touch date, originating campaign.
- *   2. Exposure   — campaign + list memberships, last sender, import
+ *   2. Exposure   - campaign + list memberships, last sender, import
  *      source. Updates as outreach progresses.
- *   3. Engagement — reply count, time-to-first-reply, last-reply-at.
- *   4. Intent     — auto-tag class (Positive/Neutral/Negative). Driven
+ *   3. Engagement - reply count, time-to-first-reply, last-reply-at.
+ *   4. Intent     - auto-tag class (Positive/Neutral/Negative). Driven
  *      by the reply classifier.
  *
  * Direction: Superkabe → HubSpot (unidirectional push). Email is the
- * required dedup identifier — leads without an email cannot create a
+ * required dedup identifier - leads without an email cannot create a
  * contact.
  *
  * Activity timeline events (CR sent, message sent, reply received, etc.)
@@ -106,7 +106,7 @@ async function upsertContact(props: ContactProps): Promise<void> {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Public trigger surface — one function per trigger event.
+// Public trigger surface - one function per trigger event.
 // Each call is idempotent + stub-safe.
 // ────────────────────────────────────────────────────────────────────
 
@@ -171,7 +171,7 @@ export async function pushIntent(input: { email: string; tag: 'Interested' | 'No
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Activity timeline — pushes a single event row onto the contact's
+// Activity timeline - pushes a single event row onto the contact's
 // timeline so the HubSpot rep sees the outreach history inline. Uses
 // HubSpot's CRM timeline events API. Requires a registered "event
 // template" in HubSpot's developer portal; the template id lives in

@@ -1,5 +1,5 @@
 /**
- * Unipile Posts API — list a user's posts + retrieve reactions/comments
+ * Unipile Posts API - list a user's posts + retrieve reactions/comments
  * on each. Powers the signal-monitoring poller (Phase 4).
  *
  * Engagement on the user's posts is poll-only per Unipile docs (no
@@ -28,7 +28,7 @@ export interface ListPostsResponse {
 }
 
 export interface UnipileReaction {
-    /** Reaction type — LinkedIn taxonomy: LIKE | PRAISE | EMPATHY | INTEREST | APPRECIATION | MAYBE | FUNNY. */
+    /** Reaction type - LinkedIn taxonomy: LIKE | PRAISE | EMPATHY | INTEREST | APPRECIATION | MAYBE | FUNNY. */
     type: string;
     actor_full_name?: string;
     actor_public_identifier?: string;
@@ -98,7 +98,7 @@ export async function listPostComments(postId: string, opts: { cursor?: string; 
 }
 
 /**
- * LinkedIn classic post search — keyword discovery for topics watchlists.
+ * LinkedIn classic post search - keyword discovery for topics watchlists.
  * Returns posts matching the keyword; engagers are NOT included, callers
  * need to follow up per post with listPostReactions / listPostComments
  * to hydrate the actual people.

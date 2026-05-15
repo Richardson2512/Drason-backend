@@ -1,30 +1,30 @@
 /**
- * Reply Classifier — rule-based, no AI.
+ * Reply Classifier - rule-based, no AI.
  *
  * Categorizes inbound replies into nine buckets so analytics can show what
  * actually works versus what burns relationships:
  *
- *   positive      — clearly interested ("yes let's chat", "send more info")
- *   qualified     — booking-intent or concrete next step ("here's my calendar")
- *   objection     — questions about price / fit / integrations / timing
- *   referral      — points to someone else ("Sarah handles this")
- *   soft_no       — polite no, not now ("circle back next quarter")
- *   hard_no       — firm refusal, not unsubscribe-flavored
- *   angry         — hostile or profane response
- *   auto          — out-of-office, vacation, autoresponder
- *   unclassified  — none of the above triggered with sufficient confidence
+ *   positive      - clearly interested ("yes let's chat", "send more info")
+ *   qualified     - booking-intent or concrete next step ("here's my calendar")
+ *   objection     - questions about price / fit / integrations / timing
+ *   referral      - points to someone else ("Sarah handles this")
+ *   soft_no       - polite no, not now ("circle back next quarter")
+ *   hard_no       - firm refusal, not unsubscribe-flavored
+ *   angry         - hostile or profane response
+ *   auto          - out-of-office, vacation, autoresponder
+ *   unclassified  - none of the above triggered with sufficient confidence
  *
  * RULES OVER MODELS (DELIBERATE)
  *   We chose explicit rules over an ML model so that:
  *     1. Every classification is auditable (signals[] shows why)
  *     2. There's no per-reply API cost
- *     3. Latency is sub-millisecond — we can classify on the IMAP worker hot path
+ *     3. Latency is sub-millisecond - we can classify on the IMAP worker hot path
  *     4. Operators can tune the lexicons in prod without retraining anything
  *   Tradeoff: ~30% of replies will land in unclassified or low-confidence.
- *   When we add an AI fallback later, this service stays — AI runs only on
+ *   When we add an AI fallback later, this service stays - AI runs only on
  *   the residue, not on every reply.
  *
- * Pure function — no DB, no fetch, no logging side effects. Every decision
+ * Pure function - no DB, no fetch, no logging side effects. Every decision
  * is derivable from the inputs, which makes this trivially unit-testable.
  */
 
@@ -56,7 +56,7 @@ export interface ReplyClassifierInput {
 export interface ReplyClassification {
     class: ReplyQualityClass;
     confidence: ReplyConfidence;
-    /** Rule names that triggered, in firing order — used in the UI tooltip. */
+    /** Rule names that triggered, in firing order - used in the UI tooltip. */
     signals: string[];
     /** First snippet (≤140 chars) that supports the classification. */
     evidence?: string;
@@ -83,7 +83,7 @@ const HARD_NO_PHRASES = [
     /\bwe\s+(?:already|already've)\s+(?:have|use|got)\b/i,
     /\bnot\s+looking\s+for\s+this\b/i,
     /\bwe['’]re\s+(?:all\s+)?set\b/i,
-    /\bpass\b/i,                                // "pass" alone — risky but useful
+    /\bpass\b/i,                                // "pass" alone - risky but useful
 ];
 
 const SOFT_NO_PHRASES = [
@@ -142,7 +142,7 @@ const OBJECTION_PHRASES = [
     /\bwhat\s+about\s+(?:security|gdpr|hipaa|compliance|sso)\b/i,
     /\bcan\s+you\s+(?:show|prove|demonstrate)\b/i,
     /\bhow\s+(?:are\s+you|do\s+you)\s+different(?:\s+from|\s+than)?\b/i,
-    /\bwe['’]re\s+already\s+using\s+\w+/i,            // both objection + soft_no signal — context decides
+    /\bwe['’]re\s+already\s+using\s+\w+/i,            // both objection + soft_no signal - context decides
 ];
 
 const ANGRY_PHRASES = [
@@ -158,7 +158,7 @@ const ANGRY_PHRASES = [
 ];
 
 /**
- * Auto-reply detection — RFC 3834 headers first, then phrasal fallback.
+ * Auto-reply detection - RFC 3834 headers first, then phrasal fallback.
  * Inbox autoresponders (vacation / OOO / new role / "I'm leaving the company")
  * shouldn't pollute reply-rate analytics.
  */
@@ -176,7 +176,7 @@ const AUTO_REPLY_PHRASES = [
 ];
 
 /**
- * Lexicon words for residual sentiment — used only when no phrase rule
+ * Lexicon words for residual sentiment - used only when no phrase rule
  * decisively hit. Tiny bias so positive lexicons can tip an ambiguous
  * short reply into `positive` rather than `unclassified`.
  */
@@ -203,8 +203,8 @@ function stripHtmlToText(html: string): string {
 }
 
 /**
- * Strip common quoted-reply boilerplate ("On Mon, X wrote:", "—Original
- * Message—", `>` prefixes) so we only classify the user's actual response.
+ * Strip common quoted-reply boilerplate ("On Mon, X wrote:", "-Original
+ * Message-", `>` prefixes) so we only classify the user's actual response.
  * Without this, an angry reply like "fuck off" in a quoted earlier message
  * would pollute the analysis of the new message.
  */
@@ -279,7 +279,7 @@ export function classifyReply(input: ReplyClassifierInput): ReplyClassification 
         return { class: 'auto', confidence: 'high', signals, evidence: firstSnippet(autoPhraseHit.match) };
     }
 
-    // ── 2. Angry beats everything below — hostile replies are always urgent ──
+    // ── 2. Angry beats everything below - hostile replies are always urgent ──
     const angryHit = anyPhraseMatches(text, ANGRY_PHRASES);
     const allCapsRatio = (text.replace(/[^A-Za-z]/g, '').match(/[A-Z]/g)?.length || 0)
         / Math.max(1, text.replace(/[^A-Za-z]/g, '').length);
@@ -308,14 +308,14 @@ export function classifyReply(input: ReplyClassifierInput): ReplyClassification 
         return { class: 'referral', confidence: 'high', signals, evidence: firstSnippet(referralHit.match) };
     }
 
-    // ── 5. Qualified — booking intent / explicit "let's connect" ──
+    // ── 5. Qualified - booking intent / explicit "let's connect" ──
     const qualifiedHit = anyPhraseMatches(text, QUALIFIED_PHRASES);
     if (qualifiedHit) {
         signals.push('qualified_phrase');
         return { class: 'qualified', confidence: 'high', signals, evidence: firstSnippet(qualifiedHit.match) };
     }
 
-    // ── 6. Soft nos (after qualified — "let's chat next quarter" should be
+    // ── 6. Soft nos (after qualified - "let's chat next quarter" should be
     //      caught as qualified above, not as a soft no on its own) ──
     const softNoHit = anyPhraseMatches(text, SOFT_NO_PHRASES);
     if (softNoHit) {
@@ -323,7 +323,7 @@ export function classifyReply(input: ReplyClassifierInput): ReplyClassification 
         return { class: 'soft_no', confidence: 'high', signals, evidence: firstSnippet(softNoHit.match) };
     }
 
-    // ── 7. Objections — questions about pricing / fit / integrations ──
+    // ── 7. Objections - questions about pricing / fit / integrations ──
     const objectionHit = anyPhraseMatches(text, OBJECTION_PHRASES);
     const hasQuestionMark = /\?/.test(text);
     if (objectionHit) {
@@ -351,7 +351,7 @@ export function classifyReply(input: ReplyClassifierInput): ReplyClassification 
         signals.push('lexicon_negative');
         return { class: 'soft_no', confidence: 'low', signals, evidence: firstSnippet(text) };
     }
-    // Lone question with no objection lexicon — treat as objection (low confidence)
+    // Lone question with no objection lexicon - treat as objection (low confidence)
     if (hasQuestionMark && text.length < 400) {
         signals.push('lone_question');
         return { class: 'objection', confidence: 'low', signals, evidence: firstSnippet(text) };

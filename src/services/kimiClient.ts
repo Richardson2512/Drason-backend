@@ -1,5 +1,5 @@
 /**
- * Kimi K2.5 client — Moonshot AI's multi-agent-friendly model. Powers the
+ * Kimi K2.5 client - Moonshot AI's multi-agent-friendly model. Powers the
  * Super LinkedIn agent layer (supervisor, signal monitoring, enrichment,
  * reply classifier).
  *
@@ -10,7 +10,7 @@
  *      exponential backoff + full jitter. 4xx validation errors short-circuit.
  *
  *   2. SEMAPHORE on concurrent in-flight calls. Per-process cap configurable
- *      via KIMI_MAX_CONCURRENT (default 20 — sized between Gemini's 15 and
+ *      via KIMI_MAX_CONCURRENT (default 20 - sized between Gemini's 15 and
  *      OpenAI's 25 since Moonshot's rate limits are middle-of-pack).
  *
  *   3. STUB FALLBACK when KIMI_API_KEY is unset. Returns a deterministic
@@ -39,7 +39,7 @@ export function isKimiConfigured(): boolean {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Semaphore — per-process concurrency cap, FIFO wait queue
+// Semaphore - per-process concurrency cap, FIFO wait queue
 // ────────────────────────────────────────────────────────────────────
 
 const MAX_CONCURRENT = parseInt(process.env.KIMI_MAX_CONCURRENT || '20', 10);
@@ -89,13 +89,13 @@ function jitter(baseMs: number): number {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// SDK loader — indirect dynamic import so the dev box doesn't need the
+// SDK loader - indirect dynamic import so the dev box doesn't need the
 // openai package installed when stub mode is fine.
 // ────────────────────────────────────────────────────────────────────
 
 interface KimiResponse {
     text: string;
-    /** Token usage when the API reports it — used for cost telemetry. */
+    /** Token usage when the API reports it - used for cost telemetry. */
     promptTokens?: number;
     completionTokens?: number;
 }
@@ -141,7 +141,7 @@ export interface SafeKimiInput {
     messages?: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
     /** 0-1; defaults to 0.2 for classification work where we want determinism. */
     temperature?: number;
-    /** Max output tokens. Defaults to 512 — enough for structured agent outputs. */
+    /** Max output tokens. Defaults to 512 - enough for structured agent outputs. */
     maxTokens?: number;
     /** When true, model is constrained to emit valid JSON. */
     jsonMode?: boolean;
@@ -155,7 +155,7 @@ export interface SafeKimiInput {
  */
 export async function safeKimiCompletion(input: SafeKimiInput): Promise<KimiResponse> {
     if (!isKimiConfigured()) {
-        logger.info('[KIMI] Stub mode — returning placeholder response', { tag: input.tag });
+        logger.info('[KIMI] Stub mode - returning placeholder response', { tag: input.tag });
         return {
             text: input.jsonMode ? '{}' : '',
             promptTokens: 0,
@@ -184,7 +184,7 @@ export async function safeKimiCompletion(input: SafeKimiInput): Promise<KimiResp
                 if (!isRetryable(err) || attempt === RETRY_DELAYS_MS.length) throw err;
                 const wait = jitter(RETRY_DELAYS_MS[attempt]);
                 const e = err as { status?: number; code?: string; message?: string };
-                logger.warn('[KIMI] Retryable failure — backing off', {
+                logger.warn('[KIMI] Retryable failure - backing off', {
                     tag: input.tag,
                     attempt: attempt + 1,
                     of: RETRY_DELAYS_MS.length + 1,

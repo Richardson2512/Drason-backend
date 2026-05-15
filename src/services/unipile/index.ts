@@ -2,7 +2,7 @@
  * Public entry point for the Unipile service layer.
  *
  * The directory is split by resource (accounts / profiles / posts /
- * invitations / messaging / search) — those files import from ./client
+ * invitations / messaging / search) - those files import from ./client
  * for the underlying HTTP primitive. Callers should import the named
  * function from this barrel, not the per-resource files directly.
  */

@@ -1,9 +1,9 @@
 /**
- * CRM integrations controller — Phase 1 read-only surface.
+ * CRM integrations controller - Phase 1 read-only surface.
  *
  * Drives the /dashboard/integrations/crm UI:
- *   GET    /api/integrations/crm/connections          — list all connections + counts
- *   GET    /api/integrations/crm/connections/:id      — one connection detail (sync history)
+ *   GET    /api/integrations/crm/connections          - list all connections + counts
+ *   GET    /api/integrations/crm/connections/:id      - one connection detail (sync history)
  *   POST   /api/integrations/crm/connections/:id/disconnect
  *
  * Connect / OAuth callback / start-sync / field-mapping endpoints are
@@ -24,7 +24,7 @@ import {
 /**
  * GET /api/integrations/crm/connections
  *
- * Returns one row per (org, provider) — even providers the user hasn't
+ * Returns one row per (org, provider) - even providers the user hasn't
  * connected yet are surfaced as `status: 'not_connected'` so the UI can
  * render a single grid of cards consistently.
  */

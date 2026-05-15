@@ -1,5 +1,5 @@
 /**
- * Clay enrichment provider — strict BYOK (customer supplies webhook + key).
+ * Clay enrichment provider - strict BYOK (customer supplies webhook + key).
  *
  * Clay exposes per-row enrichment via a webhook-driven flow rather than a
  * sync REST endpoint. The integration here is async (we POST a row to the

@@ -2,9 +2,9 @@
  * Unipile invitations + messaging API wrappers.
  *
  * Three send surfaces:
- *   1. sendConnectionRequest — POST a CR with optional note.
- *   2. sendMessage           — DM to an existing 1st-degree connection.
- *   3. sendInMail            — Sales Nav / Recruiter InMail.
+ *   1. sendConnectionRequest - POST a CR with optional note.
+ *   2. sendMessage           - DM to an existing 1st-degree connection.
+ *   3. sendInMail            - Sales Nav / Recruiter InMail.
  *
  * Endpoint paths derived from Unipile's docs reference slug naming
  * (`usercontroller_sendinvitation`, etc.). Path-param shape mirrors the
@@ -12,7 +12,7 @@
  * If the live API uses query-param form, this is a one-line swap in
  * `unipileRequest({ path })`.
  *
- * Each call returns a thin success/error response — the dispatcher is
+ * Each call returns a thin success/error response - the dispatcher is
  * responsible for translating these into SequenceStepExecution rows.
  */
 
@@ -20,7 +20,7 @@ import { unipileRequest } from './client';
 
 export interface SendInvitationInput {
     account_id: string;
-    /** Recipient — accept either the LinkedIn slug or the full URN. */
+    /** Recipient - accept either the LinkedIn slug or the full URN. */
     recipient_public_identifier?: string;
     recipient_member_urn?: string;
     /** Optional note; max 200 chars (Free) / 300 chars (Premium+). */
