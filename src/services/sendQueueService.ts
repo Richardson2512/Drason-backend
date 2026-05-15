@@ -39,6 +39,14 @@ import * as webhookBus from './webhookEventBus';
 import { applyTracking } from './trackingService';
 import { resolveSpintax } from '../utils/spintax';
 import { resolveDeliverableStep, classifyStepOwner } from './sequencer/stepResolver';
+import {
+    computeProgression,
+    writeProgression,
+    completeLead,
+    progressionWhere,
+    progressionWriteData,
+    ProgressionStepLite,
+} from './sequencer/leadProgression';
 import { MONITORING_THRESHOLDS } from '../types';
 
 const { ROLLING_WINDOW_SIZE } = MONITORING_THRESHOLDS;
@@ -134,13 +142,14 @@ interface EmailInBatch {
     /** Pre-computed RFC 8058 unsubscribe URL - passed verbatim into List-Unsubscribe
      *  headers by the send services. Required by Gmail's bulk-sender policy. */
     unsubscribeUrl: string;
+    /** The step being delivered (== resolved deliverable step_number).
+     *  Progression after delivery is derived from this + the batch-level
+     *  `steps` skeleton via computeProgression at SEND time — never
+     *  pre-baked here (the inter-step delay must count from actual
+     *  delivery, not from enqueue). */
     stepNumber: number;
     stepId: string;
     variantId: string | null;
-    nextStepNumber: number;
-    nextStepDelayDays: number;
-    nextStepDelayHours: number;
-    isLastStep: boolean;
 }
 
 interface BatchJobData {
@@ -150,6 +159,10 @@ interface BatchJobData {
     sendGapMinutes: number;
     account: AccountData;
     emails: EmailInBatch[];
+    /** Lightweight campaign step skeleton (one campaign per batch) so the
+     *  worker can computeProgression at send time. Single source of
+     *  progression math shared with the LinkedIn worker. */
+    steps: ProgressionStepLite[];
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -302,17 +315,11 @@ function isWithinSendingWindow(campaign: {
 }
 
 // stepConditionMatches + resolveDeliverableStep moved to the shared
-// single-source-of-truth module ./sequencer/stepResolver (imported above)
-// so the email dispatcher and the LinkedIn worker resolve the next step
-// identically and can never drift.
-
-function calculateNextSendAt(nextStep: { delay_days: number; delay_hours: number } | null): Date | null {
-    if (!nextStep) return null;
-    const next = new Date();
-    next.setDate(next.getDate() + nextStep.delay_days);
-    next.setHours(next.getHours() + nextStep.delay_hours);
-    return next;
-}
+// single-source-of-truth module ./sequencer/stepResolver. The next-step
+// delay math (formerly calculateNextSendAt here) moved to
+// ./sequencer/leadProgression (computeProgression / progressionFromNextStep)
+// so the email dispatcher and the LinkedIn worker resolve AND schedule
+// the next step identically and can never drift.
 
 async function resetDailySendsIfNeeded(accountId: string, sendsResetAt: Date): Promise<number> {
     const today = new Date();
@@ -970,10 +977,10 @@ async function dispatch(): Promise<void> {
                     });
 
                     if (!step) {
-                        await prisma.campaignLead.update({
-                            where: { id: lead.id },
-                            data: { status: 'completed', next_send_at: null },
-                        });
+                        // No deliverable step left. Single guarded completion
+                        // path (was an unguarded update() that could clobber a
+                        // lead that just replied).
+                        await completeLead(prisma, lead.id);
                         continue;
                     }
 
@@ -989,12 +996,8 @@ async function dispatch(): Promise<void> {
                     // the real touch: double action + corrupted ordering.
                     const stepOwner = classifyStepOwner(step.step_type);
                     if (stepOwner === 'terminal') {
-                        // Guard on status='active' so we don't overwrite a lead
-                        // that replied/unsubscribed/paused since selection.
-                        await prisma.campaignLead.updateMany({
-                            where: { id: lead.id, status: 'active' },
-                            data: { status: 'completed', next_send_at: null },
-                        });
+                        // Terminal node — same single guarded completion path.
+                        await completeLead(prisma, lead.id);
                         continue;
                     }
                     if (stepOwner === 'linkedin') {
@@ -1067,14 +1070,12 @@ async function dispatch(): Promise<void> {
                         ? buildUnsubscribeUrl(lead.id, effectiveTrackingDomain)
                         : '';
 
-                    // Schedule the next dispatch at delivered_step + 1. The branching
-                    // engine will re-evaluate conditions when this lead becomes due
-                    // again. If no later step exists at all, we've reached end of
-                    // sequence regardless of branches.
-                    const followUpStepNumber = deliveredStepNumber + 1;
-                    const nextStep = campaign.steps.find((s: any) => s.step_number === followUpStepNumber);
-                    const anyHigherStep = (campaign.steps as { step_number: number }[]).some(s => s.step_number > deliveredStepNumber);
-
+                    // No next-step math here anymore. Progression (current_step,
+                    // next_send_at, completed?) is derived once, at SEND time,
+                    // by computeProgression in the worker using the batch-level
+                    // `steps` skeleton — so the inter-step delay counts from
+                    // actual delivery (not enqueue) and the math lives in
+                    // exactly one place shared with the LinkedIn worker.
                     mailboxBatches.get(bestAccount.id)!.emails.push({
                         leadId: lead.id,
                         leadEmail: lead.email,
@@ -1092,10 +1093,6 @@ async function dispatch(): Promise<void> {
                         stepNumber: deliveredStepNumber,
                         stepId: step.id,
                         variantId,
-                        nextStepNumber: deliveredStepNumber, // written to current_step after send
-                        nextStepDelayDays: nextStep ? (nextStep as any).delay_days : 0,
-                        nextStepDelayHours: nextStep ? (nextStep as any).delay_hours : 0,
-                        isLastStep: !anyHigherStep,
                     });
 
                     accountCounts.set(bestAccount.id, (accountCounts.get(bestAccount.id) || 0) + 1);
@@ -1168,6 +1165,10 @@ async function dispatch(): Promise<void> {
                         sendGapMinutes: sendGap,
                         account: batch.account,
                         emails: batch.emails,
+                        // Lightweight step skeleton, once per batch (all
+                        // emails in a batch are from this one campaign).
+                        steps: (campaign.steps as { step_number: number; delay_days: number; delay_hours: number }[])
+                            .map(s => ({ step_number: s.step_number, delay_days: s.delay_days, delay_hours: s.delay_hours })),
                     };
 
                     if (sendQueue) {
@@ -1347,18 +1348,15 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                 logger.warn(`[${LOG_TAG}] Step ${email.stepNumber} already delivered to lead ${email.leadId} — skipping resend, advancing`, {
                     campaignId, mailbox: account.email,
                 });
-                await prisma.campaignLead.updateMany({
-                    where: { id: email.leadId, status: 'active' },
-                    data: {
-                        current_step: email.nextStepNumber,
-                        last_sent_at: new Date(),
-                        next_send_at: email.isLastStep ? null : calculateNextSendAt({
-                            delay_days: email.nextStepDelayDays,
-                            delay_hours: email.nextStepDelayHours,
-                        }),
-                        status: email.isLastStep ? 'completed' : 'active',
-                    },
-                }).catch((err) => {
+                // Single shared progression path. computeProgression derives
+                // the next state from the delivered step + the batch step
+                // skeleton; writeProgression is the guarded write (no-op if
+                // the lead replied/paused since selection).
+                const state = computeProgression({
+                    deliveredStepNumber: email.stepNumber,
+                    steps: data.steps,
+                });
+                await writeProgression(prisma, email.leadId, state).catch((err) => {
                     logger.warn(`[${LOG_TAG}] Post-dedupe advance failed for ${email.leadId}: ${err?.message}`);
                 });
                 continue;
@@ -1380,6 +1378,16 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                 continue;
             }
 
+            // Single shared progression compute, anchored to actual send
+            // time (not enqueue) so the inter-step delay measures from
+            // delivery. The guarded write is embedded as a transaction
+            // element below via progressionWhere/progressionWriteData so it
+            // stays atomic with SendEvent + the counters.
+            const sendProgression = computeProgression({
+                deliveredStepNumber: email.stepNumber,
+                steps: data.steps,
+            });
+
             // Write all updates in one transaction
             await prisma.$transaction([
                 prisma.sendEvent.create({
@@ -1400,28 +1408,19 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                         sent_at: new Date(),
                     },
                 }),
-                // Guarded on status='active'. canSendNow re-checks status
-                // immediately before sendEmail(), but a reply / unsubscribe
-                // can still land in the few-second SMTP round-trip after
-                // that check passes. An unconditional update here would
-                // resurrect that lead — set status back to 'active' and
-                // next_send_at to the next step — and because imapReplyWorker
-                // dedupes the inbound by message_id it would NOT self-correct,
-                // permanently leaking the sequence past a reply. updateMany
-                // with status='active' makes this a no-op when the lead is no
-                // longer active; the SendEvent + all counters below still
-                // record (the email physically went out).
+                // Progression write — SAME guarded shape as writeProgression
+                // (progressionWhere + progressionWriteData), embedded here so
+                // it commits atomically with the SendEvent + counters.
+                // status='active' guard: canSendNow re-checks status just
+                // before sendEmail(), but a reply / unsubscribe can still land
+                // in the few-second SMTP round-trip; an unconditional update
+                // would resurrect that lead (and imapReplyWorker dedupes the
+                // inbound by message_id so it would NOT self-correct). 0 rows
+                // matched = no-op; the SendEvent + counters still record the
+                // email that physically went out.
                 prisma.campaignLead.updateMany({
-                    where: { id: email.leadId, status: 'active' },
-                    data: {
-                        current_step: email.nextStepNumber,
-                        last_sent_at: new Date(),
-                        next_send_at: email.isLastStep ? null : calculateNextSendAt({
-                            delay_days: email.nextStepDelayDays,
-                            delay_hours: email.nextStepDelayHours,
-                        }),
-                        status: email.isLastStep ? 'completed' : 'active',
-                    },
+                    where: progressionWhere(email.leadId),
+                    data: progressionWriteData(sendProgression),
                 }),
                 prisma.connectedAccount.update({
                     where: { id: account.id },
@@ -1480,7 +1479,7 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                     recipient_email: email.leadEmail,
                     lead_id: email.leadId,
                 },
-                `${campaignId}-${email.leadId}-${email.nextStepNumber}`,
+                `${campaignId}-${email.leadId}-${email.stepNumber}`,
             );
 
             // Post-send Protection bookkeeping. Replaces the deprecated
@@ -1610,7 +1609,7 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
             logger.info(`[${LOG_TAG}] Sent step ${email.stepNumber} → ${maskEmail(email.leadEmail)} via ${account.email}`, {
                 campaignId,
                 batch: `${i + 1}/${emails.length}`,
-                isLastStep: email.isLastStep,
+                sequenceCompleted: sendProgression.status === 'completed',
             });
         } catch (err: any) {
             logger.error(`[${LOG_TAG}] Error processing ${email.leadEmail}`, err);
