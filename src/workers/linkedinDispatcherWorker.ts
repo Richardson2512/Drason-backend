@@ -514,6 +514,34 @@ async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<
         return 'SKIPPED';
     }
 
+    // ── IDEMPOTENCY: already-delivered guard (parity with the email
+    // dispatcher's SendEvent pre-send check). A SENT
+    // SequenceStepExecution for this (campaign_lead_id, step_number)
+    // means the step was already physically delivered - a stalled-job
+    // re-run, or two ticks racing the same lead. Do NOT re-send (a
+    // duplicate DM / connection request is unrecoverable). Advance the
+    // lead past it via the shared guarded progression so it doesn't
+    // loop, and report SKIPPED. The partial unique index
+    // (campaign_lead_id, step_number) WHERE status='SENT' is the race
+    // backstop if two ticks clear this check simultaneously.
+    const priorSent = await prisma.sequenceStepExecution.findFirst({
+        where: {
+            campaign_lead_id: cand.campaign_lead_id,
+            step_number: step.step_number,
+            status: 'SENT',
+        },
+        select: { id: true },
+    });
+    if (priorSent) {
+        logger.warn('[LINKEDIN-DISPATCHER] Step already delivered - skipping resend, advancing', {
+            campaign_lead_id: cand.campaign_lead_id,
+            step_number: step.step_number,
+            step_type: step.step_type,
+        });
+        await advanceLead(cand, step.step_number);
+        return 'SKIPPED';
+    }
+
     // Mark SCHEDULED so we have a row to update on send result.
     const execId = await stepAudit.markScheduled({
         organization_id: cand.organization_id, campaign_id: cand.campaign_id,

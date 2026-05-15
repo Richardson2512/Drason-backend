@@ -11,6 +11,7 @@
  * SENT/FAILED outcome (see markSent / markFailed).
  */
 
+import { Prisma } from '@prisma/client';
 import { prisma } from '../../prisma';
 import { logger } from '../observabilityService';
 
@@ -94,10 +95,28 @@ export async function markBranched(input: MarkBranchedInput): Promise<void> {
 }
 
 export async function markSent(executionId: string): Promise<void> {
-    await prisma.sequenceStepExecution.update({
-        where: { id: executionId },
-        data: { status: 'SENT', completed_at: new Date() },
-    });
+    try {
+        await prisma.sequenceStepExecution.update({
+            where: { id: executionId },
+            data: { status: 'SENT', completed_at: new Date() },
+        });
+    } catch (err) {
+        // The partial unique index
+        //   (campaign_lead_id, step_number) WHERE status = 'SENT'
+        // fired: a sibling row already records THIS exact (lead, step)
+        // as delivered - a stalled job re-run, or a second tick that
+        // also cleared the pre-dispatch guard. The step IS delivered
+        // (by the sibling row); this attempt's row simply stays
+        // SCHEDULED as harmless audit noise. Swallow so the caller does
+        // NOT markFailed a step that actually succeeded, and the lead is
+        // not double-advanced. This is the LinkedIn analogue of the
+        // SendEvent unique backstop on the email side.
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+            logger.warn('[STEP-EXEC] markSent suppressed - (lead, step) already recorded SENT', { executionId });
+            return;
+        }
+        throw err;
+    }
 }
 
 export async function markFailed(executionId: string, errorMessage: string): Promise<void> {
