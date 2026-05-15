@@ -23,6 +23,7 @@ import {
     isLinkedInStepType,
     type FullStepLite,
 } from '../services/sequencer/stepTypeRegistry';
+import { normalizeSequenceSteps } from '../services/sequencer/stepNormalizer';
 import { runPreLaunchValidation } from '../services/linkedin/preLaunchValidator';
 import * as auditLogService from '../services/auditLogService';
 
@@ -499,21 +500,10 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
         // LinkedIn sender pool. The detail validation (config_schema +
         // cross-step shape) runs through validateStepConfig +
         // validateSequenceShape before we hit the transaction.
-        const incomingSteps: any[] = Array.isArray(steps) ? steps : [];
-        const normalizedSteps = incomingSteps.map((s: any, idx: number) => ({
-            step_number: s.step_number ?? s.stepNumber ?? idx + 1,
-            step_type: (s.step_type ?? s.stepType ?? 'email') as string,
-            delay_days: s.delay_days ?? s.delayDays ?? (idx === 0 ? 0 : 1),
-            delay_hours: s.delay_hours ?? s.delayHours ?? 0,
-            subject: s.subject ?? '',
-            preheader: s.preheader ?? '',
-            body_html: s.body_html ?? s.bodyHtml ?? '',
-            body_text: s.body_text ?? s.bodyText ?? null,
-            condition: (s.condition ?? null) as string | null,
-            branch_to_step_number: s.branch_to_step_number ?? s.branchToStepNumber ?? null,
-            step_config: (s.step_config ?? s.stepConfig ?? {}) as Record<string, unknown>,
-            variants: Array.isArray(s.variants) ? s.variants : [],
-        }));
+        // Canonical normalization (shared with the update path): contiguous
+        // 1..N step_number in intended order, branch targets remapped, full
+        // step shape preserved. step_number is never trusted raw again.
+        const normalizedSteps = normalizeSequenceSteps(steps);
 
         for (const s of normalizedSteps) {
             if (!STEP_TYPES[s.step_type]) {
@@ -646,7 +636,7 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
                 });
 
                 if (step.variants && Array.isArray(step.variants)) {
-                    for (const variant of step.variants) {
+                    for (const variant of step.variants as any[]) {
                         await tx.stepVariant.create({
                             data: {
                                 step_id: createdStep.id,
@@ -1004,8 +994,18 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
                 // but invisible to the operator - log a structured warning
                 // with the count so support has a trail when a customer
                 // asks "why did 200 leads suddenly complete?".
-                if (campaign.status === 'active' && Array.isArray(steps) && steps.length > 0) {
-                    const newMaxStep = Math.max(...(steps as any[]).map(s => (s.step_number ?? s.stepNumber ?? 0) | 0));
+                // Same canonical normalization as createCampaign: contiguous
+                // 1..N step_number, branch targets remapped, full shape kept.
+                const normalizedUpdateSteps = normalizeSequenceSteps(steps);
+
+                // Active-campaign step-replace audit. After normalization the
+                // sequence is contiguous 1..N, so the new last step number is
+                // simply the step count. Leads whose current_step is at/after
+                // that are "effectively done" (resolver returns null → marks
+                // them completed) - log it so support has a trail when a
+                // customer asks "why did 200 leads suddenly complete?".
+                if (campaign.status === 'active' && normalizedUpdateSteps.length > 0) {
+                    const newMaxStep = normalizedUpdateSteps.length;
                     const orphanedCount = await tx.campaignLead.count({
                         where: {
                             campaign_id: campaignId,
@@ -1030,25 +1030,32 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
                     }
                 }
 
-                // Delete existing steps - variants cascade via SequenceStepVariant relation
+                // Delete existing steps - variants cascade via SequenceStepVariant relation.
                 await tx.sequenceStep.deleteMany({ where: { campaign_id: campaignId } });
-                for (const step of steps as any[]) {
-                    const stepNumber = step.step_number ?? step.stepNumber;
-                    const delayDays = step.delay_days ?? step.delayDays ?? 1;
-                    const delayHours = step.delay_hours ?? step.delayHours ?? 0;
+                // Recreate persisting the FULL shape. The prior loop dropped
+                // step_type / condition / branch_to_step_number / body_text /
+                // step_config, silently turning every LinkedIn/branched step
+                // back into a plain email step on edit - that bug is fixed
+                // here by mirroring createCampaign's persistence exactly.
+                for (const step of normalizedUpdateSteps) {
                     const created = await tx.sequenceStep.create({
                         data: {
                             campaign_id: campaignId,
-                            step_number: stepNumber,
-                            delay_days: delayDays,
-                            delay_hours: delayHours,
-                            subject: step.subject ?? '',
-                            preheader: step.preheader ?? '',
-                            body_html: step.body_html ?? step.bodyHtml ?? '',
+                            step_number: step.step_number,
+                            step_type: step.step_type,
+                            step_config: step.step_config as Prisma.InputJsonValue,
+                            delay_days: step.delay_days,
+                            delay_hours: step.delay_hours,
+                            subject: step.subject,
+                            preheader: step.preheader,
+                            body_html: step.body_html,
+                            body_text: step.body_text,
+                            condition: step.condition,
+                            branch_to_step_number: step.branch_to_step_number,
                         },
                     });
                     if (Array.isArray(step.variants) && step.variants.length > 0) {
-                        for (const variant of step.variants) {
+                        for (const variant of step.variants as any[]) {
                             await tx.stepVariant.create({
                                 data: {
                                     step_id: created.id,
