@@ -26,7 +26,7 @@ import { logger, maskEmail } from './observabilityService';
 import { sendEmail, SendResult } from './emailSendAdapters';
 import { buildUnsubscribeUrl } from './trackingService';
 import { TIER_LIMITS } from './polarClient';
-import { getRedisClient } from '../utils/redis';
+import { getRedisClient, acquireLock, releaseLock } from '../utils/redis';
 import { provisionMailboxForConnectedAccount } from './mailboxProvisioningService';
 import * as healingService from './healingService';
 import * as bounceProcessingService from './bounceProcessingService';
@@ -45,6 +45,23 @@ const { ROLLING_WINDOW_SIZE } = MONITORING_THRESHOLDS;
 const LOG_TAG = 'SEND-QUEUE';
 const QUEUE_NAME = 'email-sends';
 const DISPATCH_INTERVAL_MS = 60_000;
+
+// Distributed dispatch lock. The held-lead processor already uses this
+// exact primitive (worker:lock:lead_processor) to stop overlapping runs;
+// the send dispatcher previously had nothing, so a dispatch() that ran
+// longer than the 60s tick (or a second instance) could re-select and
+// re-enqueue leads that were already batched. TTL auto-expires so a
+// crashed dispatch never deadlocks the next tick.
+const DISPATCH_LOCK_KEY = 'worker:lock:send_dispatcher';
+const DISPATCH_LOCK_TTL_SECONDS = 300;
+
+// Safety margin added on top of a batch's worst-case drain time when we
+// claim its leads (push next_send_at forward so later ticks can't
+// re-pick an in-flight lead). Covers BullMQ pickup latency + the
+// post-send transaction. Generous on purpose: a too-small margin would
+// reintroduce the duplicate-send bug; a too-large one only delays
+// retry of a genuinely lost batch.
+const DISPATCH_CLAIM_MARGIN_MS = 10 * 60 * 1000;
 const WORKER_CONCURRENCY = 10;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -454,6 +471,17 @@ let sendQueue: Queue | null = null;
 
 async function dispatch(): Promise<void> {
     const startTime = Date.now();
+
+    // Skip this tick entirely if a prior dispatch is still running. Same
+    // pattern as processHeldLeads — without it, a dispatch that outruns
+    // the 60s interval lets the next tick re-select the same leads
+    // before the first run has claimed them.
+    const acquired = await acquireLock(DISPATCH_LOCK_KEY, DISPATCH_LOCK_TTL_SECONDS);
+    if (!acquired) {
+        logger.info(`[${LOG_TAG}] Dispatch already running — skipping this tick`);
+        return;
+    }
+
     logger.info(`[${LOG_TAG}] Dispatch scan starting`);
 
     try {
@@ -1118,6 +1146,37 @@ async function dispatch(): Promise<void> {
                 for (const [_accountId, batch] of mailboxBatches) {
                     if (batch.emails.length === 0) continue;
 
+                    // CLAIM the leads in this batch before enqueuing. Until
+                    // now the dispatcher selected leads by (status='active',
+                    // next_send_at<=now) but never moved them out of that
+                    // window at enqueue time — so every 60s tick re-selected
+                    // and re-enqueued the same leads while their batch was
+                    // still draining in the worker (one email per
+                    // send_gap_minutes, often hours), mass-duplicating sends.
+                    //
+                    // Push next_send_at past this batch's worst-case drain
+                    // time. The worker's post-send transaction overwrites it
+                    // with the real next-step schedule on success. If the
+                    // batch is lost (worker crash / dropped job) the lead
+                    // naturally becomes due again after the window and is
+                    // retried — self-healing, no stuck rows, no separate
+                    // sweep. Guarded on status='active' so we never resurrect
+                    // a lead that replied/unsubscribed between selection and
+                    // here (canSendNow re-checks at send time regardless).
+                    const batchDrainMs = batch.emails.length * sendGap * 60_000;
+                    const claimUntil = new Date(Date.now() + batchDrainMs + DISPATCH_CLAIM_MARGIN_MS);
+                    const claimedIds = batch.emails.map(e => e.leadId);
+                    const claim = await prisma.campaignLead.updateMany({
+                        where: { id: { in: claimedIds }, status: 'active' },
+                        data: { next_send_at: claimUntil },
+                    });
+                    if (claim.count !== claimedIds.length) {
+                        logger.warn(`[${LOG_TAG}] Lead claim partial: ${claim.count}/${claimedIds.length} claimed (rest changed state since selection — canSendNow will skip them)`, {
+                            campaignId: campaign.id,
+                            mailbox: batch.account.email,
+                        });
+                    }
+
                     const jobData: BatchJobData = {
                         orgId: campaign.organization_id,
                         campaignId: campaign.id,
@@ -1181,6 +1240,10 @@ async function dispatch(): Promise<void> {
         });
     } catch (err: any) {
         logger.error(`[${LOG_TAG}] Dispatch failed`, err);
+    } finally {
+        await releaseLock(DISPATCH_LOCK_KEY).catch((err) =>
+            logger.warn(`[${LOG_TAG}] Failed to release dispatch lock (will TTL-expire)`, { error: err?.message }),
+        );
     }
 }
 
@@ -1311,8 +1374,19 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                         sent_at: new Date(),
                     },
                 }),
-                prisma.campaignLead.update({
-                    where: { id: email.leadId },
+                // Guarded on status='active'. canSendNow re-checks status
+                // immediately before sendEmail(), but a reply / unsubscribe
+                // can still land in the few-second SMTP round-trip after
+                // that check passes. An unconditional update here would
+                // resurrect that lead — set status back to 'active' and
+                // next_send_at to the next step — and because imapReplyWorker
+                // dedupes the inbound by message_id it would NOT self-correct,
+                // permanently leaking the sequence past a reply. updateMany
+                // with status='active' makes this a no-op when the lead is no
+                // longer active; the SendEvent + all counters below still
+                // record (the email physically went out).
+                prisma.campaignLead.updateMany({
+                    where: { id: email.leadId, status: 'active' },
                     data: {
                         current_step: email.nextStepNumber,
                         last_sent_at: new Date(),
