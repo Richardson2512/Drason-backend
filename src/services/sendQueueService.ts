@@ -38,7 +38,7 @@ import { SlackAlertService } from './SlackAlertService';
 import * as webhookBus from './webhookEventBus';
 import { applyTracking } from './trackingService';
 import { resolveSpintax } from '../utils/spintax';
-import { isLinkedInDispatcherStep } from './sequencer/stepTypeRegistry';
+import { resolveDeliverableStep, classifyStepOwner } from './sequencer/stepResolver';
 import { MONITORING_THRESHOLDS } from '../types';
 
 const { ROLLING_WINDOW_SIZE } = MONITORING_THRESHOLDS;
@@ -301,64 +301,10 @@ function isWithinSendingWindow(campaign: {
     return true;
 }
 
-/**
- * Evaluate a step's branching condition against a lead's CampaignLead state.
- * Returns true if the step should be sent. Unknown conditions fail-open
- * (treated as no condition) so a typo on the schema enum doesn't silently
- * stop the whole sequence.
- */
-function stepConditionMatches(
-    condition: string | null | undefined,
-    lead: {
-        replied_at?: Date | null;
-        opened_count?: number | null;
-        clicked_count?: number | null;
-    },
-): boolean {
-    if (!condition) return true;
-    const opens = lead.opened_count || 0;
-    const clicks = lead.clicked_count || 0;
-    switch (condition) {
-        case 'if_no_reply':    return !lead.replied_at;
-        case 'if_replied':     return !!lead.replied_at;
-        case 'if_opened':      return opens > 0;
-        case 'if_not_opened':  return opens === 0;
-        case 'if_clicked':     return clicks > 0;
-        case 'if_not_clicked': return clicks === 0;
-        default:               return true;
-    }
-}
-
-/**
- * Walk the sequence from `startNumber`, honoring per-step `condition` and
- * `branch_to_step_number` until we find a deliverable step or exhaust the
- * branch chain. Returns null when no step in the chain is eligible - caller
- * should mark the lead completed.
- *
- * Safety: capped at 10 hops to defang accidental loops (a step that branches
- * to itself, or two steps that ping-pong via mutual branches).
- */
-function resolveDeliverableStep(
-    startNumber: number,
-    steps: SequenceStepWithVariants[],
-    lead: { replied_at?: Date | null; opened_count?: number | null; clicked_count?: number | null },
-): SequenceStepWithVariants | null {
-    let current: number | null = startNumber;
-    let safety = 10;
-    while (current != null && safety-- > 0) {
-        const step = steps.find(s => s.step_number === current) as SequenceStepWithVariants & {
-            condition?: string | null;
-            branch_to_step_number?: number | null;
-        } | undefined;
-        if (!step) return null;
-        if (stepConditionMatches(step.condition, lead)) return step;
-        // Condition failed - try the branch if defined and not self-pointing.
-        const branch = step.branch_to_step_number;
-        if (branch == null || branch === current) return null;
-        current = branch;
-    }
-    return null;
-}
+// stepConditionMatches + resolveDeliverableStep moved to the shared
+// single-source-of-truth module ./sequencer/stepResolver (imported above)
+// so the email dispatcher and the LinkedIn worker resolve the next step
+// identically and can never drift.
 
 function calculateNextSendAt(nextStep: { delay_days: number; delay_hours: number } | null): Date | null {
     if (!nextStep) return null;
@@ -1031,29 +977,27 @@ async function dispatch(): Promise<void> {
                         continue;
                     }
 
-                    // ── STEP-OWNERSHIP CONTRACT (stepTypeRegistry) ──
-                    // The email dispatcher owns ONLY `email` steps + the `end`
-                    // terminal. linkedin_* and find_* steps belong to the
-                    // LinkedIn worker. Without this guard the email dispatcher
-                    // would build an email out of a LinkedIn/utility step
-                    // (whose subject/body_html are "" — their content lives in
-                    // step_config), send a blank message, AND advance
-                    // current_step — while the LinkedIn worker independently
-                    // delivered the real touch. Double action + corrupted
-                    // ordering on every mixed sequence. We mirror the LinkedIn
-                    // worker's isLinkedInDispatcherStep() filter using the same
-                    // single source of truth so the two can never drift.
-                    if (step.step_type === 'end') {
-                        // Terminal node. Guard on status='active' so we don't
-                        // overwrite a lead that replied/unsubscribed/paused
-                        // between selection and here.
+                    // ── STEP-OWNERSHIP CONTRACT ──
+                    // classifyStepOwner is the single source of truth shared
+                    // with the LinkedIn worker. The email dispatcher executes
+                    // ONLY 'email' steps; 'terminal' completes the lead;
+                    // 'linkedin' (linkedin_*/find_*) belongs to the LinkedIn
+                    // worker. Without this the email dispatcher would build an
+                    // email from a LinkedIn step (subject/body_html are "" —
+                    // content lives in step_config), send a blank message and
+                    // advance current_step while the LinkedIn worker delivered
+                    // the real touch: double action + corrupted ordering.
+                    const stepOwner = classifyStepOwner(step.step_type);
+                    if (stepOwner === 'terminal') {
+                        // Guard on status='active' so we don't overwrite a lead
+                        // that replied/unsubscribed/paused since selection.
                         await prisma.campaignLead.updateMany({
                             where: { id: lead.id, status: 'active' },
                             data: { status: 'completed', next_send_at: null },
                         });
                         continue;
                     }
-                    if (isLinkedInDispatcherStep(step.step_type)) {
+                    if (stepOwner === 'linkedin') {
                         // Not ours. Leave the lead completely untouched —
                         // status, current_step and next_send_at unchanged — so
                         // the LinkedIn worker's tick (same status='active',
