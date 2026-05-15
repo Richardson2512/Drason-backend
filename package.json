@@ -20,6 +20,7 @@
   },
   "type": "commonjs",
   "dependencies": {
+    "@aws-sdk/client-sesv2": "^3.1048.0",
     "@azure/msal-node": "^5.1.4",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@prisma/client": "^5.22.0",

@@ -62,24 +62,29 @@ async function loadRealClient(): Promise<{
 
     return {
         async createPool(name: string) {
+            // MANAGED scaling: SES owns IP allocation AND per-ISP warmup,
+            // and auto-scales the number of physical IPs behind this pool
+            // based on the volume flowing through it. This is the only
+            // mode where "customer purchases -> pool provisioned
+            // automatically" actually works end to end without manual AWS
+            // Support cases (STANDARD requires hand-requesting IPs and
+            // running warmup yourself, which the per-purchase flow can't
+            // do). Reputation is still our responsibility - SES does not
+            // monitor bounce rate or handle RBL delisting (see the SNS
+            // bounce/complaint auto-pause handler).
             await client.send(new sdk.CreateDedicatedIpPoolCommand({
                 PoolName: name,
-                ScalingMode: 'STANDARD',
+                ScalingMode: 'MANAGED',
             }));
         },
 
         async requestIp(poolName: string) {
-            // SES auto-assigns a managed dedicated IP to the pool when you
-            // call PutDedicatedIpInPool, but you first need an IP allocated
-            // to the account. The cleanest pattern is to use
-            // CreateDedicatedIpPool with ScalingMode=MANAGED, which lets
-            // SES auto-scale IPs into the pool - that's what we use here.
-            // If a specific IP must be moved, the operator can do it from
-            // the AWS console.
-            //
-            // We don't have an IP to return at create-time - it's assigned
-            // asynchronously by SES, and shows up in subsequent
-            // GetDedicatedIpPool calls.
+            // Nothing to request at create-time. With ScalingMode=MANAGED
+            // SES auto-scales IPs into the pool as real sending volume
+            // warrants - a freshly created managed pool legitimately has
+            // ZERO physical IPs until traffic starts flowing through it.
+            // The IP(s) show up in subsequent GetDedicatedIps calls; the
+            // platform's provisioning poller + warmup states model that.
             return null;
         },
 
