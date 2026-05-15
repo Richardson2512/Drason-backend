@@ -26,6 +26,12 @@ router.post('/forgot-password', validateBody(forgotPasswordSchema), authControll
 router.get('/reset-password/verify', authController.verifyResetToken);
 router.post('/reset-password', validateBody(resetPasswordSchema), authController.resetPassword);
 
+// Email verification (public - no auth; the link IS the login for a
+// password signup). GET validates the token for the page; POST burns it,
+// marks verified, and establishes the session.
+router.get('/verify-email', authController.verifyEmailToken);
+router.post('/verify-email', authController.confirmEmailVerification);
+
 // Google OAuth 2.0 authentication
 router.get('/google', googleAuthController.initiateGoogleAuth);
 router.get('/google/callback', googleAuthController.handleGoogleCallback);

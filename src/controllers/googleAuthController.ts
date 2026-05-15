@@ -129,7 +129,11 @@ async function createOrgAndUser(params: {
                 google_refresh_token: encryptedRefreshToken,
                 google_token_expires_at: expiresAt,
                 avatar_url: googleUser.picture,
-                last_login_at: new Date()
+                last_login_at: new Date(),
+                // Google already verified this address (OAuth). OAuth signups
+                // are verified at creation so they never hit the email-
+                // verification gate that password signups must pass.
+                email_verified_at: new Date(),
             }
         });
 

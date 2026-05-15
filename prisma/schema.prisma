@@ -430,6 +430,16 @@ model User {
   reset_token_hash       String?   @unique
   reset_token_expires_at DateTime?
 
+  // Email verification — same SHA-256(token) pattern as password reset.
+  // email_verified_at NULL = unverified: a password signup gets NO session
+  // until the email link is clicked (the link both verifies AND logs in).
+  // OAuth signups are set verified at creation (Google already verified the
+  // address). Existing users are backfilled to created_at by the migration
+  // so no real account is ever locked out. 24h TTL on the token.
+  email_verified_at             DateTime?
+  email_verification_token_hash String?   @unique
+  email_verification_expires_at DateTime?
+
   // ── Agency / multi-tenancy fields (Phase 1 additive) ─────────────────────
   /// Account this user belongs to. Backfilled by data migration; future-state
   /// required. For agency owners: the account they created. For clients:

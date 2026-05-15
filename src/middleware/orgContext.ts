@@ -107,7 +107,7 @@ export const extractOrgContext = async (
 
         // PUBLIC ROUTES: Skip context check for auth endpoints and webhooks
         // Note: req.path is relative to the mount point ('/api')
-        const publicPaths = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout', '/auth/google', '/auth/onboarding', '/auth/legal-versions', '/auth/forgot-password', '/auth/reset-password',
+        const publicPaths = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout', '/auth/google', '/auth/onboarding', '/auth/legal-versions', '/auth/forgot-password', '/auth/reset-password', '/auth/verify-email',
             // Workspace invite magic-link flow - pre-auth by design.
             '/auth/invite',           // GET /auth/invite?token= validates a magic link
             '/auth/invite/complete',  // POST sets password + creates the User row

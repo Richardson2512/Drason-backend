@@ -10,6 +10,7 @@ import { isFreeEmailDomain } from '../constants/freeEmailDomains';
 import { dispatchEmail } from '../services/emailTemplates/dispatcher';
 import { passwordResetEmail } from '../services/emailTemplates/passwordReset';
 import { welcomeEmail } from '../services/emailTemplates/welcome';
+import { emailVerificationEmail } from '../services/emailTemplates/emailVerification';
 import { internalNewSignupAlert } from '../services/emailTemplates/internalNewSignupAlert';
 import { accountLockedEmail } from '../services/emailTemplates/accountLocked';
 import { passwordChangedEmail } from '../services/emailTemplates/passwordChanged';
@@ -297,9 +298,29 @@ export const register = async (req: Request, res: Response) => {
         // Client users (scoped_organization_id IS NOT NULL) live in a per-workspace namespace.
         const existingUser = await prisma.user.findFirst({
             where: { email, scoped_organization_id: null },
-            select: { id: true },
+            select: { id: true, name: true, email: true, password_hash: true, email_verified_at: true },
         });
         if (existingUser) {
+            // Verified account already owns this email - a real collision.
+            if (existingUser.email_verified_at) {
+                return res.status(400).json({ success: false, error: 'Email already registered' });
+            }
+            // Unverified password account that never clicked the link: almost
+            // always the same person retrying. Do NOT create a second trial
+            // org - rotate + re-send the verification link so they aren't
+            // dead-ended, and they still can't get in without verifying.
+            if (existingUser.password_hash) {
+                await issueAndSendEmailVerification(existingUser);
+                return res.status(200).json({
+                    success: true,
+                    verification_required: true,
+                    email: existingUser.email,
+                    message: 'That email is already pending verification - we just re-sent the link. Check your inbox.',
+                });
+            }
+            // OAuth-created account with no password but somehow unverified
+            // (shouldn't happen - OAuth marks verified at creation). Treat as
+            // a collision rather than spawn a duplicate org.
             return res.status(400).json({ success: false, error: 'Email already registered' });
         }
 
@@ -398,25 +419,14 @@ export const register = async (req: Request, res: Response) => {
             );
         }
 
-        const token = generateToken({ ...result.user, organization_id: result.org.id });
+        logger.info('User registered (pending email verification)', { userId: result.user.id, email: result.user.email });
 
-        logger.info('User registered', { userId: result.user.id, email: result.user.email });
-
-        // Welcome email - fire-and-forget so it doesn't block the response.
-        // Idempotency on user.id ensures a retry of the (already-rare) double-
-        // submit doesn't double-send.
-        void dispatchEmail({
-            rendered: welcomeEmail({
-                name: result.user.name,
-                organizationName: result.org.name,
-                trialDaysRemaining: 14,
-                dashboardUrl: buildFrontendUrl('/dashboard'),
-            }),
-            audience: { kind: 'email', email: result.user.email },
-            category: 'account_security',
-            eventKind: 'welcome',
-            idempotencyKey: `welcome:${result.user.id}`,
-        });
+        // NO session is issued here. A password signup is not logged in until
+        // it clicks the verification link (the link both verifies the email
+        // AND establishes the session - see confirmEmailVerification). An
+        // unverified account therefore holds zero token and cannot touch any
+        // API or burn the trial, which is the entire point of this gate.
+        await issueAndSendEmailVerification(result.user);
 
         // Internal alert - let the team know about every new signup.
         const internalAlertTo = process.env.INTERNAL_SIGNUP_ALERT_TO || 'richardson@superkabe.com';
@@ -436,22 +446,15 @@ export const register = async (req: Request, res: Response) => {
             quiet: true,
         });
 
-        // Set httpOnly cookie server-side
-        setTokenCookie(res, token);
+        // Welcome email is deliberately NOT sent here. It goes out only
+        // after the address is verified (see confirmEmailVerification) so the
+        // first and only mail an unverified account receives is the link.
 
         res.status(201).json({
-            token,
-            user: {
-                id: result.user.id,
-                email: result.user.email,
-                name: result.user.name,
-                role: result.user.role,
-                organization: {
-                    id: result.org.id,
-                    name: result.org.name,
-                    slug: result.org.slug
-                }
-            }
+            success: true,
+            verification_required: true,
+            email: result.user.email,
+            message: 'Account created. Check your email for a verification link to activate your account and sign in.',
         });
 
     } catch (error: any) {
@@ -577,6 +580,51 @@ function buildResetUrl(rawToken: string): string {
     const url = new URL('/reset-password', base);
     url.searchParams.set('token', rawToken);
     return url.toString();
+}
+
+// ── Email verification (mirrors the reset-token pattern above) ──────────
+const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;   // 24 hours
+const EMAIL_VERIFICATION_TOKEN_BYTES = 32;               // 256 bits
+
+function hashEmailVerificationToken(rawToken: string): string {
+    return crypto.createHash('sha256').update(rawToken).digest('hex');
+}
+
+function buildVerifyEmailUrl(rawToken: string): string {
+    const base = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const url = new URL('/verify-email', base);
+    url.searchParams.set('token', rawToken);
+    return url.toString();
+}
+
+/**
+ * Rotate + send a fresh verification link for a user. Called by register
+ * for a new signup and by register's resend path (existing-but-unverified
+ * retry). Single outstanding token per user - re-issuing rotates it; the
+ * hash slice in the idempotency key lets Resend send the new mail.
+ */
+async function issueAndSendEmailVerification(user: { id: string; email: string; name: string | null }): Promise<void> {
+    const rawToken = crypto.randomBytes(EMAIL_VERIFICATION_TOKEN_BYTES).toString('hex');
+    const tokenHash = hashEmailVerificationToken(rawToken);
+    const expiresAt = new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS);
+    await prisma.user.update({
+        where: { id: user.id },
+        data: {
+            email_verification_token_hash: tokenHash,
+            email_verification_expires_at: expiresAt,
+        },
+    });
+    await dispatchEmail({
+        rendered: emailVerificationEmail({
+            name: user.name,
+            verifyUrl: buildVerifyEmailUrl(rawToken),
+            ttlLabel: '24 hours',
+        }),
+        audience: { kind: 'email', email: user.email },
+        category: 'account_security',
+        eventKind: 'email_verification_requested',
+        idempotencyKey: `emailverify:${user.id}:${tokenHash.slice(0, 16)}`,
+    });
 }
 
 
@@ -752,6 +800,126 @@ export const resetPassword = async (req: Request, res: Response): Promise<void> 
     } catch (err) {
         logger.error('[AUTH] resetPassword failed', err instanceof Error ? err : new Error(String(err)));
         res.status(500).json({ success: false, error: 'Failed to reset password' });
+    }
+};
+
+/**
+ * GET /api/auth/verify-email?token=...
+ * Lets the /verify-email page show a sensible state before it auto-confirms.
+ * Mirrors verifyResetToken.
+ */
+export const verifyEmailToken = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const rawToken = (req.query.token as string | undefined) || '';
+        if (!rawToken || rawToken.length < 20) {
+            res.json({ valid: false, reason: 'invalid' });
+            return;
+        }
+        const tokenHash = hashEmailVerificationToken(rawToken);
+        const user = await prisma.user.findUnique({
+            where: { email_verification_token_hash: tokenHash },
+            select: { email: true, email_verification_expires_at: true, email_verified_at: true },
+        });
+        if (!user || !user.email_verification_expires_at) {
+            res.json({ valid: false, reason: 'invalid' });
+            return;
+        }
+        if (user.email_verified_at) {
+            // Link clicked twice - already verified is success, not an error.
+            res.json({ valid: true, already_verified: true });
+            return;
+        }
+        if (user.email_verification_expires_at < new Date()) {
+            res.json({ valid: false, reason: 'expired' });
+            return;
+        }
+        const masked = user.email.replace(/^([^@])[^@]*(@.*)$/, (_m, a, c) => `${a}***${c}`);
+        res.json({ valid: true, email_masked: masked });
+    } catch (err) {
+        logger.error('[AUTH] verifyEmailToken failed', err instanceof Error ? err : new Error(String(err)));
+        res.status(500).json({ success: false, error: 'Failed to verify token' });
+    }
+};
+
+/**
+ * POST /api/auth/verify-email { token }
+ * Burns the token, marks the email verified, AND establishes the session -
+ * THIS is the moment a password signup actually logs in. The welcome email
+ * goes out here (the verified address's first non-verification mail).
+ * Idempotent: a double-click / refresh just re-establishes the session.
+ */
+export const confirmEmailVerification = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const { token } = req.body as { token?: string };
+        if (!token || token.length < 20) {
+            res.status(400).json({ success: false, error: 'Verification link is invalid or has already been used.' });
+            return;
+        }
+        const tokenHash = hashEmailVerificationToken(token);
+        const user = await prisma.user.findUnique({
+            where: { email_verification_token_hash: tokenHash },
+            include: { organization: { select: { id: true, name: true, slug: true } } },
+        });
+        if (!user || !user.email_verification_expires_at) {
+            res.status(400).json({ success: false, error: 'Verification link is invalid or has already been used.' });
+            return;
+        }
+
+        const alreadyVerified = Boolean(user.email_verified_at);
+        if (!alreadyVerified && user.email_verification_expires_at < new Date()) {
+            res.status(400).json({ success: false, error: 'Verification link has expired. Sign up again to get a new link.' });
+            return;
+        }
+
+        if (!alreadyVerified) {
+            await prisma.user.update({
+                where: { id: user.id },
+                data: {
+                    email_verified_at: new Date(),
+                    email_verification_token_hash: null,   // single-use - burn it
+                    email_verification_expires_at: null,
+                },
+            });
+
+            // Welcome email - now that the address is real. Fire-and-forget;
+            // idempotency on user.id dedupes a double verify.
+            void dispatchEmail({
+                rendered: welcomeEmail({
+                    name: user.name,
+                    organizationName: user.organization.name,
+                    trialDaysRemaining: 14,
+                    dashboardUrl: buildFrontendUrl('/dashboard'),
+                }),
+                audience: { kind: 'email', email: user.email },
+                category: 'account_security',
+                eventKind: 'welcome',
+                idempotencyKey: `welcome:${user.id}`,
+            });
+            logger.info('[AUTH] Email verified', { userId: user.id });
+        }
+
+        // Establish the session - this is the login for a password signup.
+        const sessionToken = generateToken(user);
+        setTokenCookie(res, sessionToken);
+
+        res.json({
+            success: true,
+            token: sessionToken,
+            user: {
+                id: user.id,
+                email: user.email,
+                name: user.name,
+                role: user.role,
+                organization: {
+                    id: user.organization.id,
+                    name: user.organization.name,
+                    slug: user.organization.slug,
+                },
+            },
+        });
+    } catch (err) {
+        logger.error('[AUTH] confirmEmailVerification failed', err instanceof Error ? err : new Error(String(err)));
+        res.status(500).json({ success: false, error: 'Failed to verify email' });
     }
 };
 
