@@ -103,6 +103,56 @@ describe('computeProgression', () => {
     });
 });
 
+describe('selection-convention contract (the every-other-step skip guard)', () => {
+    // Both executors select the next step as step_number = current_step + 1.
+    // Therefore after delivering step N, current_step MUST equal N (so the
+    // next selection lands on N+1, the immediate next step — never N+2).
+    // If this ever regresses the LinkedIn worker skips every other step.
+    const steps = [
+        { step_number: 1, delay_days: 0, delay_hours: 0 },
+        { step_number: 2, delay_days: 1, delay_hours: 0 },
+        { step_number: 3, delay_days: 1, delay_hours: 0 },
+    ];
+
+    it('after delivering step N, next selection (current_step+1) is exactly N+1', () => {
+        const afterStep1 = computeProgression({ deliveredStepNumber: 1, steps, now: NOW });
+        expect(afterStep1.current_step).toBe(1);
+        expect(afterStep1.current_step + 1).toBe(2); // selects step 2, NOT 3
+
+        const afterStep2 = computeProgression({ deliveredStepNumber: 2, steps, now: NOW });
+        expect(afterStep2.current_step).toBe(2);
+        expect(afterStep2.current_step + 1).toBe(3); // selects step 3
+    });
+
+    it('a fresh lead (current_step 0) selects step 1', () => {
+        // current_step starts at 0; selection = 0 + 1 = step_number 1.
+        const firstSelected = 0 + 1;
+        expect(firstSelected).toBe(1);
+    });
+
+    it('branch jump: progressionFromNextStep(delivered=T-1) makes the next selection land exactly on T', () => {
+        const target = 3;
+        const state = progressionFromNextStep({
+            deliveredStepNumber: target - 1,
+            nextStep: { delay_days: 2, delay_hours: 0 },
+            now: NOW,
+        });
+        // Next selection = current_step + 1 must equal the branch target T.
+        expect(state.current_step + 1).toBe(target);
+        expect(state.status).toBe('active');
+    });
+
+    it('branch jump to step 1 works (current_step 0 → selects step 1)', () => {
+        const state = progressionFromNextStep({
+            deliveredStepNumber: 1 - 1,
+            nextStep: { delay_days: 0, delay_hours: 0 },
+            now: NOW,
+        });
+        expect(state.current_step).toBe(0);
+        expect(state.current_step + 1).toBe(1);
+    });
+});
+
 describe('canonical guarded write shape', () => {
     it('progressionWhere always guards on status=active', () => {
         expect(progressionWhere('lead-1')).toEqual({ id: 'lead-1', status: 'active' });

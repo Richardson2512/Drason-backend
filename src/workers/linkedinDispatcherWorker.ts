@@ -26,6 +26,12 @@ import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { evaluate, type PreconditionContext } from '../services/sequencer/preconditionEvaluator';
 import { STEP_TYPES, isLinkedInDispatcherStep } from '../services/sequencer/stepTypeRegistry';
+import {
+    computeProgression,
+    writeProgression,
+    completeLead,
+    progressionFromNextStep,
+} from '../services/sequencer/leadProgression';
 import * as stepAudit from '../services/sequencer/stepExecutionAudit';
 import * as sendService from '../services/linkedin/sendService';
 import { runEnrichmentAgent } from '../services/agents/enrichmentAgent';
@@ -210,16 +216,33 @@ async function findDueCandidates(): Promise<DispatchCandidate[]> {
             },
         });
 
-        // Pre-filter to leads whose next step is owned by this dispatcher.
-        // Derived from STEP_TYPES via isLinkedInDispatcherStep() so a newly
-        // registered LinkedIn or utility step automatically becomes
-        // dispatchable - no risk of the filter and the dispatch switch
-        // below drifting out of sync (which is exactly how `find_email`
-        // ended up silently broken before this refactor).
-        const eligible = leads.filter(l => {
-            const next = steps[l.current_step];
-            return Boolean(next && isLinkedInDispatcherStep(next.step_type));
-        });
+        // Pre-filter to leads whose IMMEDIATE next step is owned by this
+        // dispatcher. Resolution is by step_number = current_step + 1 — the
+        // SAME convention the email dispatcher uses — NOT array position.
+        //
+        // The old `steps[l.current_step]` indexed by ARRAY POSITION while
+        // advanceLead moved current_step by step_number VALUE. Every
+        // campaign-create path numbers steps 1-based contiguous, so those
+        // two were incompatible and this worker executed every OTHER step
+        // (a 3-step LinkedIn sequence ran steps 1 and 3; a 2-step sequence
+        // ran step 1 then stalled). Resolving by step_number fixes that and
+        // keeps the LinkedIn and email executors on one numbering model.
+        //
+        // Branch/condition resolution stays in dispatchOne (it needs
+        // dispatch-time context — resolved profile / sender / found email —
+        // that a pure CampaignLead-only resolver can't see). isLinkedIn-
+        // DispatcherStep remains the single shared ownership predicate, so a
+        // step the email dispatcher owns is left for it and vice versa.
+        const stepByNumber = new Map(steps.map(s => [s.step_number, s]));
+
+        type EligibleLead = (typeof leads)[number] & { _nextStep: (typeof steps)[number] };
+        const eligible: EligibleLead[] = [];
+        for (const l of leads) {
+            const next = stepByNumber.get(l.current_step + 1);
+            if (next && isLinkedInDispatcherStep(next.step_type)) {
+                eligible.push({ ...l, _nextStep: next });
+            }
+        }
         if (eligible.length === 0) continue;
 
         const emails = Array.from(new Set(eligible.map(l => l.email)));
@@ -232,7 +255,6 @@ async function findDueCandidates(): Promise<DispatchCandidate[]> {
         const leadByEmail = new Map(leadRows.map(r => [r.email, r]));
 
         for (const l of eligible) {
-            const nextStep = steps[l.current_step];
             const lead = leadByEmail.get(l.email);
             candidates.push({
                 campaign_id: c.id,
@@ -241,7 +263,7 @@ async function findDueCandidates(): Promise<DispatchCandidate[]> {
                 lead_id: lead?.id ?? null,
                 lead_email: l.email,
                 lead_linkedin_url: lead?.linkedin_url || null,
-                next_step_number: nextStep.step_number,
+                next_step_number: l._nextStep.step_number,
                 enrollment_at: l.created_at,
                 replied_at: l.replied_at,
                 opened_count: l.opened_count,
@@ -741,57 +763,54 @@ async function buildPreconditionContext(
     return ctx;
 }
 
-async function advanceLead(cand: DispatchCandidate, completedStepNumber: number): Promise<void> {
-    // Move to the next step. Find its delay and set next_send_at.
-    const next = await prisma.sequenceStep.findFirst({
-        where: { campaign_id: cand.campaign_id, step_number: completedStepNumber + 1 },
+/**
+ * Advance the lead after delivering (or skipping) step `deliveredStepNumber`.
+ *
+ * Routes through the SHARED progression module — same compute + same
+ * guarded write as the email dispatcher. computeProgression sets
+ * current_step = deliveredStepNumber (canonical: "last delivered step",
+ * so the next selection resolves step deliveredStepNumber + 1) and
+ * schedules next_send_at from the immediate next step's delay, or marks
+ * the lead completed when none remains. writeProgression is guarded on
+ * status='active' so a reply/bounce/unsubscribe landing mid-dispatch is
+ * never resurrected. This replaces the old private logic that set
+ * current_step = completedStepNumber + 1 (incompatible with 1-based
+ * step_number selection — the every-other-step skip).
+ */
+async function advanceLead(cand: DispatchCandidate, deliveredStepNumber: number): Promise<void> {
+    const steps = await prisma.sequenceStep.findMany({
+        where: { campaign_id: cand.campaign_id },
+        select: { step_number: true, delay_days: true, delay_hours: true },
     });
-    if (!next) {
-        // No more steps - mark lead completed.
-        await prisma.campaignLead.update({
-            where: { id: cand.campaign_lead_id },
-            data: { status: 'completed', current_step: completedStepNumber + 1 },
-        });
-        return;
-    }
-    const delayMs = (next.delay_days * 24 + next.delay_hours) * 60 * 60 * 1000;
-    await prisma.campaignLead.update({
-        where: { id: cand.campaign_lead_id },
-        data: {
-            current_step: completedStepNumber + 1,
-            next_send_at: new Date(Date.now() + delayMs),
-            last_sent_at: new Date(),
-        },
-    });
+    const state = computeProgression({ deliveredStepNumber, steps });
+    await writeProgression(prisma, cand.campaign_lead_id, state);
 }
 
 /**
- * Branch jump - used when a step's condition evaluates false AND
- * branch_to_step_number is set. We move the lead to the target step
- * with that step's own delay applied from NOW (the branch target
- * shouldn't fire immediately - it has its own delay relative to the
- * branching step's intended fire date).
+ * Branch jump - condition evaluated false AND branch_to_step_number set.
+ * Move the lead so the NEXT selection resolves `targetStepNumber`. Under
+ * the canonical convention (selection = current_step + 1) that means
+ * current_step = targetStepNumber - 1, with the target's own delay
+ * applied from NOW (a branch target has its own delay; it must not fire
+ * immediately). All pointer/date math goes through the shared module's
+ * progressionFromNextStep so it can never diverge from the email path;
+ * the write is the same guarded path; a missing target completes the
+ * lead instead of looping.
  */
 async function jumpLeadToStep(cand: DispatchCandidate, targetStepNumber: number): Promise<void> {
     const target = await prisma.sequenceStep.findFirst({
         where: { campaign_id: cand.campaign_id, step_number: targetStepNumber },
+        select: { delay_days: true, delay_hours: true },
     });
     if (!target) {
-        // Branch target missing - mark completed rather than loop.
-        await prisma.campaignLead.update({
-            where: { id: cand.campaign_lead_id },
-            data: { status: 'completed', current_step: targetStepNumber },
-        });
+        await completeLead(prisma, cand.campaign_lead_id);
         return;
     }
-    const delayMs = (target.delay_days * 24 + target.delay_hours) * 60 * 60 * 1000;
-    await prisma.campaignLead.update({
-        where: { id: cand.campaign_lead_id },
-        data: {
-            current_step: targetStepNumber,
-            next_send_at: new Date(Date.now() + delayMs),
-        },
+    const state = progressionFromNextStep({
+        deliveredStepNumber: targetStepNumber - 1,
+        nextStep: { delay_days: target.delay_days, delay_hours: target.delay_hours },
     });
+    await writeProgression(prisma, cand.campaign_lead_id, state);
 }
 
 async function tick(): Promise<void> {
