@@ -24,12 +24,41 @@
 
 import { Request, Response } from 'express';
 import axios from 'axios';
+import MessageValidator from 'sns-validator';
 import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 
 const BOUNCE_PAUSE_THRESHOLD = 0.04;     // 4%
 const COMPLAINT_PAUSE_THRESHOLD = 0.0008; // 0.08%
 const MIN_VOLUME_FOR_PAUSE = 100;         // don't pause on 1 bounce out of 5 sends
+
+// SNS message signature validator. The default host pattern only accepts
+// SigningCertURLs on `sns.<region>.amazonaws.com[.cn]` — an attacker
+// cannot point us at a cert they control. validate() also checks the
+// RSA signature over the canonical message string, so forged envelopes
+// (fake bounces to auto-pause a paid IP) are rejected here.
+const snsValidator = new MessageValidator();
+
+function validateSnsSignature(envelope: Record<string, unknown>): Promise<void> {
+    return new Promise((resolve, reject) => {
+        snsValidator.validate(envelope, (err) => (err ? reject(err) : resolve()));
+    });
+}
+
+// Defense-in-depth on the SubscriptionConfirmation handshake: even though
+// the signature is validated first, only ever fetch a SubscribeURL whose
+// host is an AWS SNS endpoint. Without this, a validly-signed message
+// with a crafted SubscribeURL could still drive an SSRF.
+function isAwsSnsUrl(raw: string): boolean {
+    let u: URL;
+    try { u = new URL(raw); } catch { return false; }
+    return u.protocol === 'https:' && /^sns\.[a-z0-9-]{3,}\.amazonaws\.com(\.cn)?$/i.test(u.hostname);
+}
+
+// Optional pinning — when SES_SNS_TOPIC_ARN is set, reject any envelope
+// whose TopicArn doesn't match, so a different (but validly-signed) AWS
+// SNS topic can't feed us events.
+const EXPECTED_TOPIC_ARN = process.env.SES_SNS_TOPIC_ARN || null;
 
 interface SnsEnvelope {
     Type?: string;
@@ -65,9 +94,41 @@ interface SesNotification {
 export const handleSesNotification = async (req: Request, res: Response): Promise<Response> => {
     const envelope = (req.body || {}) as SnsEnvelope;
 
+    // 0. AUTHENTICITY GATE. This endpoint is public (no app auth) so the
+    // ONLY thing standing between the internet and "auto-pause a paid
+    // customer's IP" is the AWS SNS signature. Reject anything that
+    // doesn't carry a valid AWS signature before touching the DB.
+    if (!envelope.Type) {
+        return res.status(400).send('missing Type');
+    }
+    try {
+        await validateSnsSignature(envelope as unknown as Record<string, unknown>);
+    } catch (err) {
+        logger.warn('[SES_SNS] signature validation failed — rejecting', {
+            type: envelope.Type,
+            topicArn: envelope.TopicArn,
+            err: err instanceof Error ? err.message : String(err),
+        });
+        return res.status(403).send('invalid signature');
+    }
+
+    if (EXPECTED_TOPIC_ARN && envelope.TopicArn !== EXPECTED_TOPIC_ARN) {
+        logger.warn('[SES_SNS] TopicArn not in allowlist — rejecting', {
+            got: envelope.TopicArn,
+        });
+        return res.status(403).send('unexpected topic');
+    }
+
     // 1. SNS handshake — auto-confirm subscriptions. AWS will not deliver
-    // events until SubscribeURL is fetched once.
+    // events until SubscribeURL is fetched once. Signature is already
+    // verified above; the host check is belt-and-suspenders against SSRF.
     if (envelope.Type === 'SubscriptionConfirmation' && envelope.SubscribeURL) {
+        if (!isAwsSnsUrl(envelope.SubscribeURL)) {
+            logger.warn('[SES_SNS] SubscribeURL is not an AWS SNS host — refusing to fetch', {
+                topicArn: envelope.TopicArn,
+            });
+            return res.status(403).send('bad subscribe url');
+        }
         try {
             await axios.get(envelope.SubscribeURL, { timeout: 5000 });
             logger.info('[SES_SNS] subscription confirmed', { topicArn: envelope.TopicArn });

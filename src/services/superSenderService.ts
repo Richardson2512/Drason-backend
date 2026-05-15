@@ -314,44 +314,31 @@ export async function handleSuperSenderWebhook(event: WebhookEventLike, resolved
         return;
     }
 
-    // Promote the pre-created pending row to row 1.
+    // Resolve the pre-created row (if any) up front so we know whether
+    // row 1 is an update or part of the createMany.
     const eventData = event.data as Record<string, unknown> | undefined;
     const rawCheckoutId =
         (eventData?.checkout_id as string | undefined) ??
         ((eventData?.checkout as { id?: string } | undefined)?.id);
     const checkoutId = rawCheckoutId ?? null;
-    let firstRowUpdated = false;
-    if (checkoutId) {
-        const existingByCheckout = await prisma.dedicatedIp.findUnique({
-            where: { polar_checkout_id: String(checkoutId) },
-        });
-        if (existingByCheckout) {
-            await prisma.dedicatedIp.update({
-                where: { id: existingByCheckout.id },
-                data: {
-                    polar_subscription_id: String(subscriptionId),
-                    // If pre-allocation included workspace_ids[0], it's
-                    // already on the row. Move into provisioning.
-                    state: existingByCheckout.organization_id ? 'provisioning' : 'pending_payment',
-                },
-            });
-            firstRowUpdated = true;
-        }
-    }
+    const existingByCheckout = checkoutId
+        ? await prisma.dedicatedIp.findUnique({ where: { polar_checkout_id: String(checkoutId) } })
+        : null;
+    const firstRowUpdated = Boolean(existingByCheckout);
 
     const rowsToCreate = quantity - (firstRowUpdated ? 1 : 0);
+    const createManyData: Array<{
+        account_id: string;
+        organization_id: string | null;
+        polar_subscription_id: string;
+        state: string;
+    }> = [];
     if (rowsToCreate > 0) {
-        const createMany: Array<{
-            account_id: string;
-            organization_id: string | null;
-            polar_subscription_id: string;
-            state: string;
-        }> = [];
         // Workspace IDs at index 0 already used on the pre-created row.
         const offset = firstRowUpdated ? 1 : 0;
         for (let i = 0; i < rowsToCreate; i++) {
             const workspaceId = workspaceIds[offset + i] || null;
-            createMany.push({
+            createManyData.push({
                 account_id: accountId,
                 organization_id: workspaceId,
                 polar_subscription_id: String(subscriptionId),
@@ -360,8 +347,31 @@ export async function handleSuperSenderWebhook(event: WebhookEventLike, resolved
                 state: workspaceId ? 'provisioning' : 'pending_payment',
             });
         }
-        await prisma.dedicatedIp.createMany({ data: createMany });
     }
+
+    // Atomic fan-out. Promoting the pre-created row (which stamps
+    // polar_subscription_id) and inserting the remaining rows must both
+    // commit or neither. Without the transaction, a createMany failure
+    // after the update leaves subscription_id set on row 1 — the
+    // idempotency guard above then trips on Polar's retry and the
+    // customer is permanently short the IPs they paid for. On rollback,
+    // row 1 keeps subscription_id = null so the retry re-runs cleanly.
+    await prisma.$transaction(async (tx) => {
+        if (existingByCheckout) {
+            await tx.dedicatedIp.update({
+                where: { id: existingByCheckout.id },
+                data: {
+                    polar_subscription_id: String(subscriptionId),
+                    // If pre-allocation included workspace_ids[0], it's
+                    // already on the row. Move into provisioning.
+                    state: existingByCheckout.organization_id ? 'provisioning' : 'pending_payment',
+                },
+            });
+        }
+        if (createManyData.length > 0) {
+            await tx.dedicatedIp.createMany({ data: createManyData });
+        }
+    });
 
     logger.info('[SUPER_SENDER] Webhook fan-out complete', {
         accountId,
@@ -422,14 +432,23 @@ export async function assignIpToWorkspace(opts: {
     });
     if (!workspace) throw new AllocationError('Workspace not part of this account', 'CROSS_TENANT');
 
-    // Reassignment cooldown — only applies if the IP is currently assigned
-    // to a different workspace and was reassigned recently.
-    if (ip.organization_id && ip.organization_id !== opts.workspaceId && ip.last_reassigned_at) {
+    // Reassignment cooldown. Fires whenever the IP carries a recent
+    // reassignment/unassignment timestamp, independent of whether it's
+    // currently assigned. The previous `ip.organization_id && ...` guard
+    // let the sequence assign -> unassign -> assign bypass the cooldown
+    // entirely: unassignIp nulls organization_id (while correctly bumping
+    // last_reassigned_at), so an organization_id-gated check never ran on
+    // the follow-up assign. First-ever allocation from the pool stays
+    // free because last_reassigned_at is null then. Re-assigning to the
+    // workspace the IP is already on is a no-op and stays exempt.
+    const reassigningToSameWorkspace =
+        ip.organization_id != null && ip.organization_id === opts.workspaceId;
+    if (ip.last_reassigned_at && !reassigningToSameWorkspace) {
         const ageMs = Date.now() - ip.last_reassigned_at.getTime();
         const cooldownMs = REASSIGN_COOLDOWN_HOURS * 60 * 60 * 1000;
         if (ageMs < cooldownMs) {
             const hoursLeft = Math.ceil((cooldownMs - ageMs) / (60 * 60 * 1000));
-            throw new AllocationError(`Reassignment cooldown active — try again in ${hoursLeft}h`, 'COOLDOWN');
+            throw new AllocationError(`Reassignment cooldown active - try again in ${hoursLeft}h`, 'COOLDOWN');
         }
     }
 
