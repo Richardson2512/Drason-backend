@@ -12,6 +12,7 @@
 import {
     stepConditionMatches,
     resolveDeliverableStep,
+    decideConditionOutcome,
     classifyStepOwner,
     ResolverStep,
 } from '../src/services/sequencer/stepResolver';
@@ -67,9 +68,35 @@ describe('resolveDeliverableStep', () => {
         expect(resolveDeliverableStep(99, [step(1)], {})).toBeNull();
     });
 
-    it('condition fails with no branch → null (sequence ends)', () => {
+    it('condition fails, no branch, later step exists → SKIPS this step and CONTINUES (unified policy)', () => {
+        // Product-owner-ratified policy: a failed condition with no branch
+        // skips THIS step and continues. This is the email behaviour
+        // change; LinkedIn already behaved this way. Both channels now
+        // share decideConditionOutcome so they cannot diverge again.
+        const steps = [step(1, { condition: 'if_replied' }), step(2)];
+        expect(resolveDeliverableStep(1, steps, { replied_at: null })?.step_number).toBe(2);
+    });
+
+    it('condition fails, no branch, NO later step → null (runs off the end → complete)', () => {
+        // A lead only finishes when there is genuinely no next step.
         const steps = [step(1, { condition: 'if_replied' })];
         expect(resolveDeliverableStep(1, steps, { replied_at: null })).toBeNull();
+    });
+
+    it('skip-continue is gap-safe: walks to the next EXISTING step over a number gap', () => {
+        // Legacy pre-normalizer campaign 1,2,4. Step 2 fails, no branch →
+        // continue to 4, never mistake the 3-gap for end-of-sequence.
+        const steps = [step(1), step(2, { condition: 'if_replied' }), step(4)];
+        expect(resolveDeliverableStep(2, steps, { replied_at: null })?.step_number).toBe(4);
+    });
+
+    it('chained skip-continue falls through consecutive failing steps to the first deliverable', () => {
+        const steps = [
+            step(1, { condition: 'if_replied' }),
+            step(2, { condition: 'if_replied' }),
+            step(3),
+        ];
+        expect(resolveDeliverableStep(1, steps, { replied_at: null })?.step_number).toBe(3);
     });
 
     it('condition fails with a branch → follows the branch', () => {
@@ -89,7 +116,7 @@ describe('resolveDeliverableStep', () => {
         expect(resolveDeliverableStep(1, steps, { replied_at: null })).toBeNull();
     });
 
-    it('mutual ping-pong branches terminate via the 10-hop safety cap', () => {
+    it('mutual ping-pong branches terminate via the visited-set guard (no infinite loop)', () => {
         const steps = [
             step(1, { condition: 'if_replied', branch_to_step_number: 2 }),
             step(2, { condition: 'if_replied', branch_to_step_number: 1 }),
@@ -103,6 +130,31 @@ describe('resolveDeliverableStep', () => {
         const rich: Rich[] = [{ ...step(1), subject: 'hi' } as Rich];
         const r = resolveDeliverableStep(1, rich, {});
         expect(r?.subject).toBe('hi');
+    });
+});
+
+describe('decideConditionOutcome (THE single shared condition policy)', () => {
+    // This is the one function both the email resolver and the LinkedIn
+    // dispatcher route through. If these expectations change, the two
+    // channels' behaviour changes together — by construction they can
+    // never again encode opposite rules (the mixed-sequence root cause).
+    it('condition passed → proceed', () => {
+        expect(decideConditionOutcome({ conditionPassed: true, branchToStepNumber: 5, currentStepNumber: 1 }))
+            .toEqual({ kind: 'proceed' });
+    });
+    it('failed + usable branch → branch to that target', () => {
+        expect(decideConditionOutcome({ conditionPassed: false, branchToStepNumber: 5, currentStepNumber: 1 }))
+            .toEqual({ kind: 'branch', toStepNumber: 5 });
+    });
+    it('failed + no branch → skip_continue', () => {
+        expect(decideConditionOutcome({ conditionPassed: false, branchToStepNumber: null, currentStepNumber: 1 }))
+            .toEqual({ kind: 'skip_continue' });
+        expect(decideConditionOutcome({ conditionPassed: false, branchToStepNumber: undefined, currentStepNumber: 1 }))
+            .toEqual({ kind: 'skip_continue' });
+    });
+    it('failed + self-pointing branch → skip_continue (same on both channels; no self-jump loop)', () => {
+        expect(decideConditionOutcome({ conditionPassed: false, branchToStepNumber: 3, currentStepNumber: 3 }))
+            .toEqual({ kind: 'skip_continue' });
     });
 });
 

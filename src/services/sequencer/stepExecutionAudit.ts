@@ -71,6 +71,25 @@ export async function markSkipped(input: MarkSkippedInput): Promise<void> {
     });
 }
 
+/**
+ * Transition an EXISTING (already markScheduled) row to SKIPPED.
+ *
+ * Why this exists: a step that skips AFTER it was scheduled (e.g. a
+ * find_linkedin_url that found nothing, a like_post with no post) used to
+ * be recorded by writing a fresh markSkipped row AND flipping the
+ * scheduled row to FAILED — two rows for one attempt, and the skip got
+ * counted as a failure in any status='FAILED' metric. The audit state
+ * machine simply had no SCHEDULED→SKIPPED edge; this adds it. One attempt
+ * = one row, by construction. (Pre-scheduled skips still use markSkipped,
+ * which is correct there: no scheduled row exists yet.)
+ */
+export async function markSkippedExisting(executionId: string, skipReason: string): Promise<void> {
+    await prisma.sequenceStepExecution.update({
+        where: { id: executionId },
+        data: { status: 'SKIPPED', skip_reason: skipReason, completed_at: new Date() },
+    });
+}
+
 export interface MarkBranchedInput extends MarkScheduledInput {
     branched_to_step: number;
     branch_reason?: string;

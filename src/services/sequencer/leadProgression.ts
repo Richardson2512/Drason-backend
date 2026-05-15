@@ -18,12 +18,14 @@
  * That's why the primitive takes the already-resolved next step rather
  * than a steps[] array (the email worker doesn't carry steps[]).
  *
- * SCOPE BOUNDARY (deliberate, not an omission): this module owns
- * PROGRESSION transitions only — "the lead finished step N, advance the
- * pointer." It does NOT own reschedule of the SAME step (defer /
- * capacity-retry: pointer doesn't move) or interrupts (reply/bounce/
- * suppression/pause: terminal state changes handled elsewhere). Keeping
- * that boundary explicit is what stops this from sprawling.
+ * SCOPE BOUNDARY (deliberate, not an omission): this module owns every
+ * CampaignLead pointer/timing write — PROGRESSION ("finished step N,
+ * advance the pointer", completeLead) AND reschedule of the SAME step
+ * (rescheduleSameStep: defer/retry, pointer does NOT move). Both live
+ * here, behind the same status='active' guard, precisely so there is ONE
+ * guarded writer and the "multiple unguarded writers with divergent math"
+ * root cause cannot regrow. It still does NOT own interrupts (reply/
+ * bounce/suppression/pause: terminal state changes handled elsewhere).
  *
  * Pure compute is unit-tested; the writers are thin guarded updateManys.
  */
@@ -184,6 +186,31 @@ export async function completeLead(
     const r = await client.campaignLead.updateMany({
         where: { id: leadId, status: 'active' },
         data: { status: 'completed', next_send_at: null },
+    });
+    return r.count;
+}
+
+/**
+ * DEFER: the current step could not run yet and should be retried later
+ * WITHOUT advancing (e.g. linkedin_like_post when the lead has no post yet
+ * and skip-if-no-post is off — "wait for one"). current_step is left
+ * untouched so the next selection (current_step + 1) lands on the SAME
+ * step again; only next_send_at is pushed out. Same status='active' guard
+ * as every other writer here, so a lead that replied / bounced / was
+ * paused since selection is never resurrected by a deferral.
+ *
+ * The CALLER owns the retry policy (interval + a max-attempts ceiling) so
+ * a never-satisfiable defer can't loop forever — this primitive only
+ * performs the one guarded write.
+ */
+export async function rescheduleSameStep(
+    client: CampaignLeadWriter,
+    leadId: string,
+    nextAttemptAt: Date,
+): Promise<number> {
+    const r = await client.campaignLead.updateMany({
+        where: { id: leadId, status: 'active' },
+        data: { next_send_at: nextAttemptAt },
     });
     return r.count;
 }

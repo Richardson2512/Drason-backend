@@ -63,15 +63,67 @@ export function stepConditionMatches(
 }
 
 /**
+ * THE single condition-outcome policy. Given whether a step's condition
+ * passed and its branch target, decide what happens next. This is the ONE
+ * place that rule lives — both the email resolver (below) and the LinkedIn
+ * dispatcher call it, so the two channels can never again encode opposite
+ * rules for the same construct (the mixed-sequence divergence root cause).
+ *
+ *   - condition passed                       → proceed (deliver this step)
+ *   - failed, has a usable branch            → branch (jump to target)
+ *   - failed, no branch (or self-pointing)   → skip_continue (skip THIS
+ *     step, move on to the next step). A self-pointing branch is treated
+ *     as "no usable branch" identically on both channels.
+ *
+ * Policy decision (product-owner ratified): a failed condition with no
+ * branch SKIPS the one step and CONTINUES. Ending a lead only happens via
+ * an explicit `end` step, a branch, or running off the last step. This is
+ * the least-surprising behaviour and matches mainstream sequence tools.
+ */
+export type ConditionOutcome =
+    | { kind: 'proceed' }
+    | { kind: 'branch'; toStepNumber: number }
+    | { kind: 'skip_continue' };
+
+export function decideConditionOutcome(args: {
+    conditionPassed: boolean;
+    branchToStepNumber: number | null | undefined;
+    currentStepNumber: number;
+}): ConditionOutcome {
+    if (args.conditionPassed) return { kind: 'proceed' };
+    const b = args.branchToStepNumber;
+    if (b != null && b !== args.currentStepNumber) {
+        return { kind: 'branch', toStepNumber: b };
+    }
+    return { kind: 'skip_continue' };
+}
+
+/** Smallest step_number strictly greater than `n`, or null when none.
+ *  Gap-safe: with normalized contiguous 1..N this is just n+1, but a
+ *  legacy non-contiguous campaign (pre-normalizer) still advances over the
+ *  hole instead of mistaking the gap for end-of-sequence. */
+function nextStepNumberAfter(n: number, steps: { step_number: number }[]): number | null {
+    let best: number | null = null;
+    for (const s of steps) {
+        if (s.step_number > n && (best === null || s.step_number < best)) best = s.step_number;
+    }
+    return best;
+}
+
+/**
  * Walk the sequence from `startNumber`, honoring per-step `condition` and
- * `branch_to_step_number` until we find a deliverable step or exhaust the
- * branch chain. Returns null when no step in the chain is eligible —
- * caller should mark the lead completed.
+ * `branch_to_step_number` via the shared decideConditionOutcome policy,
+ * until we find a deliverable step or run off the end. Returns null only
+ * when no step remains (no such step_number, or the chain walked past the
+ * last step) — caller marks the lead completed.
  *
  * Resolution is purely by `step_number` (never array position) so it is
- * correct regardless of how steps are ordered or numbered. Safety: capped
- * at 10 hops to defang accidental loops (a step that branches to itself,
- * or two steps that ping-pong via mutual branches).
+ * correct regardless of how steps are ordered or numbered. Loop safety:
+ * a visited-set, not a fixed hop cap — forward skip_continue moves can
+ * never revisit (step_number strictly increases), so only branches can
+ * loop; revisiting any step_number terminates the walk. This both kills
+ * self/ping-pong branch loops AND can't prematurely truncate a long but
+ * legitimate sequence the way a 10-hop cap could.
  *
  * Generic so the caller gets its own concrete step type back (no cast).
  */
@@ -81,15 +133,21 @@ export function resolveDeliverableStep<T extends ResolverStep>(
     lead: ResolverLeadState,
 ): T | null {
     let current: number | null = startNumber;
-    let safety = 10;
-    while (current != null && safety-- > 0) {
+    const visited = new Set<number>();
+    while (current != null) {
+        if (visited.has(current)) return null; // branch loop (self / ping-pong)
+        visited.add(current);
         const step = steps.find(s => s.step_number === current);
-        if (!step) return null;
-        if (stepConditionMatches(step.condition, lead)) return step;
-        // Condition failed — try the branch if defined and not self-pointing.
-        const branch = step.branch_to_step_number ?? null;
-        if (branch == null || branch === current) return null;
-        current = branch;
+        if (!step) return null; // no such step_number → end of sequence (gap-safe)
+        const outcome = decideConditionOutcome({
+            conditionPassed: stepConditionMatches(step.condition, lead),
+            branchToStepNumber: step.branch_to_step_number,
+            currentStepNumber: current,
+        });
+        if (outcome.kind === 'proceed') return step;
+        if (outcome.kind === 'branch') { current = outcome.toStepNumber; continue; }
+        // skip_continue: skip THIS step, advance to the next existing step.
+        current = nextStepNumberAfter(current, steps);
     }
     return null;
 }

@@ -26,11 +26,13 @@ import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { evaluate, type PreconditionContext } from '../services/sequencer/preconditionEvaluator';
 import { STEP_TYPES, isLinkedInDispatcherStep } from '../services/sequencer/stepTypeRegistry';
+import { decideConditionOutcome } from '../services/sequencer/stepResolver';
 import {
     computeProgression,
     writeProgression,
     completeLead,
     progressionFromNextStep,
+    rescheduleSameStep,
 } from '../services/sequencer/leadProgression';
 import * as stepAudit from '../services/sequencer/stepExecutionAudit';
 import * as sendService from '../services/linkedin/sendService';
@@ -41,6 +43,17 @@ import type { ReactionType } from '../services/unipile';
 const RUN_INTERVAL_MS = 60 * 1000;
 const FIRST_RUN_DELAY_MS = 60 * 1000;
 const BATCH_SIZE = 200;
+
+// DEFER policy for "the step can't run yet, wait and retry the SAME step"
+// (today only linkedin_like_post when the lead has no post yet AND
+// skip-if-no-post is off). Bounded so a lead that simply never posts is
+// not deferred forever: after MAX_DEFER_ATTEMPTS we skip-and-continue.
+// 8 * 6h ≈ a 2-day ceiling.
+const DEFER_RETRY_MS = 6 * 60 * 60 * 1000;
+const MAX_DEFER_ATTEMPTS = 8;
+/** skip_reason marking a bounded "waiting for a post" deferral; counted to
+ *  enforce MAX_DEFER_ATTEMPTS. */
+const DEFER_REASON_NO_POST = 'no_post_yet_deferred';
 
 let scheduled: NodeJS.Timeout | null = null;
 let totalCycles = 0;
@@ -70,7 +83,7 @@ interface DispatchCandidate {
 /**
  * Per-cycle cache for sender pools + live capacity.
  *
- * Goal: stop pickSender from re-fetching `CampaignLinkedInSender +
+ * Goal: stop selectSender from re-fetching `CampaignLinkedInSender +
  * LinkedInAccount` rows for every candidate. On a 200-candidate cycle
  * across 10 campaigns the naïve path issued 200 sender-pool queries.
  *
@@ -78,13 +91,14 @@ interface DispatchCandidate {
  *   - Sender pool per campaign is loaded once at cycle start (lazy on
  *     first dispatch for that campaign). Static fields (max caps,
  *     account_type, working_hours, rotation_priority) are snapshot.
- *   - Live capacity is tracked in `usedThisCycle` keyed by
- *     (account_id, kind). Initial values come from the DB counters
- *     (invites_today / messages_today / inmails_today). Each successful
- *     pickSender increments the in-memory counter so two candidates in
- *     the same cycle can't double-book a sender that only has one slot
- *     left. The DB counters are still authoritative across cycles -
- *     sendService writes them, the next cycle reads fresh values.
+ *   - Live capacity is tracked in `accountUsage` keyed by account_id.
+ *     Initial values come from the DB counters (invites_today /
+ *     messages_today / inmails_today). reserveSenderSlot (called only
+ *     post-gates, once committed to send) increments the in-memory
+ *     counter so two candidates in the same cycle can't double-book a
+ *     sender that only has one slot left. The DB counters are still
+ *     authoritative across cycles - sendService writes them, the next
+ *     cycle reads fresh values.
  */
 interface CachedSender {
     sender_id: string;
@@ -98,7 +112,7 @@ interface CachedSender {
     cap_inmails: number;
     cap_invites_per_week: number;
     /** Today/this-week counters snapshotted at first load + bumped by
-     *  successful pickSender calls within this cycle. */
+     *  reserveSenderSlot (post-gates) within this cycle. */
     used_invites: number;
     used_messages: number;
     used_inmails: number;
@@ -324,17 +338,23 @@ function isWithinWorkingHours(wh: WorkingHours | null | undefined, now: Date): b
 }
 
 /**
- * Pick an enabled sender from the campaign's pool that has remaining
- * capacity AND is within its working-hours window. NULL when no sender
- * qualifies (caller writes a SKIPPED audit row).
+ * SELECTION (read-only): pick the first enabled sender from the campaign's
+ * pool with remaining capacity AND inside its working-hours window. NULL
+ * when none qualifies (caller writes a SKIPPED audit row).
  *
- * Cache-aware: the sender pool is loaded once per campaign per cycle,
- * and capacity is decremented in-memory on a successful pick so a
- * second candidate in the same cycle sees the slot already taken. The
- * actual DB counter increments happen later inside sendService -
- * across cycles, the DB is authoritative.
+ * This deliberately does NOT mutate the cycle capacity counters. Selection
+ * has to run early (the condition evaluator needs the sender account to
+ * answer if_connection), but the capacity RESERVATION is a side-effect
+ * that must not happen until we're actually committed to sending —
+ * otherwise a step that then branches / skips / is a duplicate burns a
+ * slot for the rest of the cycle (the wasted-capacity bug). Reservation is
+ * a separate explicit step: reserveSenderSlot, called post-gates.
+ *
+ * Safe because tick() awaits dispatchOne strictly sequentially — no two
+ * candidates are mid-dispatch at once, so select-then-reserve within one
+ * dispatchOne can't race another candidate.
  */
-async function pickSender(
+async function selectSender(
     campaignId: string,
     kind: 'invite' | 'message' | 'inmail',
     cache: CycleCache,
@@ -352,22 +372,30 @@ async function pickSender(
         // queue-later. If senders are all outside hours, the next
         // dispatcher cycle will re-evaluate.
         if (!isWithinWorkingHours(s.working_hours as WorkingHours | null, now)) continue;
-
-        // Reserve the slot in this cycle so the next candidate sees it
-        // consumed. The DB counters update through sendService on actual
-        // dispatch - on the next cycle (60s) those updates plus this
-        // reservation will agree.
-        if (kind === 'invite') {
-            usage.invites += 1;
-            usage.invites_this_week += 1;
-        } else if (kind === 'message') {
-            usage.messages += 1;
-        } else {
-            usage.inmails += 1;
-        }
         return { id: s.sender_id, account_id: s.account_id };
     }
     return null;
+}
+
+/**
+ * RESERVATION (the side-effect): decrement the in-cycle capacity for the
+ * chosen sender's account so a second candidate in the SAME cycle sees the
+ * slot consumed. Called only AFTER every gate (condition / preconditions /
+ * idempotency) has passed and we are committed to sending — never before.
+ * The DB counters are still authoritative across cycles (sendService
+ * writes them; next cycle reads fresh values).
+ */
+function reserveSenderSlot(accountId: string, kind: 'invite' | 'message' | 'inmail', cache: CycleCache): void {
+    const usage = cache.accountUsage.get(accountId);
+    if (!usage) return;
+    if (kind === 'invite') {
+        usage.invites += 1;
+        usage.invites_this_week += 1;
+    } else if (kind === 'message') {
+        usage.messages += 1;
+    } else {
+        usage.inmails += 1;
+    }
 }
 
 /**
@@ -418,7 +446,9 @@ async function evaluateCondition(
     }
 }
 
-async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<'SENT' | 'SKIPPED' | 'FAILED' | 'BRANCHED'> {
+type DispatchResult = 'SENT' | 'SKIPPED' | 'FAILED' | 'BRANCHED' | 'DEFER';
+
+async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<DispatchResult> {
     const step = await prisma.sequenceStep.findFirst({
         where: { campaign_id: cand.campaign_id, step_number: cand.next_step_number },
     });
@@ -454,7 +484,11 @@ async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<
         senderKind = 'message';
     }
 
-    const sender = senderKind ? await pickSender(cand.campaign_id, senderKind, cache) : null;
+    // SELECT only (no capacity reservation yet) — the condition evaluator
+    // below needs the sender account for if_connection, but reserving the
+    // slot before the gates would waste it if the step then branches/
+    // skips/dedupes. Reservation happens post-gates, just before send.
+    const sender = senderKind ? await selectSender(cand.campaign_id, senderKind, cache) : null;
     if (senderKind && !sender) {
         await stepAudit.markSkipped({
             organization_id: cand.organization_id, campaign_id: cand.campaign_id,
@@ -473,20 +507,32 @@ async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<
     // off this step's preconditions entirely.
     if (step.condition) {
         const passes = await evaluateCondition(step.condition, cand, linkedinProfileId, sender?.account_id || null);
-        if (!passes) {
-            if (step.branch_to_step_number != null) {
-                await stepAudit.markBranched({
-                    organization_id: cand.organization_id, campaign_id: cand.campaign_id,
-                    campaign_lead_id: cand.campaign_lead_id, sequence_step_id: step.id,
-                    step_number: step.step_number, step_type: step.step_type,
-                    branched_to_step: step.branch_to_step_number,
-                    branch_reason: step.condition,
-                });
-                await jumpLeadToStep(cand, step.branch_to_step_number);
-                return 'BRANCHED';
-            }
-            // Condition false + no branch target = drop out of the
-            // sequence entirely (mark lead completed).
+        // SAME policy the email resolver uses (shared decideConditionOutcome)
+        // so the two channels can never diverge on what a failed condition
+        // means. evaluateCondition stays LinkedIn-specific (it needs live
+        // connection / email context); only the OUTCOME policy is shared.
+        const outcome = decideConditionOutcome({
+            conditionPassed: passes,
+            branchToStepNumber: step.branch_to_step_number,
+            currentStepNumber: step.step_number,
+        });
+        if (outcome.kind === 'branch') {
+            await stepAudit.markBranched({
+                organization_id: cand.organization_id, campaign_id: cand.campaign_id,
+                campaign_lead_id: cand.campaign_lead_id, sequence_step_id: step.id,
+                step_number: step.step_number, step_type: step.step_type,
+                branched_to_step: outcome.toStepNumber,
+                branch_reason: step.condition,
+            });
+            await jumpLeadToStep(cand, outcome.toStepNumber);
+            return 'BRANCHED';
+        }
+        if (outcome.kind === 'skip_continue') {
+            // Condition false + no usable branch → SKIP this one step and
+            // CONTINUE (advanceLead moves the pointer forward by one; it
+            // does NOT complete the lead). If this was the last step,
+            // computeProgression inside advanceLead completes the lead by
+            // running off the end — identical to the email resolver.
             await stepAudit.markSkipped({
                 organization_id: cand.organization_id, campaign_id: cand.campaign_id,
                 campaign_lead_id: cand.campaign_lead_id, sequence_step_id: step.id,
@@ -496,6 +542,7 @@ async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<
             await advanceLead(cand, step.step_number);
             return 'SKIPPED';
         }
+        // outcome.kind === 'proceed' → fall through to preconditions.
     }
 
     // Evaluate preconditions.
@@ -551,7 +598,21 @@ async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<
         sender_ref_type: sender ? 'linkedin_account' : null,
     });
 
+    // All gates passed and we're committed to sending — NOW reserve the
+    // sender's in-cycle capacity slot (Root Cause C: side-effect after the
+    // guards, never before, so a branched/skipped/duplicate step can't
+    // waste a slot for the rest of the cycle).
+    if (sender && senderKind) reserveSenderSlot(sender.account_id, senderKind, cache);
+
     // Dispatch by step type.
+    //
+    // The step's true outcome is computed into `dispatchResult` by each
+    // arm — never decided by control-flow fall-through. Every arm writes
+    // exactly ONE terminal audit state onto the scheduled row (markSent /
+    // markFailed / markSkippedExisting), so one attempt = one row and a
+    // skip is never also counted as a failure. The single finalize point
+    // after the try/catch is the ONLY place the lead pointer moves.
+    let dispatchResult: DispatchResult = 'SENT';
     try {
         const cfg = (step.step_config as Record<string, unknown>) || {};
         switch (step.step_type) {
@@ -563,8 +624,8 @@ async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<
                     linkedin_profile_id: linkedinProfileId,
                     note: (cfg.note_template as string | undefined) || undefined,
                 });
-                if (out.status === 'SENT') await stepAudit.markSent(execId);
-                else await stepAudit.markFailed(execId, out.error_message || out.status);
+                if (out.status === 'SENT') { await stepAudit.markSent(execId); dispatchResult = 'SENT'; }
+                else { await stepAudit.markFailed(execId, out.error_message || out.status); dispatchResult = 'FAILED'; }
                 break;
             }
             case 'linkedin_message': {
@@ -576,8 +637,8 @@ async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<
                     linkedin_profile_id: linkedinProfileId,
                     text: body,
                 });
-                if (out.status === 'SENT') await stepAudit.markSent(execId);
-                else await stepAudit.markFailed(execId, out.error_message || out.status);
+                if (out.status === 'SENT') { await stepAudit.markSent(execId); dispatchResult = 'SENT'; }
+                else { await stepAudit.markFailed(execId, out.error_message || out.status); dispatchResult = 'FAILED'; }
                 break;
             }
             case 'linkedin_inmail': {
@@ -589,8 +650,8 @@ async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<
                     subject: (cfg.subject as string | undefined) || '',
                     body: (cfg.body as string | undefined) || '',
                 });
-                if (out.status === 'SENT') await stepAudit.markSent(execId);
-                else await stepAudit.markFailed(execId, out.error_message || out.status);
+                if (out.status === 'SENT') { await stepAudit.markSent(execId); dispatchResult = 'SENT'; }
+                else { await stepAudit.markFailed(execId, out.error_message || out.status); dispatchResult = 'FAILED'; }
                 break;
             }
             case 'linkedin_view_profile': {
@@ -603,6 +664,7 @@ async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<
                     data: { profile_views_today: { increment: 1 } },
                 });
                 await stepAudit.markSent(execId);
+                dispatchResult = 'SENT';
                 break;
             }
             case 'linkedin_follow': {
@@ -615,6 +677,7 @@ async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<
                     data: { messages_today: { increment: 1 } },
                 });
                 await stepAudit.markSent(execId);
+                dispatchResult = 'SENT';
                 break;
             }
             case 'linkedin_like_post': {
@@ -628,21 +691,33 @@ async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<
                 const recent = await unipileChats.listLeadRecentPosts(acct.unipile_account_id, linkedinPublicId, since);
                 if (recent.length === 0) {
                     if (skipIfNoPost) {
-                        await stepAudit.markSkipped({
-                            organization_id: cand.organization_id, campaign_id: cand.campaign_id,
-                            campaign_lead_id: cand.campaign_lead_id, sequence_step_id: step.id,
-                            step_number: step.step_number, step_type: step.step_type,
-                            skip_reason: 'lead_has_recent_post',
-                            sender_ref_id: sender.account_id, sender_ref_type: 'linkedin_account',
-                        });
-                        // markScheduled was already written; flip to SKIPPED
-                        // by failing it with the skip reason so the row reflects truth.
-                        await stepAudit.markFailed(execId, 'skipped:lead_has_recent_post');
+                        // Author opted: no post → skip this step, continue.
+                        // Single SCHEDULED→SKIPPED transition (one row).
+                        await stepAudit.markSkippedExisting(execId, 'lead_has_recent_post');
+                        dispatchResult = 'SKIPPED';
                         break;
                     }
-                    // Without skip_if_no_post, mark as failed so the dispatcher
-                    // retries next cycle (post may have been published since).
-                    await stepAudit.markFailed(execId, 'no_recent_post_to_react_to');
+                    // Author opted: WAIT for a post (don't skip). DEFER the
+                    // SAME step and retry later — bounded by
+                    // MAX_DEFER_ATTEMPTS so a lead that never posts is
+                    // eventually skipped-and-continued instead of looping
+                    // forever. (This is the bug the old "mark failed so it
+                    // retries next cycle" comment described but never did —
+                    // it advanced the lead, abandoning the step.)
+                    const priorDefers = await prisma.sequenceStepExecution.count({
+                        where: {
+                            campaign_lead_id: cand.campaign_lead_id,
+                            step_number: step.step_number,
+                            skip_reason: DEFER_REASON_NO_POST,
+                        },
+                    });
+                    if (priorDefers >= MAX_DEFER_ATTEMPTS) {
+                        await stepAudit.markSkippedExisting(execId, 'no_post_after_max_retries');
+                        dispatchResult = 'SKIPPED';
+                    } else {
+                        await stepAudit.markSkippedExisting(execId, DEFER_REASON_NO_POST);
+                        dispatchResult = 'DEFER';
+                    }
                     break;
                 }
                 await unipileChats.reactToPost(acct.unipile_account_id, recent[0].id, reactionType);
@@ -651,6 +726,7 @@ async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<
                     data: { messages_today: { increment: 1 } },
                 });
                 await stepAudit.markSent(execId);
+                dispatchResult = 'SENT';
                 break;
             }
             case 'find_email': {
@@ -667,6 +743,7 @@ async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<
                     });
                 }
                 await stepAudit.markSent(execId);
+                dispatchResult = 'SENT';
                 break;
             }
             case 'find_linkedin_url': {
@@ -674,17 +751,13 @@ async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<
                 // this step is "best-effort fill if missing", not "force
                 // re-enrich".
                 if (cand.lead_linkedin_url) {
-                    await stepAudit.markSkipped({
-                        organization_id: cand.organization_id, campaign_id: cand.campaign_id,
-                        campaign_lead_id: cand.campaign_lead_id, sequence_step_id: step.id,
-                        step_number: step.step_number, step_type: step.step_type,
-                        skip_reason: 'lead_already_has_linkedin_url',
-                    });
-                    await stepAudit.markFailed(execId, 'skipped:lead_already_has_linkedin_url');
+                    await stepAudit.markSkippedExisting(execId, 'lead_already_has_linkedin_url');
+                    dispatchResult = 'SKIPPED';
                     break;
                 }
                 if (!cand.lead_id) {
                     await stepAudit.markFailed(execId, 'lead_id_missing_on_candidate');
+                    dispatchResult = 'FAILED';
                     break;
                 }
 
@@ -716,13 +789,8 @@ async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<
                 //   (c) hit - persist linkedin_url onto the Lead row so
                 //       downstream linkedin_* steps see it on their next tick
                 if (result.no_provider_available) {
-                    await stepAudit.markSkipped({
-                        organization_id: cand.organization_id, campaign_id: cand.campaign_id,
-                        campaign_lead_id: cand.campaign_lead_id, sequence_step_id: step.id,
-                        step_number: step.step_number, step_type: step.step_type,
-                        skip_reason: 'no_enrichment_provider_configured',
-                    });
-                    await stepAudit.markFailed(execId, 'skipped:no_enrichment_provider_configured');
+                    await stepAudit.markSkippedExisting(execId, 'no_enrichment_provider_configured');
+                    dispatchResult = 'SKIPPED';
                     break;
                 }
 
@@ -733,29 +801,37 @@ async function dispatchOne(cand: DispatchCandidate, cache: CycleCache): Promise<
                         data: { linkedin_url: foundUrl, last_activity_at: new Date() },
                     });
                     await stepAudit.markSent(execId);
+                    dispatchResult = 'SENT';
                 } else {
-                    await stepAudit.markSkipped({
-                        organization_id: cand.organization_id, campaign_id: cand.campaign_id,
-                        campaign_lead_id: cand.campaign_lead_id, sequence_step_id: step.id,
-                        step_number: step.step_number, step_type: step.step_type,
-                        skip_reason: 'linkedin_url_not_found_by_any_provider',
-                    });
-                    await stepAudit.markFailed(execId, 'skipped:linkedin_url_not_found_by_any_provider');
+                    await stepAudit.markSkippedExisting(execId, 'linkedin_url_not_found_by_any_provider');
+                    dispatchResult = 'SKIPPED';
                 }
                 break;
             }
             default:
                 await stepAudit.markFailed(execId, `Unknown step_type: ${step.step_type}`);
+                dispatchResult = 'FAILED';
         }
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         await stepAudit.markFailed(execId, msg);
-        await advanceLead(cand, step.step_number);
-        return 'FAILED';
+        dispatchResult = 'FAILED';
     }
 
+    // ── Single finalize point — the ONLY place the pointer moves ──
+    if (dispatchResult === 'DEFER') {
+        // Retry the SAME step later: pointer stays put, only next_send_at
+        // is pushed out. Guarded write (status='active') so a lead that
+        // replied/paused since selection is not resurrected.
+        await rescheduleSameStep(prisma, cand.campaign_lead_id, new Date(Date.now() + DEFER_RETRY_MS));
+        return 'DEFER';
+    }
+    // SENT / SKIPPED / FAILED all advance: SKIPPED = skip-and-continue
+    // (unified policy), FAILED advances so a hard failure doesn't trap the
+    // lead forever. computeProgression completes the lead automatically if
+    // this was the last step.
     await advanceLead(cand, step.step_number);
-    return 'SENT';
+    return dispatchResult;
 }
 
 async function buildPreconditionContext(
@@ -848,7 +924,7 @@ async function tick(): Promise<void> {
         if (candidates.length === 0) return;
 
         const cache = makeCycleCache();
-        const results = { SENT: 0, SKIPPED: 0, FAILED: 0, BRANCHED: 0 };
+        const results: Record<DispatchResult, number> = { SENT: 0, SKIPPED: 0, FAILED: 0, BRANCHED: 0, DEFER: 0 };
         for (const c of candidates) {
             try {
                 const r = await dispatchOne(c, cache);

@@ -17,6 +17,7 @@ import {
     progressionWriteData,
     writeProgression,
     completeLead,
+    rescheduleSameStep,
     ProgressionState,
 } from '../src/services/sequencer/leadProgression';
 
@@ -208,5 +209,20 @@ describe('writeProgression / completeLead are guarded', () => {
         expect(n).toBe(1);
         expect(c.calls[0].where).toEqual({ id: 'lead-7', status: 'active' });
         expect(c.calls[0].data).toEqual({ status: 'completed', next_send_at: null });
+    });
+
+    it('rescheduleSameStep (DEFER) pushes only next_send_at, guarded, pointer untouched', async () => {
+        // DEFER must NOT move current_step or change status — it only
+        // delays the retry of the SAME step. Same status='active' guard so
+        // a replied/paused lead is never resurrected by a deferral.
+        const c = mockClient();
+        const when = new Date('2026-05-16T18:00:00.000Z');
+        const n = await rescheduleSameStep(c, 'lead-5', when);
+        expect(n).toBe(1);
+        expect(c.calls[0].where).toEqual({ id: 'lead-5', status: 'active' });
+        expect(c.calls[0].data).toEqual({ next_send_at: when });
+        // The pointer/status fields must be ABSENT from the write payload.
+        expect(c.calls[0].data.current_step).toBeUndefined();
+        expect(c.calls[0].data.status).toBeUndefined();
     });
 });

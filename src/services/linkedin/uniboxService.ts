@@ -276,7 +276,7 @@ export async function sendReply(
     }
 
     // Rate-limit precheck. The dispatcher uses the same counter so this
-    // mirrors the capacity logic in linkedinDispatcherWorker.pickSender.
+    // mirrors the capacity logic in linkedinDispatcherWorker.selectSender.
     if (acct.messages_today >= acct.max_messages_per_day) {
         throw new SendReplyError(
             'cap_reached',
