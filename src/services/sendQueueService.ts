@@ -1347,6 +1347,39 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                 continue;
             }
 
+            // ── IDEMPOTENCY: already-delivered guard ──
+            // SendEvent(campaign_lead_id, step_number) is data-layer-unique.
+            // If a row already exists for this (lead, step) the step was
+            // already delivered — a stalled-job re-run, or any two-writer
+            // interleaving. Do NOT physically re-send. Advance the lead past
+            // the delivered step (guarded on status='active') so it doesn't
+            // loop, then move on. The unique constraint on the create below
+            // is the race backstop if two workers clear this check at once.
+            const priorSend = await prisma.sendEvent.findFirst({
+                where: { campaign_lead_id: email.leadId, step_number: email.stepNumber },
+                select: { id: true },
+            });
+            if (priorSend) {
+                logger.warn(`[${LOG_TAG}] Step ${email.stepNumber} already delivered to lead ${email.leadId} — skipping resend, advancing`, {
+                    campaignId, mailbox: account.email,
+                });
+                await prisma.campaignLead.updateMany({
+                    where: { id: email.leadId, status: 'active' },
+                    data: {
+                        current_step: email.nextStepNumber,
+                        last_sent_at: new Date(),
+                        next_send_at: email.isLastStep ? null : calculateNextSendAt({
+                            delay_days: email.nextStepDelayDays,
+                            delay_hours: email.nextStepDelayHours,
+                        }),
+                        status: email.isLastStep ? 'completed' : 'active',
+                    },
+                }).catch((err) => {
+                    logger.warn(`[${LOG_TAG}] Post-dedupe advance failed for ${email.leadId}: ${err?.message}`);
+                });
+                continue;
+            }
+
             const result: SendResult = await sendEmail(account, email.leadEmail, email.subject, email.bodyHtml, {
                 unsubscribeUrl: email.unsubscribeUrl || null,
             });
@@ -1371,6 +1404,15 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                         mailbox_id: mailboxId,
                         campaign_id: campaignId,
                         recipient_email: email.leadEmail,
+                        // Idempotency identity — the @@unique([campaign_lead_id,
+                        // step_number]) makes this create the data-layer
+                        // backstop: a duplicate delivery throws P2002, the
+                        // whole transaction rolls back (no double counters, no
+                        // double progression), and the per-email catch logs +
+                        // continues. The pre-send guard above catches the
+                        // common case before the SMTP send.
+                        campaign_lead_id: email.leadId,
+                        step_number: email.stepNumber,
                         sent_at: new Date(),
                     },
                 }),
