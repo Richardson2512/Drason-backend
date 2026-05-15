@@ -38,6 +38,7 @@ import { SlackAlertService } from './SlackAlertService';
 import * as webhookBus from './webhookEventBus';
 import { applyTracking } from './trackingService';
 import { resolveSpintax } from '../utils/spintax';
+import { isLinkedInDispatcherStep } from './sequencer/stepTypeRegistry';
 import { MONITORING_THRESHOLDS } from '../types';
 
 const { ROLLING_WINDOW_SIZE } = MONITORING_THRESHOLDS;
@@ -77,6 +78,11 @@ interface StepVariantRow {
 interface SequenceStepWithVariants {
     id: string;
     step_number: number;
+    /** Channel/owner of this step. Email dispatcher owns 'email' (+ the
+     *  'end' terminal); the LinkedIn worker owns every linkedin_* and the
+     *  find_* utility steps. Present on every SequenceStep row (schema
+     *  default 'email'); typed here so the ownership guard isn't a cast. */
+    step_type: string;
     delay_days: number;
     delay_hours: number;
     subject: string;
@@ -1024,6 +1030,40 @@ async function dispatch(): Promise<void> {
                         });
                         continue;
                     }
+
+                    // ── STEP-OWNERSHIP CONTRACT (stepTypeRegistry) ──
+                    // The email dispatcher owns ONLY `email` steps + the `end`
+                    // terminal. linkedin_* and find_* steps belong to the
+                    // LinkedIn worker. Without this guard the email dispatcher
+                    // would build an email out of a LinkedIn/utility step
+                    // (whose subject/body_html are "" — their content lives in
+                    // step_config), send a blank message, AND advance
+                    // current_step — while the LinkedIn worker independently
+                    // delivered the real touch. Double action + corrupted
+                    // ordering on every mixed sequence. We mirror the LinkedIn
+                    // worker's isLinkedInDispatcherStep() filter using the same
+                    // single source of truth so the two can never drift.
+                    if (step.step_type === 'end') {
+                        // Terminal node. Guard on status='active' so we don't
+                        // overwrite a lead that replied/unsubscribed/paused
+                        // between selection and here.
+                        await prisma.campaignLead.updateMany({
+                            where: { id: lead.id, status: 'active' },
+                            data: { status: 'completed', next_send_at: null },
+                        });
+                        continue;
+                    }
+                    if (isLinkedInDispatcherStep(step.step_type)) {
+                        // Not ours. Leave the lead completely untouched —
+                        // status, current_step and next_send_at unchanged — so
+                        // the LinkedIn worker's tick (same status='active',
+                        // current_step, next_send_at<=now predicate) claims and
+                        // advances it. Any state mutation here would either
+                        // hide the lead from the LinkedIn worker or desync the
+                        // step pointer.
+                        continue;
+                    }
+
                     // The step we resolved may have a different step_number than the
                     // candidate (when we followed a branch). Use the resolved step's
                     // number going forward so current_step gets the actual delivered
