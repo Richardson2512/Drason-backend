@@ -8,6 +8,8 @@
 import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import * as emailValidationService from './emailValidationService';
+import { validationPersistData } from './emailValidationService';
+import { classifyLeadHealth } from './leadHealthService';
 import * as espClassifierService from './espClassifierService';
 import * as entityStateService from './entityStateService';
 import * as auditLogService from './auditLogService';
@@ -97,6 +99,36 @@ export async function processBatch(organizationId: string, batchId: string): Pro
             orderBy: { created_at: 'asc' },
         });
 
+        // F8: BATCHED DEDUP. Replace the old per-lead two-findFirst pattern
+        // (2 DB queries per lead = ~10k queries on a 5k upload) with a
+        // single pre-load. crossBatch is immutable for this batch run;
+        // inBatch grows as we process rows in this batch so an earlier
+        // row's status is visible when a later identical email is reached.
+        const batchEmails = Array.from(new Set(batchLeads.map(b => b.email)));
+        const crossBatchRows = batchEmails.length > 0
+            ? await prisma.validationBatchLead.findMany({
+                where: {
+                    batch_id: { not: batchId },
+                    email: { in: batchEmails },
+                    batch: { organization_id: organizationId },
+                    validation_status: { notIn: ['pending', 'skipped'] },
+                },
+                select: { email: true, validation_status: true, routed_to_campaign_id: true, created_at: true },
+                orderBy: { created_at: 'desc' },
+            })
+            : [];
+        const crossBatchByEmail = new Map<string, { validation_status: string; routed_to_campaign_id: string | null }>();
+        for (const r of crossBatchRows) {
+            // orderBy desc + first-wins keeps the most recent prior record.
+            if (!crossBatchByEmail.has(r.email)) {
+                crossBatchByEmail.set(r.email, {
+                    validation_status: r.validation_status,
+                    routed_to_campaign_id: r.routed_to_campaign_id,
+                });
+            }
+        }
+        const inBatchProcessed = new Set<string>();
+
         let validCount = 0;
         let invalidCount = 0;
         let riskyCount = 0;
@@ -117,39 +149,22 @@ export async function processBatch(organizationId: string, batchId: string): Pro
 
             for (const batchLead of chunk) {
                 try {
-                    // --- Duplicate check ---
-                    // Check for duplicates within same batch (earlier row)
-                    const batchDuplicate = await prisma.validationBatchLead.findFirst({
-                        where: {
-                            batch_id: batchId,
-                            email: batchLead.email,
-                            id: { not: batchLead.id },
-                            validation_status: { notIn: ['pending', 'skipped'] },
-                        }
-                    });
-
-                    if (batchDuplicate) {
+                    // --- Duplicate check (F8: in-memory, no DB query) ---
+                    // In-batch: any earlier non-pending/non-skipped row with
+                    // the same email was already processed in this run.
+                    if (inBatchProcessed.has(batchLead.email)) {
                         await prisma.validationBatchLead.update({
                             where: { id: batchLead.id },
                             data: { validation_status: 'duplicate', error_message: 'Duplicate within this upload' }
                         });
+                        inBatchProcessed.add(batchLead.email);
                         duplicateCount++;
                         processedCount++;
                         continue;
                     }
 
-                    // Check for cross-batch duplicate (same email in a previous batch)
-                    const previousBatchLead = await prisma.validationBatchLead.findFirst({
-                        where: {
-                            batch_id: { not: batchId },
-                            email: batchLead.email,
-                            batch: { organization_id: organizationId },
-                            validation_status: { notIn: ['pending', 'skipped'] },
-                        },
-                        select: { batch_id: true, validation_status: true, routed_to_campaign_id: true },
-                        orderBy: { created_at: 'desc' },
-                    });
-
+                    // Cross-batch: precomputed once above.
+                    const previousBatchLead = crossBatchByEmail.get(batchLead.email);
                     if (previousBatchLead) {
                         const msg = previousBatchLead.routed_to_campaign_id
                             ? `Previously uploaded and routed to campaign`
@@ -158,6 +173,7 @@ export async function processBatch(organizationId: string, batchId: string): Pro
                             where: { id: batchLead.id },
                             data: { validation_status: 'duplicate', error_message: msg }
                         });
+                        inBatchProcessed.add(batchLead.email);
                         duplicateCount++;
                         processedCount++;
                         continue;
@@ -209,11 +225,16 @@ export async function processBatch(organizationId: string, batchId: string): Pro
                     }
 
                     // --- Update batch lead ---
+                    // Persist validation_source here so routeLeads + push-
+                    // to-contacts attribute the result truthfully later
+                    // ('internal' vs 'millionverifier') instead of
+                    // fabricating 'internal' at routing time (F3 root).
                     await prisma.validationBatchLead.update({
                         where: { id: batchLead.id },
                         data: {
                             validation_status: validationResult.status,
                             validation_score: validationResult.score,
+                            validation_source: validationResult.source,
                             rejection_reason: rejectionReason,
                             is_disposable: validationResult.is_disposable ?? null,
                             is_catch_all: validationResult.is_catch_all ?? null,
@@ -232,6 +253,7 @@ export async function processBatch(organizationId: string, batchId: string): Pro
                     if (validationResult.status === 'valid') validCount++;
                     else if (validationResult.status === 'invalid') invalidCount++;
                     else if (validationResult.status === 'risky') riskyCount++;
+                    inBatchProcessed.add(batchLead.email);
 
                 } catch (err: any) {
                     logger.error(`[${logTag}] Failed to validate lead ${batchLead.email}`, err);
@@ -242,6 +264,7 @@ export async function processBatch(organizationId: string, batchId: string): Pro
                             error_message: err.message || 'Validation failed',
                         }
                     });
+                    inBatchProcessed.add(batchLead.email);
                     invalidCount++;
                 }
 
@@ -400,7 +423,12 @@ export async function routeLeads(
         where: {
             id: { in: leadIds },
             batch_id: batchId,
-            validation_status: { in: ['valid', 'risky'] },
+            // F6: 'unknown' is now routable along with valid/risky -
+            // per the ratified policy only 'invalid' blocks. The
+            // enroll-guard refuses 'invalid' too, so an invalid that
+            // somehow slipped past this filter is still safely rejected
+            // downstream.
+            validation_status: { in: ['valid', 'risky', 'unknown'] },
             routed_to_campaign_id: null, // not already routed
         }
     });
@@ -411,6 +439,30 @@ export async function routeLeads(
 
     for (const batchLead of batchLeads) {
         try {
+            // Real health classification (F4 root). The old code hardcoded
+            // health_classification='green' + health_score_calc=80 here,
+            // bypassing the validation->health gate that ingestion
+            // applies. classifyLeadHealth seeded with the batch lead's
+            // actual validation context now produces the same shape on
+            // both entry paths.
+            const healthResult = await classifyLeadHealth(batchLead.email, {
+                validationScore: batchLead.validation_score ?? 50,
+                isDisposable: batchLead.is_disposable ?? false,
+                isCatchAll: batchLead.is_catch_all ?? false,
+            });
+
+            // Truthful source attribution (F3 root). processBatch persisted
+            // validation_source on the batch row at engine time; carry it
+            // through unchanged instead of fabricating 'internal' here.
+            // Legacy batch rows (pre-migration) fall back to 'internal'.
+            const persist = validationPersistData({
+                status: batchLead.validation_status,
+                score: batchLead.validation_score ?? 0,
+                source: batchLead.validation_source || 'internal',
+                is_catch_all: batchLead.is_catch_all,
+                is_disposable: batchLead.is_disposable,
+            });
+
             // Upsert into Lead table with validation results already computed
             const lead = await prisma.lead.upsert({
                 where: {
@@ -423,11 +475,8 @@ export async function routeLeads(
                     persona: batchLead.persona || 'General',
                     lead_score: batchLead.lead_score ?? 50,
                     source: batch.source,
-                    validation_status: batchLead.validation_status,
-                    validation_score: batchLead.validation_score,
-                    validation_source: 'internal',
-                    validated_at: new Date(),
                     assigned_campaign_id: campaignId,
+                    ...persist,
                 },
                 create: {
                     email: batchLead.email,
@@ -436,15 +485,12 @@ export async function routeLeads(
                     source: batch.source,
                     status: 'held',
                     health_state: 'healthy',
-                    health_classification: 'green',
-                    health_score_calc: 80,
-                    health_checks: {},
-                    validation_status: batchLead.validation_status,
-                    validation_score: batchLead.validation_score,
-                    validation_source: 'internal',
-                    validated_at: new Date(),
+                    health_classification: healthResult.classification,
+                    health_score_calc: healthResult.score,
+                    health_checks: healthResult.checks as any,
                     assigned_campaign_id: campaignId,
                     organization_id: organizationId,
+                    ...persist,
                 }
             });
 
@@ -539,8 +585,15 @@ export async function exportCleanCSV(
     });
 
     const headers = ['email', 'first_name', 'last_name', 'company', 'persona', 'lead_score', 'validation_status', 'validation_score', 'esp_bucket'];
+    // Neutralize spreadsheet formula injection (CWE-1236, F7). Lead
+    // names / company / etc. are attacker-influenced via upload; a value
+    // starting with = + - @ (or TAB/CR) runs as a formula when the CSV
+    // is opened in Excel / Sheets. Prefix a single quote to force text.
+    // Same chokepoint pattern as the cold-call CSV fix.
+    const neutralizeFormula = (s: string): string =>
+        /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
     const escapeCSV = (val: string | number | null | undefined): string => {
-        const str = String(val ?? '');
+        const str = neutralizeFormula(String(val ?? ''));
         return str.includes(',') || str.includes('"') || str.includes('\n')
             ? `"${str.replace(/"/g, '""')}"`
             : str;

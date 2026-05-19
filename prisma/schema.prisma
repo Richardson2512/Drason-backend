@@ -1604,14 +1604,24 @@ model ValidationBatchLead {
   company               String?
   persona               String?
   lead_score            Int?
-  validation_status     String    @default("pending") // pending, valid, risky, invalid, duplicate
+  validation_status     String    @default("pending") // pending, valid, risky, invalid, unknown, duplicate, skipped
   validation_score      Int?
+  // Source recorded at validation time so routeLeads / push-to-contacts
+  // can attribute the result truthfully ('internal' vs 'millionverifier')
+  // instead of fabricating 'internal' on every routed lead (F3 root).
+  // Nullable for legacy rows written before this column existed.
+  validation_source     String?
   rejection_reason      String? // disposable, no_mx, syntax, role_based, catch_all, smtp_fail, api_invalid
   is_disposable         Boolean?
   is_catch_all          Boolean?
   esp_bucket            String? // gmail, microsoft, yahoo, other
   routed_to_campaign_id String?
   routed_at             DateTime?
+  // Set when a validated lead has been pushed to the Contacts page via
+  // the "Push to Contacts" action (no campaign required). Lets the UI
+  // distinguish leads that became Lead rows but weren't enrolled in any
+  // campaign vs leads still living only in this batch.
+  pushed_to_contacts_at DateTime?
   error_message         String?
   created_at            DateTime  @default(now())
 

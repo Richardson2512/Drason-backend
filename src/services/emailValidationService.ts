@@ -1,16 +1,21 @@
 /**
  * Email Validation Service
  *
- * SINGLE WRITER for all validation fields on the Lead model.
- * No other service should write to: validation_status, validation_score,
- * validation_source, validated_at, is_catch_all, is_disposable.
+ * Engine: validateLeadEmail runs the syntax / DNS / domain-insight /
+ * MillionVerifier pipeline and returns a ValidationResult.
  *
- * Orchestrates:
- * 1. Internal checks (syntax, MX, disposable domain, catch-all via DNS)
- * 2. MillionVerifier API (conditional fallback for risky leads)
- * 3. DomainInsight caching (avoids redundant DNS/API lookups)
+ * Persistence of the six Lead.validation_* fields (status / score /
+ * source / validated_at / is_catch_all / is_disposable) flows through a
+ * SINGLE writer here: validationPersistData() returns the canonical data
+ * block, and every caller (ingestion, routeLeads, contactController re-
+ * validate, push-to-contacts) embeds that block - so source/timestamp/
+ * shape are identical at every entry path and can never drift again. The
+ * old "this service is the sole writer" claim was false (routeLeads and
+ * contactController wrote inline with hardcoded 'internal' / now); the
+ * helper makes it true in practice.
  *
- * The validation_score feeds INTO lead_score via the health gate.
+ * The validation_score feeds INTO lead_score via the health gate
+ * (classifyLeadHealth in leadHealthService).
  */
 
 import dns from 'dns';
@@ -160,6 +165,35 @@ function isValidSyntax(email: string): boolean {
     if (email.includes('..') || email.startsWith('.') || email.endsWith('.')) return false;
 
     return true;
+}
+
+// ============================================================================
+// SINGLE-WRITER PERSISTENCE HELPER (F3 root)
+// ============================================================================
+
+/**
+ * The canonical data block for the six Lead.validation_* fields. Every
+ * persistence call site (ingestion, routeLeads, contactController
+ * re-validate, push-to-contacts) embeds THIS so the shape - and crucially
+ * the source attribution + validated_at timestamp - cannot drift between
+ * paths. Was previously hand-written 3+ ways (routeLeads hardcoded
+ * source='internal' + validated_at=now even on MillionVerifier results).
+ */
+export function validationPersistData(result: {
+    status: string;
+    score: number;
+    source: string;
+    is_catch_all?: boolean | null;
+    is_disposable?: boolean | null;
+}) {
+    return {
+        validation_status: result.status,
+        validation_score: result.score,
+        validation_source: result.source,
+        validated_at: new Date(),
+        is_catch_all: result.is_catch_all ?? null,
+        is_disposable: result.is_disposable ?? null,
+    };
 }
 
 // ============================================================================

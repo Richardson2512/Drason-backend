@@ -15,7 +15,7 @@ import { getOrgId } from '../middleware/orgContext';
 import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { classifyLeadHealth } from '../services/leadHealthService';
-import { validateLeadEmail, suppressCampaignLeadsForInvalidEmail } from '../services/emailValidationService';
+import { validateLeadEmail, suppressCampaignLeadsForInvalidEmail, validationPersistData } from '../services/emailValidationService';
 import { getValidationCreditState } from '../services/validationCreditService';
 import * as espClassifierService from '../services/espClassifierService';
 import { TIER_LIMITS } from '../services/polarClient';
@@ -889,18 +889,13 @@ export const validateContacts = async (req: Request, res: Response): Promise<Res
                     else rejectionReason = 'low_score';
                 }
 
-                // Persist validation fields on the Lead (ValidationAttempt is created
-                // inside validateLeadEmail - that's what drives credit counting).
+                // Persist validation fields on the Lead via the SHARED
+                // writer (F3 root) - same shape and source attribution
+                // every other path uses. ValidationAttempt is created
+                // inside validateLeadEmail (single ledger - F2).
                 await prisma.lead.update({
                     where: { id: lead.id },
-                    data: {
-                        validation_status: result.status,
-                        validation_score: result.score,
-                        validation_source: result.source,
-                        validated_at: new Date(),
-                        is_catch_all: result.is_catch_all ?? null,
-                        is_disposable: result.is_disposable ?? null,
-                    },
+                    data: validationPersistData(result),
                 });
 
                 // Post-enrollment suppression (F1 / D2): this is the
@@ -1080,16 +1075,11 @@ export const validateLeadsPreview = async (req: Request, res: Response): Promise
                     select: { id: true },
                 });
                 if (existing) {
+                    // Shared writer (F3 root) - identical shape + source
+                    // attribution across every entry path.
                     await prisma.lead.update({
                         where: { id: existing.id },
-                        data: {
-                            validation_status: v.status,
-                            validation_score: v.score,
-                            validation_source: v.source,
-                            validated_at: new Date(),
-                            is_catch_all: v.is_catch_all ?? null,
-                            is_disposable: v.is_disposable ?? null,
-                        },
+                        data: validationPersistData(v),
                     });
                 }
 
@@ -1394,9 +1384,16 @@ export const exportContacts = async (req: Request, res: Response): Promise<Respo
             l.created_at.toISOString(),
         ]);
 
+        // Neutralize spreadsheet formula injection (CWE-1236, F7): a cell
+        // beginning with = + - @ (or TAB/CR) executes as a formula when
+        // the CSV is opened in Excel / Sheets. Lead names / company /
+        // title are attacker-influenced via upload. Prefix a single quote
+        // to force text. Same chokepoint pattern as the cold-call CSV fix.
+        const neutralizeFormula = (s: string): string =>
+            /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
         const csv = [
             headers.join(','),
-            ...rows.map((r) => r.map((v) => `"${v.replace(/"/g, '""')}"`).join(',')),
+            ...rows.map((r) => r.map((v) => `"${neutralizeFormula(v).replace(/"/g, '""')}"`).join(',')),
         ].join('\n');
 
         res.setHeader('Content-Type', 'text/csv');
