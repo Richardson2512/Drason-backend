@@ -100,6 +100,43 @@ export const exportMyData = async (req: Request, res: Response): Promise<void> =
             }),
         ]);
 
+        // AI-derived data (GDPR Art. 15 = "everything we hold", which
+        // includes data we INFERRED, not just data the user typed in). The
+        // original export predated the AI features and silently omitted
+        // these; full content is exported per the right-to-know.
+        //   - business_profile: what our AI concluded about the customer's
+        //     own company from the URLs they pasted.
+        //   - lead_ai_profiles: per-recipient company/pain-point inferences.
+        //   - signal_icebreakers: AI-written openers (can quote a person's
+        //     own post/comment - clearly personal data).
+        const [businessProfile, leadAiProfiles, signalIcebreakers] = await Promise.all([
+            prisma.businessProfile.findUnique({
+                where: { organization_id: orgId },
+                select: {
+                    source_url: true, source_urls: true, profile_json: true,
+                    model_used: true, scraped_chars: true,
+                    extracted_at: true, updated_at: true,
+                },
+            }),
+            prisma.leadProfile.findMany({
+                where: { organization_id: orgId },
+                select: {
+                    lead_id: true, source_url: true, source_kind: true,
+                    status: true, model_used: true, extracted_at: true,
+                    profile_json: true,
+                    lead: { select: { email: true } },
+                },
+            }),
+            prisma.lead.findMany({
+                where: { organization_id: orgId, signal_icebreaker: { not: null } },
+                select: {
+                    email: true,
+                    signal_icebreaker: true,
+                    signal_icebreaker_generated_at: true,
+                },
+            }),
+        ]);
+
         res.json({
             generated_at: new Date().toISOString(),
             user,
@@ -115,9 +152,15 @@ export const exportMyData = async (req: Request, res: Response): Promise<void> =
                 leads: leadsCount,
                 campaigns: campaignsCount,
             },
+            ai_generated_data: {
+                business_profile: businessProfile,
+                lead_ai_profiles: leadAiProfiles,
+                signal_icebreakers: signalIcebreakers,
+            },
             note:
                 'Encrypted secrets (OAuth tokens, SMTP credentials, import keys) are not included for security. ' +
-                'Email bodies of sent messages are not retained by Superkabe; reply messages are stored only until the customer deletes them.',
+                'Email bodies of sent messages are not retained by Superkabe; reply messages are stored only until the customer deletes them. ' +
+                'AI-inferred data (business profile, per-lead AI profiles, signal icebreakers) is included in full under ai_generated_data.',
         });
 
         // Security-audit confirmation email - fire-and-forget. Single email

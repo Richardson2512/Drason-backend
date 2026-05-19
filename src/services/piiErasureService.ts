@@ -15,9 +15,20 @@
  *
  * Tables we touch and how:
  *
- *   Lead              - scrub email/name/phone/linkedin/persona/title/company.
- *                       Keep row + flip status='erased' so re-imports of the same
- *                       email recreate as a fresh Lead and don't re-collide.
+ *   Lead              - scrub email/name/phone/linkedin/persona/title/company
+ *                       AND the AI signal_icebreaker fields (the generated
+ *                       opener can quote the person's own post/comment, so it
+ *                       is their personal data and MUST be erased here, not
+ *                       only on full-org cascade). Keep row + flip
+ *                       status='erased' so re-imports of the same email
+ *                       recreate as a fresh Lead and don't re-collide.
+ *   LeadProfile       - delete. AI-inferred profile of the recipient's
+ *                       company/pain-points. No audit value once the Lead is
+ *                       erased. The Lead row is KEPT-and-scrubbed (not
+ *                       deleted) so the onDelete:Cascade on LeadProfile.lead
+ *                       never fires - we must delete it explicitly here.
+ *   EnrichmentAttempt - delete (per-lead enrichment provider log; no audit
+ *                       value once the Lead is erased).
  *   CampaignLead      - scrub email/name/company/title; status='erased'.
  *   BounceEvent       - scrub email_address.
  *   SendEvent         - scrub recipient_email.
@@ -29,6 +40,11 @@
  *   - AuditLog (compliance retention requirement - 1 year)
  *   - Consent (audit trail integrity - snapshot fields preserve identity)
  *   - SubscriptionEvent / ApiCallLog (financial/operational records)
+ *
+ * Org-wide AI artifacts (BusinessProfile, LinkedInProfile + its auto-tag,
+ * AgentRun, EngagementEvent, AgentRunIcpMatch) are NOT per-recipient and are
+ * erased by the onDelete:Cascade off Organization in eraseOrganization -
+ * verified against schema.prisma; do not duplicate that here.
  */
 
 import { prisma } from '../prisma';
@@ -43,6 +59,14 @@ export interface LeadErasureResult {
     sendEventsScrubbed: number;
     validationAttemptsDeleted: number;
     emailMessagesScrubbed: number;
+    /** AI-derived personal data (added when icebreaker/LeadProfile features
+     *  shipped — the original erasure list predated them). These fields are
+     *  the typed contract that this function MUST cover them; a regression
+     *  that drops the deletion shows up as a permanently-0 count in the
+     *  AuditLog erasure summary. */
+    icebreakerScrubbed: boolean;
+    leadProfilesDeleted: number;
+    enrichmentAttemptsDeleted: number;
 }
 
 /**
@@ -65,6 +89,9 @@ export async function eraseLeadPII(
         sendEventsScrubbed: 0,
         validationAttemptsDeleted: 0,
         emailMessagesScrubbed: 0,
+        icebreakerScrubbed: false,
+        leadProfilesDeleted: 0,
+        enrichmentAttemptsDeleted: 0,
     };
 
     // Find Lead row (org-scoped) so we have its id for child-table cleanup.
@@ -95,14 +122,35 @@ export async function eraseLeadPII(
                 status: 'erased',
                 custom_variables: undefined,           // Json field; reset
                 deleted_at: new Date(),
+                // AI signal-icebreaker is personal data (it can quote the
+                // person's own post/comment). Null it here, not only on
+                // org-cascade - this path keeps the Lead row alive.
+                signal_icebreaker: null,
+                signal_icebreaker_generated_at: null,
+                signal_icebreaker_event_id: null,
+                signal_icebreaker_skip_reason: null,
             } as never,
         });
         result.leadFound = true;
+        result.icebreakerScrubbed = true;
         // ValidationAttempt - referenced by lead_id, no audit value once lead is gone.
         const va = await prisma.validationAttempt.deleteMany({
             where: { lead_id: lead.id },
         });
         result.validationAttemptsDeleted = va.count;
+        // LeadProfile - AI-inferred profile of the recipient. The Lead row
+        // is kept-and-scrubbed (not deleted) so LeadProfile's
+        // onDelete:Cascade never fires; delete it explicitly. Idempotent.
+        const lp = await prisma.leadProfile.deleteMany({
+            where: { lead_id: lead.id },
+        });
+        result.leadProfilesDeleted = lp.count;
+        // EnrichmentAttempt - per-lead provider log, no audit value once the
+        // Lead is erased. org-scoped for tenant safety.
+        const ea = await prisma.enrichmentAttempt.deleteMany({
+            where: { lead_id: lead.id, organization_id: organizationId },
+        });
+        result.enrichmentAttemptsDeleted = ea.count;
     }
 
     // 2. Scrub CampaignLead rows for this email across the entire org. Even if
@@ -176,6 +224,16 @@ export async function eraseLeadPII(
  * AuditLog rows survive - those are required compliance evidence and are
  * already org-scoped so they don't carry recipient PII directly.
  *
+ * AI-data cascade invariant (verified against schema.prisma 2026-05-16):
+ * the Organization hard-delete transitively removes every AI artifact -
+ * BusinessProfile (org Cascade), LeadProfile (via Lead Cascade), Lead
+ * signal_icebreaker (Lead column), EngagementEvent / EnrichmentAttempt /
+ * AgentRun / LinkedInProfile (org Cascade), AgentRunIcpMatch (via AgentRun
+ * Cascade). NONE is onDelete:Restrict, so org.delete() cannot be silently
+ * blocked by an AI table. If a future migration changes any of those
+ * relations away from Cascade, this guarantee breaks and that migration
+ * must add an explicit pre-delete here.
+ *
  * Returns a counts summary for the AuditLog row that signals completion.
  */
 export interface OrganizationErasureResult {
@@ -185,6 +243,9 @@ export interface OrganizationErasureResult {
     sendEventsScrubbed: number;
     validationAttemptsDeleted: number;
     emailMessagesScrubbed: number;
+    icebreakersScrubbed: number;
+    leadProfilesDeleted: number;
+    enrichmentAttemptsDeleted: number;
     organizationDeleted: boolean;
 }
 
@@ -200,6 +261,9 @@ export async function eraseOrganization(
         sendEventsScrubbed: 0,
         validationAttemptsDeleted: 0,
         emailMessagesScrubbed: 0,
+        icebreakersScrubbed: 0,
+        leadProfilesDeleted: 0,
+        enrichmentAttemptsDeleted: 0,
         organizationDeleted: false,
     };
 
@@ -229,6 +293,9 @@ export async function eraseOrganization(
             totals.sendEventsScrubbed += r.sendEventsScrubbed;
             totals.validationAttemptsDeleted += r.validationAttemptsDeleted;
             totals.emailMessagesScrubbed += r.emailMessagesScrubbed;
+            if (r.icebreakerScrubbed) totals.icebreakersScrubbed++;
+            totals.leadProfilesDeleted += r.leadProfilesDeleted;
+            totals.enrichmentAttemptsDeleted += r.enrichmentAttemptsDeleted;
         }
         lastId = batch[batch.length - 1]!.id;
         if (batch.length < PAGE) break;
