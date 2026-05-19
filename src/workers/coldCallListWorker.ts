@@ -3,10 +3,12 @@
  *
  * Runs every hour (matching the existing setInterval pattern used by
  * warmupTrackingWorker / espPerformanceWorker). For each organization, the
- * worker checks: is it currently 06:00 in this org's local timezone AND has
- * a snapshot not yet been created for today's local date? If both, generate
- * the snapshot. Idempotent - re-running for an org that's already snapshotted
- * today is a no-op (handled inside generateDailySnapshot).
+ * worker checks: is it AT OR PAST 06:00 in this org's local timezone AND
+ * has a snapshot not yet been created for today's local date? If both,
+ * generate the snapshot. ">= 06:00" (not "== 06:00") so a delayed or
+ * missed tick still catches the day. Idempotent - re-running for an org
+ * that's already snapshotted today is a no-op (handled inside
+ * generateDailySnapshot + the unique (org, snapshot_date) index).
  *
  * One worker, one interval, all orgs. Same shape as scheduleWarmupTracking.
  */
@@ -42,7 +44,16 @@ export async function runColdCallListTick(): Promise<{
         try {
             const tz = await getWorkspaceTimezone(org.id);
             const localHour = workspaceLocalHour(now, tz);
-            if (localHour !== TARGET_HOUR) {
+            // ">= TARGET_HOUR", not "=== TARGET_HOUR". The old equality gate
+            // meant a single delayed/missed tick (long org loop, timer
+            // drift, a redeploy spanning the local 06:00 hour) skipped that
+            // org's list for the WHOLE day. With ">=", any later tick that
+            // day still generates it. Dedupe is fully covered: the
+            // per-day existing-row check below + the same check inside
+            // generateDailySnapshot + the unique (org, snapshot_date)
+            // index. Before 06:00 we still wait (correct: the list
+            // represents the morning's accumulated intent).
+            if (localHour < TARGET_HOUR) {
                 skipped++;
                 continue;
             }

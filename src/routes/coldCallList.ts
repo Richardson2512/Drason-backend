@@ -8,6 +8,7 @@
 
 import { Router } from 'express';
 import * as controller from '../controllers/coldCallListController';
+import { requireAgencyOwner } from '../middleware/requireCapability';
 
 const router = Router();
 
@@ -22,7 +23,11 @@ router.get('/system/csv', controller.downloadSystemListCsv);
 router.post('/custom/generate', controller.generateCustomList);
 router.post('/custom/csv', controller.downloadCustomListCsv);
 
-// Manual trigger - useful for staging seeding. Same org-scoped middleware.
-router.post('/system/trigger', controller.triggerDailyForOrg);
+// Manual trigger - ops/staging seeding only. Operator-gated: the spec
+// forbids regular users regenerating the official daily list, and the
+// controller comment used to CLAIM "admin-only" without enforcing it.
+// requireAgencyOwner is the real control (scoped clients can't reach it
+// even with '*' caps); generateDailySnapshot is idempotent as a backstop.
+router.post('/system/trigger', requireAgencyOwner, controller.triggerDailyForOrg);
 
 export default router;

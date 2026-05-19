@@ -19,6 +19,7 @@
 
 import { prisma } from '../prisma';
 import { logger } from './observabilityService';
+import { isHardSuppressed, isErased } from './leadContactabilityService';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -58,6 +59,15 @@ export const SYSTEM_LIST_RULES: ListRules = {
     maxListSize: 100,
 };
 
+/**
+ * THE single source of truth for custom-list defaults. loadOrCreateSettings
+ * seeds new ColdCallListSettings rows from this, so these values - not the
+ * Prisma column @default and not any frontend constant - are what a fresh
+ * workspace actually gets. The schema @default and the frontend
+ * DEFAULT_SETTINGS must mirror these (kept in sync by review, not code, to
+ * avoid a zero-value high-risk migration just to change an inert column
+ * default that no code path ever reads).
+ */
 export const DEFAULT_CUSTOM_RULES: ListRules = {
     minOpens: 2,
     timeWindowDays: 7,
@@ -121,11 +131,18 @@ interface ClickSignal {
  * re-fetch the same URL across multiple devices/IPs in quick succession; without
  * a cap one prospect's score could dwarf the rest of the list and give SDRs a
  * false-positive "10× clicker" they should call first.
+ *
+ * `asOf` is the clock the recency multipliers are measured against. Live
+ * generation passes nothing (= now). Snapshot HYDRATION passes the
+ * snapshot's generated_at so a hydrated score is byte-identical to the
+ * score computed at generation time (events are immutable; same window +
+ * same asOf + same algorithm = same number). That is what stops the
+ * displayed score from drifting away from the frozen score-desc order.
  */
-export function computeScore(opens: OpenSignal[], clicks: ClickSignal[]): number {
+export function computeScore(opens: OpenSignal[], clicks: ClickSignal[], asOf?: Date): number {
     if (opens.length === 0 && clicks.length === 0) return 0;
 
-    const now = Date.now();
+    const now = (asOf ?? new Date()).getTime();
 
     // ── Opens ──────────────────────────────────────────────────────────────
     const sortedOpens = [...opens].sort((a, b) => a.opened_at.getTime() - b.opened_at.getTime());
@@ -321,10 +338,12 @@ export async function generateProspectList(ctx: ScoringContext): Promise<Prospec
     for (const row of aggregates) {
         if (excludeCampaignLeadIds.has(row.campaign_lead_id)) continue;
 
-        // Suppression - locked on, both lists.
-        if (row.bounced_at !== null) continue;
-        if (row.unsubscribed_at !== null) continue;
-        if (row.status === 'bounced' || row.status === 'unsubscribed') continue;
+        // Suppression - locked on, both lists. ONE shared predicate
+        // (bounced/unsubscribed/erased) so generation, hydration, CSV and
+        // the export boundary cannot diverge. This now also excludes
+        // GDPR-erased leads at generation, which the old inline check
+        // (bounced/unsubscribed only) silently let through.
+        if (isHardSuppressed(row)) continue;
 
         if (rules.requireNoReply && row.replied_at !== null) continue;
 
@@ -457,6 +476,51 @@ export async function generateProspectList(ctx: ScoringContext): Promise<Prospec
             reason,
         };
     });
+}
+
+// ─── Custom-list memo (anti-spam + generate/download consistency) ────────────
+//
+// generateProspectList scans every open + click in window for every active
+// campaign and aggregates in JS. The daily snapshot does that ONCE a day;
+// the custom endpoints are user-triggered and spammable - Generate,
+// Re-generate, and Download CSV each recompute from scratch (and Download
+// previously recomputed independently of Generate, so the persisted
+// snapshot could differ from what the user saw). A short per-(org, rules)
+// memo collapses a burst of identical requests into a single scan and
+// makes Download return exactly the list Generate showed. After the TTL it
+// recomputes with a fresh rotation-exclusion, so dedup stays correct. The
+// daily snapshot path never uses this - it calls generateProspectList
+// directly so it is always fresh.
+interface CustomMemoEntry { at: number; promise: Promise<ProspectRow[]>; }
+const CUSTOM_MEMO_TTL_MS = 45_000;
+const customListMemo = new Map<string, CustomMemoEntry>();
+
+export async function generateCustomListMemoized(
+    organizationId: string,
+    rules: ListRules,
+    excludeCampaignLeadIds: Set<string>,
+): Promise<ProspectRow[]> {
+    // rules is built by settingsToRules with a fixed key order, so
+    // JSON.stringify is a stable cache key.
+    const key = `${organizationId}::${JSON.stringify(rules)}`;
+    const now = Date.now();
+    const hit = customListMemo.get(key);
+    if (hit && now - hit.at < CUSTOM_MEMO_TTL_MS) return hit.promise;
+
+    const promise = generateProspectList({ organizationId, rules, excludeCampaignLeadIds });
+    customListMemo.set(key, { at: now, promise });
+    // Don't cache a rejection for the whole window - drop on failure so the
+    // next attempt re-runs.
+    promise.catch(() => {
+        if (customListMemo.get(key)?.promise === promise) customListMemo.delete(key);
+    });
+    // Opportunistic prune so the map can't grow unbounded across orgs.
+    if (customListMemo.size > 500) {
+        for (const [k, v] of customListMemo) {
+            if (now - v.at >= CUSTOM_MEMO_TTL_MS) customListMemo.delete(k);
+        }
+    }
+    return promise;
 }
 
 // ─── Reason text for UI + CSV ────────────────────────────────────────────────
@@ -732,7 +796,12 @@ export async function hydrateDailySnapshot(organizationId: string, snapshotDate:
     if (ids.length === 0) {
         return { prospects: [], status: snap.status, generatedAt: snap.generated_at, errorMessage: snap.error_message };
     }
-    const prospects = await materializeFromIds(organizationId, ids);
+    // Anchor scoring + the open/click windows to WHEN the snapshot was
+    // generated, not "now". The events are immutable, so re-deriving the
+    // score against the same asOf reproduces the exact generation-time
+    // score - the displayed numbers stay consistent with the frozen
+    // score-desc order in prospect_ids no matter when the page is opened.
+    const prospects = await materializeFromIds(organizationId, ids, snap.generated_at);
     return { prospects, status: snap.status, generatedAt: snap.generated_at, errorMessage: snap.error_message };
 }
 
@@ -740,7 +809,11 @@ export async function hydrateDailySnapshot(organizationId: string, snapshotDate:
  * Re-hydrate ProspectRow[] from a fixed list of campaign_lead_ids. Used by
  * the snapshot reader and CSV download path. Order is preserved per input.
  */
-async function materializeFromIds(organizationId: string, ids: string[]): Promise<ProspectRow[]> {
+async function materializeFromIds(
+    organizationId: string,
+    ids: string[],
+    asOf: Date,
+): Promise<ProspectRow[]> {
     if (ids.length === 0) return [];
 
     // Pull Cold Call List columns the same way generateProspectList does so
@@ -763,25 +836,40 @@ async function materializeFromIds(organizationId: string, ids: string[]): Promis
             campaign: { select: { name: true, organization_id: true } },
         },
     });
-    const validLeads = campaignLeads.filter((cl) => cl.campaign.organization_id === organizationId);
-    const validIdSet = new Set(validLeads.map((cl) => cl.id));
-    const orderedLeads = ids.map((id) => validLeads.find((cl) => cl.id === id)).filter((x): x is NonNullable<typeof x> => !!x);
+    // Org-scope, then drop GDPR-erased rows ENTIRELY (privacy: a tombstoned
+    // lead must never resurface on a call sheet or export, even from an old
+    // immutable snapshot). bounced / unsubscribed rows are intentionally
+    // KEPT here so the UI can still show them flagged for post-snapshot
+    // state-change awareness - they are excluded from the CSV and from the
+    // export boundary instead (isHardSuppressed there). Order is restored
+    // from the frozen score-desc `ids` via an O(1) map (was an O(n^2)
+    // Array.find per id).
+    const byId = new Map(
+        campaignLeads
+            .filter((cl) => cl.campaign.organization_id === organizationId && !isErased(cl))
+            .map((cl) => [cl.id, cl] as const),
+    );
+    const validIdSet = new Set(byId.keys());
+    const orderedLeads = ids
+        .map((id) => byId.get(id))
+        .filter((x): x is NonNullable<typeof x> => !!x);
 
     const campaignIds = Array.from(new Set(orderedLeads.map((cl) => cl.campaign_id)));
     const cappedEmails = Array.from(new Set(orderedLeads.map((cl) => cl.email)));
 
-    // Recompute scores using the SAME window the snapshot used at generation
-    // so a prospect's hydrated score doesn't drift higher than their rank-
-    // time score (e.g. an old open that wouldn't have counted at snapshot
-    // time shouldn't suddenly bump them on view).
-    const opensSince = new Date(Date.now() - SYSTEM_LIST_RULES.timeWindowDays * 86_400_000);
-    const clicksSince = new Date(Date.now() - Math.max(SYSTEM_LIST_RULES.timeWindowDays, 14) * 86_400_000);
+    // Score + windows are anchored to `asOf` (the snapshot's generated_at),
+    // NOT wall-clock now, AND bounded `<= asOf` so only events that existed
+    // at generation time count. Re-deriving against that exact window over
+    // immutable events reproduces the generation-time score precisely, so
+    // displayed numbers never drift out of the frozen score-desc order.
+    const opensSince = new Date(asOf.getTime() - SYSTEM_LIST_RULES.timeWindowDays * 86_400_000);
+    const clicksSince = new Date(asOf.getTime() - Math.max(SYSTEM_LIST_RULES.timeWindowDays, 14) * 86_400_000);
     const [opens, clicks] = await Promise.all([
         prisma.emailOpenEvent.findMany({
             where: {
                 organization_id: organizationId,
                 campaign_lead_id: { in: ids },
-                opened_at: { gte: opensSince },
+                opened_at: { gte: opensSince, lte: asOf },
             },
             select: { campaign_lead_id: true, opened_at: true, ms_since_send: true },
         }),
@@ -789,7 +877,7 @@ async function materializeFromIds(organizationId: string, ids: string[]): Promis
             where: {
                 organization_id: organizationId,
                 campaign_lead_id: { in: ids },
-                clicked_at: { gte: clicksSince },
+                clicked_at: { gte: clicksSince, lte: asOf },
             },
             select: { campaign_lead_id: true, clicked_at: true },
         }),
@@ -843,7 +931,7 @@ async function materializeFromIds(organizationId: string, ids: string[]): Promis
     return orderedLeads.map((cl) => {
         const oList = opensByLead.get(cl.id) ?? [];
         const cList = clicksByLead.get(cl.id) ?? [];
-        const score = computeScore(oList, cList);
+        const score = computeScore(oList, cList, asOf);
         const enrich = enrichByEmail.get(cl.email.toLowerCase());
         const lastOpen = oList.length > 0 ? oList.sort((a, b) => a.opened_at.getTime() - b.opened_at.getTime())[oList.length - 1].opened_at : null;
         const lastClick = cList.length > 0 ? cList.sort((a, b) => a.clicked_at.getTime() - b.clicked_at.getTime())[cList.length - 1].clicked_at : null;

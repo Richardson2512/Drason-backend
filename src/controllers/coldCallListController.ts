@@ -21,13 +21,14 @@ import {
     SYSTEM_LIST_RULES,
     ListRules,
     ProspectRow,
-    generateProspectList,
+    generateCustomListMemoized,
     hydrateDailySnapshot,
     workspaceLocalDate,
     getWorkspaceTimezone,
     generateDailySnapshot,
     buildCustomRotationExclusion,
 } from '../services/coldCallListService';
+import { isProspectRowSuppressed } from '../services/leadContactabilityService';
 
 // ─── Settings ────────────────────────────────────────────────────────────────
 
@@ -196,7 +197,7 @@ export const generateCustomList = async (req: Request, res: Response): Promise<R
         const settings = await loadOrCreateSettings(orgId);
         const rules = settingsToRules(settings);
         const exclude = await buildCustomRotationExclusion(orgId, rules.excludeRecentDays);
-        const prospects = await generateProspectList({ organizationId: orgId, rules, excludeCampaignLeadIds: exclude });
+        const prospects = await generateCustomListMemoized(orgId, rules, exclude);
         return res.json({ success: true, prospects, generated_at: new Date().toISOString() });
     } catch (err) {
         logger.error('[COLD-CALL] generateCustomList failed', err instanceof Error ? err : new Error(String(err)));
@@ -210,7 +211,7 @@ export const downloadCustomListCsv = async (req: Request, res: Response): Promis
         const settings = await loadOrCreateSettings(orgId);
         const rules = settingsToRules(settings);
         const exclude = await buildCustomRotationExclusion(orgId, rules.excludeRecentDays);
-        const prospects = await generateProspectList({ organizationId: orgId, rules, excludeCampaignLeadIds: exclude });
+        const prospects = await generateCustomListMemoized(orgId, rules, exclude);
 
         // Persist a custom snapshot so subsequent runs can dedup the user's
         // prior downloads (separate from system-list snapshots - a prospect
@@ -236,11 +237,14 @@ export const downloadCustomListCsv = async (req: Request, res: Response): Promis
     }
 };
 
-// ─── Manual cron trigger (admin only) ────────────────────────────────────────
+// ─── Manual cron trigger (agency-owner only) ─────────────────────────────────
 //
 // Spec is explicit that users cannot regenerate the system list (it's "today's
-// official list"). This endpoint exists for ops/staging seeding and is gated
-// to admin-only callers; surfaced separately so the regular UI can't reach it.
+// official list"). This endpoint exists for ops/staging seeding. It is gated
+// in routes/coldCallList.ts with requireAgencyOwner (operator-only; a scoped
+// client cannot reach it even with '*' caps). generateDailySnapshot is also
+// idempotent, so even an authorised early call cannot overwrite an existing
+// day's official list - it returns { skipped: true }.
 
 export const triggerDailyForOrg = async (req: Request, res: Response): Promise<Response> => {
     try {
@@ -278,9 +282,21 @@ const CSV_HEADERS = [
     'list_source',
 ];
 
+// Neutralise spreadsheet formula injection (CWE-1236). A cell that begins
+// with = + - @ (or TAB / CR) is executed as a formula by Excel / Google
+// Sheets - e.g. a lead imported with name `=HYPERLINK("http://evil",...)`.
+// Lead name/company/title/reason are attacker-influenced (imported data)
+// and this CSV is opened by SDRs, so we prefix a single quote which forces
+// the cell to be treated as text. Phone numbers like `+15550000000` are
+// also forced to text, which is the correct behaviour anyway (stops Excel
+// mangling them into numbers). Runs on EVERY field via csvEscape.
+function neutralizeFormula(s: string): string {
+    return /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+}
+
 function csvEscape(v: unknown): string {
     if (v === null || v === undefined) return '';
-    let s = String(v);
+    let s = neutralizeFormula(String(v));
     if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
         s = `"${s.replace(/"/g, '""')}"`;
     }
@@ -290,6 +306,12 @@ function csvEscape(v: unknown): string {
 function buildCsv(prospects: ProspectRow[], source: 'system_daily' | 'custom'): string {
     const lines = [CSV_HEADERS.join(',')];
     for (const p of prospects) {
+        // A downloadable call sheet must never contain an unreachable
+        // prospect. The custom path already filtered these at generation;
+        // the system path keeps bounced/unsubscribed visible (flagged) in
+        // the UI for awareness but they must NOT reach the dialer CSV.
+        // Erased rows are already gone (removed during hydration).
+        if (isProspectRowSuppressed(p)) continue;
         lines.push(
             [
                 csvEscape(p.full_name ?? ''),

@@ -25,6 +25,7 @@ import {
 } from '../services/justcall/connectionService';
 import { JustCallClient } from '../services/justcall/client';
 import { JustCallError } from '../services/justcall/types';
+import { isHardSuppressed } from '../services/leadContactabilityService';
 
 const MAX_EXPORT_LEADS = 5_000; // matches Outreach - keeps a single job tractable
 
@@ -239,17 +240,30 @@ export async function startExport(req: Request, res: Response): Promise<Response
         return res.status(400).json({ success: false, error: 'source_kind is required' });
     }
 
-    // Defensive: clamp to CampaignLead rows actually owned by this org.
+    // Defensive: clamp to CampaignLead rows actually owned by this org,
+    // THEN drop hard-suppressed prospects (bounced / unsubscribed / GDPR-
+    // erased) via the SHARED contactability predicate. This is the
+    // authoritative, stale-client-proof gate - even if the cold-call page
+    // was loaded before someone bounced / unsubscribed / was erased and
+    // the SDR exports later, an unreachable person never reaches the dialer.
     const ownedRows = await prisma.campaignLead.findMany({
         where: {
             id: { in: prospect_ids },
             campaign: { organization_id: orgId },
         },
-        select: { id: true },
+        select: { id: true, status: true, bounced_at: true, unsubscribed_at: true, email: true },
     });
-    const ownedIds = ownedRows.map(r => r.id);
-    if (ownedIds.length === 0) {
+    if (ownedRows.length === 0) {
         return res.status(400).json({ success: false, error: 'No matching prospects in this workspace' });
+    }
+    const contactable = ownedRows.filter(r => !isHardSuppressed(r));
+    const ownedIds = contactable.map(r => r.id);
+    const suppressedCount = ownedRows.length - contactable.length;
+    if (ownedIds.length === 0) {
+        return res.status(400).json({
+            success: false,
+            error: `All ${ownedRows.length} selected prospect(s) are unreachable (bounced, unsubscribed, or erased) and were skipped.`,
+        });
     }
 
     const job = await prisma.justCallExportJob.create({
@@ -272,6 +286,7 @@ export async function startExport(req: Request, res: Response): Promise<Response
         orgId,
         jobId: job.id,
         prospectCount: ownedIds.length,
+        suppressedSkipped: suppressedCount,
         campaignId: campaign_id,
         sourceKind: source_kind,
     });

@@ -31,6 +31,7 @@ import {
     listRecentExportJobs,
 } from '../services/outreach/connectionService';
 import { OutreachClient } from '../services/outreach/client';
+import { isHardSuppressed } from '../services/leadContactabilityService';
 
 const FRONTEND_BASE = process.env.FRONTEND_URL || 'http://localhost:3000';
 const MAX_EXPORT_LEADS = 5_000; // hard cap per export to keep jobs tractable
@@ -313,17 +314,29 @@ export async function startExport(req: Request, res: Response): Promise<Response
     }
 
     // Defensive: clamp prospect_ids to CampaignLead rows owned by campaigns
-    // in this org. Bypasses any client-side tampering.
+    // in this org, THEN drop hard-suppressed prospects (bounced /
+    // unsubscribed / GDPR-erased) via the SHARED contactability predicate.
+    // Authoritative, stale-client-proof gate: an unreachable person never
+    // gets pushed into a sales-engagement sequence even if the cold-call
+    // page was loaded before their state changed.
     const ownedRows = await prisma.campaignLead.findMany({
         where: {
             id: { in: prospect_ids },
             campaign: { organization_id: orgId },
         },
-        select: { id: true },
+        select: { id: true, status: true, bounced_at: true, unsubscribed_at: true, email: true },
     });
-    const ownedIds = ownedRows.map(r => r.id);
-    if (ownedIds.length === 0) {
+    if (ownedRows.length === 0) {
         return res.status(400).json({ success: false, error: 'No matching prospects in this workspace' });
+    }
+    const contactable = ownedRows.filter(r => !isHardSuppressed(r));
+    const ownedIds = contactable.map(r => r.id);
+    const suppressedCount = ownedRows.length - contactable.length;
+    if (ownedIds.length === 0) {
+        return res.status(400).json({
+            success: false,
+            error: `All ${ownedRows.length} selected prospect(s) are unreachable (bounced, unsubscribed, or erased) and were skipped.`,
+        });
     }
 
     const job = await prisma.outreachExportJob.create({
@@ -347,6 +360,7 @@ export async function startExport(req: Request, res: Response): Promise<Response
         orgId,
         jobId: job.id,
         prospectCount: ownedIds.length,
+        suppressedSkipped: suppressedCount,
         sequenceId: sequence_id,
         sourceKind: source_kind,
     });
