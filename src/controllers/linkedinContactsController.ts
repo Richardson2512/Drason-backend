@@ -36,6 +36,7 @@ import { Request, Response } from 'express';
 import { getOrgId } from '../middleware/orgContext';
 import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
+import { eraseLeadPII } from '../services/piiErasureService';
 
 function parseCsv(raw: string | undefined): string[] {
     if (!raw || typeof raw !== 'string') return [];
@@ -466,9 +467,17 @@ export const bulk = async (req: Request, res: Response): Promise<Response> => {
 // ────────────────────────────────────────────────────────────────────
 // POST /api/linkedin/contacts/delete - bulk delete
 //
-// Deletes Lead rows by id. Cascading FKs (LeadTag, CampaignLead) clear
-// automatically. This is hard delete (matches the sequencer behavior);
-// PII-erasure is a separate flow.
+// Routes through eraseLeadPII - the SINGLE erasure source of truth shared
+// with the sequencer delete, recipient-DSAR, and full-account erasure.
+// Previously this did a raw prisma.lead.deleteMany, which left the
+// email-keyed PII (BounceEvent / SendEvent / EmailMessage) un-scrubbed
+// for any LinkedIn contact that also had email activity - and leads are
+// cross-channel, so that residue was real. Erasure tombstones the Lead
+// in place (status='erased'); the list/facets endpoints already exclude
+// status='erased', so the contact disappears from the UI exactly as it
+// did before. LinkedIn contacts always carry a unique real-or-synthetic
+// email (lin_<slug>@unresolved.local) so the (org,email) erasure lookup
+// always resolves - there is no null-email edge here.
 // ────────────────────────────────────────────────────────────────────
 
 export const remove = async (req: Request, res: Response): Promise<Response> => {
@@ -478,10 +487,22 @@ export const remove = async (req: Request, res: Response): Promise<Response> => 
         if (ids.length === 0) {
             return res.status(400).json({ success: false, error: 'ids array is required' });
         }
-        const result = await prisma.lead.deleteMany({
+        // Resolve emails for the ids, then run the canonical per-recipient
+        // erasure - identical loop to eraseOrganization and the sequencer
+        // deleteContacts path, so all four delete entry points behave the
+        // same and there is exactly one erasure implementation to maintain.
+        const leads = await prisma.lead.findMany({
             where: { id: { in: ids }, organization_id: orgId },
+            select: { email: true },
         });
-        return res.json({ success: true, data: { deleted: result.count } });
+        let deleted = 0;
+        for (const row of leads) {
+            // Skip already-erased rows (tombstone email prefix).
+            if (row.email.startsWith('erased-')) continue;
+            const r = await eraseLeadPII(orgId, row.email);
+            if (r.leadFound) deleted++;
+        }
+        return res.json({ success: true, data: { deleted } });
     } catch (err) {
         logger.error('[LINKEDIN-CONTACTS] delete failed', err instanceof Error ? err : new Error(String(err)));
         return res.status(500).json({ success: false, error: 'Delete failed' });
