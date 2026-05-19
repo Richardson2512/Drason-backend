@@ -30,6 +30,11 @@ import {
 } from '../services/coldCallListService';
 import { isProspectRowSuppressed } from '../services/leadContactabilityService';
 
+// Default daily cap on BYOK phone-enrichment lookups per workspace. Off by
+// default at the toggle; this only bounds spend once a workspace opts in.
+const DEFAULT_PHONE_ENRICH_CAP = 50;
+const MAX_PHONE_ENRICH_CAP = 500;
+
 // ─── Settings ────────────────────────────────────────────────────────────────
 
 function settingsToRules(s: {
@@ -72,6 +77,8 @@ async function loadOrCreateSettings(orgId: string) {
             title_filter: DEFAULT_CUSTOM_RULES.titleFilter,
             campaign_filter: DEFAULT_CUSTOM_RULES.campaignFilter ?? undefined,
             max_list_size: DEFAULT_CUSTOM_RULES.maxListSize,
+            phone_enrichment_enabled: false,
+            phone_enrichment_daily_cap: DEFAULT_PHONE_ENRICH_CAP,
         },
     });
 }
@@ -108,6 +115,16 @@ export const updateSettings = async (req: Request, res: Response): Promise<Respo
             campaignFilter = ids.length > 0 ? ids : null;
         }
 
+        // Phone enrichment opt-in + spend cap. Strict boolean (default OFF
+        // when absent) and a clamped daily cap so a workspace can never set
+        // an unbounded BYOK spend.
+        const phoneEnrichmentEnabled = !!body.phone_enrichment_enabled;
+        const phoneEnrichmentDailyCap = clamp(
+            toInt(body.phone_enrichment_daily_cap, DEFAULT_PHONE_ENRICH_CAP),
+            0,
+            MAX_PHONE_ENRICH_CAP,
+        );
+
         const updated = await prisma.coldCallListSettings.update({
             where: { organization_id: orgId },
             data: {
@@ -119,6 +136,8 @@ export const updateSettings = async (req: Request, res: Response): Promise<Respo
                 title_filter: titleFilter,
                 campaign_filter: campaignFilter ?? undefined,
                 max_list_size: maxListSize,
+                phone_enrichment_enabled: phoneEnrichmentEnabled,
+                phone_enrichment_daily_cap: phoneEnrichmentDailyCap,
             },
         });
         return res.json({ success: true, settings: updated });

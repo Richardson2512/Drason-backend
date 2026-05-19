@@ -17,6 +17,7 @@ import {
     isErased,
     isHardSuppressed,
     isProspectRowSuppressed,
+    shouldEnrichPhone,
 } from '../src/services/leadContactabilityService';
 import { computeScore } from '../src/services/coldCallListService';
 
@@ -71,6 +72,26 @@ describe('isProspectRowSuppressed (same policy over a hydrated ProspectRow)', ()
     });
     it('clean row is not suppressed', () => {
         expect(isProspectRowSuppressed({ bounced: false, unsubscribed: false, email: 'jane@acme.com' })).toBe(false);
+    });
+});
+
+describe('shouldEnrichPhone (BYOK spend guard - one place)', () => {
+    const ok = { status: 'active', bounced_at: null, unsubscribed_at: null, email: 'a@b.com' };
+
+    it('enriches when contactable and no usable phone', () => {
+        expect(shouldEnrichPhone({ ...ok, phone: null })).toBe(true);
+        expect(shouldEnrichPhone({ ...ok, phone: '' })).toBe(true);
+        expect(shouldEnrichPhone({ ...ok, phone: '   ' })).toBe(true);
+        expect(shouldEnrichPhone({ ...ok })).toBe(true);
+    });
+    it('does NOT enrich when a usable phone already exists (no wasted credit)', () => {
+        expect(shouldEnrichPhone({ ...ok, phone: '+15551234567' })).toBe(false);
+    });
+    it('does NOT enrich a suppressed prospect even with no phone (never burn credits on bounced/unsub/erased)', () => {
+        expect(shouldEnrichPhone({ ...ok, phone: null, bounced_at: new Date() })).toBe(false);
+        expect(shouldEnrichPhone({ ...ok, phone: null, unsubscribed_at: new Date() })).toBe(false);
+        expect(shouldEnrichPhone({ ...ok, phone: null, status: 'erased' })).toBe(false);
+        expect(shouldEnrichPhone({ ...ok, phone: null, email: 'erased-z@anonymized.invalid' })).toBe(false);
     });
 });
 

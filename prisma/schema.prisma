@@ -2225,6 +2225,13 @@ model ColdCallListSettings {
   title_filter        String? // Comma-separated; substring contains-match, case-insensitive
   campaign_filter     Json? // Array<string> of campaign IDs; null = all active
   max_list_size       Int      @default(200)
+  // Phone enrichment (opt-in, default OFF). When on, a capped background
+  // worker fills Lead.phone for prospects that landed on a generated list
+  // via the org's BYOK enrichment waterfall, so the Cold Call List shows a
+  // dialable number without the SDR hunting it down. OFF by default and
+  // capped because every lookup spends the customer's own provider credits.
+  phone_enrichment_enabled    Boolean  @default(false)
+  phone_enrichment_daily_cap  Int      @default(50)
   created_at          DateTime @default(now())
   updated_at          DateTime @updatedAt
 }

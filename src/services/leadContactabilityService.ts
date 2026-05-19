@@ -83,3 +83,18 @@ export function isProspectRowSuppressed(p: {
 }): boolean {
     return Boolean(p.bounced) || Boolean(p.unsubscribed) || isErased(p);
 }
+
+/**
+ * Whether it is worth spending one BYOK enrichment lookup on this
+ * prospect's phone. True ONLY when there is no usable number on file AND
+ * the prospect is still contactable. Centralised here so the policy
+ * "never burn the customer's enrichment credits on a bounced /
+ * unsubscribed / erased lead, and never re-enrich a lead that already has
+ * a number" lives in exactly one place. Pure - unit-tested.
+ */
+export function shouldEnrichPhone(
+    row: ContactabilityRow & { phone?: string | null },
+): boolean {
+    if (isHardSuppressed(row)) return false;
+    return !(typeof row.phone === 'string' && row.phone.trim().length > 0);
+}

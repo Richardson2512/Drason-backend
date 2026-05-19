@@ -149,6 +149,7 @@ import { scheduleImapPolling } from './workers/imapReplyWorker';
 import { startWebhookDispatcherWorker } from './workers/webhookDispatcherWorker';
 import { scheduleMailboxIpBlacklist } from './workers/mailboxIpBlacklistWorker';
 import { scheduleColdCallListSnapshots } from './workers/coldCallListWorker';
+import { scheduleColdCallPhoneEnrichment } from './workers/coldCallPhoneEnrichmentWorker';
 import { scheduleLinkedInCapacityReset } from './workers/linkedinCapacityResetWorker';
 import { scheduleLinkedInSignalPoller } from './workers/linkedinSignalPollerWorker';
 import { scheduleLinkedInWatchlistRunner } from './workers/linkedinWatchlistRunnerWorker';
@@ -1165,6 +1166,12 @@ function startWorkerBootstrap(): void {
     // 06:00 in each workspace's local timezone)
     scheduleColdCallListSnapshots();
     logger.info('Cold Call List snapshot worker scheduled (hourly tick, 06:00 workspace-local trigger)');
+
+    // Cold Call List background phone enrichment (hourly tick). Opt-in per
+    // workspace + daily-capped; fills Lead.phone for prospects already on a
+    // generated list via the org's BYOK enrichment waterfall.
+    scheduleColdCallPhoneEnrichment();
+    logger.info('Cold Call List phone-enrichment worker scheduled (hourly tick, opt-in + daily-capped)');
 
     // Super LinkedIn - capacity counter reset (30min tick, rolls daily/weekly
     // counters over at UTC midnight / Monday UTC) + signal poller (4× daily
