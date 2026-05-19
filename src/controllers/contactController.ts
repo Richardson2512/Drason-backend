@@ -16,6 +16,7 @@ import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { classifyLeadHealth } from '../services/leadHealthService';
 import { validateLeadEmail, suppressCampaignLeadsForInvalidEmail } from '../services/emailValidationService';
+import { getValidationCreditState } from '../services/validationCreditService';
 import * as espClassifierService from '../services/espClassifierService';
 import { TIER_LIMITS } from '../services/polarClient';
 import * as entityStateService from '../services/entityStateService';
@@ -813,32 +814,25 @@ export const validateContacts = async (req: Request, res: Response): Promise<Res
             return res.status(400).json({ success: false, error: tagId ? 'No contacts carry that tag' : 'ids array is required' });
         }
 
-        // Load tier limits for credit gating
+        // Load tier (for the MillionVerifier gating inside validateLeadEmail).
         const org = await prisma.organization.findUnique({
             where: { id: orgId },
             select: { subscription_tier: true },
         });
         const tier = (org?.subscription_tier || 'trial').toLowerCase();
-        const tierLimits = TIER_LIMITS[tier] || TIER_LIMITS.trial;
 
-        // Count validations already used this calendar month (ValidationAttempt is
-        // the unified record - covers ingestion, batch, and single-lead flows).
-        const monthStart = new Date();
-        monthStart.setDate(1);
-        monthStart.setHours(0, 0, 0, 0);
-        const usedThisMonth = await prisma.validationAttempt.count({
-            where: { organization_id: orgId, created_at: { gte: monthStart } },
-        });
-        const creditsRemaining = tierLimits.validationCredits === Infinity
-            ? Infinity
-            : Math.max(0, tierLimits.validationCredits - usedThisMonth);
+        // Credit accounting reads the SINGLE ledger via the shared service,
+        // so the by-tag path here sees CSV-batch / Clay / other validations
+        // for the same month (F2 root - was two incompatible counters
+        // before).
+        const credit = await getValidationCreditState(orgId, tier);
 
-        if (creditsRemaining <= 0) {
+        if (!credit.unlimited && credit.remaining <= 0) {
             return res.status(402).json({
                 success: false,
                 error: 'Monthly email validation credits exhausted. Upgrade your plan to verify more contacts.',
-                credits_used: usedThisMonth,
-                credits_limit: tierLimits.validationCredits === Infinity ? null : tierLimits.validationCredits,
+                credits_used: credit.used,
+                credits_limit: credit.unlimited ? null : credit.limit,
             });
         }
 
@@ -854,7 +848,7 @@ export const validateContacts = async (req: Request, res: Response): Promise<Res
         }
 
         // Only validate up to the remaining credit allowance
-        const processable = creditsRemaining === Infinity ? leads : leads.slice(0, creditsRemaining as number);
+        const processable = credit.unlimited ? leads : leads.slice(0, credit.remaining);
         const skipped = leads.length - processable.length;
 
         // Create a ValidationBatch so this run shows up in the Email Validation page
@@ -968,8 +962,10 @@ export const validateContacts = async (req: Request, res: Response): Promise<Res
             },
         });
 
-        const usedAfter = usedThisMonth + (processable.length - failedCount);
-
+        // Re-read the shared ledger after the loop so 'used' reflects what
+        // actually got recorded (validateLeadEmail writes one row per
+        // engine run; failed-to-validate attempts didn't write one).
+        const after = await getValidationCreditState(orgId, tier);
         return res.json({
             success: true,
             processed: processable.length,
@@ -978,11 +974,9 @@ export const validateContacts = async (req: Request, res: Response): Promise<Res
             risky: riskyCount,
             invalid: invalidCount,
             failed: failedCount,
-            credits_used: usedAfter,
-            credits_limit: tierLimits.validationCredits === Infinity ? null : tierLimits.validationCredits,
-            credits_remaining: tierLimits.validationCredits === Infinity
-                ? null
-                : Math.max(0, tierLimits.validationCredits - usedAfter),
+            credits_used: after.used,
+            credits_limit: after.unlimited ? null : after.limit,
+            credits_remaining: after.unlimited ? null : after.remaining,
         });
     } catch (error: any) {
         logger.error('[CONTACTS] Failed to validate contacts', error instanceof Error ? error : new Error(String(error)));

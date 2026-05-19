@@ -669,7 +669,12 @@ model CampaignTag {
 
 model ValidationAttempt {
   id              String   @id @default(uuid())
-  lead_id         String
+  // Nullable: this is the SINGLE credit ledger - one row per engine run
+  // from EVERY path (Clay ingest, CSV batch, by-tag, single). Most bulk
+  // validations happen BEFORE a Lead row exists, so lead_id is set when
+  // known and left null otherwise. organization_id + created_at is the
+  // authoritative monthly-usage key (indexed below).
+  lead_id         String?
   organization_id String
   source          String // internal, millionverifier
   result_status   String // valid, risky, invalid, unknown, error

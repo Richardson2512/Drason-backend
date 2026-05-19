@@ -777,8 +777,15 @@ export const getValidationActivity = async (req: Request, res: Response, next: N
             prisma.validationAttempt.count({ where: { organization_id: orgId, created_at: { gte: since24h }, result_status: 'unknown' } }),
         ]);
 
-        // Enrich attempts with lead email by looking up lead_id
-        const leadIds = [...new Set(attempts.map(a => a.lead_id).filter(id => id !== 'pre-upsert'))];
+        // Enrich attempts with lead email by looking up lead_id. lead_id
+        // is nullable on ValidationAttempt now (single-ledger fix - many
+        // attempts happen before a Lead exists), so filter nulls AND the
+        // legacy 'pre-upsert' sentinel out of the id list.
+        const leadIds = [...new Set(
+            attempts
+                .map(a => a.lead_id)
+                .filter((id): id is string => id !== null && id !== 'pre-upsert')
+        )];
         const leads = leadIds.length > 0 ? await prisma.lead.findMany({
             where: { id: { in: leadIds } },
             select: { id: true, email: true },
@@ -787,7 +794,7 @@ export const getValidationActivity = async (req: Request, res: Response, next: N
 
         const enrichedAttempts = attempts.map(a => ({
             id: a.id,
-            email: leadMap.get(a.lead_id) || 'Unknown',
+            email: a.lead_id ? (leadMap.get(a.lead_id) || 'Unknown') : 'Pre-Lead',
             source: a.source,
             status: a.result_status,
             score: a.result_score,
@@ -1992,7 +1999,12 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
                 orderBy: { created_at: 'desc' },
                 take: 50000,
             });
-            const leadIds = [...new Set(attempts.map(a => a.lead_id))];
+            // lead_id is nullable on ValidationAttempt now (single-ledger
+            // fix - rows can be written before a Lead exists). Filter null
+            // before passing to the `in` array.
+            const leadIds = [...new Set(
+                attempts.map(a => a.lead_id).filter((id): id is string => id !== null)
+            )];
             const leadRows = leadIds.length > 0
                 ? await prisma.lead.findMany({
                     where: { id: { in: leadIds } },
@@ -2010,7 +2022,7 @@ export const generateReport = async (req: Request, res: Response, next: NextFunc
                 { key: 'created_at', label: 'Checked At' },
             ];
             const rows = attempts.map(a => ({
-                lead_email: leadMap.get(a.lead_id) || a.lead_id,
+                lead_email: a.lead_id ? (leadMap.get(a.lead_id) || a.lead_id) : '(pre-lead)',
                 source: a.source,
                 result_status: a.result_status,
                 result_score: a.result_score,

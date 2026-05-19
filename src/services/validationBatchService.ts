@@ -12,7 +12,7 @@ import * as espClassifierService from './espClassifierService';
 import * as entityStateService from './entityStateService';
 import * as auditLogService from './auditLogService';
 import { enrollLeadInSequencerCampaign } from './sequencerEnrollmentService';
-import { TIER_LIMITS } from './polarClient';
+import { getValidationCreditState } from './validationCreditService';
 import { LeadState, TriggerType } from '../types';
 import type { ParsedLead } from './csvParserService';
 
@@ -83,21 +83,13 @@ export async function processBatch(organizationId: string, batchId: string): Pro
             select: { subscription_tier: true }
         });
         const tier = org?.subscription_tier || 'trial';
-        const tierLimits = TIER_LIMITS[tier] || TIER_LIMITS.trial;
 
-        // Check monthly validation credit usage
-        const monthStart = new Date();
-        monthStart.setDate(1);
-        monthStart.setHours(0, 0, 0, 0);
-        const monthlyUsage = await prisma.validationBatchLead.count({
-            where: {
-                batch: { organization_id: organizationId },
-                validation_status: { notIn: ['pending', 'duplicate'] },
-                created_at: { gte: monthStart },
-            }
-        });
-
-        const creditsRemaining = Math.max(0, tierLimits.validationCredits - monthlyUsage);
+        // Credit accounting now reads the SINGLE ledger (ValidationAttempt)
+        // via the shared service, so this batch sees by-tag / single /
+        // Clay / other-batch usage too (F2 root). Re-derived at the start
+        // of every chunk below, not snapshotted once - that collapses the
+        // overspend race from a whole batch to one chunk.
+        let credit = await getValidationCreditState(organizationId, tier);
 
         // Fetch all pending leads for this batch
         const batchLeads = await prisma.validationBatchLead.findMany({
@@ -105,39 +97,34 @@ export async function processBatch(organizationId: string, batchId: string): Pro
             orderBy: { created_at: 'asc' },
         });
 
-        // If batch exceeds remaining credits, only process what we can
-        let creditsUsed = 0;
-
         let validCount = 0;
         let invalidCount = 0;
         let riskyCount = 0;
         let duplicateCount = 0;
+        let skippedCount = 0;
         let processedCount = 0;
 
         // Process in chunks
         for (let i = 0; i < batchLeads.length; i += CHUNK_SIZE) {
             const chunk = batchLeads.slice(i, i + CHUNK_SIZE);
 
+            // Re-derive remaining credits from the SINGLE ledger at every
+            // chunk boundary so concurrent batches / the by-tag path can't
+            // each spend the full monthly allowance (race window = one
+            // chunk, not a whole batch).
+            credit = await getValidationCreditState(organizationId, tier);
+            let creditsUsedThisChunk = 0;
+
             for (const batchLead of chunk) {
                 try {
                     // --- Duplicate check ---
-                    const existingLead = await prisma.lead.findUnique({
-                        where: {
-                            organization_id_email: {
-                                organization_id: organizationId,
-                                email: batchLead.email,
-                            }
-                        },
-                        select: { id: true, assigned_campaign_id: true, status: true }
-                    });
-
                     // Check for duplicates within same batch (earlier row)
                     const batchDuplicate = await prisma.validationBatchLead.findFirst({
                         where: {
                             batch_id: batchId,
                             email: batchLead.email,
                             id: { not: batchLead.id },
-                            validation_status: { not: 'pending' },
+                            validation_status: { notIn: ['pending', 'skipped'] },
                         }
                     });
 
@@ -157,7 +144,7 @@ export async function processBatch(organizationId: string, batchId: string): Pro
                             batch_id: { not: batchId },
                             email: batchLead.email,
                             batch: { organization_id: organizationId },
-                            validation_status: { not: 'pending' },
+                            validation_status: { notIn: ['pending', 'skipped'] },
                         },
                         select: { batch_id: true, validation_status: true, routed_to_campaign_id: true },
                         orderBy: { created_at: 'desc' },
@@ -176,17 +163,22 @@ export async function processBatch(organizationId: string, batchId: string): Pro
                         continue;
                     }
 
-                    // --- Credit check ---
-                    if (creditsUsed >= creditsRemaining && tierLimits.validationCredits !== Infinity) {
+                    // --- Credit check (F5) ---
+                    // Credit-exhausted is NOT 'invalid' - the email was
+                    // never checked. Mark 'skipped' so it is excluded from
+                    // invalid-rate analytics AND from dedup, so it gets
+                    // re-validated next month / after an upgrade instead of
+                    // being permanently treated as a "duplicate".
+                    if (!credit.unlimited && creditsUsedThisChunk >= credit.remaining) {
                         await prisma.validationBatchLead.update({
                             where: { id: batchLead.id },
-                            data: { validation_status: 'invalid', error_message: 'Monthly validation credit limit reached. Upgrade your plan.' }
+                            data: { validation_status: 'skipped', error_message: 'Monthly validation credit limit reached. Upgrade your plan to validate the rest.' }
                         });
-                        invalidCount++;
+                        skippedCount++;
                         processedCount++;
                         continue;
                     }
-                    creditsUsed++;
+                    creditsUsedThisChunk++;
 
                     // --- Validate email ---
                     const validationResult = await emailValidationService.validateLeadEmail(
@@ -229,22 +221,12 @@ export async function processBatch(organizationId: string, batchId: string): Pro
                         }
                     });
 
-                    // --- Record validation attempt (for billing credit tracking) ---
-                    if (existingLead && validationResult.attempt) {
-                        try {
-                            await prisma.validationAttempt.create({
-                                data: {
-                                    lead_id: existingLead.id,
-                                    organization_id: organizationId,
-                                    source: validationResult.attempt.source,
-                                    result_status: validationResult.attempt.result_status,
-                                    result_score: validationResult.attempt.result_score,
-                                    result_details: validationResult.attempt.result_details,
-                                    duration_ms: validationResult.attempt.duration_ms,
-                                },
-                            });
-                        } catch { /* best-effort */ }
-                    }
+                    // Credit ledger is written ONCE inside
+                    // validateLeadEmail (single source - F2). The old
+                    // per-batch ValidationAttempt create here was the
+                    // double-write that, combined with the separate
+                    // ValidationBatchLead counter, made credit accounting
+                    // incoherent. Removed.
 
                     // Track counts
                     if (validationResult.status === 'valid') validCount++;
@@ -630,7 +612,7 @@ export async function getAnalytics(
          FROM "ValidationBatchLead" vbl
          JOIN "ValidationBatch" vb ON vb.id = vbl.batch_id
          WHERE vb.organization_id = $1
-           AND vbl.validation_status != 'pending'
+           AND vbl.validation_status NOT IN ('pending', 'skipped')
            ${dateClause}
          GROUP BY vb.source`,
         ...params,

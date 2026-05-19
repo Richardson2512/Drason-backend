@@ -199,7 +199,9 @@ export async function validateLeadEmail(
             attempt: { source: ValidationSource.INTERNAL, result_status: ValidationStatus.INVALID, result_score: 0, result_details: { syntax_ok: false, mx_found: false, disposable_check: false, catch_all_check: false }, duration_ms: durationMs },
         };
 
-        await recordAttempt(organizationId, emailLower, result, durationMs);
+        // Credit policy (ratified): a pure SYNTAX reject is pre-engine - no
+        // DNS/API work was done - so it is FREE (no ledger row). Every
+        // other path below ran at least a DNS lookup and records 1.
         return result;
     }
 
@@ -339,20 +341,21 @@ async function recordAttempt(
     durationMs: number
 ): Promise<void> {
     try {
-        // Find the lead - skip recording if lead doesn't exist yet (will be recorded post-upsert)
+        // SINGLE CREDIT LEDGER. Every engine run records exactly one row,
+        // whether or not a Lead exists yet (lead_id is nullable). The old
+        // "skip if no Lead" early-return was the F2 root cause: bulk CSV
+        // and Clay validations happen BEFORE the Lead exists, so they were
+        // never counted, splitting credit accounting across two
+        // incompatible counters. organization_id + created_at is the
+        // authoritative monthly-usage key (see validationCreditService).
         const lead = await prisma.lead.findUnique({
             where: { organization_id_email: { organization_id: organizationId, email } },
             select: { id: true },
         });
 
-        if (!lead) {
-            logger.debug('[VALIDATION] Skipping attempt record - lead not yet created', { email });
-            return;
-        }
-
         await prisma.validationAttempt.create({
             data: {
-                lead_id: lead.id,
+                lead_id: lead?.id ?? null,
                 organization_id: organizationId,
                 source: result.source,
                 result_status: result.status,
