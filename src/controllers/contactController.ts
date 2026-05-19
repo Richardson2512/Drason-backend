@@ -15,7 +15,7 @@ import { getOrgId } from '../middleware/orgContext';
 import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { classifyLeadHealth } from '../services/leadHealthService';
-import { validateLeadEmail } from '../services/emailValidationService';
+import { validateLeadEmail, suppressCampaignLeadsForInvalidEmail } from '../services/emailValidationService';
 import * as espClassifierService from '../services/espClassifierService';
 import { TIER_LIMITS } from '../services/polarClient';
 import * as entityStateService from '../services/entityStateService';
@@ -908,6 +908,16 @@ export const validateContacts = async (req: Request, res: Response): Promise<Res
                         is_disposable: result.is_disposable ?? null,
                     },
                 });
+
+                // Post-enrollment suppression (F1 / D2): this is the
+                // re-validation path - the lead may already be ACTIVE in
+                // campaigns. If it just came back invalid, stop mailing it
+                // immediately through the same cascade hard-bounces use,
+                // rather than knowingly letting a guaranteed-bounce address
+                // finish its sequence.
+                if (result.status === 'invalid') {
+                    await suppressCampaignLeadsForInvalidEmail(orgId, lead.email);
+                }
 
                 // Mirror into ValidationBatchLead so the Email Validation page picks it up
                 await prisma.validationBatchLead.create({

@@ -76,7 +76,7 @@ export async function enrollLeadInSequencerCampaign(
         // objects (or has been classified as undeliverable), no further sends.
         const suppression = await prisma.lead.findUnique({
             where: { organization_id_email: { organization_id: organizationId, email: normalizedEmail } },
-            select: { status: true, unsubscribed_reason: true },
+            select: { status: true, unsubscribed_reason: true, validation_status: true },
         });
         if (suppression && (suppression.status === 'unsubscribed' || suppression.status === 'bounced')) {
             logger.info('[SEQUENCER_ENROLL] Refused - org-wide suppression', {
@@ -89,6 +89,31 @@ export async function enrollLeadInSequencerCampaign(
             return {
                 success: false,
                 error: `Recipient is suppressed at the organization level (${suppression.status}). Cannot enroll in any campaign.`,
+            };
+        }
+
+        // Validation suppression (F1 root). An email validated 'invalid' is
+        // a guaranteed bounce, so treat it EXACTLY like the bounce /
+        // unsubscribe guard above. This is THE single chokepoint where a
+        // lead becomes a sendable CampaignLead - Clay ingest, campaign
+        // creation, and the Email Validation page route all funnel through
+        // here - so gating 'invalid' at this one point closes the
+        // send-time leak for every entry path at once instead of patching
+        // each path separately.
+        //
+        // Policy (product-ratified): ONLY 'invalid' blocks. valid / risky /
+        // unknown / null all enroll. null = never-validated, which is every
+        // legacy lead and any path that didn't validate - blocking it would
+        // halt all existing campaigns, so it MUST pass.
+        if (suppression && suppression.validation_status === 'invalid') {
+            logger.info('[SEQUENCER_ENROLL] Refused - email failed validation (invalid)', {
+                organizationId,
+                campaignId,
+                email: normalizedEmail,
+            });
+            return {
+                success: false,
+                error: 'Recipient email failed validation (invalid). Cannot enroll - it would bounce.',
             };
         }
 

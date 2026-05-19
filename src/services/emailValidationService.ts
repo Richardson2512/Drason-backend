@@ -418,3 +418,47 @@ export async function markValidationRiskyOnComplaint(
         });
     }
 }
+
+/**
+ * Suppression cascade for an email that has just been validated 'invalid'
+ * while it may ALREADY be enrolled in campaigns (e.g. the "Validate by
+ * tag" re-validation path). An invalid address bounces on every remaining
+ * sequence step, so we stop it mid-sequence - identical SHAPE to the
+ * hard-bounce cascade in bounceParserService (CampaignLead.status off
+ * 'active' + next_send_at null), which the send queue already excludes.
+ *
+ * This is the post-enrollment half of the F1 root fix: the enroll guard
+ * (sequencerEnrollmentService) stops NEW invalid enrollments; this stops
+ * leads that turned invalid AFTER they were enrolled. One concept
+ * ("invalid email = do not mail"), routed through the suppression
+ * mechanism the send gate already trusts - no new send-path surface.
+ *
+ * Idempotent: filters status='active' so a second call is a no-op.
+ * Returns the number of CampaignLead rows halted (for caller logging).
+ */
+export async function suppressCampaignLeadsForInvalidEmail(
+    organizationId: string,
+    email: string
+): Promise<number> {
+    try {
+        const r = await prisma.campaignLead.updateMany({
+            where: {
+                email: email.toLowerCase().trim(),
+                status: 'active',
+                campaign: { organization_id: organizationId },
+            },
+            data: { status: 'invalid', next_send_at: null },
+        });
+        if (r.count > 0) {
+            logger.info('[VALIDATION] Suppressed active campaign leads for invalid email', {
+                organizationId, halted: r.count,
+            });
+        }
+        return r.count;
+    } catch (err) {
+        logger.warn('[VALIDATION] Failed to suppress campaign leads for invalid email', {
+            organizationId, error: String(err),
+        });
+        return 0;
+    }
+}
