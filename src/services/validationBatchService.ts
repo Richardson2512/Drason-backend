@@ -560,6 +560,106 @@ export async function routeLeads(
 }
 
 // ============================================================================
+// PUSH TO CONTACTS (Process B - operator-requested)
+// ============================================================================
+
+/**
+ * "Push validated contacts to the Contacts page." Selected batch leads
+ * become Lead rows (org-scoped) WITHOUT being enrolled in any campaign -
+ * this is the "I just want them on the contacts list" action, distinct
+ * from routeLeads which requires a campaignId.
+ *
+ * Auto-excludes invalids: only leads in {valid, risky, unknown} can be
+ * pushed (mirrors the routeLeads filter under the same D1 policy "only
+ * invalid blocks"). Idempotent via pushed_to_contacts_at.
+ */
+export async function pushLeadsToContacts(
+    organizationId: string,
+    batchId: string,
+    leadIds: string[],
+): Promise<{ added: number; skipped: number; errors: string[] }> {
+    const batch = await prisma.validationBatch.findFirst({
+        where: { id: batchId, organization_id: organizationId },
+    });
+    if (!batch) throw new Error('Batch not found');
+
+    const batchLeads = await prisma.validationBatchLead.findMany({
+        where: {
+            id: { in: leadIds },
+            batch_id: batchId,
+            validation_status: { in: ['valid', 'risky', 'unknown'] },
+            pushed_to_contacts_at: null,
+        },
+    });
+
+    let added = 0;
+    const skipped = leadIds.length - batchLeads.length; // invalid / already-pushed / not-in-batch
+    const errors: string[] = [];
+
+    for (const batchLead of batchLeads) {
+        try {
+            // Real health (same shape ingestion uses).
+            const healthResult = await classifyLeadHealth(batchLead.email, {
+                validationScore: batchLead.validation_score ?? 50,
+                isDisposable: batchLead.is_disposable ?? false,
+                isCatchAll: batchLead.is_catch_all ?? false,
+            });
+            // Truthful source attribution from the engine-time write.
+            const persist = validationPersistData({
+                status: batchLead.validation_status,
+                score: batchLead.validation_score ?? 0,
+                source: batchLead.validation_source || 'internal',
+                is_catch_all: batchLead.is_catch_all,
+                is_disposable: batchLead.is_disposable,
+            });
+            await prisma.lead.upsert({
+                where: {
+                    organization_id_email: { organization_id: organizationId, email: batchLead.email },
+                },
+                update: {
+                    persona: batchLead.persona || 'General',
+                    lead_score: batchLead.lead_score ?? 50,
+                    source: batch.source,
+                    ...persist,
+                },
+                create: {
+                    email: batchLead.email,
+                    persona: batchLead.persona || 'General',
+                    lead_score: batchLead.lead_score ?? 50,
+                    source: batch.source,
+                    status: 'held',
+                    health_state: 'healthy',
+                    health_classification: healthResult.classification,
+                    health_score_calc: healthResult.score,
+                    health_checks: healthResult.checks as any,
+                    organization_id: organizationId,
+                    ...persist,
+                },
+            });
+            await prisma.validationBatchLead.update({
+                where: { id: batchLead.id },
+                data: { pushed_to_contacts_at: new Date() },
+            });
+            added++;
+        } catch (err: any) {
+            logger.error('[VALIDATION_BATCH_PUSH] Failed to push lead to contacts', err, { batchLeadId: batchLead.id });
+            errors.push(`${batchLead.email}: ${err.message || 'push failed'}`);
+        }
+    }
+
+    await auditLogService.logAction({
+        organizationId,
+        entity: 'validation_batch',
+        entityId: batchId,
+        trigger: 'user',
+        action: 'push_to_contacts',
+        details: `Pushed ${added} leads to Contacts page (${skipped} skipped, ${errors.length} errors)`,
+    });
+
+    return { added, skipped, errors };
+}
+
+// ============================================================================
 // EXPORT
 // ============================================================================
 

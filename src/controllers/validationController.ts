@@ -216,6 +216,33 @@ export const routeLeadsToCampaign = async (req: Request, res: Response): Promise
 };
 
 // ============================================================================
+// PUSH TO CONTACTS (Process B)
+// ============================================================================
+
+/**
+ * POST /api/validation/batches/:id/push-to-contacts
+ * Add selected validated leads to the Contacts page (Lead rows) WITHOUT
+ * enrolling them in any campaign. Invalid leads are auto-excluded.
+ */
+export const pushToContacts = async (req: Request, res: Response): Promise<Response> => {
+    try {
+        const orgId = getOrgId(req);
+        const batchId = String(req.params.id);
+        const { leadIds } = req.body;
+
+        if (!leadIds || !Array.isArray(leadIds) || leadIds.length === 0) {
+            return res.status(400).json({ success: false, error: 'leadIds array required' });
+        }
+
+        const result = await validationBatchService.pushLeadsToContacts(orgId, batchId, leadIds);
+        return res.json({ success: true, ...result });
+    } catch (error: any) {
+        logger.error('[VALIDATION] Push to contacts failed', error instanceof Error ? error : new Error(String(error)));
+        return res.status(500).json({ success: false, error: 'Failed to push to contacts' });
+    }
+};
+
+// ============================================================================
 // EXPORT
 // ============================================================================
 

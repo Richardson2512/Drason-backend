@@ -17,6 +17,11 @@ router.get('/batches/:id', validationController.getBatchDetail);
 // Route leads to a campaign - touches campaign sequence membership.
 router.post('/batches/:id/route', requireCapability('edit_sequences'), validationController.routeLeadsToCampaign);
 
+// Push validated leads to the Contacts page WITHOUT a campaign. Creates
+// Lead rows (gated by add_leads, same capability that gates uploads).
+// Invalid leads are auto-excluded server-side via the routable filter.
+router.post('/batches/:id/push-to-contacts', requireCapability('add_leads'), validationController.pushToContacts);
+
 // Export - read-only data export of leads the user already has access to. Open.
 router.post('/batches/:id/export', validationController.exportCSV);
 
