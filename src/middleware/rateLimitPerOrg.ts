@@ -131,3 +131,17 @@ export const billingOpsRateLimit = rateLimitPerOrg({
     windowMs: 60_000,
     bucketKey: 'billing-ops',
 });
+
+/**
+ * Preset for data-export endpoints (campaign lead CSV, generateReport
+ * full-org CSV, super-admin impact CSV). Each call materializes up to
+ * 50k+ rows in memory before CSV serialization. 5/min/org leaves
+ * headroom for "I downloaded but it had a typo, let me try again"
+ * but catches the export-in-a-loop attempt.
+ * Reports audit R4 root-cause fix.
+ */
+export const exportRateLimit = rateLimitPerOrg({
+    maxPerWindow: 5,
+    windowMs: 60_000,
+    bucketKey: 'data-export',
+});

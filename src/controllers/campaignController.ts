@@ -12,6 +12,11 @@ import { logAction } from '../services/auditLogService';
 import * as loadBalancingService from '../services/loadBalancingService';
 import * as predictiveMonitoringService from '../services/predictiveMonitoringService';
 import * as smartRoutingService from '../services/smartRoutingService';
+// Shared CSV helper (Reports audit R2 + R3 root fix). Prevents formula
+// injection AND row-cap exhaustion in one place.
+import { toCsvDownload } from '../utils/csv';
+
+const EXPORT_LEADS_MAX_ROWS = 50_000;
 /**
  * Pause all active campaigns for an organization
  * Used by health enforcement when critical issues detected
@@ -482,7 +487,9 @@ export const exportCampaignLeads = async (req: Request, res: Response) => {
             return res.status(404).json({ success: false, error: 'Campaign not found' });
         }
 
-        // Get all leads for this campaign
+        // Get all leads for this campaign, capped one row above the
+        // export limit so we can detect (and surface via X-Truncated)
+        // when the user has more leads than the cap. Reports audit R3.
         const leads = await prisma.lead.findMany({
             where: {
                 organization_id: orgId,
@@ -502,37 +509,47 @@ export const exportCampaignLeads = async (req: Request, res: Response) => {
             },
             orderBy: {
                 created_at: 'desc'
-            }
+            },
+            take: EXPORT_LEADS_MAX_ROWS + 1,
         });
 
         if (leads.length === 0) {
             return res.status(404).json({ success: false, error: 'No leads found in this campaign' });
         }
 
-        // Generate CSV
-        const headers = ['Email', 'Persona', 'Score', 'Status', 'Opens', 'Clicks', 'Replies', 'Bounced', 'Created', 'Last Activity'];
-        const rows = leads.map(lead => [
-            lead.email,
-            lead.persona || '',
-            lead.lead_score.toString(),
-            lead.status,
-            lead.emails_opened?.toString() || '0',
-            lead.emails_clicked?.toString() || '0',
-            lead.emails_replied?.toString() || '0',
-            lead.bounced ? 'Yes' : 'No',
-            lead.created_at.toISOString(),
-            lead.last_activity_at?.toISOString() || 'Never'
-        ]);
-
-        const csv = [
-            headers.join(','),
-            ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
-        ].join('\n');
-
-        // Set headers for file download
+        // Build CSV through the shared helper. escapeField inside
+        // toCsvDownload runs the formula-prefix + quote-escape contract
+        // so a lead persona of `=HYPERLINK(...)` can't become a live
+        // formula in Excel. R2 root-cause fix.
         const filename = `${campaign.name.replace(/[^a-z0-9]/gi, '_')}_leads_${new Date().toISOString().split('T')[0]}.csv`;
-        res.setHeader('Content-Type', 'text/csv');
-        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        const result = toCsvDownload(
+            res,
+            leads.map(lead => ({
+                email: lead.email,
+                persona: lead.persona || '',
+                lead_score: lead.lead_score.toString(),
+                status: lead.status,
+                emails_opened: lead.emails_opened?.toString() || '0',
+                emails_clicked: lead.emails_clicked?.toString() || '0',
+                emails_replied: lead.emails_replied?.toString() || '0',
+                bounced: lead.bounced ? 'Yes' : 'No',
+                created_at: lead.created_at.toISOString(),
+                last_activity_at: lead.last_activity_at?.toISOString() || 'Never',
+            })),
+            [
+                { key: 'email', label: 'Email' },
+                { key: 'persona', label: 'Persona' },
+                { key: 'lead_score', label: 'Score' },
+                { key: 'status', label: 'Status' },
+                { key: 'emails_opened', label: 'Opens' },
+                { key: 'emails_clicked', label: 'Clicks' },
+                { key: 'emails_replied', label: 'Replies' },
+                { key: 'bounced', label: 'Bounced' },
+                { key: 'created_at', label: 'Created' },
+                { key: 'last_activity_at', label: 'Last Activity' },
+            ],
+            { maxRows: EXPORT_LEADS_MAX_ROWS, filename },
+        );
 
         await logAction({
             organizationId: orgId,
@@ -540,10 +557,10 @@ export const exportCampaignLeads = async (req: Request, res: Response) => {
             entityId: campaignId,
             trigger: 'user_action',
             action: 'export_leads',
-            details: `Exported ${leads.length} leads to CSV`
+            details: `Exported ${result.written} leads to CSV${result.truncated ? ` (truncated from ${leads.length})` : ''}`,
         });
 
-        return res.send(csv);
+        return;
 
     } catch (error: any) {
         logger.error('[CAMPAIGNS] Error exporting leads', error);

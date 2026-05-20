@@ -2,6 +2,10 @@ import { Router } from 'express';
 import * as dashboardController from '../controllers/dashboardController';
 import * as campaignController from '../controllers/campaignController';
 import { validateBody, validateQuery, routingRuleSchema, campaignActionSchema, paginationSchema, auditLogQuerySchema, resolveStalledCampaignSchema, applyLoadBalancingSchema, campaignRecommendationsBatchSchema } from '../middleware/validation';
+// Per-org rate-limit on the two export endpoints under /api/dashboard.
+// Each one materializes up to 50k rows in memory before CSV serialization
+// (Reports audit R4 root-cause fix).
+import { exportRateLimit } from '../middleware/rateLimitPerOrg';
 
 const router = Router();
 
@@ -28,7 +32,7 @@ router.post('/campaign/resume', validateBody(campaignActionSchema), dashboardCon
 router.post('/campaigns/pause-all', campaignController.pauseAllCampaigns);
 router.get('/campaigns/:id/stalled-context', campaignController.getStalledCampaignContext);
 router.post('/campaigns/:id/resolve-stalled', validateBody(resolveStalledCampaignSchema), campaignController.resolveStalledCampaign);
-router.get('/campaigns/:id/export-leads', campaignController.exportCampaignLeads);
+router.get('/campaigns/:id/export-leads', exportRateLimit, campaignController.exportCampaignLeads);
 router.post('/campaigns/:id/archive', campaignController.archiveCampaign);
 
 // Load balancing endpoints
@@ -61,7 +65,7 @@ router.post('/warmup/check', dashboardController.checkWarmupProgress);
 router.get('/healing/recently-recovered', dashboardController.getRecentlyRecovered);
 
 // Report generation endpoint
-router.get('/reports/generate', dashboardController.generateReport);
+router.get('/reports/generate', exportRateLimit, dashboardController.generateReport);
 
 // Support ticket endpoints
 import * as ticketController from '../controllers/ticketController';

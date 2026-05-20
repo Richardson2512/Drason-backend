@@ -10,30 +10,11 @@ import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { getApiCallStats } from '../services/apiCallTracker';
 
-// ============================================================================
-// CSV HELPERS
-// ============================================================================
-
-function escapeField(val: any): string {
-    if (val === null || val === undefined) return '';
-    let str = String(val);
-    // CSV injection protection: prefix formula-triggering characters with single quote
-    if (/^[=+\-@\t\r]/.test(str)) {
-        str = "'" + str;
-    }
-    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-        str = '"' + str.replace(/"/g, '""') + '"';
-    }
-    return str;
-}
-
-function toCsv(rows: Record<string, any>[], columns: { key: string; label: string }[]): string {
-    const header = columns.map(c => escapeField(c.label)).join(',');
-    const body = rows.map(row =>
-        columns.map(c => escapeField(row[c.key])).join(',')
-    ).join('\n');
-    return header + '\n' + body;
-}
+// CSV helpers consolidated into utils/csv.ts (Reports audit R2 root
+// fix - the parallel inline serializer in campaignController did NOT
+// have these protections, so a lead persona starting with `=` would
+// inject a formula when the customer opened the file in Excel).
+import { toCsv, escapeField } from '../utils/csv';
 
 // ============================================================================
 // GET /api/admin/organizations

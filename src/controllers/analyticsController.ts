@@ -8,6 +8,7 @@ import { Request, Response } from 'express';
 import { prisma } from '../prisma';
 import { getOrgId } from '../middleware/orgContext';
 import { logger } from '../services/observabilityService';
+import { parseDateRange } from '../utils/dateRange';
 
 /**
  * GET /api/analytics/bounces
@@ -69,14 +70,15 @@ export const getBounceAnalytics = async (req: Request, res: Response) => {
             where.bounce_type = bounce_type as string;
         }
 
+        // Parse the date range through the shared validator so an
+        // invalid ISO string returns a clean 400 instead of cascading
+        // into a Prisma "Invalid Date" error. Reports audit R5.
         if (start_date || end_date) {
-            where.bounced_at = {};
-            if (start_date) {
-                where.bounced_at.gte = new Date(start_date as string);
+            const range = parseDateRange(start_date, end_date, { defaultDays: 30 });
+            if (!range.ok) {
+                return res.status(400).json({ success: false, error: range.message });
             }
-            if (end_date) {
-                where.bounced_at.lte = new Date(end_date as string);
-            }
+            where.bounced_at = { gte: range.start, lte: range.end };
         }
 
         // Fetch bounce events
@@ -125,9 +127,17 @@ export const getBounceAnalytics = async (req: Request, res: Response) => {
             .map(mb => mb.mailbox_id)
             .filter(id => id !== null) as string[];
 
+        // organization_id IS already implicit (the IDs came out of a
+        // groupBy on BounceEvent that was org-scoped), but stating it
+        // explicitly here closes the defense-in-depth gap Reports audit
+        // R1 flagged: a future refactor of the `where` above could
+        // silently widen the ID set, and this layer would happily
+        // enrich them. Add the explicit predicate so the contract is
+        // visible at the call site, not derived.
         const mailboxes = await prisma.mailbox.findMany({
             where: {
-                id: { in: mailboxIds }
+                id: { in: mailboxIds },
+                organization_id: orgId,
             },
             select: {
                 id: true,
@@ -168,9 +178,12 @@ export const getBounceAnalytics = async (req: Request, res: Response) => {
             .map(c => c.campaign_id)
             .filter(id => id !== null) as string[];
 
+        // Defense-in-depth: same fix as the mailbox enrichment above.
+        // Reports audit R1.
         const campaigns = await prisma.campaign.findMany({
             where: {
-                id: { in: campaignIds }
+                id: { in: campaignIds },
+                organization_id: orgId,
             },
             select: {
                 id: true,
