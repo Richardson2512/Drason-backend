@@ -56,6 +56,76 @@ const QUEUE_NAME = 'email-sends';
 const DISPATCH_INTERVAL_MS = 60_000;
 
 /**
+ * Fairness tolerance for the lead-distribution picker. Two mailboxes
+ * within this fraction of each other's fullness are treated as
+ * "equally loaded" - ESP affinity breaks the tie. Picked at 0.5% to
+ * keep the tie-group from fragmenting under floating-point rounding
+ * while still being narrower than a single lead's worth at the
+ * typical 50-200/day cap range. Tunable; exported for tests.
+ *
+ * @internal
+ */
+export const FAIRNESS_TOLERANCE_FOR_DISTRIBUTION = 0.005;
+
+/**
+ * Pure-function form of the per-tick mailbox picker. Encapsulates the
+ * fairness-first + ESP-tie-break algorithm so it can be regression-
+ * tested without standing up the full dispatcher.
+ *
+ * Production-readiness round-4 fix. See the inline algorithm doc on
+ * the dispatcher-local pickBestByScore closure for the full rationale.
+ *
+ * @internal exported only for the test harness.
+ */
+export interface DistributionAccount {
+    id: string;
+    remainingCapacity: number;
+}
+
+export function pickAccountForLead(args: {
+    accounts: DistributionAccount[];
+    accountCounts: Map<string, number>;
+    espPerfMap: Map<string, { bounceRate: number; sendCount: number }>;
+    useEspRouting: boolean;
+    leadEspBucket: string | null;
+}): DistributionAccount | null {
+    const { accounts, accountCounts, espPerfMap, useEspRouting, leadEspBucket } = args;
+    const leadEsp = leadEspBucket || 'other';
+
+    // Step 1: filter to mailboxes that still have capacity this tick.
+    const eligible = accounts.filter(a => (accountCounts.get(a.id) || 0) < a.remainingCapacity);
+    if (eligible.length === 0) return null;
+
+    // Step 2: proportional fairness via fullness ratio.
+    const fullness = (a: DistributionAccount) =>
+        (accountCounts.get(a.id) || 0) / Math.max(1, a.remainingCapacity);
+
+    // Step 3: find the minimum-fullness tier and the tolerance bucket.
+    const minFullness = Math.min(...eligible.map(fullness));
+    const fairCandidates = eligible.filter(a => fullness(a) <= minFullness + FAIRNESS_TOLERANCE_FOR_DISTRIBUTION);
+
+    // Step 4: tie-break by ESP performance, or first fair candidate
+    // if routing disabled / single candidate.
+    if (!useEspRouting || fairCandidates.length === 1) {
+        return fairCandidates[0];
+    }
+
+    let best = fairCandidates[0];
+    let bestEspScore = -Infinity;
+    for (const acct of fairCandidates) {
+        const espPerf = espPerfMap.get(`${acct.id}:${leadEsp}`);
+        const espScore = (espPerf && espPerf.sendCount >= 10)
+            ? 1 - Math.min(espPerf.bounceRate, 1)
+            : 0.5;
+        if (espScore > bestEspScore) {
+            bestEspScore = espScore;
+            best = acct;
+        }
+    }
+    return best;
+}
+
+/**
  * Build the In-Reply-To / References pair for a step-N send (N > 1).
  *
  * Production-readiness round-1 fix: before this helper, sendQueueService
@@ -928,29 +998,99 @@ async function dispatch(): Promise<void> {
                 // post-send transaction; only re-write when changed).
                 const leadsToBindStickyAccount: Array<{ leadId: string; accountId: string }> = [];
 
+                /**
+                 * Pick a mailbox for a step-1 (first-touch) send. Production-
+                 * readiness round-4 R4-1: this used to be a weighted-greedy
+                 * picker (60% capacity / 40% ESP), which concentrated the
+                 * first ~17 leads on the single best-ESP mailbox before
+                 * fairness took over. That worked theoretically (best
+                 * performers handle more) but had three real downsides:
+                 *
+                 *   1. Anti-fingerprinting risk - one mailbox sending a
+                 *      sudden burst is exactly what Microsoft 365 spam
+                 *      heuristics pattern-match.
+                 *   2. Reputation concentration - a bad day on the top
+                 *      mailbox compounded faster than on a spread fleet.
+                 *   3. Warm-up bootstrap - new mailboxes never got their
+                 *      ESP data populated because the picker preferred
+                 *      already-warmed siblings indefinitely.
+                 *
+                 * New algorithm matches Smartlead / Instantly defaults:
+                 * strict fairness-first, ESP-tie-break.
+                 *
+                 *   1. Filter to mailboxes with capacity remaining.
+                 *   2. Compute fullness ratio = assigned / remainingCapacity.
+                 *      Using a RATIO (not raw count) means heterogeneous
+                 *      caps balance proportionally - a 30/day mailbox at
+                 *      3 assigned is as "full" as a 50/day at 5 assigned.
+                 *   3. Keep mailboxes within 0.5% of minimum fullness.
+                 *      Tolerance bucket treats single-lead differences as
+                 *      "tied" so ESP affinity actually breaks ties; tighter
+                 *      tolerance would fragment the tie-group on tiny
+                 *      rounding.
+                 *   4. Among fair-tied candidates, pick the best ESP
+                 *      performer for this lead's ESP bucket. ESP routing
+                 *      disabled / no ESP data -> first fair candidate
+                 *      (degenerates to pure round-robin).
+                 *
+                 * Net result: for 1000 leads / 100 equal-cap mailboxes,
+                 * after 10 rounds every mailbox has exactly 10 sends; the
+                 * ESP-strongest mailbox for each ESP bucket is picked
+                 * first WITHIN each round, so Gmail-strong mailboxes still
+                 * get Gmail leads preferentially - just not concentrated.
+                 *
+                 * Function name kept (instead of renamed to pickBalanced)
+                 * so the existing sticky-fallback call site at line 989
+                 * doesn't need a code change. The algorithm changed; the
+                 * contract did not.
+                 */
+                const FAIRNESS_TOLERANCE = 0.005;
                 const pickBestByScore = (lead: { esp_bucket: string | null }): typeof accounts[0] | null => {
-                    let best: typeof accounts[0] | null = null;
-                    let bestScore = -Infinity;
                     const leadEsp = lead.esp_bucket || 'other';
 
-                    for (const acct of accounts) {
-                        const assigned = accountCounts.get(acct.id) || 0;
-                        if (assigned >= acct.remainingCapacity) continue;
+                    // Step 1: filter to mailboxes that still have capacity
+                    // this tick. Note: accounts[].remainingCapacity already
+                    // accounts for healing warmup_limit, the mailbox-wide
+                    // daily_send_limit, the per-campaign daily cap, and
+                    // the cross-campaign in-flight tracker (line 826-836).
+                    const eligible = accounts.filter(a => (accountCounts.get(a.id) || 0) < a.remainingCapacity);
+                    if (eligible.length === 0) return null;
 
-                        const capacityScore = (acct.remainingCapacity - assigned) / acct.remainingCapacity;
-                        let score: number;
-                        if (useEspRouting) {
-                            const espKey = `${acct.id}:${leadEsp}`;
-                            const espPerf = espPerfMap.get(espKey);
-                            const espScore = (espPerf && espPerf.sendCount >= 10)
-                                ? 1 - Math.min(espPerf.bounceRate, 1)
-                                : 0.5;
-                            score = (capacityScore * 0.6) + (espScore * 0.4);
-                        } else {
-                            score = capacityScore;
-                        }
-                        if (score > bestScore) {
-                            bestScore = score;
+                    // Step 2: proportional fairness via fullness ratio.
+                    // (assigned / remainingCapacity) is the fraction of
+                    // this mailbox's currently-available headroom that's
+                    // been used this tick. A 30-day-cap mailbox at 3 sends
+                    // and a 50-day-cap mailbox at 5 sends are both 10%
+                    // full and treated as equally-loaded.
+                    const fullness = (a: typeof accounts[0]) =>
+                        (accountCounts.get(a.id) || 0) / Math.max(1, a.remainingCapacity);
+
+                    // Step 3: find the minimum-fullness tier and the
+                    // tolerance bucket around it. Tolerance prevents
+                    // floating-point rounding from artificially shrinking
+                    // the tie-group when two mailboxes are within one
+                    // lead's worth of each other.
+                    const minFullness = Math.min(...eligible.map(fullness));
+                    const fairCandidates = eligible.filter(a => fullness(a) <= minFullness + FAIRNESS_TOLERANCE);
+
+                    // Step 4: tie-break among fair candidates by ESP
+                    // performance for this lead's ESP. With ESP routing
+                    // disabled OR no ESP performance data at all, this
+                    // degenerates to picking the first fair candidate -
+                    // pure round-robin, which is the correct fallback.
+                    if (!useEspRouting || fairCandidates.length === 1) {
+                        return fairCandidates[0];
+                    }
+
+                    let best = fairCandidates[0];
+                    let bestEspScore = -Infinity;
+                    for (const acct of fairCandidates) {
+                        const espPerf = espPerfMap.get(`${acct.id}:${leadEsp}`);
+                        const espScore = (espPerf && espPerf.sendCount >= 10)
+                            ? 1 - Math.min(espPerf.bounceRate, 1)
+                            : 0.5;
+                        if (espScore > bestEspScore) {
+                            bestEspScore = espScore;
                             best = acct;
                         }
                     }
