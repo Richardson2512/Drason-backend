@@ -72,6 +72,9 @@ describe('recordSecurityEvent', () => {
         // subsystem (Notifications audit N6), and the Super Protect
         // subsystem (audit SP2/SP3/SP4/SP1).
         expect(Object.values(EVENT_TYPES).sort()).toEqual([
+            'campaign.cross_tenant_access_denied',
+            'campaign.manually_paused',
+            'campaign.manually_resumed',
             'dedicated_ip.auto_paused',
             'email.delivery.failed',
             'mailbox.cross_tenant_access_denied',

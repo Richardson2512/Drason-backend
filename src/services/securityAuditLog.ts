@@ -46,6 +46,10 @@ export const EVENT_TYPES = {
     SUPPRESSION_MODE_CHANGED: 'suppression.mode_changed',
     MAILBOX_PAUSED_BY_ASSESSMENT: 'mailbox.paused_by_assessment',
     CROSS_TENANT_MAILBOX_ACCESS_DENIED: 'mailbox.cross_tenant_access_denied',
+    // Super Protect ROUND 3 - dashboard campaign pause/resume audit
+    CROSS_TENANT_CAMPAIGN_ACCESS_DENIED: 'campaign.cross_tenant_access_denied',
+    CAMPAIGN_MANUALLY_PAUSED: 'campaign.manually_paused',
+    CAMPAIGN_MANUALLY_RESUMED: 'campaign.manually_resumed',
 } as const;
 export type SecurityEventType = typeof EVENT_TYPES[keyof typeof EVENT_TYPES];
 

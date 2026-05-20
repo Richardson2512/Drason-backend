@@ -138,16 +138,30 @@ export async function pauseCampaign(
     campaignId: string,
     reason: string
 ): Promise<void> {
-    const campaign = await prisma.campaign.findUnique({
-        where: { id: campaignId },
+    // Defence-in-depth (Super Protect ROUND 3 R3-SP1 root-cause fix).
+    // Previously: findUnique({id}) + update({id}) - both ignored the
+    // organizationId parameter, so any authenticated caller could pause
+    // any campaign by ID. The controller passes orgId but the service
+    // never used it as a filter. This is the same cross-tenant shape as
+    // the original SP1 finding in monitoringController.triggerEvent.
+    //
+    // findFirst with both predicates returns null exactly the same as
+    // a nonexistent UUID would - no leak about whether the row exists
+    // in some other org. updateMany with both predicates returns
+    // count===0 on cross-tenant attempts even if a future caller
+    // bypasses the controller ownership gate (the controller-layer
+    // gate in dashboardController.pauseCampaign is the first line of
+    // defense; this is the second).
+    const campaign = await prisma.campaign.findFirst({
+        where: { id: campaignId, organization_id: organizationId },
         select: { name: true, status: true }
     });
 
     if (!campaign || campaign.status === 'paused') return;
 
     const previousStatus = campaign.status;
-    await prisma.campaign.update({
-        where: { id: campaignId },
+    const updateResult = await prisma.campaign.updateMany({
+        where: { id: campaignId, organization_id: organizationId },
         data: {
             status: 'paused',
             paused_reason: reason,
@@ -155,6 +169,9 @@ export async function pauseCampaign(
             paused_by: 'system'
         }
     });
+    // Race-safe: if the row was already paused or has been mutated
+    // out from under us by a parallel writer, abort the side effects.
+    if (updateResult.count === 0) return;
 
     // Record state transition for traceability
     await prisma.stateTransition.create({
@@ -238,14 +255,20 @@ export async function resumeCampaign(
     organizationId: string,
     campaignId: string
 ): Promise<void> {
-    const campaign = await prisma.campaign.findUnique({
-        where: { id: campaignId },
+    // Same defence-in-depth pattern as pauseCampaign above.
+    // Super Protect ROUND 3 R3-SP1 root-cause fix - the service layer
+    // refuses to operate on a campaign that does not belong to the
+    // caller's organization, regardless of what the controller passes.
+    const campaign = await prisma.campaign.findFirst({
+        where: { id: campaignId, organization_id: organizationId },
         select: { name: true, status: true }
     });
 
-    const previousStatus = campaign?.status || 'unknown';
-    await prisma.campaign.update({
-        where: { id: campaignId },
+    if (!campaign) return;
+
+    const previousStatus = campaign.status || 'unknown';
+    const updateResult = await prisma.campaign.updateMany({
+        where: { id: campaignId, organization_id: organizationId },
         data: {
             status: 'active',
             paused_reason: null,
@@ -253,6 +276,7 @@ export async function resumeCampaign(
             warning_count: 0  // Reset warning count on resume
         }
     });
+    if (updateResult.count === 0) return;
 
     // Record state transition for traceability
     await prisma.stateTransition.create({

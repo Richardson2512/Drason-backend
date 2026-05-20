@@ -12,6 +12,7 @@ import * as routingService from '../services/routingService';
 import * as leadHealthService from '../services/leadHealthService';
 import * as campaignHealthService from '../services/campaignHealthService';
 import * as entityStateService from '../services/entityStateService';
+import { recordSecurityEvent, EVENT_TYPES } from '../services/securityAuditLog';
 import { MailboxState, DomainState, TriggerType } from '../types';
 import { logger } from '../services/observabilityService';
 import { cached } from '../utils/responseCache';
@@ -978,7 +979,56 @@ export const pauseCampaign = async (req: Request, res: Response) => {
             return res.status(400).json({ success: false, error: 'Missing campaignId' });
         }
 
-        await campaignHealthService.pauseCampaign(orgId, campaignId, reason || 'Manual pause');
+        // Ownership gate (Super Protect ROUND 3 R3-SP1).
+        // Previously: pauseCampaign accepted campaignId from req.body and
+        // forwarded straight to the service. The service did findUnique +
+        // update WITHOUT an organization_id filter, so any authenticated
+        // user could pause any campaign org-wide just by knowing its UUID.
+        // Direct sibling of the original SP1 cross-tenant attack.
+        //
+        // findFirst with both predicates returns null exactly like a
+        // nonexistent UUID would (no leak of whether the row exists in
+        // some other org). Service-layer defence-in-depth: even if a
+        // future controller bypasses this check, the service refuses to
+        // operate on cross-org rows.
+        const campaign = await prisma.campaign.findFirst({
+            where: { id: String(campaignId), organization_id: orgId },
+            select: { id: true },
+        });
+        if (!campaign) {
+            logger.warn('[DASHBOARD] pauseCampaign: campaign ownership check failed', {
+                orgId,
+                requestedCampaignId: String(campaignId),
+            });
+            void recordSecurityEvent({
+                organizationId: orgId,
+                actorKind: 'user',
+                actorId: req.orgContext?.userId ?? null,
+                eventType: EVENT_TYPES.CROSS_TENANT_CAMPAIGN_ACCESS_DENIED,
+                target: String(campaignId),
+                metadata: { action: 'pause', route: '/api/dashboard/campaign/pause' },
+                req,
+            });
+            return res.status(404).json({ success: false, error: 'Campaign not found' });
+        }
+
+        await campaignHealthService.pauseCampaign(orgId, campaign.id, reason || 'Manual pause');
+
+        // SecurityAuditLog row for the successful operator-initiated pause.
+        // Operator pause of a campaign is consequential and ops needs the
+        // forensic trail when investigating "why did this campaign stop
+        // sending?" - same class as the suppression-mode flip and the
+        // dedicated-ip auto-pause events. R3-SP3 root-cause fix.
+        void recordSecurityEvent({
+            organizationId: orgId,
+            actorKind: 'user',
+            actorId: req.orgContext?.userId ?? null,
+            eventType: EVENT_TYPES.CAMPAIGN_MANUALLY_PAUSED,
+            target: campaign.id,
+            metadata: { reason: reason || 'Manual pause' },
+            req,
+        });
+
         res.json({ success: true, message: 'Campaign paused' });
     } catch (error) {
         logger.error('pauseCampaign error', error as Error);
@@ -998,7 +1048,42 @@ export const resumeCampaign = async (req: Request, res: Response) => {
             return res.status(400).json({ success: false, error: 'Missing campaignId' });
         }
 
-        await campaignHealthService.resumeCampaign(orgId, campaignId);
+        // Ownership gate - same reasoning as pauseCampaign above.
+        // R3-SP1 root-cause fix.
+        const campaign = await prisma.campaign.findFirst({
+            where: { id: String(campaignId), organization_id: orgId },
+            select: { id: true },
+        });
+        if (!campaign) {
+            logger.warn('[DASHBOARD] resumeCampaign: campaign ownership check failed', {
+                orgId,
+                requestedCampaignId: String(campaignId),
+            });
+            void recordSecurityEvent({
+                organizationId: orgId,
+                actorKind: 'user',
+                actorId: req.orgContext?.userId ?? null,
+                eventType: EVENT_TYPES.CROSS_TENANT_CAMPAIGN_ACCESS_DENIED,
+                target: String(campaignId),
+                metadata: { action: 'resume', route: '/api/dashboard/campaign/resume' },
+                req,
+            });
+            return res.status(404).json({ success: false, error: 'Campaign not found' });
+        }
+
+        await campaignHealthService.resumeCampaign(orgId, campaign.id);
+
+        // Forensic audit row for the successful resume. R3-SP3.
+        void recordSecurityEvent({
+            organizationId: orgId,
+            actorKind: 'user',
+            actorId: req.orgContext?.userId ?? null,
+            eventType: EVENT_TYPES.CAMPAIGN_MANUALLY_RESUMED,
+            target: campaign.id,
+            metadata: {},
+            req,
+        });
+
         res.json({ success: true, message: 'Campaign resumed' });
     } catch (error) {
         logger.error('resumeCampaign error', error as Error);

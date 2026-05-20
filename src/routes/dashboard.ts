@@ -5,7 +5,9 @@ import { validateBody, validateQuery, routingRuleSchema, campaignActionSchema, p
 // Per-org rate-limit on the two export endpoints under /api/dashboard.
 // Each one materializes up to 50k rows in memory before CSV serialization
 // (Reports audit R4 root-cause fix).
-import { exportRateLimit } from '../middleware/rateLimitPerOrg';
+// protectionConfigRateLimit additionally guards the operator-driven
+// pause/resume state mutations (Super Protect R3-SP2 root-cause fix).
+import { exportRateLimit, protectionConfigRateLimit } from '../middleware/rateLimitPerOrg';
 
 const router = Router();
 
@@ -27,8 +29,11 @@ router.get('/lead-health-stats', dashboardController.getLeadHealthStats);
 
 // Campaign Health endpoints
 // Removed: /campaign-health-stats - Duplicate of /campaigns endpoint (use that instead)
-router.post('/campaign/pause', validateBody(campaignActionSchema), dashboardController.pauseCampaign);
-router.post('/campaign/resume', validateBody(campaignActionSchema), dashboardController.resumeCampaign);
+// Rate-limited via protectionConfigRateLimit (3/min/org) for Super Protect
+// R3-SP2 - operator-driven campaign pause/resume should be rare; >3/min
+// is a script or a compromised credential, not a person.
+router.post('/campaign/pause', protectionConfigRateLimit, validateBody(campaignActionSchema), dashboardController.pauseCampaign);
+router.post('/campaign/resume', protectionConfigRateLimit, validateBody(campaignActionSchema), dashboardController.resumeCampaign);
 router.post('/campaigns/pause-all', campaignController.pauseAllCampaigns);
 router.get('/campaigns/:id/stalled-context', campaignController.getStalledCampaignContext);
 router.post('/campaigns/:id/resolve-stalled', validateBody(resolveStalledCampaignSchema), campaignController.resolveStalledCampaign);
