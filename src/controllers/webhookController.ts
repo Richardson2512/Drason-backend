@@ -31,21 +31,39 @@ import {
     type WebhookEventType,
 } from '../services/webhookService';
 import { generateEndpointSecret } from '../utils/webhookOutboundSigning';
+import { validateSafeOutboundUrl } from '../utils/safeOutboundUrl';
 
 // ────────────────────────────────────────────────────────────────────
 // Validation helpers
 // ────────────────────────────────────────────────────────────────────
 
-const URL_REGEX = /^https?:\/\/[^\s/$.?#].[^\s]*$/i;
-
-function validateUrl(url: unknown): { ok: true; url: string } | { ok: false; error: string } {
+/**
+ * Validate a customer-supplied webhook URL.
+ *
+ * Pre-fix (Notifications audit N1, CRITICAL): this was a regex shape
+ * check that accepted `http://169.254.169.254/...` / `http://10.x.x.x/...`
+ * / `http://localhost:5432/...`. An authenticated user could register
+ * such a URL and read responses back through GET /api/webhooks/:id/
+ * deliveries/:deliveryId - SSRF into IAM credential theft.
+ *
+ * Post-fix: shape + production-https are now BOTH defense-in-depth on
+ * top of `validateSafeOutboundUrl`, which resolves DNS and rejects any
+ * hostname that points at a private / loopback / link-local / cloud-
+ * metadata address. Validation also runs again at dispatch time inside
+ * `safeFetch` so a hostname whose DNS later flips to internal is still
+ * blocked.
+ */
+async function validateUrl(url: unknown): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
     if (typeof url !== 'string') return { ok: false, error: 'url must be a string' };
     const trimmed = url.trim();
-    if (!URL_REGEX.test(trimmed)) return { ok: false, error: 'url must be a valid http(s) URL' };
     if (process.env.NODE_ENV === 'production' && trimmed.startsWith('http://')) {
         return { ok: false, error: 'http:// URLs are blocked in production - use https://' };
     }
-    return { ok: true, url: trimmed };
+    const safe = await validateSafeOutboundUrl(trimmed);
+    if (!safe.ok) {
+        return { ok: false, error: `url is not allowed as a webhook destination: ${safe.message}` };
+    }
+    return { ok: true, url: safe.normalized };
 }
 
 function validateEvents(events: unknown): { ok: true; events: string[] } | { ok: false; error: string } {
@@ -137,7 +155,7 @@ export const createEndpoint = async (req: Request, res: Response): Promise<Respo
     if (!name || typeof name !== 'string' || name.trim().length === 0 || name.length > 120) {
         return res.status(400).json({ success: false, error: 'name is required (1–120 chars)' });
     }
-    const urlV = validateUrl(url);
+    const urlV = await validateUrl(url);
     if (!urlV.ok) return res.status(400).json({ success: false, error: urlV.error });
     const eventsV = validateEvents(events);
     if (!eventsV.ok) return res.status(400).json({ success: false, error: eventsV.error });
@@ -217,7 +235,7 @@ export const updateEndpoint = async (req: Request, res: Response): Promise<Respo
             data.name = name.trim();
         }
         if (url !== undefined) {
-            const v = validateUrl(url);
+            const v = await validateUrl(url);
             if (!v.ok) return res.status(400).json({ success: false, error: v.error });
             data.url = v.url;
         }

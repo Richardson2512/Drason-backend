@@ -93,3 +93,27 @@ export const integrationConnectRateLimit = rateLimitPerOrg({
     windowMs: 60_000,
     bucketKey: 'integration-connect',
 });
+
+/**
+ * Preset for webhook-ops endpoints: 10 attempts per minute per org for
+ * create/update/rotate, and the tighter `webhookTestRateLimit` (below)
+ * for /test which fans out a real event to every active endpoint in
+ * the org. Notifications audit N3: without this, an authenticated user
+ * could spam endpoint creation (filling the DB) or trigger /test in a
+ * loop to amplify fan-out.
+ */
+export const webhookOpsRateLimit = rateLimitPerOrg({
+    maxPerWindow: 10,
+    windowMs: 60_000,
+    bucketKey: 'webhook-ops',
+});
+
+/**
+ * Tighter preset for the synthetic test-event endpoint: each call fans
+ * out to every active webhook in the org, so we cap at 5/min/org.
+ */
+export const webhookTestRateLimit = rateLimitPerOrg({
+    maxPerWindow: 5,
+    windowMs: 60_000,
+    bucketKey: 'webhook-test',
+});

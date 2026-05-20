@@ -35,6 +35,7 @@ import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import { sendTransactionalEmail } from './transactionalEmailService';
 import { renderEmailTemplate, renderEmailPlainText } from './transactionalEmailTemplates';
+import { recordSecurityEvent, EVENT_TYPES } from './securityAuditLog';
 
 // ────────────────────────────────────────────────────────────────────
 // Event taxonomy - single source of truth for valid event types.
@@ -359,6 +360,33 @@ export async function markDeliveryAttempt(
             notifyEndpointAutoDisabled(delivery.endpoint_id).catch(err =>
                 logger.error('[WEBHOOK] notifyEndpointAutoDisabled failed', err instanceof Error ? err : new Error(String(err)))
             );
+            void recordSecurityEvent({
+                organizationId: delivery.endpoint.organization_id,
+                actorKind: 'system',
+                eventType: EVENT_TYPES.WEBHOOK_ENDPOINT_AUTO_DISABLED,
+                target: delivery.endpoint_id,
+                metadata: {
+                    endpoint_url: delivery.endpoint.url,
+                    failure_count: newFailureCount,
+                    last_error: result.errorMessage ?? null,
+                },
+            });
+        }
+        // Surface SSRF blocks as their own event-type so an operator
+        // can grep one row instead of decoding a generic last_error.
+        // The dispatcher worker stamps `blocked: ...` into errorMessage
+        // when safeFetch refuses the destination.
+        if (result.errorMessage && result.errorMessage.startsWith('blocked: ')) {
+            void recordSecurityEvent({
+                organizationId: delivery.endpoint.organization_id,
+                actorKind: 'system',
+                eventType: EVENT_TYPES.WEBHOOK_DELIVERY_SSRF_BLOCKED,
+                target: delivery.endpoint_id,
+                metadata: {
+                    endpoint_url: delivery.endpoint.url,
+                    detail: result.errorMessage,
+                },
+            });
         }
     } else {
         await prisma.webhookDelivery.update({

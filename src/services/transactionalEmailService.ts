@@ -19,6 +19,7 @@
  */
 
 import { logger } from './observabilityService';
+import { recordSecurityEvent, EVENT_TYPES } from './securityAuditLog';
 
 const RESEND_ENDPOINT = 'https://api.resend.com/emails';
 
@@ -110,6 +111,20 @@ export async function sendTransactionalEmail(
             const text = await res.text().catch(() => '');
             logger.error(`[TX_EMAIL] Resend rejected: ${res.status}`, new Error(text), {
                 to: params.to, subject: params.subject,
+            });
+            // Notifications audit N6: surface delivery failure to the
+            // durable audit table so an operator can correlate "users
+            // missed the password-reset email" with the right window.
+            void recordSecurityEvent({
+                actorKind: 'system',
+                eventType: EVENT_TYPES.EMAIL_DELIVERY_FAILED,
+                // Recipient address is identifying - record subject only
+                // and the recipient count, not the addresses.
+                target: params.subject,
+                metadata: {
+                    resend_status: res.status,
+                    recipient_count: Array.isArray(params.to) ? params.to.length : 1,
+                },
             });
             return { sent: false, id: null, skippedReason: 'resend_error' };
         }

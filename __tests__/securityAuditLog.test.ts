@@ -65,10 +65,13 @@ describe('recordSecurityEvent', () => {
         expect(call.data.organization_id).toBeNull();
     });
 
-    it('EVENT_TYPES vocabulary covers every OAuth/MCP touchpoint we instrument', () => {
+    it('EVENT_TYPES vocabulary covers every OAuth/MCP + Notifications touchpoint we instrument', () => {
         // If this list changes, every call site needs an audit. Reviewer
-        // gate - do not relax this without intent.
+        // gate - do not relax this without intent. Currently spans the
+        // OAuth/MCP subsystem (API/MCP audit G6) AND the Notifications
+        // subsystem (Notifications audit N6).
         expect(Object.values(EVENT_TYPES).sort()).toEqual([
+            'email.delivery.failed',
             'mcp.tool.failed',
             'mcp.tool.invoked',
             'oauth.client.registered',
@@ -79,6 +82,10 @@ describe('recordSecurityEvent', () => {
             'oauth.token.minted',
             'oauth.token.refreshed',
             'oauth.token.revoked',
+            'slack.integration.auth_error',
+            'slack.integration.revoked',
+            'webhook.delivery.ssrf_blocked',
+            'webhook.endpoint.auto_disabled',
         ]);
     });
 });

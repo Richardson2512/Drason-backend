@@ -3,44 +3,16 @@ import { verifySlackSignature } from '../utils/slackUtils';
 import { logger } from '../services/observabilityService';
 import { prisma } from '../prisma';
 import axios from 'axios';
-import crypto from 'crypto';
 import { getPublicBackendUrl } from '../utils/publicBackendUrl';
+// Slack bot-token at-rest encryption is now consolidated in
+// utils/slackTokenEncryption.ts (Notifications audit N2 root-cause fix).
+// The old local AES-256-GCM with a padEnd "KDF" + hardcoded fallback
+// string is gone; legacy rows still decrypt via the v2-then-legacy
+// fallback inside the helper.
+import { encryptSlackToken, decryptSlackToken, reencryptSlackTokenIfLegacy } from '../utils/slackTokenEncryption';
 
 interface RequestWithRawBody extends Request {
     rawBody?: string;
-}
-
-// Token Encryption Helper
-function encryptToken(text: string): string {
-    const algorithm = 'aes-256-gcm';
-    const iv = crypto.randomBytes(16);
-    // Use SLACK_SIGNING_SECRET or fall back to generic APP secret for encryption key
-    // Ensure key is exactly 32 bytes 
-    let key = (process.env.SLACK_SIGNING_SECRET || process.env.JWT_SECRET || 'fallback-secret-for-dev-only--').padEnd(32, '0').substring(0, 32);
-
-    const cipher = crypto.createCipheriv(algorithm, Buffer.from(key), iv);
-    let encrypted = cipher.update(text, 'utf8', 'hex');
-    encrypted += cipher.final('hex');
-    const authTag = cipher.getAuthTag().toString('hex');
-
-    return `${iv.toString('hex')}:${authTag}:${encrypted}`;
-}
-
-function decryptToken(encryptedData: string): string {
-    const algorithm = 'aes-256-gcm';
-    let key = (process.env.SLACK_SIGNING_SECRET || process.env.JWT_SECRET || 'fallback-secret-for-dev-only--').padEnd(32, '0').substring(0, 32);
-
-    const parts = encryptedData.split(':');
-    const iv = Buffer.from(parts[0], 'hex');
-    const authTag = Buffer.from(parts[1], 'hex');
-    const encrypted = parts[2];
-
-    const decipher = crypto.createDecipheriv(algorithm, Buffer.from(key), iv);
-    decipher.setAuthTag(authTag);
-    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-
-    return decrypted;
 }
 
 // ============================================================================
@@ -163,7 +135,7 @@ export const handleOAuthCallback = async (req: Request, res: Response) => {
             data: {
                 organization_id: orgId,
                 slack_team_id: teamId,
-                bot_token_encrypted: encryptToken(botToken),
+                bot_token_encrypted: encryptSlackToken(botToken),
                 installed_by_user_id: superkabeUserId !== 'system' ? superkabeUserId : orgId // fallback if user not present
             }
         });
@@ -311,7 +283,11 @@ export const getSlackChannels = async (req: Request, res: Response) => {
             return res.status(404).json({ success: false, error: 'Slack not connected' });
         }
 
-        const token = decryptToken(integration.bot_token_encrypted);
+        const decoded = decryptSlackToken(integration.bot_token_encrypted);
+        const token = decoded.plaintext;
+        // Opportunistically re-encrypt legacy rows; failure must not
+        // break the channel-list flow.
+        void reencryptSlackTokenIfLegacy(orgId, decoded);
 
         const response = await axios.get('https://slack.com/api/conversations.list', {
             headers: { Authorization: `Bearer ${token}` },
@@ -358,7 +334,9 @@ export const saveSlackChannel = async (req: Request, res: Response) => {
             return res.status(404).json({ success: false, error: 'Slack not connected' });
         }
 
-        const token = decryptToken(integration.bot_token_encrypted);
+        const decoded = decryptSlackToken(integration.bot_token_encrypted);
+        const token = decoded.plaintext;
+        void reencryptSlackTokenIfLegacy(orgId, decoded);
 
         const postTestMessage = () => axios.post('https://slack.com/api/chat.postMessage', {
             channel: channel_id,

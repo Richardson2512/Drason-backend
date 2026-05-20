@@ -35,6 +35,12 @@ export const EVENT_TYPES = {
     OAUTH_CODE_REUSE_DETECTED: 'oauth.code.reuse_detected',
     MCP_TOOL_INVOKED: 'mcp.tool.invoked',
     MCP_TOOL_FAILED: 'mcp.tool.failed',
+    // Notifications subsystem (audit N6)
+    WEBHOOK_ENDPOINT_AUTO_DISABLED: 'webhook.endpoint.auto_disabled',
+    WEBHOOK_DELIVERY_SSRF_BLOCKED: 'webhook.delivery.ssrf_blocked',
+    SLACK_INTEGRATION_AUTH_ERROR: 'slack.integration.auth_error',
+    SLACK_INTEGRATION_REVOKED: 'slack.integration.revoked',
+    EMAIL_DELIVERY_FAILED: 'email.delivery.failed',
 } as const;
 export type SecurityEventType = typeof EVENT_TYPES[keyof typeof EVENT_TYPES];
 

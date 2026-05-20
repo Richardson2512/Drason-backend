@@ -3,6 +3,10 @@ import crypto from 'crypto';
 import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import { SlackAlertsStatus } from '@prisma/client';
+// Slack bot-token at-rest encryption is centralized in
+// utils/slackTokenEncryption.ts (Notifications audit N2 root-cause fix).
+import { decryptSlackToken, reencryptSlackTokenIfLegacy } from '../utils/slackTokenEncryption';
+import { recordSecurityEvent, EVENT_TYPES } from './securityAuditLog';
 
 export type AlertSeverity = 'info' | 'warning' | 'critical';
 
@@ -12,24 +16,11 @@ const SEVERITY_COLORS: Record<AlertSeverity, string> = {
     critical: '#e01e5a'  // Red
 };
 
-// Decrypt helper explicitly duplicated here to enforce isolation 
-// from web request threads and prevent token leakage.
-function decryptTokenIsolated(encryptedData: string): string {
-    const algorithm = 'aes-256-gcm';
-    const key = (process.env.SLACK_SIGNING_SECRET || process.env.JWT_SECRET || 'fallback-secret-for-dev-only--').padEnd(32, '0').substring(0, 32);
-
-    const parts = encryptedData.split(':');
-    if (parts.length !== 3) throw new Error('Invalid encrypted token format');
-
-    const iv = Buffer.from(parts[0], 'hex');
-    const authTag = Buffer.from(parts[1], 'hex');
-    const decipher = crypto.createDecipheriv(algorithm, Buffer.from(key), iv);
-    decipher.setAuthTag(authTag);
-    let decrypted = decipher.update(parts[2], 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-
-    return decrypted;
-}
+// (The previous local decryptTokenIsolated() was a duplicate of
+// slackController.ts's broken AES-GCM implementation - same padEnd
+// "KDF" + hardcoded fallback string. Both now route through
+// utils/slackTokenEncryption.ts so a fix at the root replaces every
+// caller.)
 
 /**
  * Proactive Slack Alert Service
@@ -119,8 +110,13 @@ export class SlackAlertService {
             // Channel resolution: per-event override wins over integration default.
             const targetChannel = channelOverride || integration.alerts_channel_id;
 
-            // 3. Decrypt safely strictly in memory scope
-            const botToken = decryptTokenIsolated(integration.bot_token_encrypted);
+            // 3. Decrypt safely strictly in memory scope. v2 format
+            // via utils/slackTokenEncryption; legacy rows fall back
+            // through the helper. Opportunistically re-encrypt so a
+            // worker run gradually migrates old rows without a script.
+            const decoded = decryptSlackToken(integration.bot_token_encrypted);
+            const botToken = decoded.plaintext;
+            void reencryptSlackTokenIfLegacy(params.organizationId, decoded);
 
             // 4. Construct Block Kit Payload
             const blocks: any[] = [
@@ -231,6 +227,22 @@ export class SlackAlertService {
                     alerts_last_error_at: new Date(),
                     alerts_last_error_message: `Integration disabled due to Slack error: ${slackError}`
                 }
+            });
+            // Notifications audit N6: a structurally-frozen Slack
+            // integration is a security-relevant event (token revoked
+            // upstream, channel access lost). Record it in the durable
+            // audit log so it shows up alongside OAuth events when an
+            // operator investigates "what changed?".
+            void recordSecurityEvent({
+                organizationId: orgId,
+                actorKind: 'system',
+                eventType: structuralStatus === SlackAlertsStatus.auth_error
+                    ? EVENT_TYPES.SLACK_INTEGRATION_AUTH_ERROR
+                    : structuralStatus === SlackAlertsStatus.revoked
+                        ? EVENT_TYPES.SLACK_INTEGRATION_REVOKED
+                        : EVENT_TYPES.SLACK_INTEGRATION_AUTH_ERROR,
+                target: structuralStatus,
+                metadata: { slack_error: slackError },
             });
         } else {
             // Other non-structural API errors (e.g. invalid_blocks) we just log

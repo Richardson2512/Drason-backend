@@ -31,11 +31,19 @@ import {
     type WebhookEventType,
 } from '../services/webhookService';
 import { signWebhookPayload } from '../utils/webhookOutboundSigning';
+import { safeFetch } from '../utils/safeFetch';
 
 const LOG_TAG = 'WEBHOOK_DISPATCHER';
 const WORKER_CONCURRENCY = 10;
 const RESCUE_INTERVAL_MS = 60_000;
 const POST_TIMEOUT_MS = 15_000;
+// Response body cap matches the storage truncation (4 KB) plus comfortable
+// headroom so we never truncate mid-multi-byte-UTF-8. The actual storage
+// in WebhookDelivery.response_body is still capped at 4 KB by
+// markDeliveryAttempt - this is just the network-level safety bound.
+const RESPONSE_MAX_BYTES = 16 * 1024;
+// Honour redirects but only a handful, each re-validated by safeFetch.
+const MAX_REDIRECTS = 3;
 
 let worker: Worker | null = null;
 let rescueQueue: Queue | null = null;
@@ -139,35 +147,52 @@ async function postDelivery(
     }
 
     const startedAt = Date.now();
-    try {
-        const res = await fetch(endpoint.url, {
-            method: 'POST',
-            headers,
-            body: rawBody,
-            signal: AbortSignal.timeout(POST_TIMEOUT_MS),
-        });
-        const responseBody = await res.text().catch(() => '');
-        const durationMs = Date.now() - startedAt;
+    // safeFetch is the SINGLE source of truth for customer-influenced
+    // outbound HTTP. It (a) re-validates the URL through the SSRF
+    // gatekeeper right before dispatch (closes the time-of-check / time-
+    // of-use window since registration), (b) follows redirects manually
+    // with the same validation on each hop, and (c) stream-caps the
+    // response body so a malicious responder cannot OOM the worker.
+    // Notifications audit N1 + N4 + N5 all close here.
+    const result = await safeFetch(endpoint.url, {
+        method: 'POST',
+        headers,
+        body: rawBody,
+        timeoutMs: POST_TIMEOUT_MS,
+        maxBytes: RESPONSE_MAX_BYTES,
+        maxRedirects: MAX_REDIRECTS,
+    });
+    const durationMs = Date.now() - startedAt;
 
-        if (res.ok) {
-            return { success: true, responseCode: res.status, responseBody, durationMs };
-        }
-        return {
-            success: false,
-            responseCode: res.status,
-            responseBody,
-            durationMs,
-            errorMessage: `HTTP ${res.status} ${res.statusText}`,
-        };
-    } catch (err) {
-        const durationMs = Date.now() - startedAt;
-        const msg = err instanceof Error ? err.message : String(err);
+    if (!result.ok) {
+        // Map safeFetch failure categories to the existing
+        // DeliveryAttemptResult shape. URL-blocked / redirect-blocked
+        // failures are PERMANENT (validator decision, not a transient
+        // network issue) - the caller's markDeliveryAttempt still retries
+        // per the standard schedule, but we surface the SSRF block in
+        // last_error so the operator can see "your URL points at an
+        // internal range" instead of a generic timeout.
         return {
             success: false,
             durationMs,
-            errorMessage: msg.includes('aborted') ? `timeout after ${POST_TIMEOUT_MS}ms` : msg,
+            errorMessage: result.reason === 'url_blocked' || result.reason === 'redirect_blocked'
+                ? `blocked: ${result.message}`
+                : result.reason === 'timeout'
+                    ? `timeout after ${POST_TIMEOUT_MS}ms`
+                    : result.message,
         };
     }
+
+    if (result.status >= 200 && result.status < 300) {
+        return { success: true, responseCode: result.status, responseBody: result.body, durationMs };
+    }
+    return {
+        success: false,
+        responseCode: result.status,
+        responseBody: result.body,
+        durationMs,
+        errorMessage: `HTTP ${result.status} ${result.statusText}`,
+    };
 }
 
 // ────────────────────────────────────────────────────────────────────

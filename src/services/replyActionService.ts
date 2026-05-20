@@ -19,6 +19,7 @@
 import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import { pauseCrossChannelForLead } from './crossChannelSuppressionService';
+import * as notificationService from './notificationService';
 
 export interface ReplyActionContext {
     organizationId: string;
@@ -165,17 +166,16 @@ export async function applyReplyActions(ctx: ReplyActionContext): Promise<void> 
                     // operator can click through instead of searching the
                     // Unibox. action_url is consumed by the notification
                     // dropdown component; entity_type/entity_id let the
-                    // Unibox row badge unread alerts per-thread.
-                    await prisma.notification.create({
-                        data: {
-                            organization_id: ctx.organizationId,
-                            type: ctx.replyClass === 'angry' ? 'WARNING' : 'INFO',
-                            title: `Reply classified as ${ctx.replyClass}`,
-                            message: `${ctx.contactEmail} replied with a "${ctx.replyClass}" reply. Review in Unibox.`,
-                            action_url: `/dashboard/sequencer/unibox?thread=${ctx.threadId}`,
-                            entity_type: 'email_thread',
-                            entity_id: ctx.threadId,
-                        },
+                    // Unibox row badge unread alerts per-thread. Routed
+                    // through notificationService so the action_url is
+                    // validated at the writer (N7 root-cause fix).
+                    await notificationService.createNotification(ctx.organizationId, {
+                        type: ctx.replyClass === 'angry' ? 'WARNING' : 'INFO',
+                        title: `Reply classified as ${ctx.replyClass}`,
+                        message: `${ctx.contactEmail} replied with a "${ctx.replyClass}" reply. Review in Unibox.`,
+                        actionUrl: `/dashboard/sequencer/unibox?thread=${ctx.threadId}`,
+                        entityType: 'email_thread',
+                        entityId: ctx.threadId,
                     });
                     break;
 
