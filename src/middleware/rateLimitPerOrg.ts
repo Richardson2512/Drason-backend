@@ -157,3 +157,22 @@ export const protectionConfigRateLimit = rateLimitPerOrg({
     windowMs: 60_000,
     bucketKey: 'protection-config',
 });
+
+/**
+ * Preset for assessment-trigger endpoints (POST /assessment/run and the
+ * per-domain DNS re-check). These run expensive DNS + DNSBL fanout
+ * (resolveTxt, resolve4, hundreds of DNSBL probes per domain). A
+ * compromised agency-owner credential or a retry-loop bug in the frontend
+ * could DOS the resolver pool and rack up DNSBL provider quota.
+ *
+ * Sized at 5/min/org - generous for legitimate operator retries
+ * (assessment takes ~30s; even 2 retries per minute is unusual) but
+ * rejects scripted abuse. Aligns with exportRateLimit and
+ * integrationConnectRateLimit which guard similarly-heavy operator
+ * actions. Super Protect audit R2-SP2.
+ */
+export const assessmentRateLimit = rateLimitPerOrg({
+    maxPerWindow: 5,
+    windowMs: 60_000,
+    bucketKey: 'assessment-run',
+});

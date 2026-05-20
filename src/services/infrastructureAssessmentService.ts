@@ -27,6 +27,7 @@ import * as eventService from './eventService';
 import * as rotationService from './rotationService';
 import { SlackAlertService } from './SlackAlertService';
 import * as dnsblService from './dnsblService';
+import { recordSecurityEvent, EVENT_TYPES } from './securityAuditLog';
 import { MailboxState, DomainState, TriggerType, EventType, MONITORING_THRESHOLDS } from '../types';
 import { logger } from './observabilityService';
 
@@ -222,7 +223,13 @@ interface AssessmentResult {
  * This closes the gap where assessment-detected pauses were DB-only flags
  * without actual platform enforcement or healing entry.
  */
-async function enforceMailboxPause(
+/**
+ * Exported for the Super Protect round-2 audit regression tests. Internal
+ * callers (runFullAssessment) treat it as private - the export exists so
+ * the test harness can call it directly to verify the audit emission
+ * contract without standing up the entire assessment pipeline.
+ */
+export async function enforceMailboxPause(
     organizationId: string,
     mailbox: {
         id: string;
@@ -281,6 +288,33 @@ async function enforceMailboxPause(
             organizationId, error: err.message,
         });
     }
+
+    // ── 3b. SecurityAuditLog row (Super Protect audit R2-SP1).
+    // The first-pass SP4 fix above added the operational AuditLog row but
+    // left the EVENT_TYPES.MAILBOX_PAUSED_BY_ASSESSMENT constant unused.
+    // That created a pattern divergence vs the three sibling Super Protect
+    // events (cross-tenant access, dedicated-ip auto-pause, suppression-
+    // mode flip) which all write to SecurityAuditLog via recordSecurityEvent.
+    // SecurityAuditLog is the forensic-grade table operators query when
+    // investigating consequential state changes; the analytics AuditLog
+    // serves the entity-timeline UI. Both are needed - operators reasoning
+    // about "why did Super Protect pause this mailbox?" expect the trail to
+    // show up where the other Super Protect actions do, not in a separate
+    // analytics surface. fire-and-forget; the existing surrounding
+    // try/catch on AuditLog is for the same reason - assessment must not
+    // abort because an audit write hiccuped. ──
+    void recordSecurityEvent({
+        organizationId,
+        actorKind: 'system',
+        eventType: EVENT_TYPES.MAILBOX_PAUSED_BY_ASSESSMENT,
+        target: mailbox.id,
+        metadata: {
+            reason,
+            mailbox_email: mailbox.email,
+            resilience_score_before: currentResilience,
+            resilience_score_after: newResilience,
+        },
+    });
 
     // ── 3. Slack alert ──
     SlackAlertService.sendAlert({
