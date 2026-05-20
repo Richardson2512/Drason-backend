@@ -145,3 +145,15 @@ export const exportRateLimit = rateLimitPerOrg({
     windowMs: 60_000,
     bucketKey: 'data-export',
 });
+
+/**
+ * Preset for protection-critical configuration flips (cross-channel
+ * suppression mode, future system_mode endpoint). These rarely change
+ * legitimately - if a request rate exceeds 3/min, that's a script not
+ * a person. Super Protect audit SP5.
+ */
+export const protectionConfigRateLimit = rateLimitPerOrg({
+    maxPerWindow: 3,
+    windowMs: 60_000,
+    bucketKey: 'protection-config',
+});

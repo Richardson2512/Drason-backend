@@ -9,6 +9,7 @@ import { getOrgId } from '../middleware/orgContext';
 import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
 import { getSuppressionMode, setSuppressionMode, type SuppressionMode } from '../services/crossChannelSuppressionService';
+import { recordSecurityEvent, EVENT_TYPES } from '../services/securityAuditLog';
 
 /**
  * GET /api/sequencer/settings
@@ -124,7 +125,21 @@ export const updateSuppressionModeHandler = async (req: Request, res: Response):
                 error: `mode must be one of ${VALID_MODES.join(', ')}`,
             });
         }
+        // Capture the previous mode for the audit row. A flip from
+        // CLASSIFIED to OFF disables cross-channel reply protection
+        // across the entire org; the audit table is where "who flipped
+        // protection off and when" lives. Super Protect audit SP3.
+        const previous = await getSuppressionMode(orgId);
         await setSuppressionMode(orgId, requested);
+        void recordSecurityEvent({
+            organizationId: orgId,
+            actorKind: 'user',
+            actorId: req.orgContext?.userId ?? null,
+            eventType: EVENT_TYPES.SUPPRESSION_MODE_CHANGED,
+            target: orgId,
+            metadata: { from: previous, to: requested },
+            req,
+        });
         return res.json({ success: true, data: { mode: requested } });
     } catch (error: any) {
         logger.error('[SEQ_SETTINGS] Failed to update suppression mode', error instanceof Error ? error : new Error(String(error)));

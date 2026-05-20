@@ -27,6 +27,7 @@ import axios from 'axios';
 import MessageValidator from 'sns-validator';
 import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
+import { recordSecurityEvent, EVENT_TYPES } from '../services/securityAuditLog';
 
 const BOUNCE_PAUSE_THRESHOLD = 0.04;     // 4%
 const COMPLAINT_PAUSE_THRESHOLD = 0.0008; // 0.08%
@@ -239,7 +240,7 @@ export const handleSesNotification = async (req: Request, res: Response): Promis
                 if (complaintRate > COMPLAINT_PAUSE_THRESHOLD) pauseReason = 'auto_paused_complaint';
                 else if (bounceRate > BOUNCE_PAUSE_THRESHOLD) pauseReason = 'auto_paused_bounce';
                 if (pauseReason) {
-                    await prisma.dedicatedIp.updateMany({
+                    const updateResult = await prisma.dedicatedIp.updateMany({
                         // Conditional-on-no-prior-pause to avoid clobbering a manual pause.
                         where: { id: ip.id, paused_reason: null },
                         data: { paused_reason: pauseReason, paused_at: new Date() },
@@ -251,6 +252,25 @@ export const handleSesNotification = async (req: Request, res: Response): Promis
                         complaintRate,
                         total,
                     });
+                    // Super Protect audit SP2: pause of a paid IP is a
+                    // consequential event the audit table needs to
+                    // record. Only fire when the conditional update
+                    // actually flipped the row (count === 1).
+                    if (updateResult.count > 0) {
+                        void recordSecurityEvent({
+                            organizationId: ip.organization_id ?? null,
+                            actorKind: 'system',
+                            eventType: EVENT_TYPES.DEDICATED_IP_AUTO_PAUSED,
+                            target: ip.id,
+                            metadata: {
+                                reason: pauseReason,
+                                bounce_rate: Number(bounceRate.toFixed(6)),
+                                complaint_rate: Number(complaintRate.toFixed(6)),
+                                window_total: total,
+                                ses_ip_address: ip.ses_ip_address ?? null,
+                            },
+                        });
+                    }
                 }
             }
         }

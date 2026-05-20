@@ -65,13 +65,17 @@ describe('recordSecurityEvent', () => {
         expect(call.data.organization_id).toBeNull();
     });
 
-    it('EVENT_TYPES vocabulary covers every OAuth/MCP + Notifications touchpoint we instrument', () => {
+    it('EVENT_TYPES vocabulary covers every audited touchpoint across OAuth/MCP + Notifications + Super Protect', () => {
         // If this list changes, every call site needs an audit. Reviewer
         // gate - do not relax this without intent. Currently spans the
-        // OAuth/MCP subsystem (API/MCP audit G6) AND the Notifications
-        // subsystem (Notifications audit N6).
+        // OAuth/MCP subsystem (API/MCP audit G6), the Notifications
+        // subsystem (Notifications audit N6), and the Super Protect
+        // subsystem (audit SP2/SP3/SP4/SP1).
         expect(Object.values(EVENT_TYPES).sort()).toEqual([
+            'dedicated_ip.auto_paused',
             'email.delivery.failed',
+            'mailbox.cross_tenant_access_denied',
+            'mailbox.paused_by_assessment',
             'mcp.tool.failed',
             'mcp.tool.invoked',
             'oauth.client.registered',
@@ -84,6 +88,7 @@ describe('recordSecurityEvent', () => {
             'oauth.token.revoked',
             'slack.integration.auth_error',
             'slack.integration.revoked',
+            'suppression.mode_changed',
             'webhook.delivery.ssrf_blocked',
             'webhook.endpoint.auto_disabled',
         ]);

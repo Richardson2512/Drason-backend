@@ -12,10 +12,29 @@ import { prisma } from '../prisma';
 import * as monitoringService from '../services/monitoringService';
 import { getOrgId } from '../middleware/orgContext';
 import { logger } from '../services/observabilityService';
+import { recordSecurityEvent, EVENT_TYPES } from '../services/securityAuditLog';
 
 /**
  * Manually trigger a monitoring event.
  * POST /api/monitor/event
+ *
+ * Pre-fix (Super Protect audit SP1, CRITICAL): this handler accepted
+ * `mailboxId` from the request body and forwarded to
+ * `monitoringService.recordBounce/recordSent` WITHOUT verifying the
+ * caller's org owns that mailbox. The downstream service then looked
+ * the mailbox up by id and used `mailbox.organization_id` as if it
+ * were authoritative - so a user authenticated to Org A could POST
+ * `{ eventType: 'bounce', mailboxId: '<Org B's mailbox UUID> }` and
+ * inject fake bounces against Org B's mailbox. 5 fake bounces is
+ * enough to trigger auto-pause; Org B's sending could be incapacitated
+ * by any authenticated user in any org who could obtain a mailbox UUID
+ * (and mailbox UUIDs appear in many surfaces: dashboards, exports,
+ * webhook payloads). Cross-tenant integrity attack on the platform's
+ * core safety system.
+ *
+ * Post-fix: verify ownership at the controller layer before invoking
+ * the service. 404 on mismatch (don't reveal whether the UUID exists
+ * in some other org).
  */
 export const triggerEvent = async (req: Request, res: Response) => {
     const { eventType, mailboxId, campaignId } = req.body;
@@ -25,12 +44,42 @@ export const triggerEvent = async (req: Request, res: Response) => {
     }
 
     try {
+        const orgId = getOrgId(req);
+        // Ownership gate: the caller's org MUST own the mailboxId.
+        // findFirst (not findUnique) lets us combine id + organization_id
+        // into a single predicate so a UUID belonging to another org
+        // returns null exactly the same as a nonexistent UUID would.
+        const mailbox = await prisma.mailbox.findFirst({
+            where: { id: String(mailboxId), organization_id: orgId },
+            select: { id: true },
+        });
+        if (!mailbox) {
+            logger.warn('[MONITOR] triggerEvent: mailbox ownership check failed', {
+                orgId,
+                requestedMailboxId: String(mailboxId),
+            });
+            // Record the attempt to the durable audit log. A repeated
+            // pattern of these from a single org is a strong signal that
+            // a compromised account is probing the platform's safety
+            // system; ops needs the trail to investigate.
+            void recordSecurityEvent({
+                organizationId: orgId,
+                actorKind: 'user',
+                actorId: req.orgContext?.userId ?? null,
+                eventType: EVENT_TYPES.CROSS_TENANT_MAILBOX_ACCESS_DENIED,
+                target: String(mailboxId),
+                metadata: { event_type: eventType, route: '/api/monitor/event' },
+                req,
+            });
+            return res.status(404).json({ success: false, error: 'Mailbox not found' });
+        }
+
         if (eventType === 'bounce') {
-            await monitoringService.recordBounce(mailboxId, campaignId || '');
-            res.json({ success: true, message: 'Bounce recorded', mailboxId });
+            await monitoringService.recordBounce(mailbox.id, campaignId || '');
+            res.json({ success: true, message: 'Bounce recorded', mailboxId: mailbox.id });
         } else if (eventType === 'sent') {
-            await monitoringService.recordSent(mailboxId, campaignId || '');
-            res.json({ success: true, message: 'Send recorded', mailboxId });
+            await monitoringService.recordSent(mailbox.id, campaignId || '');
+            res.json({ success: true, message: 'Send recorded', mailboxId: mailbox.id });
         } else {
             res.status(400).json({ success: false, error: 'Invalid eventType. Use: bounce, sent' });
         }

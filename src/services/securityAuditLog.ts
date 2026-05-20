@@ -41,6 +41,11 @@ export const EVENT_TYPES = {
     SLACK_INTEGRATION_AUTH_ERROR: 'slack.integration.auth_error',
     SLACK_INTEGRATION_REVOKED: 'slack.integration.revoked',
     EMAIL_DELIVERY_FAILED: 'email.delivery.failed',
+    // Super Protect subsystem (audit SP2 + SP3 + SP4)
+    DEDICATED_IP_AUTO_PAUSED: 'dedicated_ip.auto_paused',
+    SUPPRESSION_MODE_CHANGED: 'suppression.mode_changed',
+    MAILBOX_PAUSED_BY_ASSESSMENT: 'mailbox.paused_by_assessment',
+    CROSS_TENANT_MAILBOX_ACCESS_DENIED: 'mailbox.cross_tenant_access_denied',
 } as const;
 export type SecurityEventType = typeof EVENT_TYPES[keyof typeof EVENT_TYPES];
 

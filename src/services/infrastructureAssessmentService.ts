@@ -245,7 +245,7 @@ async function enforceMailboxPause(
         },
     });
 
-    // ── 2. Store event for audit trail ──
+    // ── 2. Store internal event row (analytics / event log) ──
     try {
         await eventService.storeEvent({
             organizationId,
@@ -256,6 +256,28 @@ async function enforceMailboxPause(
         });
     } catch (err: any) {
         logger.warn(`[ASSESSMENT] Non-fatal: failed to store event for mailbox ${mailbox.id}`, {
+            organizationId, error: err.message,
+        });
+    }
+
+    // ── 3. AuditLog row (Super Protect audit SP4 root-cause fix).
+    // Previously this path wrote only to eventService.storeEvent, which
+    // is the analytics event log - a different table from AuditLog where
+    // every other mailbox pause is recorded. Operators searching the
+    // audit table for "why was this mailbox paused?" would find nothing.
+    // Now writes both: eventService for analytics, AuditLog for
+    // forensic-grade audit trail. ──
+    try {
+        await auditLogService.logAction({
+            organizationId,
+            entity: 'mailbox',
+            entityId: mailbox.id,
+            trigger: 'infrastructure_assessment',
+            action: 'mailbox_paused',
+            details: `Mailbox ${mailbox.email} paused by infrastructure assessment. Reason: ${reason}`,
+        });
+    } catch (err: any) {
+        logger.warn(`[ASSESSMENT] Non-fatal: failed to write AuditLog for mailbox ${mailbox.id}`, {
             organizationId, error: err.message,
         });
     }

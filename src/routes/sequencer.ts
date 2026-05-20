@@ -14,6 +14,7 @@ import * as signatureController from '../controllers/signatureController';
 import * as recipientPreviewController from '../controllers/recipientPreviewController';
 import * as zapmailController from '../controllers/zapmailController';
 import { requireCapability, requireAgencyOwner } from '../middleware/requireCapability';
+import { protectionConfigRateLimit } from '../middleware/rateLimitPerOrg';
 
 const router = Router();
 
@@ -150,7 +151,9 @@ settingsRoutes.get('/', sequencerSettingsController.getSettings);
 settingsRoutes.patch('/', requireAgencyOwner, sequencerSettingsController.updateSettings);
 // Cross-channel suppression mode - agency-owner write, anyone in org reads.
 settingsRoutes.get('/suppression-mode', sequencerSettingsController.getSuppressionModeHandler);
-settingsRoutes.patch('/suppression-mode', requireAgencyOwner, sequencerSettingsController.updateSuppressionModeHandler);
+// Cross-channel suppression flips are protection-critical and rare; rate-
+// limit them via protectionConfigRateLimit (3/min/org). Super Protect SP5.
+settingsRoutes.patch('/suppression-mode', requireAgencyOwner, protectionConfigRateLimit, sequencerSettingsController.updateSuppressionModeHandler);
 router.use('/settings', settingsRoutes);
 
 // --- Signatures ---
