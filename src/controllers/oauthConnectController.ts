@@ -24,6 +24,11 @@ import {
     parseMicrosoftState,
     exchangeMicrosoftCodeForTokens,
 } from '../services/microsoftSendService';
+// B2B-only sender-mailbox gate. Mirrors the signup-time check in
+// authController. Was missing from both OAuth-callback sites until a
+// production user successfully connected a personal gmail.com mailbox
+// on staging - hard reject restores parity with the signup behaviour.
+import { isFreeEmailDomain, FREE_EMAIL_MAILBOX_REJECT_MESSAGE } from '../constants/freeEmailDomains';
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 // In subdomain-split mode, /dashboard/* lives on the app host (e.g.
@@ -68,6 +73,22 @@ export const googleCallback = async (req: Request, res: Response): Promise<void>
 
     try {
         const { access_token, refresh_token, expires_at, email, name } = await exchangeGoogleCodeForTokens(String(code));
+
+        // B2B-only sender-mailbox gate. If the OAuth'd account is a
+        // consumer-provider domain (gmail.com, yahoo.com, etc.) reject
+        // BEFORE the ConnectedAccount row is created, BEFORE
+        // provisionMailboxForConnectedAccount runs, and BEFORE the
+        // OAuth consent row is written. Same denylist as signup
+        // (authController.ts:271).
+        if (isFreeEmailDomain(email)) {
+            logger.warn('[OAUTH] Google callback rejected - personal-domain mailbox', {
+                orgId: parsed.orgId,
+                email,
+            });
+            return res.redirect(
+                `${APP_URL}/dashboard/sequencer/accounts?error=${encodeURIComponent(FREE_EMAIL_MAILBOX_REJECT_MESSAGE)}`,
+            );
+        }
 
         // Upsert ConnectedAccount - if this org already has this email as google, update tokens
         const existing = await prisma.connectedAccount.findUnique({
@@ -204,6 +225,19 @@ export const microsoftCallback = async (req: Request, res: Response): Promise<vo
 
     try {
         const { access_token, refresh_token, expires_at, email, name } = await exchangeMicrosoftCodeForTokens(String(code));
+
+        // B2B-only gate. Microsoft consumer providers (outlook.com,
+        // hotmail.com, live.com, msn.com) are all in the same denylist
+        // as the Google side - same hard reject, same UX path.
+        if (isFreeEmailDomain(email)) {
+            logger.warn('[OAUTH] Microsoft callback rejected - personal-domain mailbox', {
+                orgId: parsed.orgId,
+                email,
+            });
+            return res.redirect(
+                `${APP_URL}/dashboard/sequencer/accounts?error=${encodeURIComponent(FREE_EMAIL_MAILBOX_REJECT_MESSAGE)}`,
+            );
+        }
 
         const existing = await prisma.connectedAccount.findUnique({
             where: { organization_id_email: { organization_id: parsed.orgId, email } },

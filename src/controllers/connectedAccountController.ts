@@ -14,6 +14,10 @@ import { verifyAndPersistForAccount, checkTrackingDomain } from '../services/tra
 import { encrypt, decrypt, isEncrypted } from '../utils/encryption';
 import { revokeGoogleToken } from '../utils/googleOAuth';
 import nodemailer from 'nodemailer';
+// B2B-only sender-mailbox gate. Single chokepoint shared with the OAuth
+// callbacks + reseller bulk import so the contract is identical at every
+// site that can create a ConnectedAccount row.
+import { isFreeEmailDomain, FREE_EMAIL_MAILBOX_REJECT_MESSAGE, FREE_EMAIL_MAILBOX_REJECT_CODE } from '../constants/freeEmailDomains';
 
 /**
  * GET /api/sequencer/accounts
@@ -128,6 +132,17 @@ export const createAccount = async (req: Request, res: Response): Promise<Respon
 
         if (!email || !provider) {
             return res.status(400).json({ success: false, error: 'email and provider are required' });
+        }
+
+        // B2B-only sender-mailbox gate. Same denylist as signup +
+        // OAuth callbacks (root-cause fix - centralised in
+        // constants/freeEmailDomains).
+        if (isFreeEmailDomain(String(email))) {
+            return res.status(400).json({
+                success: false,
+                error: FREE_EMAIL_MAILBOX_REJECT_MESSAGE,
+                code: FREE_EMAIL_MAILBOX_REJECT_CODE,
+            });
         }
 
         // Mailbox count is unmetered - connect as many as you like at any tier.
@@ -245,7 +260,7 @@ interface BulkRowResult {
     status: 'created' | 'skipped' | 'failed';
     accountId?: string;
     /** Stable error code so the frontend can group + remediate. */
-    error_code?: 'duplicate' | 'missing_email' | 'missing_provider' | 'invalid_provider' | 'missing_smtp_fields' | 'tier_limit' | 'invalid_email' | 'unknown';
+    error_code?: 'duplicate' | 'missing_email' | 'missing_provider' | 'invalid_provider' | 'missing_smtp_fields' | 'tier_limit' | 'invalid_email' | 'free_email_domain_not_allowed' | 'unknown';
     error_message?: string;
     requires_oauth?: boolean;
 }
@@ -292,6 +307,13 @@ export const bulkCreateAccounts = async (req: Request, res: Response): Promise<R
             }
             if (!VALID_PROVIDERS.has(provider)) {
                 results.push({ row: i + 1, email, status: 'failed', error_code: 'invalid_provider', error_message: `provider must be one of: smtp, google, microsoft (got "${provider}")` });
+                continue;
+            }
+            // B2B-only gate. Same denylist as the OAuth callbacks and
+            // single-account create. Row-level failure (don't bail the
+            // whole batch).
+            if (isFreeEmailDomain(email)) {
+                results.push({ row: i + 1, email, status: 'failed', error_code: FREE_EMAIL_MAILBOX_REJECT_CODE, error_message: FREE_EMAIL_MAILBOX_REJECT_MESSAGE });
                 continue;
             }
             if (provider === 'smtp') {

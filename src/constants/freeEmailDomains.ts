@@ -77,6 +77,7 @@ export const FREE_EMAIL_DOMAINS: ReadonlySet<string> = new Set([
     'fastmail.com',
     'fastmail.fm',
     'inbox.com',
+    'mail.com',
 ]);
 
 /**
@@ -93,3 +94,29 @@ export function isFreeEmailDomain(email: string): boolean {
     const domain = trimmed.slice(at + 1);
     return FREE_EMAIL_DOMAINS.has(domain);
 }
+
+/**
+ * The single canonical message every mailbox-connect site uses when a
+ * personal-provider email tries to be added as a sender mailbox.
+ * Shared so the OAuth callbacks, single-account POST, bulk CSV import,
+ * and reseller-import all surface the same explanation to the user.
+ *
+ * Why this is a hard reject (not a warning):
+ *   - Superkabe is a B2B platform; personal Gmail/Outlook/iCloud accounts
+ *     have stricter consumer-grade ToS that disallow cold-outreach use,
+ *     and sending volume from them tanks domain reputation for everyone
+ *     on the shared infrastructure.
+ *   - The signup gate (authController) already enforces this for the
+ *     ACCOUNT's primary email. The mailbox-connect surface was missing
+ *     the same gate, so a user who signed up with their work email
+ *     could still attach `personal@gmail.com` as a sender mailbox.
+ *   - Mirror behavior across all five call sites: googleCallback,
+ *     microsoftCallback, single-account createAccount, CSV bulk
+ *     createBulk, and reseller import (mailboxImportService).
+ */
+export const FREE_EMAIL_MAILBOX_REJECT_MESSAGE =
+    "Personal email addresses (Gmail, Yahoo, Outlook.com, iCloud, etc.) can't be connected as sender mailboxes. " +
+    "Superkabe is a B2B platform - connect a business mailbox on your own domain (Google Workspace / Microsoft 365 / SMTP on your domain).";
+
+/** Stable code for programmatic error handling at bulk-import call sites. */
+export const FREE_EMAIL_MAILBOX_REJECT_CODE = 'free_email_domain_not_allowed';

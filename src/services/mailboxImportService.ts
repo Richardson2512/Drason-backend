@@ -25,6 +25,7 @@ import { logger } from './observabilityService';
 import { encrypt } from '../utils/encryption';
 import { provisionMailboxForConnectedAccount } from './mailboxProvisioningService';
 import { getSequencerSettings } from './sequencerSettingsService';
+import { isFreeEmailDomain, FREE_EMAIL_MAILBOX_REJECT_MESSAGE } from '../constants/freeEmailDomains';
 import type {
     BulkImportResult,
     BulkImportResultItem,
@@ -114,6 +115,21 @@ export async function runBulkImport(args: ImportArgs): Promise<BulkImportResult>
                 email: remote.email,
                 status: 'failed',
                 error: `Unsupported underlying provider: ${remote.provider}`,
+            });
+            continue;
+        }
+
+        // B2B-only sender-mailbox gate. Resellers like Zapmail
+        // typically provision business-domain mailboxes, but the API
+        // surface accepts arbitrary email addresses - this row-level
+        // check prevents a misconfigured reseller integration from
+        // smuggling personal-domain mailboxes onto the platform.
+        if (isFreeEmailDomain(remote.email)) {
+            items.push({
+                remoteId: remote.remoteId,
+                email: remote.email,
+                status: 'failed',
+                error: FREE_EMAIL_MAILBOX_REJECT_MESSAGE,
             });
             continue;
         }
