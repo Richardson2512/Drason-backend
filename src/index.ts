@@ -459,17 +459,23 @@ app.get('/api/integrations/crm/connections', asyncHandler(crmIntegrationsControl
 app.get('/api/integrations/crm/connections/:id', asyncHandler(crmIntegrationsController.getConnectionDetail));
 app.post('/api/integrations/crm/connections/:id/disconnect', asyncHandler(crmIntegrationsController.disconnectConnection));
 
+// Per-org throttle on every credential-validation endpoint - same
+// middleware applied uniformly across all integrations so the rate-
+// limit policy can't drift per-integration (F4 root: there was no
+// platform-side gate at all).
+import { integrationConnectRateLimit } from './middleware/rateLimitPerOrg';
+
 // CRM - HubSpot (Phase 2). /authorize requires login; /callback is the
 // public OAuth landing.
 import * as hubspotIntegrationController from './controllers/hubspotIntegrationController';
-app.get('/api/integrations/hubspot/authorize', asyncHandler(hubspotIntegrationController.authorize));
+app.get('/api/integrations/hubspot/authorize', integrationConnectRateLimit, asyncHandler(hubspotIntegrationController.authorize));
 app.get('/api/integrations/hubspot/lists', asyncHandler(hubspotIntegrationController.listLists));
 app.get('/api/integrations/hubspot/fields', asyncHandler(hubspotIntegrationController.describeFields));
 app.post('/api/integrations/hubspot/import', asyncHandler(hubspotIntegrationController.startImport));
 
 // CRM - Salesforce (Phase 3).
 import * as salesforceIntegrationController from './controllers/salesforceIntegrationController';
-app.get('/api/integrations/salesforce/authorize', asyncHandler(salesforceIntegrationController.authorize));
+app.get('/api/integrations/salesforce/authorize', integrationConnectRateLimit, asyncHandler(salesforceIntegrationController.authorize));
 app.get('/api/integrations/salesforce/list-views', asyncHandler(salesforceIntegrationController.listViews));
 app.get('/api/integrations/salesforce/fields', asyncHandler(salesforceIntegrationController.describeFields));
 app.post('/api/integrations/salesforce/import', asyncHandler(salesforceIntegrationController.startImport));
@@ -481,14 +487,14 @@ app.get('/api/integrations/lead-sources/connections/:id', asyncHandler(leadSourc
 app.post('/api/integrations/lead-sources/connections/:id/disconnect', asyncHandler(leadSourcesController.disconnectConnection));
 
 import * as apolloIntegrationController from './controllers/apolloIntegrationController';
-app.post('/api/integrations/apollo/connect', asyncHandler(apolloIntegrationController.connect));
+app.post('/api/integrations/apollo/connect', integrationConnectRateLimit, asyncHandler(apolloIntegrationController.connect));
 app.post('/api/integrations/apollo/parse-url', asyncHandler(apolloIntegrationController.parseUrl));
 app.post('/api/integrations/apollo/import', asyncHandler(apolloIntegrationController.startImport));
 app.get('/api/integrations/apollo/jobs/:id', asyncHandler(apolloIntegrationController.getJobStatus));
 
 // Outreach.io - outbound prospect/sequence push (Phase 6).
 import * as outreachIntegrationController from './controllers/outreachIntegrationController';
-app.get('/api/integrations/outreach/authorize', asyncHandler(outreachIntegrationController.authorize));
+app.get('/api/integrations/outreach/authorize', integrationConnectRateLimit, asyncHandler(outreachIntegrationController.authorize));
 app.get('/api/integrations/outreach/connection', asyncHandler(outreachIntegrationController.getConnection));
 app.post('/api/integrations/outreach/disconnect', asyncHandler(outreachIntegrationController.disconnect));
 app.get('/api/integrations/outreach/sequences', asyncHandler(outreachIntegrationController.listSequences));
@@ -507,7 +513,7 @@ app.get('/api/integrations/outreach/exports/:id', asyncHandler(outreachIntegrati
 // render the integration card without elevating role.
 import * as justcallIntegrationController from './controllers/justcallIntegrationController';
 import { requireCapability } from './middleware/requireCapability';
-app.post('/api/integrations/justcall/connect', requireCapability('access_integrations'), asyncHandler(justcallIntegrationController.connect));
+app.post('/api/integrations/justcall/connect', integrationConnectRateLimit, requireCapability('access_integrations'), asyncHandler(justcallIntegrationController.connect));
 app.get('/api/integrations/justcall/connection', asyncHandler(justcallIntegrationController.getConnection));
 app.post('/api/integrations/justcall/disconnect', requireCapability('access_integrations'), asyncHandler(justcallIntegrationController.disconnect));
 app.get('/api/integrations/justcall/campaigns', asyncHandler(justcallIntegrationController.listCampaigns));
