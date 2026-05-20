@@ -13,6 +13,7 @@ import { logger } from '../services/observabilityService';
 import { prisma } from '../prisma';
 import { oauthProvider, verifyConsentSession, SUPPORTED_SCOPES } from '../mcp/oauthProvider';
 import { recordConsentFromRequest } from '../services/consentService';
+import { recordSecurityEvent, EVENT_TYPES } from '../services/securityAuditLog';
 
 /**
  * Pull the org slug out of an RFC 8707 resource URL like
@@ -92,7 +93,15 @@ export async function getConsentDetails(req: Request, res: Response): Promise<Re
 
 /**
  * POST /oauth/consent/approve
- * Body: { session: string }
+ * Body: {
+ *   session: string,
+ *   granted_scopes?: string[]   // OPTIONAL user-narrowed subset of the
+ *                                // client-requested scopes. Omitted →
+ *                                // full requested set (back-compat).
+ *                                // Server enforces: must be a subset of
+ *                                // payload.scopes; cannot widen; unknown
+ *                                // scopes rejected.
+ * }
  * Requires: authenticated user (req.orgContext set by extractOrgContext).
  * Returns: { redirect_to: string }
  */
@@ -101,7 +110,7 @@ export async function approveConsent(req: Request, res: Response): Promise<Respo
         return res.status(401).json({ success: false, error: 'Login required' });
     }
 
-    const { session } = req.body;
+    const { session, granted_scopes } = req.body;
     if (!session || typeof session !== 'string') {
         return res.status(400).json({ success: false, error: 'session is required' });
     }
@@ -111,6 +120,41 @@ export async function approveConsent(req: Request, res: Response): Promise<Respo
         payload = verifyConsentSession(session);
     } catch {
         return res.status(400).json({ success: false, error: 'Consent session expired. Restart the connection.' });
+    }
+
+    // Resolve the actually-granted scopes. API/MCP audit G5 root-cause
+    // fix: previously the controller used payload.scopes verbatim, so the
+    // user couldn't say "OK to read but NOT to launch campaigns" - the
+    // OAuth scope vocabulary was theatrical. Now the consent UI can post
+    // a user-chosen subset; we enforce three rules:
+    //   (1) every requested scope must be a STRING and a known scope
+    //       from SUPPORTED_SCOPES (no fabrication)
+    //   (2) the granted set must be a subset of payload.scopes (no
+    //       widening past what the client asked for)
+    //   (3) omitting the field falls back to the full requested set
+    //       so existing consent UIs that don't post the field keep
+    //       working unchanged
+    let effectiveScopes: string[] = payload.scopes;
+    if (granted_scopes !== undefined) {
+        if (!Array.isArray(granted_scopes) || granted_scopes.some(s => typeof s !== 'string')) {
+            return res.status(400).json({
+                success: false,
+                error: 'granted_scopes must be an array of strings (or omitted to grant the full requested set).',
+            });
+        }
+        const requestedSet = new Set(payload.scopes);
+        const unknown = granted_scopes.filter(s => !requestedSet.has(s));
+        if (unknown.length > 0) {
+            return res.status(400).json({
+                success: false,
+                error: `granted_scopes contains values the client did not request: ${unknown.join(', ')}. The granted set must be a subset of the requested scopes.`,
+            });
+        }
+        // De-dupe and preserve the canonical (client-requested) order so
+        // the audit/Consent row's "documentVersion" stays comparable across
+        // grants that selected the same subset in different click orders.
+        const grantedSet = new Set(granted_scopes);
+        effectiveScopes = payload.scopes.filter(s => grantedSet.has(s));
     }
 
     const userId = req.orgContext.userId;
@@ -156,7 +200,12 @@ export async function approveConsent(req: Request, res: Response): Promise<Respo
         user_id: userId,
         organization_id: orgId,
         redirect_uri: payload.redirect_uri,
-        scope: payload.scopes.join(' '),
+        // effectiveScopes - the user-narrowed subset (or the full requested
+        // set if the consent UI didn't post a subset). The Authorization
+        // Code row stores ONLY what was actually granted; the downstream
+        // token-exchange respects it without re-consulting the requested
+        // set, so a narrowed grant can never silently widen at /token.
+        scope: effectiveScopes.join(' '),
         code_challenge: payload.code_challenge,
         code_challenge_method: payload.code_challenge_method,
         resource: payload.resource,
@@ -185,8 +234,10 @@ export async function approveConsent(req: Request, res: Response): Promise<Respo
             consentType: 'mcp_oauth_grant',
             // Canonical scope-string is the "version" of what was granted -
             // a re-authorization with different scopes produces a distinct
-            // Consent row, which is exactly what we want.
-            documentVersion: payload.scopes.slice().sort().join(' '),
+            // Consent row, which is exactly what we want. We record the
+            // ACTUALLY-granted set (post-narrowing), not the requested
+            // set, because that is what the user signed up to.
+            documentVersion: effectiveScopes.slice().sort().join(' '),
             channel: 'oauth_consent_screen',
             userId,
             organizationId: orgId,
@@ -196,7 +247,10 @@ export async function approveConsent(req: Request, res: Response): Promise<Respo
                 client_id: payload.client_id,
                 client_name: clientRow?.client_name || null,
                 client_uri: clientRow?.client_uri || null,
-                scopes: payload.scopes,
+                // Surface both the requested and the granted set so an
+                // auditor can see whether the user narrowed scopes.
+                requested_scopes: payload.scopes,
+                granted_scopes: effectiveScopes,
                 redirect_uri: payload.redirect_uri,
                 resource: payload.resource || null,
             },
@@ -213,6 +267,20 @@ export async function approveConsent(req: Request, res: Response): Promise<Respo
     if (payload.state) url.searchParams.set('state', payload.state);
 
     logger.info('[OAUTH] Consent approved', { clientId: payload.client_id, userId, orgId });
+    void recordSecurityEvent({
+        organizationId: orgId,
+        actorKind: 'user',
+        actorId: userId,
+        eventType: EVENT_TYPES.OAUTH_CONSENT_APPROVED,
+        target: payload.client_id,
+        metadata: {
+            requested_scopes: payload.scopes,
+            granted_scopes: effectiveScopes,
+            redirect_uri: payload.redirect_uri,
+            resource: payload.resource || null,
+        },
+        req,
+    });
 
     return res.json({
         success: true,
@@ -242,6 +310,16 @@ export async function denyConsent(req: Request, res: Response): Promise<Response
     url.searchParams.set('error', 'access_denied');
     url.searchParams.set('error_description', 'User denied authorization');
     if (payload.state) url.searchParams.set('state', payload.state);
+
+    void recordSecurityEvent({
+        organizationId: req.orgContext?.organizationId ?? null,
+        actorKind: req.orgContext?.userId ? 'user' : 'system',
+        actorId: req.orgContext?.userId ?? null,
+        eventType: EVENT_TYPES.OAUTH_CONSENT_DENIED,
+        target: payload.client_id,
+        metadata: { requested_scopes: payload.scopes },
+        req,
+    });
 
     return res.json({
         success: true,

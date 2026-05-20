@@ -428,8 +428,16 @@ console.log(`[STARTUP] OAuth issuer resolved to ${PUBLIC_BACKEND_URL}`);
 // configuration, log it loudly and continue booting - the rest of the
 // backend (REST API, dashboard) must come up regardless so existing
 // users aren't blocked by an OAuth-only misconfig.
+//
+// rateLimit is applied as a pre-router middleware: the SDK mounts
+// /register, /authorize, /token, /revoke, /.well-known/oauth-* at root,
+// outside the /api tree that the global rate limiter already covers.
+// Without this gate, DCR /register can be spammed unauthenticated to
+// fill the OAuthClient table, and /token can be used as a credential
+// exchange surface without throttling. getTier() in security.ts maps
+// these paths to the dedicated `mcpOAuth` tier. (API/MCP audit G1.)
 try {
-    app.use(mcpAuthRouter({
+    app.use(rateLimit, mcpAuthRouter({
         provider: oauthProvider,
         issuerUrl: new URL(PUBLIC_BACKEND_URL),
         resourceServerUrl: new URL(`${PUBLIC_BACKEND_URL}/mcp`),
@@ -607,17 +615,21 @@ const advertiseResourceMetadata = (req: express.Request, res: express.Response, 
 };
 
 // Bare /mcp - back-compat. Any valid token works; org comes from the token.
-app.post('/mcp', advertiseResourceMetadata, extractOrgContext, checkSubscriptionStatus, asyncHandler(handleMcpRequest));
-app.get('/mcp', advertiseResourceMetadata, handleMcpMethodNotAllowed);
-app.delete('/mcp', advertiseResourceMetadata, handleMcpMethodNotAllowed);
+// rateLimit is applied first: /mcp is mounted at root (outside the /api
+// tree the global rate-limit covers), so we must gate it here to prevent
+// a compromised connector from spamming tool invocations - each one runs
+// a v1 controller and writes to the DB. (API/MCP audit G1.)
+app.post('/mcp', rateLimit, advertiseResourceMetadata, extractOrgContext, checkSubscriptionStatus, asyncHandler(handleMcpRequest));
+app.get('/mcp', rateLimit, advertiseResourceMetadata, handleMcpMethodNotAllowed);
+app.delete('/mcp', rateLimit, advertiseResourceMetadata, handleMcpMethodNotAllowed);
 
 // Per-org /mcp/<slug> - token must have been issued for that org. This is
 // the recommended URL shape for new connectors; it prevents cross-org
 // token cross-talk (the bug an agency would hit when one Claude.ai account
 // caches a grant from a previously-authorized Superkabe org).
-app.post('/mcp/:orgSlug', advertiseResourceMetadata, extractOrgContext, checkSubscriptionStatus, enforceOrgSlug, asyncHandler(handleMcpRequest));
-app.get('/mcp/:orgSlug', advertiseResourceMetadata, extractOrgContext, enforceOrgSlug, handleMcpMethodNotAllowed);
-app.delete('/mcp/:orgSlug', advertiseResourceMetadata, extractOrgContext, enforceOrgSlug, handleMcpMethodNotAllowed);
+app.post('/mcp/:orgSlug', rateLimit, advertiseResourceMetadata, extractOrgContext, checkSubscriptionStatus, enforceOrgSlug, asyncHandler(handleMcpRequest));
+app.get('/mcp/:orgSlug', rateLimit, advertiseResourceMetadata, extractOrgContext, enforceOrgSlug, handleMcpMethodNotAllowed);
+app.delete('/mcp/:orgSlug', rateLimit, advertiseResourceMetadata, extractOrgContext, enforceOrgSlug, handleMcpMethodNotAllowed);
 
 // Ingestion endpoints
 app.post('/api/ingest', asyncHandler(ingestionController.ingestLead));

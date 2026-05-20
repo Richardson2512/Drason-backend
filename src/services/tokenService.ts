@@ -10,21 +10,12 @@
 
 import { Response } from 'express';
 import jwt from 'jsonwebtoken';
-import { logger } from './observabilityService';
+// JWT secret resolution lives in utils/jwtSecret so every JWT issuer/
+// verifier in the backend follows the same throw-in-prod contract.
+// Re-exported below for back-compat with existing imports.
+import { JWT_SECRET } from '../utils/jwtSecret';
 
-function getJwtSecret(): string {
-    const secret = process.env.JWT_SECRET;
-    if (!secret) {
-        if (process.env.NODE_ENV === 'production') {
-            throw new Error('FATAL: JWT_SECRET is not set in production');
-        }
-        logger.warn('JWT_SECRET not set - using dev-only fallback. NEVER use this in production.');
-        return 'drason_dev_only_secret_DO_NOT_USE_IN_PROD';
-    }
-    return secret;
-}
-
-export const JWT_SECRET = getJwtSecret();
+export { JWT_SECRET };
 export const TOKEN_EXPIRY = '3d';
 export const COOKIE_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 

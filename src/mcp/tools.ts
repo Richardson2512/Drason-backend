@@ -14,6 +14,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import * as v1Controller from '../controllers/v1Controller';
 import { invokeAndUnwrap } from './invokeController';
+import { recordSecurityEvent, EVENT_TYPES } from '../services/securityAuditLog';
 
 type OrgContext = NonNullable<Request['orgContext']>;
 
@@ -30,13 +31,69 @@ function errorResult(error: unknown): { content: { type: 'text'; text: string }[
     return { content: [{ type: 'text' as const, text: `Error: ${msg}` }], isError: true };
 }
 
+/**
+ * Wrap a tool handler so every invocation - success OR failure - lands
+ * in SecurityAuditLog. Centralised here (not at each registerTool call)
+ * so a future tool addition cannot silently bypass the audit by
+ * forgetting to instrument its own handler. (API/MCP audit G6.)
+ *
+ * We log the tool name + top-level argument KEYS (not values) so the
+ * audit row stays PII-free even when the tool accepts emails / bodies.
+ */
+function auditedHandler<TArgs extends Record<string, unknown> | undefined, TResult>(
+    orgContext: OrgContext,
+    toolName: string,
+    inner: (args: TArgs) => Promise<TResult>,
+): (args: TArgs) => Promise<TResult> {
+    return async (args: TArgs): Promise<TResult> => {
+        const argKeys = args && typeof args === 'object' ? Object.keys(args) : [];
+        let success = true;
+        let errorMessage: string | undefined;
+        try {
+            const r = await inner(args);
+            // The MCP SDK wraps errors into { isError: true } on the
+            // return value rather than throwing - capture that so the
+            // audit row reflects the actual outcome.
+            if (r && typeof r === 'object' && (r as any).isError === true) {
+                success = false;
+                const txt = ((r as any).content?.[0]?.text || '') as string;
+                errorMessage = txt.slice(0, 200);
+            }
+            return r;
+        } catch (e) {
+            success = false;
+            errorMessage = (e instanceof Error ? e.message : String(e)).slice(0, 200);
+            throw e;
+        } finally {
+            void recordSecurityEvent({
+                organizationId: orgContext.organizationId,
+                actorKind: 'oauth_client',
+                actorId: orgContext.userId ?? null,
+                eventType: success ? EVENT_TYPES.MCP_TOOL_INVOKED : EVENT_TYPES.MCP_TOOL_FAILED,
+                target: toolName,
+                metadata: {
+                    arg_keys: argKeys,
+                    ...(errorMessage ? { error: errorMessage } : {}),
+                },
+            });
+        }
+    };
+}
+
 export function createMcpServer(orgContext: OrgContext): McpServer {
     const server = new McpServer(
         { name: 'superkabe', version: '1.1.0' },
         { capabilities: { tools: {} } }
     );
 
-    server.registerTool(
+    // Single registration helper so every tool below is audited the
+    // same way. Adding a new tool without using this helper is a
+    // visible deviation - that's the regression guard for G6.
+    const registerAudited = (toolName: string, def: any, handler: (args: any) => Promise<any>) => {
+        server.registerTool(toolName, def, auditedHandler(orgContext, toolName, handler) as any);
+    };
+
+    registerAudited(
         'get_account',
         {
             title: 'Get Account Info',
@@ -50,7 +107,7 @@ export function createMcpServer(orgContext: OrgContext): McpServer {
         }
     );
 
-    server.registerTool(
+    registerAudited(
         'import_leads',
         {
             title: 'Import Leads',
@@ -72,7 +129,7 @@ export function createMcpServer(orgContext: OrgContext): McpServer {
         }
     );
 
-    server.registerTool(
+    registerAudited(
         'list_leads',
         {
             title: 'List Leads',
@@ -99,7 +156,7 @@ export function createMcpServer(orgContext: OrgContext): McpServer {
         }
     );
 
-    server.registerTool(
+    registerAudited(
         'get_lead',
         {
             title: 'Get Lead Details',
@@ -116,7 +173,7 @@ export function createMcpServer(orgContext: OrgContext): McpServer {
         }
     );
 
-    server.registerTool(
+    registerAudited(
         'validate_leads',
         {
             title: 'Validate Lead Emails',
@@ -138,7 +195,7 @@ export function createMcpServer(orgContext: OrgContext): McpServer {
         }
     );
 
-    server.registerTool(
+    registerAudited(
         'get_validation_results',
         {
             title: 'Get Validation Analytics',
@@ -152,7 +209,7 @@ export function createMcpServer(orgContext: OrgContext): McpServer {
         }
     );
 
-    server.registerTool(
+    registerAudited(
         'create_campaign',
         {
             title: 'Create Campaign',
@@ -194,7 +251,7 @@ export function createMcpServer(orgContext: OrgContext): McpServer {
         }
     );
 
-    server.registerTool(
+    registerAudited(
         'list_campaigns',
         {
             title: 'List Campaigns',
@@ -208,7 +265,7 @@ export function createMcpServer(orgContext: OrgContext): McpServer {
         }
     );
 
-    server.registerTool(
+    registerAudited(
         'get_campaign',
         {
             title: 'Get Campaign Details',
@@ -225,7 +282,7 @@ export function createMcpServer(orgContext: OrgContext): McpServer {
         }
     );
 
-    server.registerTool(
+    registerAudited(
         'update_campaign',
         {
             title: 'Update Campaign',
@@ -252,7 +309,7 @@ export function createMcpServer(orgContext: OrgContext): McpServer {
         }
     );
 
-    server.registerTool(
+    registerAudited(
         'launch_campaign',
         {
             title: 'Launch Campaign',
@@ -269,7 +326,7 @@ export function createMcpServer(orgContext: OrgContext): McpServer {
         }
     );
 
-    server.registerTool(
+    registerAudited(
         'pause_campaign',
         {
             title: 'Pause Campaign',
@@ -286,7 +343,7 @@ export function createMcpServer(orgContext: OrgContext): McpServer {
         }
     );
 
-    server.registerTool(
+    registerAudited(
         'get_campaign_report',
         {
             title: 'Get Campaign Report',
@@ -303,7 +360,7 @@ export function createMcpServer(orgContext: OrgContext): McpServer {
         }
     );
 
-    server.registerTool(
+    registerAudited(
         'get_campaign_replies',
         {
             title: 'Get Campaign Replies',
@@ -320,7 +377,7 @@ export function createMcpServer(orgContext: OrgContext): McpServer {
         }
     );
 
-    server.registerTool(
+    registerAudited(
         'send_reply',
         {
             title: 'Send Reply',
@@ -342,7 +399,7 @@ export function createMcpServer(orgContext: OrgContext): McpServer {
         }
     );
 
-    server.registerTool(
+    registerAudited(
         'list_mailboxes',
         {
             title: 'List Mailboxes',
@@ -356,7 +413,7 @@ export function createMcpServer(orgContext: OrgContext): McpServer {
         }
     );
 
-    server.registerTool(
+    registerAudited(
         'list_domains',
         {
             title: 'List Domains',

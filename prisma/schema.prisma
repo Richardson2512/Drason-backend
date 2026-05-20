@@ -2358,11 +2358,71 @@ model OAuthAccessToken {
   created_at         DateTime  @default(now())
   last_used_at       DateTime?
 
+  /// Hash of the OAuthAuthorizationCode this token was originally minted
+  /// from. Set on initial code-for-token exchange; NULL for tokens that
+  /// were the product of refresh rotation (those are linked transitively
+  /// via the refresh chain). Used to implement RFC 6749 §10.5 "revoke
+  /// any tokens issued from the reused code" - when an auth code is
+  /// presented twice, that's a theft signal and the in-flight token
+  /// must die. (API/MCP audit G4.) Legacy rows pre-dating this column
+  /// have NULL and the revoke-on-reuse step is a no-op for them.
+  source_auth_code_hash String?
+
   client OAuthClient @relation(fields: [client_id], references: [client_id], onDelete: Cascade)
 
   @@index([client_id])
   @@index([organization_id])
   @@index([expires_at])
+  @@index([source_auth_code_hash])
+}
+
+/// Durable audit trail for OAuth / MCP / public-API security events.
+///
+/// Pre-fix (API/MCP audit G6): operational logger.info / logger.warn
+/// calls were the only record of who registered an OAuth client, who
+/// approved a consent grant, when tokens were minted / refreshed /
+/// revoked, and which MCP tools any given token invoked. Operational
+/// logs roll over; a security audit trail must not. When a customer
+/// asks "what did this Claude.ai connector touch last week?" we need
+/// a queryable answer, and SOC 2 / GDPR expect the same.
+///
+/// Writes are best-effort - the writer never throws back to the OAuth
+/// or MCP flow it's instrumenting, so a DB hiccup cannot brick auth.
+/// Retention is bounded by the retention job (operator-configurable;
+/// default 365 days) so the table can't grow unbounded.
+model SecurityAuditLog {
+  id              String   @id @default(uuid())
+  /// Scoping org. Nullable for pre-auth events (DCR /register) where the
+  /// actor's org is not yet known.
+  organization_id String?
+  /// Kind of principal that triggered the event: "oauth_client" (DCR/MCP
+  /// client by client_id), "user" (dashboard / consent UI), "api_key",
+  /// "system" (background / unauthenticated).
+  actor_kind      String
+  /// Stable identifier for the actor (client_id, user_id, api_key prefix,
+  /// or 'system'). Never a raw token / secret.
+  actor_id        String?
+  /// Event vocabulary - see services/securityAuditLog.ts for the
+  /// canonical list. Examples: "oauth.client.registered",
+  /// "oauth.consent.approved", "oauth.consent.denied", "oauth.token.minted",
+  /// "oauth.token.refreshed", "oauth.token.revoked", "oauth.code.reuse_detected",
+  /// "mcp.tool.invoked".
+  event_type      String
+  /// What the event acted on: client_id, tool name, token id prefix, etc.
+  target          String?
+  /// Strict structured detail (no PII, no raw payload). For mcp.tool.invoked
+  /// this is { tool, arg_keys, http_status }; for oauth.token.refreshed it
+  /// is { from_token_id, granted_scopes }.
+  metadata        Json?
+  /// HTTP context at time of event - useful for forensics across
+  /// re-authorization attempts from an unfamiliar IP / UA.
+  ip              String?
+  user_agent      String?
+  created_at      DateTime @default(now())
+
+  @@index([organization_id, created_at])
+  @@index([event_type, created_at])
+  @@index([actor_kind, actor_id, created_at])
 }
 
 /// CRM connection (HubSpot, Salesforce, future). One per (org, provider).

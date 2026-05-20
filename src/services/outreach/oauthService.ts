@@ -16,6 +16,7 @@
 import jwt from 'jsonwebtoken';
 import { logger } from '../observabilityService';
 import type { OutreachOAuthTokens } from './types';
+import { JWT_SECRET } from '../../utils/jwtSecret';
 
 const OUTREACH_AUTH_BASE = 'https://api.outreach.io/oauth/authorize';
 const OUTREACH_TOKEN_URL = 'https://api.outreach.io/oauth/token';
@@ -35,7 +36,6 @@ export const OUTREACH_DEFAULT_SCOPES = [
 ] as const;
 
 const STATE_TTL_SEC = 10 * 60;
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 
 interface StatePayload {
     organizationId: string;

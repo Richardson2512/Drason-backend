@@ -36,6 +36,9 @@ import type {
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { prisma } from '../prisma';
 import { logger } from '../services/observabilityService';
+import { JWT_SECRET } from '../utils/jwtSecret';
+import { validateRedirectUriList } from '../utils/redirectUriValidator';
+import { recordSecurityEvent, EVENT_TYPES } from '../services/securityAuditLog';
 
 // ────────────────────────────────────────────────────────────────────
 // Constants
@@ -60,7 +63,6 @@ export const SUPPORTED_SCOPES = [
 ];
 
 const FRONTEND_URL = (process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 
 // ────────────────────────────────────────────────────────────────────
 // Helpers
@@ -110,6 +112,35 @@ class SuperkabeClientsStore implements OAuthRegisteredClientsStore {
     async registerClient(
         info: Omit<OAuthClientInformationFull, 'client_id' | 'client_id_issued_at'>
     ): Promise<OAuthClientInformationFull> {
+        // Validate redirect_uris BEFORE persisting. A hostile DCR client
+        // could otherwise register `javascript:`, `http://attacker.example`,
+        // or any other scheme - and the consent-redirect path would later
+        // hand them the auth code. The validator is the single source of
+        // truth for "is this a safe redirect target?" (API/MCP audit G2).
+        const redirectValidation = validateRedirectUriList(info.redirect_uris);
+        if (!redirectValidation.ok) {
+            const detail = redirectValidation.index >= 0
+                ? `redirect_uris[${redirectValidation.index}]: ${redirectValidation.message}`
+                : redirectValidation.message;
+            logger.warn('[OAUTH] DCR rejected - invalid redirect_uri', {
+                code: redirectValidation.code,
+                detail,
+                clientName: info.client_name,
+            });
+            void recordSecurityEvent({
+                actorKind: 'system',
+                eventType: EVENT_TYPES.OAUTH_CLIENT_REGISTRATION_REJECTED,
+                target: info.client_name ?? null,
+                metadata: { reason_code: redirectValidation.code, detail },
+            });
+            // The MCP SDK's /register handler maps thrown errors to a
+            // 400-class response with error_description; the message
+            // here surfaces verbatim to the caller.
+            const err = new Error(`invalid_redirect_uri: ${detail}`);
+            (err as any).code = 'invalid_redirect_uri';
+            throw err;
+        }
+
         const clientId = `mcp_client_${crypto.randomBytes(12).toString('hex')}`;
 
         // We allow only public clients (PKCE-based). If a secret is
@@ -127,7 +158,7 @@ class SuperkabeClientsStore implements OAuthRegisteredClientsStore {
                 client_id: clientId,
                 client_secret_hash: secretHash,
                 client_name: info.client_name || 'MCP Client',
-                redirect_uris: info.redirect_uris as any,
+                redirect_uris: redirectValidation.normalized as any,
                 grant_types: (info.grant_types || ['authorization_code', 'refresh_token']) as any,
                 response_types: (info.response_types || ['code']) as any,
                 token_endpoint_auth_method: info.token_endpoint_auth_method || 'none',
@@ -140,6 +171,17 @@ class SuperkabeClientsStore implements OAuthRegisteredClientsStore {
         });
 
         logger.info('[OAUTH] Registered new client', { clientId, name: created.client_name });
+        void recordSecurityEvent({
+            actorKind: 'oauth_client',
+            actorId: clientId,
+            eventType: EVENT_TYPES.OAUTH_CLIENT_REGISTERED,
+            target: created.client_name,
+            metadata: {
+                redirect_uris: redirectValidation.normalized,
+                token_endpoint_auth_method: created.token_endpoint_auth_method,
+                grant_types: created.grant_types,
+            },
+        });
 
         const full = this.toFullInfo(created);
         if (plainSecret) full.client_secret = plainSecret;
@@ -226,7 +268,33 @@ export class SuperkabeOAuthProvider implements OAuthServerProvider {
 
         const row = await prisma.oAuthAuthorizationCode.findUnique({ where: { code_hash: codeHash } });
         if (!row) throw new Error('Invalid authorization code');
-        if (row.used_at) throw new Error('Authorization code already used');
+
+        // Auth-code reuse is a theft signal (RFC 6749 §10.5): an attacker
+        // intercepted the code, AT LEAST one party is malicious, and we
+        // can't safely tell which. Detection alone is not enough - the
+        // previously-minted token from this code must die too, otherwise
+        // the attacker who got it stays inside. We additionally revoke
+        // any refresh-rotated descendants by walking the chain via
+        // source_auth_code_hash. (API/MCP audit G4 root-cause fix.)
+        if (row.used_at) {
+            await this.revokeTokensMintedFromCode(codeHash).catch(err => {
+                logger.error('[OAUTH] Failed to revoke tokens after code reuse (non-fatal)',
+                    err instanceof Error ? err : new Error(String(err)));
+            });
+            logger.warn('[OAUTH] Authorization code REUSE detected - revoked in-flight tokens', {
+                clientId: client.client_id,
+                codeHashPrefix: codeHash.slice(0, 12),
+            });
+            void recordSecurityEvent({
+                organizationId: row.organization_id,
+                actorKind: 'oauth_client',
+                actorId: client.client_id,
+                eventType: EVENT_TYPES.OAUTH_CODE_REUSE_DETECTED,
+                target: codeHash.slice(0, 12),
+                metadata: { user_id: row.user_id, original_used_at: row.used_at.toISOString() },
+            });
+            throw new Error('Authorization code already used');
+        }
         if (row.expires_at < new Date()) throw new Error('Authorization code expired');
         if (row.client_id !== client.client_id) throw new Error('Authorization code issued to a different client');
         if (redirectUri && row.redirect_uri !== redirectUri) throw new Error('redirect_uri mismatch');
@@ -243,6 +311,23 @@ export class SuperkabeOAuthProvider implements OAuthServerProvider {
             organization_id: row.organization_id,
             scope: row.scope || SUPPORTED_SCOPES.join(' '),
             resource: resource?.toString() ?? row.resource ?? undefined,
+            source_auth_code_hash: codeHash,
+        });
+    }
+
+    /**
+     * Revoke every OAuthAccessToken minted (directly or via refresh
+     * rotation) from a given authorization code hash. Called on detected
+     * code-reuse. Idempotent - setting `revoked_at` on already-revoked
+     * rows is a no-op.
+     */
+    async revokeTokensMintedFromCode(codeHash: string): Promise<void> {
+        await prisma.oAuthAccessToken.updateMany({
+            where: {
+                source_auth_code_hash: codeHash,
+                revoked_at: null,
+            },
+            data: { revoked_at: new Date() },
         });
     }
 
@@ -274,12 +359,30 @@ export class SuperkabeOAuthProvider implements OAuthServerProvider {
             data: { revoked_at: new Date() },
         });
 
+        void recordSecurityEvent({
+            organizationId: row.organization_id,
+            actorKind: 'oauth_client',
+            actorId: client.client_id,
+            eventType: EVENT_TYPES.OAUTH_TOKEN_REFRESHED,
+            target: refreshHash.slice(0, 12),
+            metadata: {
+                user_id: row.user_id,
+                previous_token_id: row.id,
+                granted_scopes: newScope,
+                scopes_narrowed: !!(scopes && scopes.length > 0 && newScope !== row.scope),
+            },
+        });
+
         return this.mintTokens({
             client_id: client.client_id,
             user_id: row.user_id,
             organization_id: row.organization_id,
             scope: newScope || SUPPORTED_SCOPES.join(' '),
             resource: resource?.toString() ?? row.resource ?? undefined,
+            // Carry the source-code linkage forward so a future reuse-
+            // detection on the original auth code revokes this rotated
+            // descendant too (G4 chain-walk semantics).
+            source_auth_code_hash: row.source_auth_code_hash ?? undefined,
         });
     }
 
@@ -317,6 +420,14 @@ export class SuperkabeOAuthProvider implements OAuthServerProvider {
                 where: { id: byAccess.id },
                 data: { revoked_at: new Date() },
             });
+            void recordSecurityEvent({
+                organizationId: byAccess.organization_id,
+                actorKind: 'oauth_client',
+                actorId: byAccess.client_id,
+                eventType: EVENT_TYPES.OAUTH_TOKEN_REVOKED,
+                target: tokenHash.slice(0, 12),
+                metadata: { kind: 'access', user_id: byAccess.user_id },
+            });
             return;
         }
         const byRefresh = await prisma.oAuthAccessToken.findUnique({ where: { refresh_token_hash: tokenHash } });
@@ -324,6 +435,14 @@ export class SuperkabeOAuthProvider implements OAuthServerProvider {
             await prisma.oAuthAccessToken.update({
                 where: { id: byRefresh.id },
                 data: { revoked_at: new Date() },
+            });
+            void recordSecurityEvent({
+                organizationId: byRefresh.organization_id,
+                actorKind: 'oauth_client',
+                actorId: byRefresh.client_id,
+                eventType: EVENT_TYPES.OAUTH_TOKEN_REVOKED,
+                target: tokenHash.slice(0, 12),
+                metadata: { kind: 'refresh', user_id: byRefresh.user_id },
             });
         }
     }
@@ -339,6 +458,10 @@ export class SuperkabeOAuthProvider implements OAuthServerProvider {
         organization_id: string;
         scope: string;
         resource?: string;
+        /** Hash of the auth code this token (or its refresh ancestor) came
+         *  from. Stamped on every row in the chain so code-reuse detection
+         *  can revoke every descendant in one updateMany. */
+        source_auth_code_hash?: string;
     }): Promise<OAuthTokens> {
         const accessToken = generateToken('oat');
         const refreshToken = generateToken('ort');
@@ -357,6 +480,26 @@ export class SuperkabeOAuthProvider implements OAuthServerProvider {
                 resource: opts.resource ?? null,
                 expires_at: expires,
                 refresh_expires_at: refreshExpires,
+                source_auth_code_hash: opts.source_auth_code_hash ?? null,
+            },
+        });
+
+        void recordSecurityEvent({
+            organizationId: opts.organization_id,
+            actorKind: 'oauth_client',
+            actorId: opts.client_id,
+            // Distinguish original mint (linked to an auth code) from a
+            // refresh rotation (no NEW code, but same source-code linkage).
+            // The presence of opts.source_auth_code_hash alone doesn't
+            // tell us which: refresh rotation also carries it forward. We
+            // pass the call-site name explicitly via metadata.flow below.
+            eventType: EVENT_TYPES.OAUTH_TOKEN_MINTED,
+            target: hashToken(accessToken).slice(0, 12),
+            metadata: {
+                user_id: opts.user_id,
+                scope: opts.scope,
+                resource: opts.resource ?? null,
+                source_auth_code_hash_prefix: opts.source_auth_code_hash?.slice(0, 12) ?? null,
             },
         });
 

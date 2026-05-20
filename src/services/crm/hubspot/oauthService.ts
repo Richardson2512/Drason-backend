@@ -16,6 +16,7 @@
 import jwt from 'jsonwebtoken';
 import { logger } from '../../observabilityService';
 import type { CrmOAuthTokens } from '../types';
+import { JWT_SECRET } from '../../../utils/jwtSecret';
 
 const HUBSPOT_AUTH_BASE = 'https://app.hubspot.com/oauth/authorize';
 const HUBSPOT_TOKEN_URL = 'https://api.hubapi.com/oauth/v1/token';
@@ -34,7 +35,6 @@ export const HUBSPOT_DEFAULT_SCOPES = [
 ] as const;
 
 const STATE_TTL_SEC = 10 * 60; // 10 minutes - covers the longest realistic OAuth flow
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 
 interface StatePayload {
     organizationId: string;

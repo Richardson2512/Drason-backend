@@ -14,6 +14,7 @@ import { prisma } from '../prisma';
 import { OrgContext, UserRole } from '../types';
 import { logger } from '../services/observabilityService';
 import { clearTokenCookie } from '../services/tokenService';
+import { JWT_SECRET } from '../utils/jwtSecret';
 
 // ============================================================================
 // JWT VERIFICATION
@@ -31,22 +32,6 @@ interface JwtPayload {
     scopedOrganizationId?: string | null;
     iat?: number; // JWT issued-at timestamp (seconds since epoch)
 }
-
-/**
- * Get JWT secret - same logic as authController.
- */
-function getJwtSecret(): string {
-    const secret = process.env.JWT_SECRET;
-    if (!secret) {
-        if (process.env.NODE_ENV === 'production') {
-            throw new Error('FATAL: JWT_SECRET is not set in production');
-        }
-        return 'drason_dev_only_secret_DO_NOT_USE_IN_PROD';
-    }
-    return secret;
-}
-
-const JWT_SECRET = getJwtSecret();
 
 /**
  * Verify a JWT token and extract claims.

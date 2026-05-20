@@ -17,6 +17,7 @@
 import jwt from 'jsonwebtoken';
 import { logger } from '../../observabilityService';
 import type { CrmOAuthTokens } from '../types';
+import { JWT_SECRET } from '../../../utils/jwtSecret';
 
 export type SalesforceLoginEnv = 'production' | 'sandbox';
 
@@ -28,7 +29,6 @@ const LOGIN_HOSTS: Record<SalesforceLoginEnv, string> = {
 export const SALESFORCE_DEFAULT_SCOPES = ['api', 'refresh_token', 'offline_access'] as const;
 
 const STATE_TTL_SEC = 10 * 60;
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 
 interface StatePayload {
     organizationId: string;

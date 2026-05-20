@@ -42,6 +42,17 @@ const RATE_LIMIT_TIERS: Record<string, RateLimitTier> = {
     // behind the same NAT don't cannibalize each other's budget.
     general: { points: 600, duration: 60 },
     apiKey: { points: 1000, duration: 60 },   // 1000 req/min for API keys
+    // MCP tool invocations (Claude.ai etc.). Each /mcp POST is a tool call
+    // that runs a v1 controller and writes to DB. 300/min/identifier is
+    // generous for legitimate Claude usage (chat-bound, human-paced) and
+    // catches automated-loop abuse from a compromised connector.
+    mcp: { points: 300, duration: 60 },
+    // OAuth endpoints mounted at root by mcpAuthRouter (/register,
+    // /authorize, /token, /revoke). Tighter than general because /register
+    // is unauthenticated by design (DCR) and /token is the credential
+    // exchange surface. 60/min/identifier still leaves headroom for a
+    // legitimate client doing back-to-back register + authorize + token.
+    mcpOAuth: { points: 60, duration: 60 },
 };
 
 let rateLimiters: Record<string, RateLimiterAbstract> = {};
@@ -94,9 +105,22 @@ export function initRateLimiters(): void {
 
 /**
  * Determine which rate limit tier applies to a request.
+ *
+ * The MCP/OAuth root endpoints (mounted by mcpAuthRouter outside the
+ * /api tree) are recognised explicitly here so the global rate-limit
+ * coverage matches every public-facing surface (API/MCP audit G1 root
+ * cause: parallel route trees with only one tree gated).
  */
 function getTier(req: Request): string {
     const path = req.path.toLowerCase();
+    if (path === '/mcp' || path.startsWith('/mcp/')) return 'mcp';
+    if (
+        path === '/register' ||
+        path === '/authorize' ||
+        path === '/token' ||
+        path === '/revoke' ||
+        path.startsWith('/.well-known/oauth-')
+    ) return 'mcpOAuth';
     if (path.startsWith('/auth/register')) return 'register';
     if (path.startsWith('/auth')) return 'auth';
     if (path.startsWith('/admin')) return 'admin';
