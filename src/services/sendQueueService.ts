@@ -55,6 +55,83 @@ const LOG_TAG = 'SEND-QUEUE';
 const QUEUE_NAME = 'email-sends';
 const DISPATCH_INTERVAL_MS = 60_000;
 
+/**
+ * Build the In-Reply-To / References pair for a step-N send (N > 1).
+ *
+ * Production-readiness round-1 fix: before this helper, sendQueueService
+ * dispatched every step of a sequence without RFC 5322 threading headers,
+ * so the recipient's email client (Gmail, Outlook, Apple Mail) treated
+ * each step as a new conversation instead of a reply chain. The SMTP
+ * adapter already supported the headers - they were just never set on
+ * the dispatch path.
+ *
+ * Lookup key is the same one EmailThread uses inside the post-send
+ * Unibox recording at sendQueueService:1551 - (organization_id,
+ * account_id, contact_email, campaign_id). Because mailbox assignment
+ * is sticky per lead (CampaignLead.assigned_account_id), step 2+ will
+ * always look up a thread the same account started.
+ *
+ * Failure modes are silent by design:
+ *   - No prior EmailMessage in the thread -> { null, null } - ships
+ *     without threading headers, same as the first-touch case. This is
+ *     safer than blocking the send.
+ *   - DB hiccup during the lookup -> { null, null } + warn log.
+ *   - Step 1 (first send) -> { null, null } - first-touch carries no
+ *     threading headers per RFC.
+ *
+ * The semantics:
+ *   - in_reply_to = parent Message-ID (the immediately prior outbound).
+ *   - references  = the accumulated ancestor chain. Formula:
+ *       prev.references ? `${prev.references} ${prev.message_id}`
+ *                       : prev.message_id
+ *     (a message's References lists its ancestors only - NOT itself.)
+ *
+ * Exported with /** @internal *\/ for the regression-test harness; do
+ * not call from production code outside this module.
+ */
+export async function buildThreadingHeaders(params: {
+    organizationId: string;
+    accountId: string;
+    contactEmail: string;
+    campaignId: string;
+    stepNumber: number;
+}): Promise<{ inReplyTo: string | null; references: string | null }> {
+    if (params.stepNumber <= 1) return { inReplyTo: null, references: null };
+
+    try {
+        const thread = await prisma.emailThread.findFirst({
+            where: {
+                organization_id: params.organizationId,
+                account_id: params.accountId,
+                contact_email: params.contactEmail.toLowerCase(),
+                campaign_id: params.campaignId,
+            },
+            select: { id: true },
+        });
+        if (!thread) return { inReplyTo: null, references: null };
+
+        const prev = await prisma.emailMessage.findFirst({
+            where: {
+                thread_id: thread.id,
+                direction: 'outbound',
+                message_id: { not: null },
+            },
+            orderBy: { sent_at: 'desc' },
+            select: { message_id: true, references: true },
+        });
+        if (!prev?.message_id) return { inReplyTo: null, references: null };
+
+        const inReplyTo = prev.message_id;
+        const references = prev.references
+            ? `${prev.references} ${prev.message_id}`
+            : prev.message_id;
+        return { inReplyTo, references };
+    } catch (err: any) {
+        logger.warn(`[${LOG_TAG}] Threading lookup failed for ${maskEmail(params.contactEmail)} step ${params.stepNumber}: ${err?.message}`);
+        return { inReplyTo: null, references: null };
+    }
+}
+
 // Distributed dispatch lock. The held-lead processor already uses this
 // exact primitive (worker:lock:lead_processor) to stop overlapping runs;
 // the send dispatcher previously had nothing, so a dispatch() that ran
@@ -1362,8 +1439,24 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                 continue;
             }
 
+            // Build RFC 5322 threading headers for step N>1. Without these,
+            // every follow-up step lands as a new conversation in the
+            // recipient's email client - breaking thread continuity and
+            // hurting reply rates. See buildThreadingHeaders above for
+            // the failure-mode contract (returns {null, null} on lookup
+            // miss; never blocks the send).
+            const threadingHeaders = await buildThreadingHeaders({
+                organizationId: orgId,
+                accountId: account.id,
+                contactEmail: email.leadEmail,
+                campaignId,
+                stepNumber: email.stepNumber,
+            });
+
             const result: SendResult = await sendEmail(account, email.leadEmail, email.subject, email.bodyHtml, {
                 unsubscribeUrl: email.unsubscribeUrl || null,
+                inReplyTo: threadingHeaders.inReplyTo,
+                references: threadingHeaders.references,
             });
 
             if (!result.success) {
@@ -1596,6 +1689,15 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                             to_name: null,
                             subject: email.subject,
                             body_html: email.bodyHtml,
+                            // Threading bookkeeping - the SMTP Message-ID plus
+                            // the chain we set on this outgoing message. Saved
+                            // so the NEXT step's buildThreadingHeaders lookup
+                            // can find this row and chain off it. Without
+                            // these three fields the thread is forever
+                            // un-resumable.
+                            message_id: result.messageId || null,
+                            in_reply_to: threadingHeaders.inReplyTo,
+                            references: threadingHeaders.references,
                             sent_at: now,
                         },
                     });
