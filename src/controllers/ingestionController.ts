@@ -19,6 +19,7 @@ import * as leadAssignmentService from '../services/leadAssignmentService';
 import * as entityStateService from '../services/entityStateService';
 import * as emailValidationService from '../services/emailValidationService';
 import { enrollLeadInSequencerCampaign } from '../services/sequencerEnrollmentService';
+import { verifyTimestampedHmac } from '../utils/webhookHmac';
 import * as redisUtils from '../utils/redis';
 import { getOrgId } from '../middleware/orgContext';
 import { EventType, LeadState, TriggerType, ValidationStatus } from '../types';
@@ -508,16 +509,32 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
             authPassed = a.length === b.length && cryptoMod.timingSafeEqual(a, b);
         }
 
-        // Fall through to HMAC if secret-header didn't pass.
+        // Fall through to HMAC if secret-header didn't pass. Uses the
+        // shared verifyTimestampedHmac util so the crypto AND the
+        // replay-protection policy match every other webhook handler.
+        // When the caller sends X-Clay-Timestamp the signature is
+        // verified against `${timestamp}.${body}` and the timestamp must
+        // be within +/- 5 min (F3 root - was body-only HMAC, replayable
+        // forever); when no timestamp is sent we still verify the
+        // cryptographic body-only signature but log a warning so the
+        // caller migrates. Backward compatible with every existing Clay
+        // integration in the field.
         if (!authPassed && signature) {
             authMethod = 'hmac-signature';
-            const expectedSignature = cryptoMod
-                .createHmac('sha256', org.clay_webhook_secret)
-                .update(JSON.stringify(req.body))
-                .digest('hex');
-            const a = Buffer.from(signature);
-            const b = Buffer.from(expectedSignature);
-            authPassed = a.length === b.length && cryptoMod.timingSafeEqual(a, b);
+            const timestampHeader = req.headers['x-clay-timestamp'];
+            const ts = typeof timestampHeader === 'string' ? timestampHeader : undefined;
+            const r = verifyTimestampedHmac({
+                body: JSON.stringify(req.body),
+                signature,
+                secret: org.clay_webhook_secret,
+                timestamp: ts,
+            });
+            authPassed = r.valid;
+            if (r.valid && !r.timestamped) {
+                logger.warn('[INGEST CLAY] HMAC accepted without timestamp - request is replayable. Add X-Clay-Timestamp + include it in the signed payload as `${ts}.${body}`.', { organizationId });
+            } else if (!r.valid) {
+                logger.warn('[INGEST CLAY] HMAC verification failed', { organizationId, reason: r.reason, timestamped: r.timestamped });
+            }
         }
     }
 

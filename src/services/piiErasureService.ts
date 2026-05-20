@@ -49,6 +49,8 @@
 
 import { prisma } from '../prisma';
 import { logger } from './observabilityService';
+import { encrypt } from '../utils/encryption';
+import { wipeAllEnrichmentProviderCredentials } from './enrichment/waterfallService';
 
 const TOMBSTONE_EMAIL = (uuid: string) => `erased-${uuid}@anonymized.invalid`;
 
@@ -301,6 +303,18 @@ export async function eraseOrganization(
         if (batch.length < PAGE) break;
     }
 
+    // Defense-in-depth integration wipe (F2 root). Cascades on the
+    // Organization relation will remove these rows when `organization
+    // .delete()` fires below - but encrypted-but-non-empty token blobs
+    // are exactly the high-value secret an attacker hopes to find in a
+    // DB snapshot, so we OVERWRITE every credential column with
+    // encrypt('') BEFORE the cascade runs. If any future migration
+    // breaks an onDelete:Cascade (or changes it to SetNull / Restrict),
+    // the credentials are still empty by the time anything could leak.
+    // Same encrypt('') sentinel the per-integration disconnect functions
+    // already use - reuse, not parallel pattern.
+    await wipeAllIntegrationCredentials(organizationId);
+
     // Hard-delete the org. Cascades clean up most relations; surviving rows
     // are AuditLog (intentionally retained for legal-compliance window).
     try {
@@ -316,4 +330,64 @@ export async function eraseOrganization(
 
     logger.info('[PII-ERASURE] Organization erasure complete', { organizationId, ...totals });
     return totals;
+}
+
+/**
+ * Explicit "wipe every integration credential we hold for this org" pass.
+ * Defense-in-depth for eraseOrganization (F2 root): every other
+ * integration has its own per-connection disconnect that writes
+ * `encrypt('')` to the credential columns; this is the bulk equivalent
+ * called once during org erasure, before the cascade. Returns a counts
+ * summary for audit / observability.
+ *
+ * NOTE: this never throws - integration wipes are best-effort defense.
+ * The cascade on Organization is still the authoritative remove. If any
+ * one bucket fails, we log and continue rather than abort erasure.
+ */
+async function wipeAllIntegrationCredentials(organizationId: string): Promise<void> {
+    const wiped = { slack: 0, crm: 0, outreach: 0, justcall: 0, leadSources: 0, enrichment: 0 };
+
+    const swallow = async <T>(fn: () => Promise<T>, label: string): Promise<T | null> => {
+        try { return await fn(); } catch (err) {
+            logger.warn('[PII-ERASURE] Integration wipe failed', { label, organizationId, error: String(err) });
+            return null;
+        }
+    };
+
+    const blank = encrypt('');
+
+    const slackR = await swallow(() => prisma.slackIntegration.updateMany({
+        where: { organization_id: organizationId },
+        data: { bot_token_encrypted: blank },
+    }), 'slack');
+    if (slackR) wiped.slack = slackR.count;
+
+    const crmR = await swallow(() => prisma.crmConnection.updateMany({
+        where: { organization_id: organizationId },
+        data: { access_token: blank, refresh_token: null },
+    }), 'crm');
+    if (crmR) wiped.crm = crmR.count;
+
+    const outreachR = await swallow(() => prisma.outreachConnection.updateMany({
+        where: { organization_id: organizationId },
+        data: { access_token: blank, refresh_token: blank },
+    }), 'outreach');
+    if (outreachR) wiped.outreach = outreachR.count;
+
+    const justcallR = await swallow(() => prisma.justCallConnection.updateMany({
+        where: { organization_id: organizationId },
+        data: { api_key: blank, api_secret: blank },
+    }), 'justcall');
+    if (justcallR) wiped.justcall = justcallR.count;
+
+    const leadSourcesR = await swallow(() => prisma.leadSourceConnection.updateMany({
+        where: { organization_id: organizationId },
+        data: { api_key_encrypted: blank },
+    }), 'leadSources');
+    if (leadSourcesR) wiped.leadSources = leadSourcesR.count;
+
+    const enrichmentN = await swallow(() => wipeAllEnrichmentProviderCredentials(organizationId), 'enrichment');
+    if (enrichmentN !== null) wiped.enrichment = enrichmentN;
+
+    logger.info('[PII-ERASURE] Integration credentials wiped (pre-cascade)', { organizationId, ...wiped });
 }

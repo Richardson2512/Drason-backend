@@ -3587,11 +3587,26 @@ model EnrichmentProvider {
   /// Waterfall ordinal — 0 = first. Ascending order is attempted in turn.
   order_index Int @default(0)
 
-  /// Encrypted secret(s) reference. Actual credentials live in the secrets
-  /// store; this is an opaque pointer.
+  /// Reserved for a future external-secrets-store integration. Unused
+  /// today; the canonical encrypted credentials column is
+  /// `credentials_encrypted` below. Kept on the schema for forward
+  /// compatibility; will be dropped in a separate cleanup migration once
+  /// every other integration has moved to the secrets store.
   credentials_ref String?
 
-  /// Optional per-org overrides (rate limits, search filters, etc.)
+  /// AES-256-GCM encrypted JSON blob carrying the per-provider credential
+  /// shape (Apollo: {api_key}; Clay: {webhook_url, api_key}; etc.). Wraps
+  /// the same encrypt()/decrypt() helper every other integration uses, so
+  /// this column behaves identically to SlackIntegration.bot_token_
+  /// encrypted, CrmConnection.access_token, JustCallConnection.api_key,
+  /// etc. Nullable so the schema change is additive; the waterfall reader
+  /// falls back to the legacy `config.credentials` shape so existing rows
+  /// (if any) keep working until an offline backfill moves them.
+  credentials_encrypted String?
+
+  /// Optional per-org overrides (rate limits, search filters, etc.) -
+  /// NON-credential data only. Credentials moved to
+  /// `credentials_encrypted` above so a DB dump can't read them.
   config Json @default("{}")
 
   created_at DateTime @default(now())

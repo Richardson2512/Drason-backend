@@ -13,6 +13,7 @@
 
 import { prisma } from '../../prisma';
 import { logger } from '../observabilityService';
+import { encrypt, decrypt } from '../../utils/encryption';
 import { apolloProvider } from './providers/apollo';
 import { clayProvider } from './providers/clay';
 import { surfeProvider } from './providers/surfe';
@@ -78,14 +79,16 @@ export async function runWaterfall(
             continue;
         }
 
-        // BYOK: pull the customer-supplied credentials out of the
-        // EnrichmentProvider.config JSON. Shape is per-provider - Apollo
-        // expects { api_key }, Clay expects { webhook_url, api_key }, etc.
-        // We never read process.env here; the platform doesn't ship
-        // shared keys for these vendors. Each provider's isConfigured()
-        // checks for the keys it needs and the waterfall skips when
-        // they're missing.
-        const credentials = extractCredentials(cfg.config);
+        // BYOK: pull the customer-supplied credentials. Reads the
+        // AES-256-GCM encrypted column (credentials_encrypted) when
+        // present - the canonical at-rest shape that matches every other
+        // integration (Slack/CRM/Outreach/JustCall) - and falls back to
+        // the legacy plaintext `config.credentials` only for rows
+        // predating the encryption migration. Shape is per-provider:
+        // Apollo expects { api_key }, Clay expects { webhook_url,
+        // api_key }, etc. Each provider's isConfigured() checks for the
+        // keys it needs and the waterfall skips when they're missing.
+        const credentials = readProviderCredentials(cfg);
 
         if (!impl.isConfigured(credentials)) {
             await prisma.enrichmentAttempt.create({
@@ -146,32 +149,156 @@ export async function runWaterfall(
 }
 
 /**
- * Pull the customer-supplied credentials out of EnrichmentProvider.config.
- * Accepts two shapes for forward compatibility:
+ * Read the BYOK credentials for an EnrichmentProvider row. Encrypted at
+ * rest (AES-256-GCM via utils/encryption) - same helper every other
+ * integration uses (SlackIntegration.bot_token_encrypted,
+ * CrmConnection.access_token, JustCallConnection.api_key, etc.). The
+ * waterfall NEVER reads process.env for these; the platform doesn't ship
+ * shared keys for any of the enrichment vendors.
  *
- *   { credentials: { api_key: '...', webhook_url: '...' } }   ← canonical
- *   { api_key: '...', webhook_url: '...' }                    ← flat (legacy)
+ * Resolution order (first wins):
+ *   1. `credentials_encrypted` - canonical encrypted blob. Decrypted to
+ *      { api_key, webhook_url, ... } per the provider's expected shape.
+ *   2. `config.credentials` - LEGACY plaintext shape. Only used for rows
+ *      that predate the encryption migration; logged as a warning so
+ *      operators can run the offline backfill.
+ *   3. flat `config` - even older legacy where credentials lived at the
+ *      top level of `config`. Same warning treatment.
  *
  * Returns `{}` (which every provider treats as "not configured") when
- * config is null / not an object / has neither shape.
- *
- * Encrypting these values at rest is a follow-up - for now we trust the
- * Postgres row-level encryption + the org-scoped foreign key. When the
- * secrets-store integration lands, this helper switches to dereferencing
- * EnrichmentProvider.credentials_ref instead of reading config.
+ * none of the above resolves to usable string values.
  */
-function extractCredentials(config: unknown): ProviderCredentials {
-    if (!config || typeof config !== 'object') return {};
-    const obj = config as Record<string, unknown>;
+function readProviderCredentials(row: {
+    credentials_encrypted: string | null;
+    config: unknown;
+    provider: string;
+}): ProviderCredentials {
+    if (row.credentials_encrypted) {
+        try {
+            const parsed = JSON.parse(decrypt(row.credentials_encrypted));
+            if (parsed && typeof parsed === 'object') {
+                return Object.fromEntries(
+                    Object.entries(parsed as Record<string, unknown>)
+                        .filter(([, v]) => typeof v === 'string')
+                ) as ProviderCredentials;
+            }
+        } catch (err) {
+            logger.error('[ENRICHMENT] Failed to decrypt provider credentials', err instanceof Error ? err : new Error(String(err)), { provider: row.provider });
+            // Fall through to legacy shapes rather than fail-closed - the
+            // operator may have left a legacy config in place for a row
+            // whose encrypted blob got corrupted.
+        }
+    }
+    if (!row.config || typeof row.config !== 'object') return {};
+    const obj = row.config as Record<string, unknown>;
     const inner = obj.credentials;
     if (inner && typeof inner === 'object') {
+        logger.warn('[ENRICHMENT] Provider using LEGACY plaintext credentials in config.credentials - run the encryption backfill', { provider: row.provider });
         return Object.fromEntries(
             Object.entries(inner as Record<string, unknown>)
                 .filter(([, v]) => typeof v === 'string')
         ) as ProviderCredentials;
     }
-    return Object.fromEntries(
+    // Flat legacy: credentials at the top level of config. Only ever
+    // existed on the very earliest enrichment rows; same warning.
+    const flat = Object.fromEntries(
         Object.entries(obj).filter(([, v]) => typeof v === 'string')
     ) as ProviderCredentials;
+    if (Object.keys(flat).length > 0) {
+        logger.warn('[ENRICHMENT] Provider using FLAT legacy credentials at config root - run the encryption backfill', { provider: row.provider });
+    }
+    return flat;
+}
+
+/**
+ * Write encrypted credentials to an EnrichmentProvider row. ONE place
+ * every future write controller calls so the encryption story can never
+ * diverge from the read path. Also enforces the per-provider config
+ * shape (F6) by deferring validation to the provider implementation's
+ * isConfigured() - rejects empty / wrong-shape configs at write time so
+ * the user gets a clear error instead of a silent waterfall skip.
+ */
+export async function setEnrichmentProviderCredentials(opts: {
+    organizationId: string;
+    provider: ProviderCode;
+    credentials: ProviderCredentials;
+    enabled?: boolean;
+    orderIndex?: number;
+    /** Non-credential config overrides (rate limits, search filters). */
+    config?: Record<string, unknown>;
+}): Promise<{ id: string }> {
+    const impl = PROVIDERS[opts.provider];
+    if (!impl) {
+        throw new Error(`Unknown enrichment provider: ${opts.provider}`);
+    }
+    // F6: per-provider shape validation at write time. isConfigured()
+    // already encodes "which keys this provider needs"; reuse it as the
+    // single source of truth so config validation can't drift from the
+    // runtime behaviour.
+    if (!impl.isConfigured(opts.credentials)) {
+        throw new Error(
+            `${impl.label} requires credentials this config does not supply. See providerInterface.ts for the per-provider shape.`,
+        );
+    }
+
+    const encrypted = encrypt(JSON.stringify(opts.credentials));
+    const nonCredentialConfig = opts.config ?? {};
+
+    const row = await prisma.enrichmentProvider.upsert({
+        where: {
+            organization_id_provider: {
+                organization_id: opts.organizationId,
+                provider: opts.provider,
+            },
+        },
+        create: {
+            organization_id: opts.organizationId,
+            provider: opts.provider,
+            credentials_encrypted: encrypted,
+            config: nonCredentialConfig as unknown as object,
+            enabled: opts.enabled ?? true,
+            order_index: opts.orderIndex ?? 0,
+        },
+        update: {
+            credentials_encrypted: encrypted,
+            // Strip any legacy plaintext credentials that may still be
+            // sitting in `config` on this row - we own the canonical
+            // location now.
+            config: stripLegacyCredentials(nonCredentialConfig) as unknown as object,
+            enabled: opts.enabled ?? true,
+            order_index: opts.orderIndex ?? 0,
+        },
+        select: { id: true },
+    });
+
+    logger.info('[ENRICHMENT] Provider credentials written (encrypted)', {
+        orgId: opts.organizationId,
+        provider: opts.provider,
+        connectionId: row.id,
+    });
+
+    return row;
+}
+
+/** Removes any historical `credentials` / `api_key` / `webhook_url` keys
+ *  from a `config` payload so legacy plaintext never lingers after a
+ *  write through the new path. */
+function stripLegacyCredentials(config: Record<string, unknown>): Record<string, unknown> {
+    const { credentials: _ignored, api_key: _a, webhook_url: _w, api_secret: _s, ...rest } = config;
+    return rest;
+}
+
+/**
+ * Erase the credentials column for every EnrichmentProvider in this org.
+ * Called from piiErasureService.eraseOrganization as the defense-in-depth
+ * wipe (cascade still removes the rows; this nulls the encrypted blob
+ * first so even a future cascade regression cannot leak credentials).
+ */
+export async function wipeAllEnrichmentProviderCredentials(organizationId: string): Promise<number> {
+    const r = await prisma.enrichmentProvider.updateMany({
+        where: { organization_id: organizationId },
+        data: { credentials_encrypted: null, config: {} as unknown as object },
+    });
+    return r.count;
 }
 
