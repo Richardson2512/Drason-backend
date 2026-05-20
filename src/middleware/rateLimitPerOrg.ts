@@ -117,3 +117,17 @@ export const webhookTestRateLimit = rateLimitPerOrg({
     windowMs: 60_000,
     bucketKey: 'webhook-test',
 });
+
+/**
+ * Preset for billing write endpoints (checkout / change-plan / cancel /
+ * refresh-usage). Each create-checkout call hits Polar (real network
+ * cost + customer-creation); refresh-usage runs two count queries
+ * against multi-million-row send/validation tables. 10/min/org is
+ * generous for legitimate dashboard interaction but catches loops.
+ * Billing audit B2 root-cause fix.
+ */
+export const billingOpsRateLimit = rateLimitPerOrg({
+    maxPerWindow: 10,
+    windowMs: 60_000,
+    bucketKey: 'billing-ops',
+});

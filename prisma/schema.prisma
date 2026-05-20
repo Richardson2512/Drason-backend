@@ -134,6 +134,14 @@ model Organization {
   subscription_started_at DateTime?
   next_billing_date       DateTime?
 
+  /// Last successful reconciliation of subscription state with Polar.
+  /// The reconciler skips orgs touched in the past hour so it doesn't
+  /// re-hit Polar's API for already-current rows. Updated regardless of
+  /// whether a diff was applied, since "we checked Polar and nothing
+  /// changed" is just as valuable a fact as "we applied a change."
+  /// (Billing audit B1 root-cause fix.)
+  polar_reconciled_at     DateTime?
+
   // Usage tracking — only the metered counters are kept on the org row.
   // Validation credits and monthly sends are derived live from
   // ValidationAttempt + SendEvent counts in billingService; this column just

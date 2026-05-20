@@ -141,6 +141,7 @@ import * as consentController from './controllers/consentController';
 import * as dataRightsController from './controllers/dataRightsController';
 import { startLeadScoringWorker, stopLeadScoringWorker } from './services/leadScoringWorker';
 import { startTrialWorker, stopTrialWorker } from './services/trialWorker';
+import { startPolarReconciler, stopPolarReconciler } from './services/polarReconciler';
 import { scheduleWarmupTracking } from './workers/warmupTrackingWorker';
 import { scheduleSequencerSpikeWorker, stopSequencerSpikeWorker } from './workers/sequencerSpikeWorker';
 import { scheduleEspPerformanceAggregation } from './workers/espPerformanceWorker';
@@ -1151,6 +1152,15 @@ function startWorkerBootstrap(): void {
     startTrialWorker();
     logger.info('Trial expiration worker started (runs hourly)');
 
+    // Billing audit B1/B3 root-cause fix: the Polar webhook is the
+    // primary mechanism that keeps subscription_status / tier /
+    // next_billing_date current, but a lost delivery has no second
+    // safety net. The reconciler pulls state back from Polar on a
+    // schedule and also catches orphan subscriptions left over from
+    // failed plan-change cancel-at-period-end attempts.
+    startPolarReconciler();
+    logger.info('Polar reconciler started (runs hourly, freshness window 1h)');
+
 
     // Start warmup tracking worker for automated recovery
     scheduleWarmupTracking();
@@ -1257,6 +1267,9 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
     stopTrialWorker();
     logger.info('Trial worker stopped');
+
+    stopPolarReconciler();
+    logger.info('Polar reconciler stopped');
 
     stopPostmasterFetch();
     logger.info('Postmaster Tools worker stopped');

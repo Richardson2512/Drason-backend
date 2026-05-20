@@ -325,42 +325,34 @@ async function handleSubscriptionCreated(event: WebhookEvent, orgId: string): Pr
     // After we've switched our org to the new sub, cancel the previous one
     // in Polar. Best-effort - failures here just leave the old sub running
     // until the operator reconciles, they don't break the new activation.
-    if (isPlanChange) {
+    //
+    // Routed through polarClient.cancelSubscriptionAtPeriodEnd (Billing
+    // audit B4 root-cause fix): the prior version reached for raw axios
+    // with the env-var access token and used console.error for the
+    // failure path, bypassing the centralized logPolarError extractor.
+    // The reconciler job (B1/B3) is the safety net that catches any
+    // failure that happens here - this site now just attempts the cancel
+    // and reports cleanly.
+    if (isPlanChange && previousSubscriptionId) {
         try {
             const polarClient = await import('./polarClient');
-            // Direct Polar API call - using cancelSubscription() would look
-            // up the org's current polar_subscription_id (which we just
-            // overwrote with the NEW one), so we patch the old id directly.
-            const axios = (await import('axios')).default;
-            await axios.patch(
-                `https://api.polar.sh/v1/subscriptions/${previousSubscriptionId}`,
-                { cancel_at_period_end: true },
-                {
-                    headers: {
-                        Authorization: `Bearer ${process.env.POLAR_ACCESS_TOKEN}`,
-                        'Content-Type': 'application/json',
-                    },
-                }
-            );
+            await polarClient.cancelSubscriptionAtPeriodEnd(previousSubscriptionId, {
+                orgId,
+                reason: `plan_change to ${subscriptionId}`,
+            });
             logger.info('[BILLING] Canceled previous subscription on plan change', {
                 orgId,
                 previousSubscriptionId,
                 newSubscriptionId: subscriptionId,
             });
-        } catch (err: any) {
-            // Don't throw - the new subscription is already active. An
-            // orphaned old sub is recoverable manually; failing the webhook
-            // here would leave the customer in a worse state.
-            console.error('[BILLING] Failed to cancel previous subscription on plan change', {
-                orgId,
-                previousSubscriptionId,
-                newSubscriptionId: subscriptionId,
-                status: err?.response?.status,
-                data: err?.response?.data,
-                message: err?.message,
-            });
-            logger.error('[BILLING] Failed to cancel previous subscription on plan change',
-                err instanceof Error ? err : new Error(String(err)));
+        } catch (err) {
+            // The new subscription is already active. An orphaned old sub
+            // is recoverable - the reconciler job sweeps for them on the
+            // next pass. Log loud so the operator can see it in the audit
+            // table if the reconciler is delayed.
+            logger.error('[BILLING] Failed to cancel previous subscription on plan change (reconciler will retry)',
+                err instanceof Error ? err : new Error(String(err)),
+                { orgId, previousSubscriptionId, newSubscriptionId: subscriptionId });
         }
     }
 

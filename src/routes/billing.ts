@@ -8,6 +8,10 @@
 import { Router } from 'express';
 import * as billingController from '../controllers/billingController';
 import { validateBody, createCheckoutSchema, changePlanSchema, cancelSubscriptionSchema } from '../middleware/validation';
+// Per-org rate-limit on the write paths that either hit Polar or run
+// expensive count() queries. Reads (status / tiers / invoices) intentionally
+// fall through to the global /api `general` tier. Billing audit B2.
+import { billingOpsRateLimit } from '../middleware/rateLimitPerOrg';
 
 const router = Router();
 
@@ -38,27 +42,27 @@ router.get('/subscription', billingController.getSubscriptionStatus);
  */
 router.get('/tiers', billingController.getTiers);
 
-router.post('/create-checkout', validateBody(createCheckoutSchema), billingController.createCheckout);
+router.post('/create-checkout', billingOpsRateLimit, validateBody(createCheckoutSchema), billingController.createCheckout);
 
 /**
  * POST /api/billing/change-plan
  * Change subscription plan (upgrade or downgrade).
  * Requires active subscription. Downgrades may return warnings requiring confirmation.
  */
-router.post('/change-plan', validateBody(changePlanSchema), billingController.changePlan);
+router.post('/change-plan', billingOpsRateLimit, validateBody(changePlanSchema), billingController.changePlan);
 
 /**
  * POST /api/billing/cancel
  * Cancel current subscription. Requires explicit data-retention consent
  * (GDPR/DPDP) - body must include `data_retention: 'keep' | 'delete'`.
  */
-router.post('/cancel', validateBody(cancelSubscriptionSchema), billingController.cancelSubscription);
+router.post('/cancel', billingOpsRateLimit, validateBody(cancelSubscriptionSchema), billingController.cancelSubscription);
 
 /**
  * POST /api/billing/refresh-usage
  * Manually refresh usage counts.
  */
-router.post('/refresh-usage', billingController.refreshUsage);
+router.post('/refresh-usage', billingOpsRateLimit, billingController.refreshUsage);
 
 /**
  * GET /api/billing/invoices

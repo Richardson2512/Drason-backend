@@ -273,10 +273,44 @@ async function expireTrials(now: Date): Promise<void> {
 // ============================================================================
 
 /**
- * Extend a trial by a specified number of days.
- * Useful for customer support scenarios.
+ * Actor identity for any privileged trial mutation. The function REQUIRES
+ * one because the alternative (no actor parameter) is a defense-in-depth
+ * gap: if this function is ever wired to a public endpoint without an
+ * authn check, a regular user could extend their own trial indefinitely
+ * AND the audit row would say `trigger: 'manual'` with no identity.
+ *
+ * - 'super_admin' is the support-team path: requires the userId of the
+ *   logged-in admin so the audit trail captures who granted the extension.
+ * - 'system' is the internal-worker path (e.g. a payment-recovery job
+ *   that wants to grant a 3-day grace period). No userId because there
+ *   isn't a human in the loop.
+ *
+ * Billing audit B6 root-cause fix.
  */
-export async function extendTrial(orgId: string, additionalDays: number): Promise<void> {
+export type TrialActor =
+    | { kind: 'super_admin'; userId: string; reason: string }
+    | { kind: 'system'; reason: string };
+
+/**
+ * Extend a trial by a specified number of days. Useful for customer
+ * support scenarios. REQUIRES an actor parameter so the AuditLog row
+ * captures who authorized the extension (Billing audit B6).
+ */
+export async function extendTrial(
+    orgId: string,
+    additionalDays: number,
+    actor: TrialActor,
+): Promise<void> {
+    if (!actor || !actor.kind) {
+        throw new Error('extendTrial requires an actor parameter (security: B6)');
+    }
+    if (actor.kind === 'super_admin' && !actor.userId) {
+        throw new Error('extendTrial super_admin actor must include userId');
+    }
+    if (!Number.isFinite(additionalDays) || additionalDays <= 0 || additionalDays > 365) {
+        throw new Error('extendTrial: additionalDays must be 1-365');
+    }
+
     const org = await prisma.organization.findUnique({
         where: { id: orgId },
         select: { trial_ends_at: true, subscription_status: true }
@@ -306,12 +340,20 @@ export async function extendTrial(orgId: string, additionalDays: number): Promis
                 organization_id: orgId,
                 entity: 'subscription',
                 entity_id: orgId,
-                trigger: 'manual',
+                // trigger now records WHO authorized this so a future
+                // "who extended this trial?" question has an answer.
+                trigger: actor.kind === 'super_admin' ? `super_admin:${actor.userId}` : 'system',
                 action: 'trial_extended',
-                details: `Trial extended by ${additionalDays} days`
+                details: `Trial extended by ${additionalDays} days. Reason: ${actor.reason}`
             }
         })
     ]);
 
-    logger.info(`[TRIAL-WORKER] Extended trial for ${orgId} by ${additionalDays} days`);
+    logger.info(`[TRIAL-WORKER] Extended trial`, {
+        orgId,
+        additionalDays,
+        actorKind: actor.kind,
+        actorUserId: actor.kind === 'super_admin' ? actor.userId : undefined,
+        reason: actor.reason,
+    });
 }

@@ -369,18 +369,46 @@ export async function cancelSubscription(orgId: string): Promise<void> {
         throw new Error('No active subscription found');
     }
 
+    await cancelSubscriptionAtPeriodEnd(org.polar_subscription_id, { orgId });
+}
+
+/**
+ * Cancel-at-period-end for a SPECIFIC Polar subscription id, regardless of
+ * what's currently stamped on the org row.
+ *
+ * Billing audit B4 root-cause fix: the plan-change branch in
+ * billingService.handleSubscriptionCreated previously reached for raw axios
+ * with the access token to cancel the PRIOR subscription (because the new
+ * one had already been written to the org row, so the lookup-by-org form
+ * above would have canceled the wrong one). That parallel call site
+ * duplicated auth + error-handling and bypassed logPolarError, so a plan-
+ * change-cancel failure was logged through console.error + an unrelated
+ * logger.error block instead of the canonical Polar-error extractor.
+ *
+ * This explicit-id form is the single source of truth every cancel-at-
+ * period-end call goes through.
+ */
+export async function cancelSubscriptionAtPeriodEnd(
+    polarSubscriptionId: string,
+    context: { orgId: string; reason?: string } = { orgId: 'unknown' }
+): Promise<void> {
+    if (!polarSubscriptionId) {
+        throw new Error('cancelSubscriptionAtPeriodEnd: polarSubscriptionId is required');
+    }
     try {
-        await polarApi.patch(`/subscriptions/${org.polar_subscription_id}`, {
+        await polarApi.patch(`/subscriptions/${polarSubscriptionId}`, {
             cancel_at_period_end: true,
         });
-
-        logger.info(`[POLAR] Canceled subscription for ${orgId}`, {
-            subscriptionId: org.polar_subscription_id
+        logger.info(`[POLAR] Canceled subscription at period end`, {
+            orgId: context.orgId,
+            subscriptionId: polarSubscriptionId,
+            reason: context.reason,
         });
     } catch (error: any) {
-        const detail = logPolarError('[POLAR] Failed to cancel subscription', error, {
-            orgId,
-            subscriptionId: org.polar_subscription_id,
+        const detail = logPolarError('[POLAR] Failed to cancel subscription at period end', error, {
+            orgId: context.orgId,
+            subscriptionId: polarSubscriptionId,
+            reason: context.reason,
         });
         throw new Error(detail);
     }
@@ -470,14 +498,23 @@ export async function changeSubscription(orgId: string, newTier: string): Promis
 
 /**
  * Get subscription details from Polar.
+ *
+ * The reconciler (Billing audit B1) needs to distinguish 404 (subscription
+ * no longer exists in Polar - flip our local state to canceled) from a
+ * generic 5xx (transient, retry next pass). We attach the HTTP status to
+ * the thrown error as a `status` property so the caller can branch
+ * without parsing the error message string.
  */
 export async function getSubscription(subscriptionId: string): Promise<any> {
     try {
         const response = await polarApi.get(`/subscriptions/${subscriptionId}`);
         return response.data;
     } catch (error: any) {
+        const status = error?.response?.status;
         const detail = logPolarError('[POLAR] Failed to fetch subscription', error, { subscriptionId });
-        throw new Error(detail);
+        const wrapped = new Error(detail) as Error & { status?: number };
+        if (typeof status === 'number') wrapped.status = status;
+        throw wrapped;
     }
 }
 
