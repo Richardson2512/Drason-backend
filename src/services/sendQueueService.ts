@@ -38,6 +38,7 @@ import { SlackAlertService } from './SlackAlertService';
 import * as webhookBus from './webhookEventBus';
 import { applyTracking } from './trackingService';
 import { resolveSpintax } from '../utils/spintax';
+import { renderPersonalization } from '../utils/personalization';
 import { resolveDeliverableStep, classifyStepOwner } from './sequencer/stepResolver';
 import {
     computeProgression,
@@ -405,10 +406,13 @@ function personalizeEmail(
     };
     if (lead.custom_variables && typeof lead.custom_variables === 'object') {
         for (const [key, value] of Object.entries(lead.custom_variables as Record<string, any>)) {
-            tokens[key] = String(value ?? '');
+            tokens[key.toLowerCase()] = String(value ?? '');
         }
     }
-    return template.replace(/\{\{(\w+)\}\}/g, (_m, token: string) => tokens[token.toLowerCase()] ?? '');
+    // Renderer resolves simple {{tokens}}, {{#if ...}}/{{else}}/{{/if}}
+    // conditional blocks, and {{field | fallback: "x"}} filters. It never
+    // throws - a malformed template degrades to a best-effort substitution.
+    return renderPersonalization(template, tokens);
 }
 
 function isWithinSendingWindow(campaign: {

@@ -24,6 +24,7 @@ import {
     type FullStepLite,
 } from '../services/sequencer/stepTypeRegistry';
 import { normalizeSequenceSteps } from '../services/sequencer/stepNormalizer';
+import { validateStepTemplates, type StepTemplateLike } from '../utils/personalization';
 import { runPreLaunchValidation } from '../services/linkedin/preLaunchValidator';
 import * as auditLogService from '../services/auditLogService';
 
@@ -521,6 +522,18 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
             }
         }
 
+        // Personalization syntax preflight - reject malformed {{#if}} /
+        // {{else}} / {{/if}} blocks before they can ever reach the send
+        // pipeline. The renderer degrades gracefully at send time, but a
+        // clear save-time error is far better than a silently broken email.
+        const personalizationErrors = validateStepTemplates(normalizedSteps as unknown as StepTemplateLike[]);
+        if (personalizationErrors.length > 0) {
+            return res.status(400).json({
+                success: false,
+                error: `Personalization syntax errors: ${personalizationErrors.join('; ')}`,
+            });
+        }
+
         const requiresLinkedIn = normalizedSteps.some(s => isLinkedInStepType(s.step_type));
         const senderAttachments: Array<{
             linkedin_account_id: string;
@@ -928,6 +941,19 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
                 success: false,
                 error: 'Completed or archived campaigns cannot be edited.',
             });
+        }
+
+        // Personalization syntax preflight on the replacement steps (mirrors
+        // the create path) - reject malformed {{#if}} blocks before the
+        // transaction so a bad template can never reach the send pipeline.
+        if (wantsStepReplace) {
+            const personalizationErrors = validateStepTemplates(steps as unknown as StepTemplateLike[]);
+            if (personalizationErrors.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    error: `Personalization syntax errors: ${personalizationErrors.join('; ')}`,
+                });
+            }
         }
 
         const scalarUpdate: any = {};

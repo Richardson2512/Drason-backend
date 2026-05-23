@@ -13,6 +13,7 @@ import { prisma } from '../prisma';
 import { logger } from './observabilityService';
 import { scrapeUrls } from './aiCopywritingService';
 import { safeGeminiCompletion, isGeminiConfigured } from './geminiClient';
+import { validateStepTemplates } from '../utils/personalization';
 
 // ────────────────────────────────────────────────────────────────────
 // Shapes
@@ -132,6 +133,11 @@ export async function createSequence(orgId: string, input: SequenceWriteInput): 
         throw new Error('Sequence must have at least one step');
     }
 
+    const personalizationErrors = validateStepTemplates(input.steps);
+    if (personalizationErrors.length > 0) {
+        throw new Error(`Personalization syntax errors: ${personalizationErrors.join('; ')}`);
+    }
+
     const normalized = normalizeSteps(input.steps);
     const created = await prisma.$transaction(async tx => {
         const seq = await tx.sequence.create({
@@ -171,6 +177,13 @@ export async function updateSequence(orgId: string, id: string, input: Partial<S
         select: { id: true },
     });
     if (!existing) return null;
+
+    if (Array.isArray(input.steps)) {
+        const personalizationErrors = validateStepTemplates(input.steps);
+        if (personalizationErrors.length > 0) {
+            throw new Error(`Personalization syntax errors: ${personalizationErrors.join('; ')}`);
+        }
+    }
 
     await prisma.$transaction(async tx => {
         await tx.sequence.update({
