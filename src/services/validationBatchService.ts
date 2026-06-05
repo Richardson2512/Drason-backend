@@ -171,6 +171,39 @@ export async function processBatch(organizationId: string, batchId: string): Pro
                             where: { id: batchLead.id },
                             data: { validation_status: 'duplicate', error_message: msg }
                         });
+                        // Even though we skip re-validating (no credit spent), make sure the
+                        // matching Lead/contact carries the previously-computed result. This
+                        // is the common case behind "I validated a list here but it doesn't
+                        // show on the Contacts page" — the prior batch wrote ValidationBatchLead
+                        // but not Lead. Pull the most recent REAL result (valid/risky/invalid),
+                        // never a 'duplicate'/'pending' marker, and only fill when the Lead
+                        // isn't already validated so we don't clobber a fresher result.
+                        if (existingLead) {
+                            try {
+                                const priorResult = await prisma.validationBatchLead.findFirst({
+                                    where: {
+                                        email: batchLead.email,
+                                        batch: { organization_id: organizationId },
+                                        validation_status: { in: ['valid', 'risky', 'invalid'] },
+                                    },
+                                    select: { validation_status: true, validation_score: true, is_catch_all: true, is_disposable: true },
+                                    orderBy: { created_at: 'desc' },
+                                });
+                                if (priorResult) {
+                                    await prisma.lead.updateMany({
+                                        where: { id: existingLead.id, validation_status: null },
+                                        data: {
+                                            validation_status: priorResult.validation_status,
+                                            validation_score: priorResult.validation_score,
+                                            validation_source: 'internal',
+                                            validated_at: new Date(),
+                                            is_catch_all: priorResult.is_catch_all,
+                                            is_disposable: priorResult.is_disposable,
+                                        },
+                                    });
+                                }
+                            } catch { /* best-effort — never fail the batch on contact sync */ }
+                        }
                         duplicateCount++;
                         processedCount++;
                         continue;
@@ -244,6 +277,29 @@ export async function processBatch(organizationId: string, batchId: string): Pro
                                 },
                             });
                         } catch { /* best-effort */ }
+                    }
+
+                    // --- Propagate result onto the matching Lead/contact ---
+                    // The Email Validation page validates into ValidationBatchLead,
+                    // but the Contacts page reads Lead.validation_*. Without this,
+                    // validating a list here never reflects on the same contacts in
+                    // the Contacts page. Mirror the exact fields the contacts-side
+                    // validate flow writes (contactController.validateContacts), so
+                    // both entry points keep the Lead row as the source of truth.
+                    if (existingLead) {
+                        try {
+                            await prisma.lead.update({
+                                where: { id: existingLead.id },
+                                data: {
+                                    validation_status: validationResult.status,
+                                    validation_score: validationResult.score,
+                                    validation_source: validationResult.source,
+                                    validated_at: new Date(),
+                                    is_catch_all: validationResult.is_catch_all ?? null,
+                                    is_disposable: validationResult.is_disposable ?? null,
+                                },
+                            });
+                        } catch { /* best-effort — never fail the batch on contact sync */ }
                     }
 
                     // Track counts
