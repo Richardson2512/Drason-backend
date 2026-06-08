@@ -101,6 +101,25 @@ export const getOrganizations = async (req: Request, res: Response, next: NextFu
 
         const apiCallStats = await getApiCallStats();
 
+        // Platform monitoring for today's product surface (native sequencer,
+        // Super Sender, Agency). The console historically only tracked the
+        // protection/validation layer. NOTE: LinkedIn ("Super LinkedIn") is a
+        // staging-only feature — its models are not in this branch's schema, so
+        // it is intentionally omitted here to avoid a runtime crash on prod.
+        const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const [
+            sequencerCampaigns, emailsSent, emailsSent24h, sequencerReplies,
+            dedicatedIps, agencyAccounts, workspaceMemberships,
+        ] = await Promise.all([
+            prisma.campaign.count({ where: { channel: 'email' } }),
+            prisma.sendEvent.count(),
+            prisma.sendEvent.count({ where: { sent_at: { gte: since24h } } }),
+            prisma.replyEvent.count(),
+            prisma.dedicatedIp.count(),
+            prisma.account.count(),
+            prisma.workspaceMembership.count(),
+        ]);
+
         logger.info('[SUPER_ADMIN] Listed organizations', {
             userId: req.orgContext?.userId,
             count: enriched.length,
@@ -117,6 +136,19 @@ export const getOrganizations = async (req: Request, res: Response, next: NextFu
                     microsoftConnections,
                     smtpConnections,
                     apiCalls: apiCallStats,
+                    sequencer: {
+                        campaigns: sequencerCampaigns,
+                        emailsSent,
+                        emailsSent24h,
+                        replies: sequencerReplies,
+                    },
+                    superSender: {
+                        dedicatedIps,
+                    },
+                    agency: {
+                        accounts: agencyAccounts,
+                        workspaceMemberships,
+                    },
                 },
             },
         });
