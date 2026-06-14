@@ -17,7 +17,8 @@
  * would likely see" - enough to surprise senders into rewriting their copy.
  */
 
-import OpenAI from 'openai';
+import { safeCompletion } from './openaiClient';
+import { logger } from './observabilityService';
 
 // ─── Client catalog ──────────────────────────────────────────────────────────
 //
@@ -321,16 +322,6 @@ export function renderDarkForClient(bodyHtml: string, profile: ClientProfile): D
 
 // ─── AI summary prediction ───────────────────────────────────────────────────
 
-let _openai: OpenAI | null = null;
-function getClient(): OpenAI {
-    if (!_openai) {
-        const apiKey = process.env.OPENAI_API_KEY;
-        if (!apiKey) throw new Error('OPENAI_API_KEY is not set');
-        _openai = new OpenAI({ apiKey });
-    }
-    return _openai;
-}
-
 /**
  * Predict the AI summary the recipient's client would generate. Gmail's
  * Summarize, Apple Intelligence's "Summary" line, and Superhuman's
@@ -365,15 +356,27 @@ ${styleInstructions[style]}
 Output ONLY the summary text. No prefixes, no quotation marks, no explanation.`;
 
     try {
-        const res = await getClient().chat.completions.create({
-            model: 'gpt-4o-mini',
-            messages: [{ role: 'user', content: prompt }],
-            temperature: 0.4,
-            max_tokens: 60,
-        });
+        const res = await safeCompletion(
+            {
+                model: 'gpt-4o-mini',
+                messages: [{ role: 'user', content: prompt }],
+                temperature: 0.4,
+                max_tokens: 60,
+            },
+            { tag: `recipient_preview.ai_summary.${style}` },
+        );
         return (res.choices[0]?.message?.content || '').trim().replace(/^["']|["']$/g, '');
-    } catch {
-        // Graceful - better to return a placeholder than fail the whole preview
+    } catch (err) {
+        // Graceful - better to return a placeholder than fail the whole preview.
+        // But the failure is real and we need to see it in logs to know whether
+        // the AI summary box is silently degraded for users.
+        const e = err as { status?: number; code?: string; message?: string };
+        logger.warn('[RECIPIENT_PREVIEW] predictAiSummary failed - returning placeholder', {
+            style,
+            status: e?.status,
+            code: e?.code,
+            msg: (e?.message || '').slice(0, 200),
+        });
         return '(summary unavailable)';
     }
 }
@@ -498,6 +501,11 @@ export interface ClientPreview {
 export interface PreviewRequest {
     subject: string;
     bodyHtml: string;
+    /** Inbox preview text. When non-empty, takes precedence over the
+     *  body-derived snippet in every client's inbox-list view - matching
+     *  real Gmail/Outlook/Apple Mail behavior where the preheader, when
+     *  present, replaces the auto-extracted snippet. */
+    preheader?: string;
     senderName: string;
     senderEmail: string;
     clients?: ClientKey[];
@@ -524,7 +532,11 @@ export async function buildRecipientPreview(req: PreviewRequest): Promise<Previe
     const clientKeys = req.clients?.length ? req.clients : DEFAULT_CLIENTS;
     const senderDisplay = req.senderName || req.senderEmail || 'Unknown sender';
     const subject = req.subject || '';
-    const plain = extractPreviewText(req.bodyHtml || '');
+    // Preheader (when authored) overrides the body-derived snippet for the
+    // inbox-list preview line. Real Gmail/Outlook/Apple Mail do the same:
+    // a non-empty hidden preheader is what users see in their inbox.
+    const preheader = (req.preheader || '').trim();
+    const plain = preheader || extractPreviewText(req.bodyHtml || '');
     const issues = detectIssues(subject, req.bodyHtml || '');
 
     // Run AI summary calls in parallel - typical 1–3 clients have hasAiSummary,
