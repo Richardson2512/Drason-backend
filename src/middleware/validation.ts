@@ -82,6 +82,14 @@ export const registerSchema = z.object({
     tier: z.string().nullable().optional(),
 });
 
+export const verifyEmailSchema = z.object({
+    token: z.string().min(1, 'Verification token is required'),
+});
+
+export const resendVerificationSchema = z.object({
+    email: z.string().email('Invalid email format'),
+});
+
 // ============================================================================
 // SCHEMAS - Settings
 // ============================================================================

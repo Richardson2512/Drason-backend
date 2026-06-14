@@ -15,6 +15,8 @@ import { passwordChangedEmail } from '../services/emailTemplates/passwordChanged
 import { summariseRequester, buildFrontendUrl } from '../services/emailTemplates/requesterContext';
 import { JWT_SECRET, generateToken, setTokenCookie, clearTokenCookie } from '../services/tokenService';
 import { uniqueSlug } from '../utils/slug';
+import { isFreeEmailDomain, WORK_EMAIL_REQUIRED_MESSAGE } from '../utils/workEmail';
+import { verifyEmailTemplate } from '../services/emailTemplates/verifyEmail';
 
 /**
  * POST /api/auth/login/client
@@ -203,6 +205,21 @@ export const login = async (req: Request, res: Response) => {
             return res.status(401).json({ success: false, error: 'Invalid credentials' });
         }
 
+        // Email-verification gate. Credentials are correct, but an email/password
+        // account cannot enter the dashboard until the address is verified. We
+        // only signal this AFTER a valid password so we don't leak verification
+        // state to wrong-password probes. Existing users were grandfathered to
+        // verified by the migration; Google/Workspace users are created verified.
+        if (!user.email_verified) {
+            logger.info('[AUTH] Login blocked - email not verified', { userId: user.id, email: user.email });
+            return res.status(403).json({
+                success: false,
+                code: 'email_not_verified',
+                email: user.email,
+                error: 'Please verify your email before signing in. Check your inbox for the verification link.',
+            });
+        }
+
         const token = generateToken(user);
 
         // Reset failed login counter on successful login
@@ -278,6 +295,14 @@ export const register = async (req: Request, res: Response) => {
             });
         }
 
+        // Work-email only. Reject free/personal/disposable providers - this is
+        // the single largest lever against signup spam, and a work email is a
+        // far stronger signal of a real prospect. Same rule is enforced on the
+        // Google path (personal Gmail is rejected there).
+        if (isFreeEmailDomain(email)) {
+            return res.status(400).json({ success: false, error: WORK_EMAIL_REQUIRED_MESSAGE });
+        }
+
         // Agency-side signup - collision check only against the agency-side namespace.
         // Client users (scoped_organization_id IS NOT NULL) live in a per-workspace namespace.
         const existingUser = await prisma.user.findFirst({
@@ -300,6 +325,12 @@ export const register = async (req: Request, res: Response) => {
 
         const salt = await bcrypt.genSalt(10);
         const passwordHash = await bcrypt.hash(password, salt);
+
+        // Email-verification token - the raw token goes in the emailed link;
+        // we persist only its SHA-256 hash + expiry (same design as reset).
+        const rawVerificationToken = crypto.randomBytes(VERIFICATION_TOKEN_BYTES).toString('hex');
+        const verificationTokenHash = hashVerificationToken(rawVerificationToken);
+        const verificationTokenExpiresAt = new Date(Date.now() + VERIFICATION_TOKEN_TTL_MS);
 
         // Transaction to create Org + User
         const result = await prisma.$transaction(async (tx) => {
@@ -334,7 +365,12 @@ export const register = async (req: Request, res: Response) => {
                     password_hash: passwordHash,
                     name,
                     role: 'admin', // First user is admin
-                    organization_id: org.id
+                    organization_id: org.id,
+                    // New email/password signups start unverified - they cannot
+                    // log in until they click the emailed verification link.
+                    email_verified: false,
+                    verification_token_hash: verificationTokenHash,
+                    verification_token_expires_at: verificationTokenExpiresAt,
                 }
             });
 
@@ -383,25 +419,30 @@ export const register = async (req: Request, res: Response) => {
             );
         }
 
-        const token = generateToken({ ...result.user, organization_id: result.org.id });
+        logger.info('User registered (pending email verification)', { userId: result.user.id, email: result.user.email });
 
-        logger.info('User registered', { userId: result.user.id, email: result.user.email });
-
-        // Welcome email - fire-and-forget so it doesn't block the response.
-        // Idempotency on user.id ensures a retry of the (already-rare) double-
-        // submit doesn't double-send.
-        void dispatchEmail({
-            rendered: welcomeEmail({
-                name: result.user.name,
-                organizationName: result.org.name,
-                trialDaysRemaining: 14,
-                dashboardUrl: buildFrontendUrl('/dashboard'),
-            }),
-            audience: { kind: 'email', email: result.user.email },
-            category: 'account_security',
-            eventKind: 'welcome',
-            idempotencyKey: `welcome:${result.user.id}`,
-        });
+        // Verification email - the user is NOT logged in until they click this
+        // link. Fire-and-forget so it doesn't block the response; the raw token
+        // is only ever present here and in the email, never persisted.
+        const verifyUrl = buildVerifyUrl(rawVerificationToken);
+        if (process.env.RESEND_API_KEY) {
+            void dispatchEmail({
+                rendered: verifyEmailTemplate({
+                    name: result.user.name,
+                    verifyUrl,
+                    expiresInHours: VERIFICATION_TOKEN_TTL_MS / (60 * 60 * 1000),
+                }),
+                audience: { kind: 'email', email: result.user.email },
+                category: 'account_security',
+                eventKind: 'verify_email',
+                idempotencyKey: `verify-email:${result.user.id}:${verificationTokenHash.slice(0, 12)}`,
+            });
+        } else {
+            // Fallback when email delivery is not configured - log the link so a
+            // local/dev signup can still be completed. NEVER hit in prod, where
+            // RESEND_API_KEY is set.
+            logger.warn('[REGISTER] RESEND_API_KEY not set - verification email not sent. Verify link:', { verifyUrl });
+        }
 
         // Internal alert - let the team know about every new signup.
         const internalAlertTo = process.env.INTERNAL_SIGNUP_ALERT_TO || 'richardson@superkabe.com';
@@ -421,22 +462,14 @@ export const register = async (req: Request, res: Response) => {
             quiet: true,
         });
 
-        // Set httpOnly cookie server-side
-        setTokenCookie(res, token);
-
+        // No auth cookie / token here - the account is created but not active.
+        // The frontend shows a "check your email" state; the dashboard opens
+        // only after the verification link is used.
         res.status(201).json({
-            token,
-            user: {
-                id: result.user.id,
-                email: result.user.email,
-                name: result.user.name,
-                role: result.user.role,
-                organization: {
-                    id: result.org.id,
-                    name: result.org.name,
-                    slug: result.org.slug
-                }
-            }
+            success: true,
+            requiresVerification: true,
+            email: result.user.email,
+            message: 'Account created. Check your email to verify your address and activate your account.',
         });
 
     } catch (error: any) {
@@ -560,6 +593,27 @@ function hashResetToken(rawToken: string): string {
 function buildResetUrl(rawToken: string): string {
     const base = process.env.FRONTEND_URL || 'http://localhost:3000';
     const url = new URL('/reset-password', base);
+    url.searchParams.set('token', rawToken);
+    return url.toString();
+}
+
+// ─── Email verification ──────────────────────────────────────────────────────
+//
+// New email/password signups are created unverified with a hashed token. The
+// raw token is emailed in a /verify-email link. Verifying flips email_verified,
+// clears the token, and logs the user in (sets the JWT cookie). Login is gated
+// on email_verified until then. resendVerification re-issues a fresh token.
+
+const VERIFICATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;   // 24 hours
+const VERIFICATION_TOKEN_BYTES = 32;                     // 256 bits - 64 hex chars
+
+function hashVerificationToken(rawToken: string): string {
+    return crypto.createHash('sha256').update(rawToken).digest('hex');
+}
+
+function buildVerifyUrl(rawToken: string): string {
+    const base = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const url = new URL('/verify-email', base);
     url.searchParams.set('token', rawToken);
     return url.toString();
 }
@@ -737,6 +791,147 @@ export const resetPassword = async (req: Request, res: Response): Promise<void> 
     } catch (err) {
         logger.error('[AUTH] resetPassword failed', err instanceof Error ? err : new Error(String(err)));
         res.status(500).json({ success: false, error: 'Failed to reset password' });
+    }
+};
+
+/**
+ * POST /api/auth/verify-email
+ * Body: { token }
+ *
+ * Consumes the emailed verification token: flips email_verified, burns the
+ * token, logs the user in (sets the JWT cookie), and fires the welcome email.
+ */
+export const verifyEmail = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const { token } = req.body as { token: string };
+        if (!token || typeof token !== 'string') {
+            res.status(400).json({ success: false, error: 'Verification token is required.' });
+            return;
+        }
+
+        const tokenHash = hashVerificationToken(token);
+        const user = await prisma.user.findUnique({
+            where: { verification_token_hash: tokenHash },
+            include: { organization: true },
+        });
+
+        if (!user || !user.verification_token_expires_at) {
+            res.status(400).json({ success: false, error: 'Verification link is invalid or has already been used.' });
+            return;
+        }
+        // Already-verified is a no-op success (e.g. a double-clicked link whose
+        // token was already burned would 400 above; this covers re-issued links).
+        if (user.verification_token_expires_at < new Date()) {
+            res.status(400).json({ success: false, code: 'expired', email: user.email, error: 'Verification link has expired. Request a new one.' });
+            return;
+        }
+
+        await prisma.user.update({
+            where: { id: user.id },
+            data: {
+                email_verified: true,
+                verification_token_hash: null,           // single-use - burn it
+                verification_token_expires_at: null,
+                last_login_at: new Date(),
+            },
+        });
+
+        // Log the user straight in - they just proved control of the inbox.
+        const jwtToken = generateToken(user);
+        setTokenCookie(res, jwtToken);
+
+        // Welcome email now that the account is active. Fire-and-forget.
+        void dispatchEmail({
+            rendered: welcomeEmail({
+                name: user.name,
+                organizationName: user.organization.name,
+                trialDaysRemaining: 14,
+                dashboardUrl: buildFrontendUrl('/dashboard'),
+            }),
+            audience: { kind: 'email', email: user.email },
+            category: 'account_security',
+            eventKind: 'welcome',
+            idempotencyKey: `welcome:${user.id}`,
+        });
+
+        logger.info('[AUTH] Email verified', { userId: user.id, email: user.email });
+        res.json({
+            success: true,
+            token: jwtToken,
+            user: {
+                id: user.id,
+                email: user.email,
+                name: user.name,
+                role: user.role,
+                organization: { id: user.organization.id, name: user.organization.name, slug: user.organization.slug },
+            },
+        });
+    } catch (err) {
+        logger.error('[AUTH] verifyEmail failed', err instanceof Error ? err : new Error(String(err)));
+        res.status(500).json({ success: false, error: 'Failed to verify email' });
+    }
+};
+
+/**
+ * POST /api/auth/resend-verification
+ * Body: { email }
+ *
+ * Re-issues a fresh verification token + email for an unverified agency user.
+ * Anti-enumeration: always returns the same generic success.
+ */
+export const resendVerification = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const { email } = req.body as { email: string };
+        const emailLower = (email || '').toLowerCase().trim();
+
+        const successResponse = {
+            success: true,
+            message: 'If an unverified account with that email exists, we have sent a new verification link.',
+        };
+
+        const user = await prisma.user.findFirst({
+            where: { email: emailLower, scoped_organization_id: null },
+            select: { id: true, email: true, name: true, email_verified: true },
+        });
+
+        // Only re-issue for an existing, still-unverified account. Every other
+        // case returns the same response so we don't leak account state.
+        if (!user || user.email_verified) {
+            res.json(successResponse);
+            return;
+        }
+
+        const rawToken = crypto.randomBytes(VERIFICATION_TOKEN_BYTES).toString('hex');
+        const tokenHash = hashVerificationToken(rawToken);
+        const expiresAt = new Date(Date.now() + VERIFICATION_TOKEN_TTL_MS);
+
+        await prisma.user.update({
+            where: { id: user.id },
+            data: { verification_token_hash: tokenHash, verification_token_expires_at: expiresAt },
+        });
+
+        const verifyUrl = buildVerifyUrl(rawToken);
+        if (process.env.RESEND_API_KEY) {
+            void dispatchEmail({
+                rendered: verifyEmailTemplate({
+                    name: user.name,
+                    verifyUrl,
+                    expiresInHours: VERIFICATION_TOKEN_TTL_MS / (60 * 60 * 1000),
+                }),
+                audience: { kind: 'email', email: user.email },
+                category: 'account_security',
+                eventKind: 'verify_email',
+                idempotencyKey: `verify-email:${user.id}:${tokenHash.slice(0, 12)}`,
+            });
+        } else {
+            logger.warn('[AUTH] RESEND_API_KEY not set - resend verification link:', { verifyUrl });
+        }
+
+        logger.info('[AUTH] Verification email re-issued', { userId: user.id });
+        res.json(successResponse);
+    } catch (err) {
+        logger.error('[AUTH] resendVerification failed', err instanceof Error ? err : new Error(String(err)));
+        res.status(500).json({ success: false, error: 'Failed to resend verification email' });
     }
 };
 

@@ -371,6 +371,15 @@ model User {
   reset_token_hash       String?   @unique
   reset_token_expires_at DateTime?
 
+  // Email verification - new email/password signups start unverified and
+  // cannot log into the dashboard until they click the link we email them.
+  // Same hashed-token-with-expiry pattern as password reset. Google/Workspace
+  // users are created already-verified (Google attests the email); users that
+  // predate this feature were backfilled to verified in the migration.
+  email_verified                Boolean   @default(false)
+  verification_token_hash       String?   @unique
+  verification_token_expires_at DateTime?
+
   // ── Agency / multi-tenancy fields (Phase 1 additive) ─────────────────────
   /// Account this user belongs to. Backfilled by data migration; future-state
   /// required. For agency owners: the account they created. For clients:

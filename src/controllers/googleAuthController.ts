@@ -153,6 +153,9 @@ async function createOrgAndUser(params: {
                 name: googleUser.name,
                 role: 'admin',
                 organization_id: org.id,
+                // Google has already verified ownership of this work email, so
+                // the user is created verified and skips the email-link step.
+                email_verified: true,
                 google_id: googleUser.id,
                 google_access_token: encryptedAccessToken,
                 google_refresh_token: encryptedRefreshToken,
@@ -363,39 +366,17 @@ export const handleGoogleCallback = async (req: Request, res: Response) => {
             return res.redirect(`${appUrl}/dashboard`);
         }
 
-        // ─── NEW USER: PERSONAL GMAIL ────────────────────────────────────
-        logger.info('[GoogleAuth] Personal Gmail detected - redirecting to onboarding', {
-            email: googleUser.email
+        // ─── NEW USER: PERSONAL GMAIL → REJECTED ─────────────────────────
+        // Work-email only. Personal Gmail (and any non-Workspace Google
+        // account) cannot create an account. We send them back to signup with
+        // a clear message instead of the old org-name onboarding step, which
+        // has been removed entirely.
+        logger.info('[GoogleAuth] Personal Gmail rejected - work email required', {
+            email: googleUser.email,
         });
-
-        // Clean up expired pending registrations opportunistically
-        await cleanupExpiredPendingRegistrations();
-
-        // Generate a cryptographically secure one-time-use token
-        const pendingToken = crypto.randomBytes(48).toString('hex');
-        const expiresAt = tokens.expiry_date ? new Date(tokens.expiry_date) : null;
-
-        // Store all sensitive data in the database - nothing in the cookie
-        await prisma.pendingRegistration.create({
-            data: {
-                token: pendingToken,
-                google_id: googleUser.id,
-                email: googleUser.email,
-                name: googleUser.name || null,
-                avatar_url: googleUser.picture || null,
-                google_access_token: encrypt(tokens.access_token),
-                google_refresh_token: tokens.refresh_token ? encrypt(tokens.refresh_token) : null,
-                google_token_expires_at: expiresAt,
-                selected_plan: selectedPlan || null,
-                expires_at: new Date(Date.now() + PENDING_TOKEN_EXPIRY_MS),
-            }
-        });
-
-        logger.info('[GoogleAuth] Created PendingRegistration', { email: googleUser.email });
-
-        // Set only the opaque token in a lightweight cookie
-        setPendingTokenCookie(res, pendingToken);
-        return res.redirect(`${appUrl}/onboarding`);
+        return res.redirect(
+            `${frontendUrl}/signup?error=${encodeURIComponent('Please sign up with your work email. Personal Google accounts (gmail.com) are not supported.')}`
+        );
 
     } catch (error: any) {
         logger.error('[GoogleAuth] OAuth callback error', error);
@@ -403,141 +384,7 @@ export const handleGoogleCallback = async (req: Request, res: Response) => {
     }
 };
 
-/**
- * Complete the onboarding flow for personal Gmail users.
- * Reads PendingRegistration from DB, creates org + user, sets JWT.
- */
-export const completeOnboarding = async (req: Request, res: Response) => {
-    try {
-        const pendingToken = req.cookies?.pending_token;
-
-        if (!pendingToken || typeof pendingToken !== 'string') {
-            logger.warn('[GoogleAuth] Onboarding called without pending token');
-            return res.status(401).json({ success: false, error: 'No pending registration found. Please sign up again.' });
-        }
-
-        const { organizationName } = req.body;
-
-        if (!organizationName || typeof organizationName !== 'string' || organizationName.trim().length < 2) {
-            return res.status(400).json({ success: false, error: 'Organization name is required (minimum 2 characters).' });
-        }
-
-        // Find the pending registration
-        const pending = await prisma.pendingRegistration.findUnique({
-            where: { token: pendingToken }
-        });
-
-        if (!pending) {
-            logger.warn('[GoogleAuth] Pending registration not found', { token: pendingToken.substring(0, 8) + '...' });
-            clearPendingTokenCookie(res);
-            return res.status(401).json({ success: false, error: 'Registration expired. Please sign up again.' });
-        }
-
-        // Verify not expired
-        if (new Date() > pending.expires_at) {
-            logger.warn('[GoogleAuth] Pending registration expired', { email: pending.email });
-            await prisma.pendingRegistration.delete({ where: { id: pending.id } });
-            clearPendingTokenCookie(res);
-            return res.status(401).json({ success: false, error: 'Registration expired. Please sign up again.' });
-        }
-
-        // Check if user was already created (e.g., double submission)
-        const existingUser = await prisma.user.findFirst({
-            where: {
-                OR: [
-                    { google_id: pending.google_id },
-                    { email: pending.email }
-                ]
-            }
-        });
-
-        if (existingUser) {
-            logger.warn('[GoogleAuth] User already exists during onboarding', { email: pending.email });
-            await prisma.pendingRegistration.delete({ where: { id: pending.id } });
-            clearPendingTokenCookie(res);
-            return res.status(409).json({ success: false, error: 'An account with this email already exists. Please sign in instead.' });
-        }
-
-        // Create org + user atomically
-        const result = await createOrgAndUser({
-            orgName: organizationName.trim(),
-            googleUser: {
-                id: pending.google_id,
-                email: pending.email,
-                name: pending.name || '',
-                picture: pending.avatar_url || '',
-                verified_email: true,
-                given_name: '',
-                family_name: '',
-                locale: 'en',
-            },
-            tokens: {
-                access_token: pending.google_access_token, // Already encrypted in DB
-                refresh_token: pending.google_refresh_token || undefined,
-                expiry_date: pending.google_token_expires_at?.getTime(),
-            },
-            selectedPlan: pending.selected_plan || undefined,
-            tokensAlreadyEncrypted: true, // Tokens in PendingRegistration are already encrypted
-        });
-
-        // Delete the pending registration - one-time use
-        await prisma.pendingRegistration.delete({ where: { id: pending.id } });
-
-        // Generate and set the real JWT
-        const token = generateToken({
-            id: result.user.id,
-            email: result.user.email,
-            role: result.user.role,
-            organization_id: result.user.organization_id
-        });
-
-        clearPendingTokenCookie(res);
-        setTokenCookie(res, token);
-
-        logger.info('[GoogleAuth] Onboarding completed successfully', {
-            userId: result.user.id,
-            orgId: result.org.id,
-            orgName: result.org.name
-        });
-
-        // Welcome email - fire-and-forget. Idempotency on user.id ensures
-        // a re-submit (rare given pending_token is single-use) doesn't
-        // double-send.
-        void dispatchEmail({
-            rendered: welcomeEmail({
-                name: result.user.name,
-                organizationName: result.org.name,
-                trialDaysRemaining: 14,
-                dashboardUrl: buildFrontendUrl('/dashboard'),
-            }),
-            audience: { kind: 'email', email: result.user.email },
-            category: 'account_security',
-            eventKind: 'welcome',
-            idempotencyKey: `welcome:${result.user.id}`,
-        });
-
-        // Internal alert - Gmail-onboarded path.
-        const internalAlertTo = process.env.INTERNAL_SIGNUP_ALERT_TO || 'richardson@superkabe.com';
-        void dispatchEmail({
-            rendered: internalNewSignupAlert({
-                userEmail: result.user.email,
-                userName: result.user.name,
-                organizationName: result.org.name,
-                signupSource: 'google_gmail',
-                ipAddress: req.ip ?? null,
-                userAgent: req.headers['user-agent'] ?? null,
-            }),
-            audience: { kind: 'email', email: internalAlertTo },
-            category: 'system',
-            eventKind: 'internal_new_signup',
-            idempotencyKey: `internal-signup:${result.user.id}`,
-            quiet: true,
-        });
-
-        return res.json({ success: true });
-
-    } catch (error: any) {
-        logger.error('[GoogleAuth] Onboarding error', error);
-        return res.status(500).json({ success: false, error: 'Failed to complete registration. Please try again.' });
-    }
-};
+// NOTE: The personal-Gmail onboarding flow (completeOnboarding + the org-name
+// collection step) was removed when signup became work-email-only. Personal
+// Google accounts are now rejected in handleGoogleCallback before any
+// PendingRegistration is created.
