@@ -5,7 +5,7 @@
  *
  * Coarse on purpose: "Chrome on macOS · 1.2.3.4" is more useful in an
  * email than the full UA string. Degrades to null when neither browser
- * nor OS could be identified — caller decides whether to surface "from
+ * nor OS could be identified - caller decides whether to surface "from
  * unknown device" or skip the line entirely.
  */
 

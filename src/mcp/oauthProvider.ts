@@ -1,5 +1,5 @@
 /**
- * SuperkabeOAuthProvider — OAuth 2.0 / DCR / PKCE provider for the
+ * SuperkabeOAuthProvider - OAuth 2.0 / DCR / PKCE provider for the
  * MCP authorization router.
  *
  * Backs the SDK's mcpAuthRouter with our Postgres tables:
@@ -9,7 +9,7 @@
  *
  * Flow:
  *   1. Client (Claude.ai) POSTs to /register → we persist a public client
- *      record, hand back client_id (no secret — public client + PKCE).
+ *      record, hand back client_id (no secret - public client + PKCE).
  *   2. Client redirects user to /authorize → SDK calls our authorize().
  *      We sign a short-lived JWT carrying the auth params and bounce the
  *      user to the frontend consent UI at /oauth/consent?session=<jwt>.
@@ -176,7 +176,7 @@ export class SuperkabeOAuthProvider implements OAuthServerProvider {
 
     /**
      * Called by the SDK when a client redirects the user to /authorize.
-     * We don't issue the code yet — we bounce the user to our consent UI
+     * We don't issue the code yet - we bounce the user to our consent UI
      * with the auth params packed into a signed JWT. After consent the
      * frontend posts /oauth/consent/approve with the user's session and
      * we mint the actual code there.
@@ -268,7 +268,7 @@ export class SuperkabeOAuthProvider implements OAuthServerProvider {
             ? scopes.filter(s => grantedScopes.includes(s)).join(' ')
             : row.scope;
 
-        // Refresh token rotation — revoke the old grant and issue new pair.
+        // Refresh token rotation - revoke the old grant and issue new pair.
         await prisma.oAuthAccessToken.update({
             where: { id: row.id },
             data: { revoked_at: new Date() },

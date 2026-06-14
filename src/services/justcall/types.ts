@@ -2,7 +2,7 @@
  * JustCall.io integration types.
  *
  * JustCall's REST API (v2.1, base https://api.justcall.io/v2.1) returns
- * plain JSON — no JSON:API envelope. List responses are typically
+ * plain JSON - no JSON:API envelope. List responses are typically
  *   { status: 'success', data: [...], count, page, total_pages }
  * single-resource responses
  *   { status: 'success', data: {...} }
@@ -19,7 +19,7 @@ export interface JustCallCampaignSummary {
     id: string;
     name: string;
     type: string | null;            // 'Autodial' | 'Predictive' | 'Dynamic'
-    status: string | null;          // 'active' | 'paused' | etc — verbatim
+    status: string | null;          // 'active' | 'paused' | etc - verbatim
     contactCount: number | null;    // how many contacts already in campaign
 }
 
@@ -35,10 +35,10 @@ export interface JustCallAccountInfo {
 /** Per-contact input for a sales-dialer push. Mirrors JustCall's
  *  bulk_import body shape so the worker can hand straight off. */
 export interface JustCallContactInput {
-    /** Free-form display name. Required by JustCall — first+last joined. */
+    /** Free-form display name. Required by JustCall - first+last joined. */
     name: string;
     /** E.164 if possible; JustCall accepts national format too as long as
-     *  country_code is present on the campaign. Optional now — for parity
+     *  country_code is present on the campaign. Optional now - for parity
      *  with Outreach we push contacts even when no phone is on file; JustCall
      *  validates per-row and reports unusable rows back via the bulk_import
      *  response (skipped/failed counts). */
@@ -49,7 +49,7 @@ export interface JustCallContactInput {
 }
 
 /** Aggregate counts JustCall returns from a single bulk_import call. The
- *  spec doesn't separate created vs updated — we record the sum as
+ *  spec doesn't separate created vs updated - we record the sum as
  *  "added" and treat anything else as skipped/failed. */
 export interface JustCallBulkResult {
     /** Total contacts JustCall accepted into the campaign. */

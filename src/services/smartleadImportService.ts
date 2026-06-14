@@ -10,7 +10,7 @@
  *     scheduling, warmup logic, sticky pinning, state machine.
  *
  * Lead policy: only `status=STARTED` leads with `last_sent_time=null` are
- * imported (Gap A — Smartlead does not expose per-lead mailbox pinning, so
+ * imported (Gap A - Smartlead does not expose per-lead mailbox pinning, so
  * mid-sequence leads cannot be safely resumed without breaking threading).
  * In-flight leads are counted and surfaced in `ImportJob.stats`.
  *
@@ -45,7 +45,7 @@ import type {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Recipients contacted within this many days are considered "recent" — they're
+ * Recipients contacted within this many days are considered "recent" - they're
  * the most likely to remember a prior outreach and react badly to a duplicate
  * first-touch from a new sender. In aggressive mode they're skipped by default
  * unless `include_recent_contacts` is explicitly enabled.
@@ -53,14 +53,14 @@ import type {
 export const RECENT_CONTACT_THRESHOLD_DAYS = 14;
 
 /**
- * Leads fall into one of five buckets — both the preview UI and the orchestrator
+ * Leads fall into one of five buckets - both the preview UI and the orchestrator
  * use this exact taxonomy to keep numbers consistent.
  */
 export type LeadBucket =
-    | 'never_contacted'  // no email has gone out yet — always safe to import
+    | 'never_contacted'  // no email has gone out yet - always safe to import
     | 'stale_contact'    // last_sent_time older than threshold
     | 'recent_contact'   // last_sent_time within threshold
-    | 'opted_out'        // PAUSED or STOPPED — customer explicitly halted
+    | 'opted_out'        // PAUSED or STOPPED - customer explicitly halted
     | 'completed';       // sequence finished without reply
 
 const RECENT_THRESHOLD_MS = RECENT_CONTACT_THRESHOLD_DAYS * 24 * 60 * 60 * 1000;
@@ -77,14 +77,14 @@ export const classifyLead = (lead: SmartleadLead, now: number = Date.now()): Lea
 
 /**
  * Decide whether a lead is imported under the chosen mode. Single source of
- * truth — used by both `previewImport` (to compute "Will be imported" counts)
+ * truth - used by both `previewImport` (to compute "Will be imported" counts)
  * and the actual `ingestLeads` filter.
  *
  *   conservative: never_contacted only (preserves threading on Smartlead side).
  *   aggressive:   never_contacted + stale_contact + completed,
  *                 plus recent_contact when includeRecent=true.
  *
- * `opted_out` is NEVER imported — customer explicitly halted those leads.
+ * `opted_out` is NEVER imported - customer explicitly halted those leads.
  */
 export const shouldImportLead = (
     bucket: LeadBucket,
@@ -118,12 +118,12 @@ export interface PreviewResult {
     mailboxes:    { total: number; byProvider: Record<string, number> };
     leads:        PreviewLeadBuckets;
     sequenceSteps: number;
-    /** How many days "recent" means — clients display this in the UI copy. */
+    /** How many days "recent" means - clients display this in the UI copy. */
     recentContactThresholdDays: number;
 }
 
 /**
- * Lightweight read pass — no writes. Used by step 2 of the wizard so the
+ * Lightweight read pass - no writes. Used by step 2 of the wizard so the
  * customer sees the impact before committing.
  */
 export const previewImport = async (orgId: string): Promise<PreviewResult> => {
@@ -199,7 +199,7 @@ const mapTrackSettings = (settings: SmartleadCampaign['track_settings']) => ({
 const mapStopRules = (stopSetting: SmartleadCampaign['stop_lead_settings']) => ({
     stop_on_reply: stopSetting === 'REPLY_TO_AN_EMAIL',
     // Note: OPENED_EMAIL / CLICKED_LINK don't have a direct equivalent in our
-    // current Campaign schema — surfaced in import stats so the customer can
+    // current Campaign schema - surfaced in import stats so the customer can
     // recreate manually if needed.
     stop_on_bounce: true,  // Always-on in our system; preserve safe default.
 });
@@ -249,9 +249,9 @@ function computeInitialWarmupLimit(
 const stripTracking = (html: string): string => {
     if (!html) return html;
     return html
-        // Tracking pixels — img tags pointing at smartlead.ai or slmail.me
+        // Tracking pixels - img tags pointing at smartlead.ai or slmail.me
         .replace(/<img[^>]*src=["'][^"']*(?:smartlead\.ai|slmail\.me)[^"']*["'][^>]*\/?>(?:<\/img>)?/gi, '')
-        // Smartlead unsubscribe links — anchor tags pointing at smartlead unsub paths
+        // Smartlead unsubscribe links - anchor tags pointing at smartlead unsub paths
         .replace(/<a[^>]*href=["'][^"']*(?:smartlead\.ai|slmail\.me)[^"']*(?:unsubscribe|unsub)[^"']*["'][^>]*>[^<]*<\/a>/gi, '');
 };
 
@@ -268,7 +268,7 @@ const stripTrackingText = (text: string | null | undefined): string | null => {
 /** Find-or-create a Domain row. Used for every imported mailbox. */
 const ensureDomain = async (orgId: string, email: string): Promise<string> => {
     const domainPart = email.split('@')[1]?.toLowerCase();
-    if (!domainPart) throw new Error(`Invalid email — no @ in ${email}`);
+    if (!domainPart) throw new Error(`Invalid email - no @ in ${email}`);
 
     const existing = await prisma.domain.findUnique({
         where: { organization_id_domain: { organization_id: orgId, domain: domainPart } },
@@ -310,7 +310,7 @@ const ingestCampaign = async (
             id: randomUUID(),
             name: sl.name,
             channel: 'email',
-            // ALWAYS land paused — customer must explicitly launch after mailbox handoff.
+            // ALWAYS land paused - customer must explicitly launch after mailbox handoff.
             status: 'paused',
             paused_reason: 'imported_from_smartlead',
             paused_by: 'system',
@@ -326,7 +326,7 @@ const ingestCampaign = async (
             ...mapTrackSettings(sl.track_settings || []),
             ...mapStopRules(sl.stop_lead_settings),
             include_unsubscribe: true,
-            esp_routing: true,            // Always on — our infra owns routing
+            esp_routing: true,            // Always on - our infra owns routing
         },
         update: {
             name: sl.name,
@@ -467,7 +467,7 @@ const ingestMailbox = async (
             import_external_id: externalId,
             import_baseline: importBaseline,
             status: 'healthy',
-            // No connected_account_id — set when user reconnects natively in step 4.
+            // No connected_account_id - set when user reconnects natively in step 4.
             warmup_reputation: warmup?.reputation_score != null
                 ? String(warmup.reputation_score)
                 : (sl.warmup_reputation != null ? String(sl.warmup_reputation) : null),
@@ -513,7 +513,7 @@ interface IngestLeadsResult {
     imported: number;
     skippedRecentContact: number;     // aggressive mode w/ includeRecent=false
     skippedInFlight: number;          // conservative mode skipping mid-sequence
-    skippedOptedOut: number;          // PAUSED/STOPPED — never imported
+    skippedOptedOut: number;          // PAUSED/STOPPED - never imported
     skippedInvalidEmail: number;
 }
 
@@ -566,8 +566,8 @@ const ingestLeads = async (
                 company: lead.company_name || null,
                 phone: phoneFromSmartlead,
                 linkedin_url: linkedinFromSmartlead,
-                persona: 'imported',                // Required field — placeholder for routing
-                lead_score: 50,                     // Default — we don't import their scoring
+                persona: 'imported',                // Required field - placeholder for routing
+                lead_score: 50,                     // Default - we don't import their scoring
                 organization_id: orgId,
                 source: 'smartlead_import',
                 import_external_id: externalId,
@@ -584,7 +584,7 @@ const ingestLeads = async (
         });
 
         // CampaignLead row (campaign-scoped membership). Upsert on
-        // (campaign_id, email) — multiple campaigns may carry the same lead.
+        // (campaign_id, email) - multiple campaigns may carry the same lead.
         await prisma.campaignLead.upsert({
             where: { campaign_id_email: { campaign_id: localCampaignId, email } },
             create: {
@@ -614,7 +614,7 @@ const ingestLeads = async (
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// runImport — the long-running orchestration entry point
+// runImport - the long-running orchestration entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const runImport = async (orgId: string, jobId: string): Promise<void> => {
@@ -654,7 +654,7 @@ export const runImport = async (orgId: string, jobId: string): Promise<void> => 
 
         // Step 2: pause any ACTIVE campaign on Smartlead BEFORE ingesting leads,
         // so they don't keep sending while we read. Do this before the heavy
-        // fetch loop — if the pause itself fails, we abort early.
+        // fetch loop - if the pause itself fails, we abort early.
         const activeCampaigns = campaigns.filter(c => c.status === 'ACTIVE');
         let pausedCount = 0;
         for (const c of activeCampaigns) {
@@ -663,7 +663,7 @@ export const runImport = async (orgId: string, jobId: string): Promise<void> => 
                 pausedCount++;
             } catch (err: any) {
                 logger.warn(`[SMARTLEAD-IMPORT] Failed to pause campaign ${c.id}`, err);
-                // Don't abort — best-effort. Customer still benefits if some pause.
+                // Don't abort - best-effort. Customer still benefits if some pause.
             }
         }
         await importJob.updateImportJob(jobId, {
@@ -678,7 +678,7 @@ export const runImport = async (orgId: string, jobId: string): Promise<void> => 
         let warmupNullCount = 0;
 
         for (const acc of accounts) {
-            // Best-effort warmup pull — null on 404/422 (not every mailbox has warmup enabled).
+            // Best-effort warmup pull - null on 404/422 (not every mailbox has warmup enabled).
             let warmup: SmartleadWarmupStats | null = null;
             try {
                 warmup = await smartlead.getWarmupStats(apiKey, acc.id);
@@ -698,7 +698,7 @@ export const runImport = async (orgId: string, jobId: string): Promise<void> => 
             },
         });
 
-        // Step 4: per-campaign ingest — sequences, leads, mailbox-pool linkage.
+        // Step 4: per-campaign ingest - sequences, leads, mailbox-pool linkage.
         let stepsImportedTotal = 0;
         let variantsImportedTotal = 0;
         const leadsAgg: IngestLeadsResult = {
@@ -710,7 +710,7 @@ export const runImport = async (orgId: string, jobId: string): Promise<void> => 
         };
 
         for (const sl of campaigns) {
-            // Skip terminal campaigns — STOPPED/ARCHIVED bring no value.
+            // Skip terminal campaigns - STOPPED/ARCHIVED bring no value.
             if (sl.status === 'STOPPED' || sl.status === 'ARCHIVED') continue;
 
             const { localId } = await ingestCampaign(orgId, sl);
@@ -721,14 +721,14 @@ export const runImport = async (orgId: string, jobId: string): Promise<void> => 
             stepsImportedTotal += seqResult.stepsImported;
             variantsImportedTotal += seqResult.variantsImported;
 
-            // Mailbox pool — only link mailboxes we successfully imported.
+            // Mailbox pool - only link mailboxes we successfully imported.
             const poolFromSource = await smartlead.getCampaignMailboxes(apiKey, sl.id);
             const localMailboxIds = poolFromSource
                 .map(m => sourceMailboxIdToLocal.get(m.id))
                 .filter((id): id is string => !!id);
             await linkCampaignMailboxes(localId, localMailboxIds);
 
-            // Leads — filter logic depends on customer-chosen mode.
+            // Leads - filter logic depends on customer-chosen mode.
             const slLeads = await smartlead.listCampaignLeads(apiKey, sl.id);
             const leadResult = await ingestLeads(orgId, localId, slLeads, mode, includeRecent);
             leadsAgg.imported += leadResult.imported;
@@ -794,7 +794,7 @@ export const runImport = async (orgId: string, jobId: string): Promise<void> => 
             error: errMsg,
             markCompleted: true,
         });
-        // Do NOT shrink TTL on failure — customer needs the full 72h window to retry.
+        // Do NOT shrink TTL on failure - customer needs the full 72h window to retry.
     }
 };
 

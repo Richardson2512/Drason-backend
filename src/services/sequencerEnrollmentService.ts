@@ -6,9 +6,9 @@
  * next cycle and runs the sends.
  *
  * This service is called from:
- *   - ingestionController.processLead — when an ingested/Clay-webhook lead has
+ *   - ingestionController.processLead - when an ingested/Clay-webhook lead has
  *     an assigned sequencer campaign
- *   - processor.ts — when a held lead with a sequencer target passes the
+ *   - processor.ts - when a held lead with a sequencer target passes the
  *     execution gate
  *
  * Both paths were previously calling getAdapterForCampaign which throws for
@@ -41,13 +41,13 @@ export interface SequencerEnrollmentResult {
 /**
  * Enroll a lead in a sequencer campaign by upserting a CampaignLead row.
  *
- * Idempotent by design — a second call with the same (campaign_id, email) is a
+ * Idempotent by design - a second call with the same (campaign_id, email) is a
  * no-op thanks to the unique index + `skipDuplicates`. Returns `success=true`
  * whether the row was newly inserted or already present, since from the
  * caller's perspective the lead is enrolled either way.
  *
  * The caller is responsible for transitioning Lead.status → ACTIVE on success
- * (via entityStateService) and handling retry bookkeeping on failure — this
+ * (via entityStateService) and handling retry bookkeeping on failure - this
  * service only owns the CampaignLead side.
  */
 export async function enrollLeadInSequencerCampaign(
@@ -70,7 +70,7 @@ export async function enrollLeadInSequencerCampaign(
 
         const normalizedEmail = lead.email.toLowerCase().trim();
 
-        // Org-wide suppression guard — refuse to enroll any lead whose org-scoped
+        // Org-wide suppression guard - refuse to enroll any lead whose org-scoped
         // Lead row carries an opt-out or hard-bounce marker. This is required by
         // CAN-SPAM § 5(a)(4)(A), CASL § 11(3), and GDPR Art. 21: once a recipient
         // objects (or has been classified as undeliverable), no further sends.
@@ -79,7 +79,7 @@ export async function enrollLeadInSequencerCampaign(
             select: { status: true, unsubscribed_reason: true },
         });
         if (suppression && (suppression.status === 'unsubscribed' || suppression.status === 'bounced')) {
-            logger.info('[SEQUENCER_ENROLL] Refused — org-wide suppression', {
+            logger.info('[SEQUENCER_ENROLL] Refused - org-wide suppression', {
                 organizationId,
                 campaignId,
                 email: normalizedEmail,
@@ -110,7 +110,7 @@ export async function enrollLeadInSequencerCampaign(
         });
 
         // Refresh campaign.total_leads so analytics stay consistent. Only update
-        // when we actually inserted — a no-op duplicate shouldn't re-count.
+        // when we actually inserted - a no-op duplicate shouldn't re-count.
         if (result.count > 0) {
             const leadCount = await prisma.campaignLead.count({
                 where: { campaign_id: campaignId },

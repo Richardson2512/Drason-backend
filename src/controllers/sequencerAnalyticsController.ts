@@ -49,7 +49,7 @@ export const getOverview = async (req: Request, res: Response): Promise<Response
         const dateFilter = getDateFilter(req);
 
         // Aggregate across all of the org's campaigns. Since Phase-B (2026-04-26)
-        // dropped source_platform, the Campaign table is fully unified — every
+        // dropped source_platform, the Campaign table is fully unified - every
         // row is a native sequencer campaign by definition.
         const where: any = { organization_id: orgId };
         if (dateFilter) where.created_at = dateFilter;
@@ -67,7 +67,7 @@ export const getOverview = async (req: Request, res: Response): Promise<Response
             },
         });
 
-        // Column names differ from the legacy SendCampaign schema — the unified
+        // Column names differ from the legacy SendCampaign schema - the unified
         // Campaign table uses open_count / click_count / reply_count /
         // unsubscribed_count. API response shape below keeps the prior
         // sequencer-style field names for FE stability.
@@ -183,7 +183,7 @@ export const getCampaignPerformance = async (req: Request, res: Response): Promi
  * Joins through ConnectedAccount for metadata (email, display_name,
  * provider, connection_status, daily_send_limit) and through Mailbox
  * for healing state (status, recovery_phase). Mailboxes with zero sends
- * in the window are still surfaced — analytics for a paused mailbox is
+ * in the window are still surfaced - analytics for a paused mailbox is
  * useful context, and exclusion would hide it from the operator who
  * needs to see "this mailbox hasn't sent anything in 7 days".
  */
@@ -197,7 +197,7 @@ export const getMailboxPerformance = async (req: Request, res: Response): Promis
         // Pull the org's mailboxes first so we can include zero-send rows.
         // ConnectedAccount is the canonical user-facing record (auth +
         // limits); Mailbox is the healing-side state. Some legacy accounts
-        // may not have a Mailbox row yet — handled defensively below.
+        // may not have a Mailbox row yet - handled defensively below.
         const accounts = await prisma.connectedAccount.findMany({
             where: { organization_id: orgId },
             select: {
@@ -218,7 +218,7 @@ export const getMailboxPerformance = async (req: Request, res: Response): Promis
 
         const mailboxIds = accounts.map(a => a.id);
 
-        // Three parallel groupBy queries — one per event type. groupBy is
+        // Three parallel groupBy queries - one per event type. groupBy is
         // index-friendly via the (mailbox_id, sent_at) / (mailbox_id, replied_at)
         // / (mailbox_id, bounced_at) indexes on each table.
         const [sends, replies, bounces, mailboxStates] = await Promise.all([
@@ -291,7 +291,7 @@ export const getMailboxPerformance = async (req: Request, res: Response): Promis
         });
 
         // Sort by send volume desc so the most-active mailboxes lead the
-        // table — that's where the operator's attention is most useful.
+        // table - that's where the operator's attention is most useful.
         // Zero-send mailboxes fall to the bottom, alphabetized by email.
         data.sort((a, b) => {
             if (b.total_sent !== a.total_sent) return b.total_sent - a.total_sent;
@@ -308,7 +308,7 @@ export const getMailboxPerformance = async (req: Request, res: Response): Promis
 /**
  * GET /api/sequencer/analytics/volume
  *
- * Historical daily send count for the org. Backward-looking — answers "how
+ * Historical daily send count for the org. Backward-looking - answers "how
  * many emails did we actually send each day". Source of truth is `SendEvent`
  * (one row per delivered message) so this reflects what actually went out,
  * not what `Campaign.total_sent` reports (which can drift from real send
@@ -474,12 +474,12 @@ export const getSendVolumeForecast = async (req: Request, res: Response): Promis
  * GET /api/sequencer/analytics/reply-quality
  *
  * Returns three things in one call:
- *   1. breakdown          — total inbound count + per-class counts
- *   2. subject_correlation — for each outbound subject the org has used,
+ *   1. breakdown          - total inbound count + per-class counts
+ *   2. subject_correlation - for each outbound subject the org has used,
  *                            the class distribution of replies. The frontend
  *                            renders this as "what works" vs "what hurts" tables
  *                            (top subjects by % positive, top by % angry/hard_no).
- *   3. samples            — up to 5 example replies per class for the drill-down
+ *   3. samples            - up to 5 example replies per class for the drill-down
  *
  * Subject correlation joins outbound EmailMessages (by thread_id) to the inbound
  * replies on the same thread, then groups by the outbound subject. Only threads
@@ -522,7 +522,7 @@ export const getReplyQuality = async (req: Request, res: Response): Promise<Resp
 
         // ── 2. Subject correlation ─────────────────────────────────────
         // For every (outbound_subject, reply_class) pair, count threads.
-        // Raw SQL because we want the join + double-aggregation in one pass —
+        // Raw SQL because we want the join + double-aggregation in one pass -
         // doing this in Prisma would require fetching every reply + outbound
         // message, which doesn't scale.
         const correlationRows = await prisma.$queryRawUnsafe<Array<{

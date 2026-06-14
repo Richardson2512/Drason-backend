@@ -10,7 +10,7 @@
  *   - Customer can `discardKeyNow()` at any time for an immediate wipe.
  *   - `importKeyTtlWorker` sweeps every 15 minutes and nulls expired keys.
  *
- * The plaintext key never leaves this module's `getDecryptedImportKey()` —
+ * The plaintext key never leaves this module's `getDecryptedImportKey()` -
  * callers receive the decrypted string only when they're about to make an
  * outbound API call.
  */
@@ -68,7 +68,7 @@ export const setImportKey = async (
         throw new Error(`Unsupported import platform: ${platform}`);
     }
     if (!plaintextKey || plaintextKey.trim().length < 8) {
-        throw new Error('Invalid API key — too short');
+        throw new Error('Invalid API key - too short');
     }
 
     const expiresAt = hoursFromNow(HARD_CEILING_HOURS);
@@ -96,7 +96,7 @@ export const setImportKey = async (
 /**
  * Decrypt and return the stored key for outbound API calls. Returns null
  * if no key is held or if it has expired (sweep worker will null it on its
- * next tick — this read-time check is the belt to that suspenders).
+ * next tick - this read-time check is the belt to that suspenders).
  */
 export const getDecryptedImportKey = async (
     orgId: string,
@@ -170,7 +170,7 @@ export const discardKeyNow = async (orgId: string, userId?: string): Promise<voi
 };
 
 /**
- * Sweep operation — used by importKeyTtlWorker. Returns the number of orgs
+ * Sweep operation - used by importKeyTtlWorker. Returns the number of orgs
  * whose keys were nulled.
  */
 export const sweepExpiredKeys = async (): Promise<number> => {

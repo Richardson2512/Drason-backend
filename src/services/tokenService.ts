@@ -3,7 +3,7 @@
  *
  * Both authController (login / signup / clientLogin) and agencyController
  * (switchWorkspace) need to mint a workspace-aware token. Keeping a single
- * source ensures the payload shape and expiry stay in lockstep — a previous
+ * source ensures the payload shape and expiry stay in lockstep - a previous
  * version had switchWorkspace using a 7d expiry while login used 3d, which
  * silently created sessions that outlived the original.
  */
@@ -18,7 +18,7 @@ function getJwtSecret(): string {
         if (process.env.NODE_ENV === 'production') {
             throw new Error('FATAL: JWT_SECRET is not set in production');
         }
-        logger.warn('JWT_SECRET not set — using dev-only fallback. NEVER use this in production.');
+        logger.warn('JWT_SECRET not set - using dev-only fallback. NEVER use this in production.');
         return 'drason_dev_only_secret_DO_NOT_USE_IN_PROD';
     }
     return secret;
@@ -57,7 +57,7 @@ export function generateToken(user: TokenInput): string {
 }
 
 /**
- * Optional cookie domain — set in subdomain-split mode so the auth cookie
+ * Optional cookie domain - set in subdomain-split mode so the auth cookie
  * is visible to BOTH the marketing host (e.g. superkabe.com) and the app
  * host (app.superkabe.com). When unset (local dev) the cookie stays
  * host-only, which is the safer default. Always start with a leading dot.
@@ -81,7 +81,7 @@ export function setTokenCookie(res: Response, token: string): void {
 /**
  * Clear the auth cookie. The browser will only clear a cookie when the
  * `domain`, `path`, `secure`, and `sameSite` attributes match the ones
- * used at set-time — so this MUST mirror setTokenCookie.
+ * used at set-time - so this MUST mirror setTokenCookie.
  */
 export function clearTokenCookie(res: Response): void {
     res.clearCookie('token', {

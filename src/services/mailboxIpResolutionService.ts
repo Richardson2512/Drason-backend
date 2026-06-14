@@ -8,14 +8,14 @@
  * IMPORTANT: this only makes sense for SMTP / relay providers (Zapmail,
  * Scaledmail, MissionInbox, custom SMTP). For Gmail and Microsoft 365 OAuth
  * mailboxes the sending IP is shared infrastructure managed by the provider
- * — there's no stable per-mailbox IP, no actionable signal if it's listed,
+ * - there's no stable per-mailbox IP, no actionable signal if it's listed,
  * and Google/Microsoft pull every customer through the same IP pools. Those
  * mailboxes are explicitly marked 'oauth_shared' and skipped in the worker.
  *
  * Resolution method:
  *   - SMTP: DNS-resolve the mailbox's connected_account.smtp_host A record
  *   - OAuth: skip (sentinel only)
- *   - Manual: respect a previously-set 'manual' source — don't overwrite
+ *   - Manual: respect a previously-set 'manual' source - don't overwrite
  *
  * Approach choice (A-record, not real-time peer-IP):
  *   The connected SMTP server's A record is what we resolve; we deliberately
@@ -23,12 +23,12 @@
  *     1. Peer-IP capture requires modifying every send path, which is the
  *        most fragile code in the system.
  *     2. Even with load-balanced SMTP front-ends the resolved A record is
- *        on the same provider IP block — actionable for "request delisting
+ *        on the same provider IP block - actionable for "request delisting
  *        from Zapmail" decisions, which is the goal.
  *     3. ~95% of customers run a single SMTP front-end with a single A
  *        record; the cost/value of peer-IP doesn't justify the risk.
  *   If a customer reports their resolved IP is clean but mail still bounces
- *   (the 5% case), peer-IP capture is a clean follow-up — it stamps a more
+ *   (the 5% case), peer-IP capture is a clean follow-up - it stamps a more
  *   accurate value into the same column and the rest of the pipeline doesn't
  *   change.
  */
@@ -50,7 +50,7 @@ export interface ResolutionResult {
 }
 
 /**
- * Resolve and persist the sending IP for a single mailbox. Idempotent —
+ * Resolve and persist the sending IP for a single mailbox. Idempotent -
  * skips work if the resolution is fresh (within TTL) and not stale, unless
  * `force` is set.
  *
@@ -81,11 +81,11 @@ export async function resolveAndPersistMailboxIp(
         return {
             ip: mailbox.sending_ip,
             source: 'manual',
-            note: 'Manually set by operator — not overwritten',
+            note: 'Manually set by operator - not overwritten',
         };
     }
 
-    // Skip if fresh (TTL-based caching at the row level — saves DNS queries).
+    // Skip if fresh (TTL-based caching at the row level - saves DNS queries).
     if (!opts.force && mailbox.sending_ip_resolved_at) {
         const ageHours = (Date.now() - mailbox.sending_ip_resolved_at.getTime()) / 36e5;
         if (ageHours < RESOLUTION_TTL_HOURS) {
@@ -110,7 +110,7 @@ export async function resolveAndPersistMailboxIp(
         result = {
             ip: null,
             source: 'oauth_shared',
-            note: 'Shared provider infrastructure (Gmail / Microsoft) — IP is not blacklist-actionable',
+            note: 'Shared provider infrastructure (Gmail / Microsoft) - IP is not blacklist-actionable',
         };
     } else if (account?.smtp_host) {
         result = await resolveSmtpHost(account.smtp_host);
@@ -178,7 +178,7 @@ export async function resolveSmtpHost(smtpHost: string): Promise<ResolutionResul
 }
 
 /**
- * Manual override — operator-typed IP. Bypasses DNS, marks sticky.
+ * Manual override - operator-typed IP. Bypasses DNS, marks sticky.
  */
 export async function setManualSendingIp(mailboxId: string, ip: string): Promise<void> {
     if (!isValidIpv4(ip)) {
@@ -220,7 +220,7 @@ export async function resolveOrgMailboxIps(
     let oauthShared = 0;
     let failed = 0;
 
-    // Sequential — DNS is fast enough that we don't need concurrency, and
+    // Sequential - DNS is fast enough that we don't need concurrency, and
     // keeping it sequential avoids hammering the resolver during a batch.
     for (const m of mailboxes) {
         const r = await resolveAndPersistMailboxIp(m.id, opts);

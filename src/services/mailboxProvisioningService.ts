@@ -1,5 +1,5 @@
 /**
- * Mailbox Provisioning Service — Option B unification bridge
+ * Mailbox Provisioning Service - Option B unification bridge
  *
  * When a user connects a mailbox via the Sequencer (SMTP/OAuth), we create
  * a "shadow" Mailbox + Domain record in the Protection layer. This lets the
@@ -25,7 +25,7 @@ interface ProvisionInput {
 
 /**
  * Idempotent: creates Domain + Mailbox records for a ConnectedAccount.
- * Safe to call multiple times — subsequent calls return the existing IDs.
+ * Safe to call multiple times - subsequent calls return the existing IDs.
  *
  * Returns { mailboxId, domainId } so callers can wire relations immediately.
  */
@@ -54,7 +54,7 @@ export async function provisionMailboxForConnectedAccount(
     // If this domain has never been DNS-checked, kick off a background DNS + DNSBL scan
     // so SPF/DKIM/DMARC + blacklist status is available immediately for the Protection layer.
     if (!domain.dns_checked_at) {
-        // Fire and forget — don't block mailbox provisioning on DNS resolution
+        // Fire and forget - don't block mailbox provisioning on DNS resolution
         (async () => {
             try {
                 const [{ assessDomainDNS }, dnsblService] = await Promise.all([
@@ -104,7 +104,7 @@ export async function provisionMailboxForConnectedAccount(
         },
         update: {
             // Keep email in sync on re-provisioning (e.g. display_name changed
-            // during OAuth re-auth). Don't touch the linkage itself — it's our
+            // during OAuth re-auth). Don't touch the linkage itself - it's our
             // upsert key.
             email: email.toLowerCase(),
         },
@@ -117,7 +117,7 @@ export async function provisionMailboxForConnectedAccount(
     });
 
     // Resolve sending IP (or mark as oauth_shared) so the periodic IP blacklist
-    // worker can pick it up on its next cycle. Fire-and-forget — never block
+    // worker can pick it up on its next cycle. Fire-and-forget - never block
     // provisioning on a DNS lookup. Errors are logged inside the service.
     import('./mailboxIpResolutionService').then(m => m.resolveAndPersistMailboxIp(mailbox.id))
         .catch(err => logger.warn('[PROVISION] IP resolution failed', { mailboxId: mailbox.id, error: err?.message }));
@@ -126,7 +126,7 @@ export async function provisionMailboxForConnectedAccount(
     // connected mailbox starts warmup at 5/day → 50/day over 21 days.
     // The membership row is created enabled, but the worker won't send
     // until the org owner consents at the workspace level (the Join
-    // Pool toggle on the warmup dashboard). Fire-and-forget — never
+    // Pool toggle on the warmup dashboard). Fire-and-forget - never
     // block provisioning on this side path.
     import('./warmup/membershipService').then(m =>
         m.autoEnrollMailbox({ mailboxId: mailbox.id, organizationId }),

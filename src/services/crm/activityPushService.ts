@@ -3,7 +3,7 @@
  *
  * Subscribes to the in-process webhook event bus and writes one
  * CrmActivityPushItem row per (active CRM connection, event) pair.
- * No HubSpot or Salesforce code lives here — this service is purely
+ * No HubSpot or Salesforce code lives here - this service is purely
  * a queue producer. Per-provider workers (Phase 2 / Phase 3) consume
  * the items and call the actual CRM API.
  *
@@ -22,7 +22,7 @@ import type { CrmActivityEventType } from './types';
 
 /**
  * Webhook bus event types we forward to CRMs. Anything else we ignore.
- * Keep narrow on purpose — CRMs care about per-contact activity, not
+ * Keep narrow on purpose - CRMs care about per-contact activity, not
  * mailbox or domain state changes.
  */
 const FORWARDED_EVENTS = new Set<WebhookEventType>([
@@ -91,7 +91,7 @@ async function handleEvent(
     const { leadId } = extractLeadRef(payload);
     if (!leadId) {
         // Without a lead reference we can't enqueue per-contact work.
-        // This is fine — some events (e.g., domain-level) shouldn't push.
+        // This is fine - some events (e.g., domain-level) shouldn't push.
         return;
     }
 
@@ -101,7 +101,7 @@ async function handleEvent(
     const occurredAt = extractOccurredAt(payload);
 
     // Insert one row per (connection, event). Idempotency via the
-    // unique tuple — duplicates from event-bus retries are swallowed.
+    // unique tuple - duplicates from event-bus retries are swallowed.
     for (const conn of connections) {
         try {
             await prisma.crmActivityPushItem.create({

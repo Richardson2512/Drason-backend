@@ -51,14 +51,14 @@ export function validateQuery(schema: z.ZodType) {
             });
             return;
         }
-        // req.query is read-only in newer Express — merge validated data instead of replacing
+        // req.query is read-only in newer Express - merge validated data instead of replacing
         Object.assign(req.query, result.data);
         next();
     };
 }
 
 // ============================================================================
-// SCHEMAS — Authentication
+// SCHEMAS - Authentication
 // ============================================================================
 
 export const loginSchema = z.object({
@@ -71,19 +71,19 @@ export const registerSchema = z.object({
     password: z.string().min(8, 'Password must be at least 8 characters').max(128, 'Password must be at most 128 characters'),
     name: z.string().min(1, 'Name is required'),
     organizationName: z.string().min(1, 'Organization name is required'),
-    // Required legal-doc consent — controller compares versions against the
+    // Required legal-doc consent - controller compares versions against the
     // current TOS_VERSION / PRIVACY_VERSION constants and 400s on mismatch.
     acceptedTosVersion: z.string().min(1, 'Acceptance of the current Terms of Service is required'),
     acceptedPrivacyVersion: z.string().min(1, 'Acceptance of the current Privacy Policy is required'),
     // Optional fields kept for backward compatibility. Nullable because the
     // signup form's plan-picker state defaults to null when the user lands on
-    // /signup directly (no ?plan= param) — Zod's .optional() alone rejects
+    // /signup directly (no ?plan= param) - Zod's .optional() alone rejects
     // null and was breaking signup for everyone who hit /signup without a plan.
     tier: z.string().nullable().optional(),
 });
 
 // ============================================================================
-// SCHEMAS — Settings
+// SCHEMAS - Settings
 // ============================================================================
 
 // Settings key allowlist. Add new native-only settings here as features ship.
@@ -104,7 +104,7 @@ export const updateOrganizationSchema = z.object({
 });
 
 // ============================================================================
-// SCHEMAS — Routing Rules
+// SCHEMAS - Routing Rules
 // ============================================================================
 
 export const routingRuleSchema = z.object({
@@ -115,7 +115,7 @@ export const routingRuleSchema = z.object({
 });
 
 // ============================================================================
-// SCHEMAS — Monitoring
+// SCHEMAS - Monitoring
 // ============================================================================
 
 export const monitorEventSchema = z.object({
@@ -126,7 +126,7 @@ export const monitorEventSchema = z.object({
 });
 
 // ============================================================================
-// SCHEMAS — Ingestion
+// SCHEMAS - Ingestion
 // ============================================================================
 
 export const ingestLeadSchema = z.object({
@@ -140,7 +140,7 @@ export const ingestLeadSchema = z.object({
 });
 
 // ============================================================================
-// SCHEMAS — Campaigns
+// SCHEMAS - Campaigns
 // ============================================================================
 
 export const campaignActionSchema = z.object({
@@ -178,7 +178,7 @@ export const campaignRecommendationsBatchSchema = z.object({
 });
 
 // ============================================================================
-// SCHEMAS — Users
+// SCHEMAS - Users
 // ============================================================================
 
 export const updateUserSchema = z.object({
@@ -200,11 +200,11 @@ export const resetPasswordSchema = z.object({
 });
 
 // ============================================================================
-// SCHEMAS — Billing
+// SCHEMAS - Billing
 // ============================================================================
 
 // Every tier key the dashboard's billing page can offer the user. Pro is
-// a family — `pro` is the $49 / 60K default plus five volume variants.
+// a family - `pro` is the $49 / 60K default plus five volume variants.
 // Earlier these schemas only accepted the four base tiers, so clicking any
 // Pro volume button (rendered from /api/billing/tiers) returned 400 with
 // 'Validation failed'. Source of much confusion. Keep this list in sync
@@ -226,7 +226,7 @@ export const changePlanSchema = z.object({
 });
 
 // Cancel-subscription consent. We can't silently preserve user data after
-// a paid relationship ends — GDPR/DPDP require an affirmative choice. The
+// a paid relationship ends - GDPR/DPDP require an affirmative choice. The
 // frontend forces the user to pick one of these before the cancel button
 // becomes active. No default; the request 400s if data_retention is
 // missing or not one of the two allowed values.
@@ -236,7 +236,7 @@ export const cancelSubscriptionSchema = z.object({
 });
 
 // ============================================================================
-// SCHEMAS — Healing
+// SCHEMAS - Healing
 // ============================================================================
 
 export const acknowledgeTransitionSchema = z.object({
@@ -244,7 +244,7 @@ export const acknowledgeTransitionSchema = z.object({
 });
 
 // ============================================================================
-// SCHEMAS — Query Params (pagination)
+// SCHEMAS - Query Params (pagination)
 // ============================================================================
 
 export const paginationSchema = z.object({

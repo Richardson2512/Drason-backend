@@ -17,7 +17,7 @@ function getJwtSecret(): string {
         if (process.env.NODE_ENV === 'production') {
             throw new Error('FATAL: JWT_SECRET is not set in production');
         }
-        logger.warn('JWT_SECRET not set — using dev-only fallback. NEVER use this in production.');
+        logger.warn('JWT_SECRET not set - using dev-only fallback. NEVER use this in production.');
         return 'drason_dev_only_secret_DO_NOT_USE_IN_PROD';
     }
     return secret;
@@ -51,7 +51,7 @@ function setTokenCookie(res: Response, token: string): void {
 
 /**
  * Set the pending registration token as a lightweight httpOnly cookie.
- * Contains only the opaque token — all sensitive data stays in the database.
+ * Contains only the opaque token - all sensitive data stays in the database.
  */
 function setPendingTokenCookie(res: Response, pendingToken: string): void {
     res.cookie('pending_token', pendingToken, {
@@ -189,7 +189,7 @@ async function cleanupExpiredPendingRegistrations(): Promise<void> {
             logger.info('[GoogleAuth] Cleaned up expired pending registrations', { count });
         }
     } catch (error: unknown) {
-        // Non-critical — log and continue
+        // Non-critical - log and continue
         logger.warn('[GoogleAuth] Failed to clean up expired pending registrations', error as Record<string, any>);
     }
 }
@@ -224,8 +224,8 @@ export const initiateGoogleAuth = async (req: Request, res: Response) => {
  * - Existing user: Update tokens → redirect to dashboard
  */
 export const handleGoogleCallback = async (req: Request, res: Response) => {
-    // FRONTEND_URL = marketing host (superkabe.com) — used for /signup, /login error redirects
-    // APP_URL = app subdomain host (app.superkabe.com) — used for /dashboard, /onboarding
+    // FRONTEND_URL = marketing host (superkabe.com) - used for /signup, /login error redirects
+    // APP_URL = app subdomain host (app.superkabe.com) - used for /dashboard, /onboarding
     // In single-domain mode just leave APP_URL unset; we fall back to FRONTEND_URL.
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     const appUrl = process.env.APP_URL || frontendUrl;
@@ -250,7 +250,7 @@ export const handleGoogleCallback = async (req: Request, res: Response) => {
             return res.redirect(`${frontendUrl}/signup?error=${encodeURIComponent('Invalid state parameter')}`);
         }
 
-        // Validate state to prevent CSRF — now returns metadata.
+        // Validate state to prevent CSRF - now returns metadata.
         // Async because the underlying store is the database.
         const stateMetadata = await googleOAuth.validateState(state);
         if (!stateMetadata) {
@@ -284,7 +284,7 @@ export const handleGoogleCallback = async (req: Request, res: Response) => {
         });
 
         if (user) {
-            // Existing user — update Google OAuth fields and log in
+            // Existing user - update Google OAuth fields and log in
             logger.info('[GoogleAuth] Existing user found', { userId: user.id });
 
             const expiresAt = tokens.expiry_date ? new Date(tokens.expiry_date) : null;
@@ -320,7 +320,7 @@ export const handleGoogleCallback = async (req: Request, res: Response) => {
         if (googleOAuth.isWorkspaceAccount(googleUser.hd)) {
             const orgName = googleOAuth.deriveOrgNameFromDomain(googleUser.hd!);
 
-            logger.info('[GoogleAuth] Workspace account detected — auto-creating org', {
+            logger.info('[GoogleAuth] Workspace account detected - auto-creating org', {
                 hd: googleUser.hd,
                 derivedOrgName: orgName
             });
@@ -341,7 +341,7 @@ export const handleGoogleCallback = async (req: Request, res: Response) => {
 
             setTokenCookie(res, token);
 
-            // Internal alert — Google Workspace auto-org path.
+            // Internal alert - Google Workspace auto-org path.
             const internalAlertTo = process.env.INTERNAL_SIGNUP_ALERT_TO || 'richardson@superkabe.com';
             void dispatchEmail({
                 rendered: internalNewSignupAlert({
@@ -364,7 +364,7 @@ export const handleGoogleCallback = async (req: Request, res: Response) => {
         }
 
         // ─── NEW USER: PERSONAL GMAIL ────────────────────────────────────
-        logger.info('[GoogleAuth] Personal Gmail detected — redirecting to onboarding', {
+        logger.info('[GoogleAuth] Personal Gmail detected - redirecting to onboarding', {
             email: googleUser.email
         });
 
@@ -375,7 +375,7 @@ export const handleGoogleCallback = async (req: Request, res: Response) => {
         const pendingToken = crypto.randomBytes(48).toString('hex');
         const expiresAt = tokens.expiry_date ? new Date(tokens.expiry_date) : null;
 
-        // Store all sensitive data in the database — nothing in the cookie
+        // Store all sensitive data in the database - nothing in the cookie
         await prisma.pendingRegistration.create({
             data: {
                 token: pendingToken,
@@ -480,7 +480,7 @@ export const completeOnboarding = async (req: Request, res: Response) => {
             tokensAlreadyEncrypted: true, // Tokens in PendingRegistration are already encrypted
         });
 
-        // Delete the pending registration — one-time use
+        // Delete the pending registration - one-time use
         await prisma.pendingRegistration.delete({ where: { id: pending.id } });
 
         // Generate and set the real JWT
@@ -500,7 +500,7 @@ export const completeOnboarding = async (req: Request, res: Response) => {
             orgName: result.org.name
         });
 
-        // Welcome email — fire-and-forget. Idempotency on user.id ensures
+        // Welcome email - fire-and-forget. Idempotency on user.id ensures
         // a re-submit (rare given pending_token is single-use) doesn't
         // double-send.
         void dispatchEmail({
@@ -516,7 +516,7 @@ export const completeOnboarding = async (req: Request, res: Response) => {
             idempotencyKey: `welcome:${result.user.id}`,
         });
 
-        // Internal alert — Gmail-onboarded path.
+        // Internal alert - Gmail-onboarded path.
         const internalAlertTo = process.env.INTERNAL_SIGNUP_ALERT_TO || 'richardson@superkabe.com';
         void dispatchEmail({
             rendered: internalNewSignupAlert({

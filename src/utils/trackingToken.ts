@@ -1,5 +1,5 @@
 /**
- * Tracking Token — HMAC-signed tokens for public email tracking endpoints.
+ * Tracking Token - HMAC-signed tokens for public email tracking endpoints.
  *
  * The open-pixel, click, and unsubscribe URLs are baked into emails sent to
  * third parties. They must be reachable without auth, but without a signature
@@ -13,13 +13,13 @@
  *
  * Replay protection scope: an attacker cannot forge a token for an arbitrary
  * CampaignLead ID. Legitimate recipient clients (email clients, proxies) will
- * reopen the same signed URL — that's expected and not blocked; the
+ * reopen the same signed URL - that's expected and not blocked; the
  * analytics-level "once per first-reply" dedupe stays in the domain layer.
  */
 
 import crypto from 'crypto';
 
-const MAX_TRACKING_AGE_MS = 180 * 24 * 60 * 60 * 1000; // 180 days — matches typical sequence lifetime
+const MAX_TRACKING_AGE_MS = 180 * 24 * 60 * 60 * 1000; // 180 days - matches typical sequence lifetime
 const TRUNCATED_SIG_LEN = 22;                          // base64url chars → ~128 bits of entropy
 
 let cachedKey: Buffer | null = null;
@@ -52,7 +52,7 @@ export interface TrackingPayload {
     lid: string;
     /** Token issue time (epoch milliseconds) */
     ts: number;
-    /** Optional — the destination URL for click tracking */
+    /** Optional - the destination URL for click tracking */
     u?: string;
 }
 
@@ -60,7 +60,7 @@ export interface TrackingPayload {
  * Produce a signed tracking token for an email URL.
  *
  * Returned format: `<base64url(payload)>.<base64url(hmac)>`
- * Both halves are URL-safe — no escaping required.
+ * Both halves are URL-safe - no escaping required.
  */
 export function signTrackingToken(input: { leadId: string; url?: string }): string {
     const payload: TrackingPayload = {
@@ -102,7 +102,7 @@ export function verifyTrackingToken(token: string): TrackingPayload | null {
     if (providedBuf.length !== expectedBuf.length) return null;
     if (!crypto.timingSafeEqual(providedBuf, expectedBuf)) return null;
 
-    // Signature OK — decode and validate the payload.
+    // Signature OK - decode and validate the payload.
     let payload: TrackingPayload;
     try {
         payload = JSON.parse(fromBase64Url(body).toString('utf8'));
@@ -112,7 +112,7 @@ export function verifyTrackingToken(token: string): TrackingPayload | null {
     if (!payload || typeof payload.lid !== 'string' || typeof payload.ts !== 'number') return null;
     if (payload.u !== undefined && typeof payload.u !== 'string') return null;
 
-    // TTL check — tokens older than MAX_TRACKING_AGE_MS are rejected.
+    // TTL check - tokens older than MAX_TRACKING_AGE_MS are rejected.
     const ageMs = Date.now() - payload.ts;
     if (ageMs < 0 || ageMs > MAX_TRACKING_AGE_MS) return null;
 

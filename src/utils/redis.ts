@@ -19,7 +19,7 @@ export function initRedis(): Redis | null {
     const redisUrl = process.env.REDIS_URL;
 
     if (!redisUrl) {
-        logger.warn('REDIS_URL not set — using in-memory fallback for rate limiting');
+        logger.warn('REDIS_URL not set - using in-memory fallback for rate limiting');
         return null;
     }
 
@@ -32,7 +32,7 @@ export function initRedis(): Redis | null {
             },
             // Fail commands immediately when disconnected instead of queuing
             // them until reconnect. Required for the rate-limiter's
-            // insuranceLimiter fallback to activate during a Redis outage —
+            // insuranceLimiter fallback to activate during a Redis outage -
             // queued commands hang the request thread for the full reconnect
             // window, which presents to clients as a multi-second timeout
             // rather than a clean fail-open.
@@ -105,7 +105,7 @@ export async function disconnectRedis(): Promise<void> {
 export async function acquireLock(key: string, ttlSeconds: number = 600): Promise<boolean> {
     if (!redisClient || !isConnected) {
         // Fail closed: if Redis is unavailable, deny the lock to prevent concurrent execution
-        logger.warn(`[REDIS] Lock denied for ${key} — Redis unavailable`);
+        logger.warn(`[REDIS] Lock denied for ${key} - Redis unavailable`);
         return false;
     }
     try {
@@ -228,7 +228,7 @@ export async function getPushRetryCount(leadId: string): Promise<number> {
 }
 
 /**
- * Reset the push retry counter for a lead — called on successful push.
+ * Reset the push retry counter for a lead - called on successful push.
  */
 export async function clearPushRetry(leadId: string): Promise<void> {
     const key = `push:retry:${leadId}`;

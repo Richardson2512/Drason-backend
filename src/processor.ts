@@ -74,12 +74,12 @@ const processHeldLeads = async () => {
             for (const lead of leads) {
                 if (!lead.assigned_campaign_id) continue;
 
-                // Retry cap — if prior push attempts have already exhausted the budget,
+                // Retry cap - if prior push attempts have already exhausted the budget,
                 // block the lead and notify. Avoids spinning forever on a permanently
                 // bad campaign config (missing mailboxes, revoked API key, etc.).
                 const priorAttempts = await getPushRetryCount(lead.id).catch(() => 0);
                 if (priorAttempts >= MAX_PUSH_RETRIES) {
-                    logger.warn(`[PROCESSOR] Lead ${lead.id} exceeded ${MAX_PUSH_RETRIES} push attempts — blocking`);
+                    logger.warn(`[PROCESSOR] Lead ${lead.id} exceeded ${MAX_PUSH_RETRIES} push attempts - blocking`);
                     await entityStateService.transitionLead(
                         orgId,
                         lead.id,
@@ -123,7 +123,7 @@ const processHeldLeads = async () => {
                     });
                     logger.info(`[PROCESSOR] Lead ${lead.id} ACTIVATED.`);
 
-                    // Native sending — enroll the lead in the sequencer campaign.
+                    // Native sending - enroll the lead in the sequencer campaign.
                     // sendQueueService dispatches from the resulting CampaignLead row
                     // on its next 60s tick.
                     logger.info(`[PROCESSOR] Enrolling Lead ${lead.id} in campaign ${lead.assigned_campaign_id}...`);
@@ -143,11 +143,11 @@ const processHeldLeads = async () => {
                         }
 
                         if (pushSucceeded) {
-                            // Success — clear retry counter.
+                            // Success - clear retry counter.
                             await clearPushRetry(lead.id).catch(() => { /* non-critical */ });
                             logger.info(`[PROCESSOR] Lead ${lead.id} successfully pushed.`);
                         } else {
-                            // Push returned false — bump retry counter AND revert lead to HELD
+                            // Push returned false - bump retry counter AND revert lead to HELD
                             // so the next cycle retries. Without this revert the lead sits in
                             // ACTIVE but never landed on the platform.
                             const attempts = await incrementPushRetry(lead.id).catch(() => priorAttempts + 1);
@@ -157,7 +157,7 @@ const processHeldLeads = async () => {
                             }).catch((err) => {
                                 logger.error('[PROCESSOR] Failed to revert lead to HELD', err);
                             });
-                            logger.warn(`[PROCESSOR] Push failed for Lead ${lead.id} (attempt ${attempts}/${MAX_PUSH_RETRIES}) — reverted to HELD for retry`);
+                            logger.warn(`[PROCESSOR] Push failed for Lead ${lead.id} (attempt ${attempts}/${MAX_PUSH_RETRIES}) - reverted to HELD for retry`);
                         }
                     } catch (pushError: any) {
                         const attempts = await incrementPushRetry(lead.id).catch(() => priorAttempts + 1);

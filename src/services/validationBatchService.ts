@@ -174,7 +174,7 @@ export async function processBatch(organizationId: string, batchId: string): Pro
                         // Even though we skip re-validating (no credit spent), make sure the
                         // matching Lead/contact carries the previously-computed result. This
                         // is the common case behind "I validated a list here but it doesn't
-                        // show on the Contacts page" — the prior batch wrote ValidationBatchLead
+                        // show on the Contacts page" - the prior batch wrote ValidationBatchLead
                         // but not Lead. Pull the most recent REAL result (valid/risky/invalid),
                         // never a 'duplicate'/'pending' marker, and only fill when the Lead
                         // isn't already validated so we don't clobber a fresher result.
@@ -202,7 +202,7 @@ export async function processBatch(organizationId: string, batchId: string): Pro
                                         },
                                     });
                                 }
-                            } catch { /* best-effort — never fail the batch on contact sync */ }
+                            } catch { /* best-effort - never fail the batch on contact sync */ }
                         }
                         duplicateCount++;
                         processedCount++;
@@ -234,7 +234,7 @@ export async function processBatch(organizationId: string, batchId: string): Pro
                     try {
                         espBucket = await espClassifierService.getEspBucket(organizationId, domain);
                     } catch {
-                        // ESP classification is best-effort — don't fail the lead
+                        // ESP classification is best-effort - don't fail the lead
                     }
 
                     // --- Derive rejection reason ---
@@ -299,7 +299,7 @@ export async function processBatch(organizationId: string, batchId: string): Pro
                                     is_disposable: validationResult.is_disposable ?? null,
                                 },
                             });
-                        } catch { /* best-effort — never fail the batch on contact sync */ }
+                        } catch { /* best-effort - never fail the batch on contact sync */ }
                     }
 
                     // Track counts
@@ -522,7 +522,7 @@ export async function routeLeads(
                 }
             });
 
-            // Native sequencer enrollment — creates a CampaignLead row idempotently.
+            // Native sequencer enrollment - creates a CampaignLead row idempotently.
             // ESP-aware routing happens at dispatch time inside sendQueueService,
             // which scores connected mailboxes by 30-day per-ESP performance.
             const enroll = await enrollLeadInSequencerCampaign(organizationId, campaignId, {
@@ -641,7 +641,7 @@ export async function getAnalytics(
 ) {
     const { from, to } = options;
 
-    // Shared filter for all aggregations — batch org + status not pending + optional date range
+    // Shared filter for all aggregations - batch org + status not pending + optional date range
     const baseWhere: any = {
         batch: { organization_id: organizationId },
         validation_status: { not: 'pending' },
@@ -662,12 +662,12 @@ export async function getAnalytics(
         _count: true,
     });
 
-    // Invalid rate by source — raw SQL with optional date range.
+    // Invalid rate by source - raw SQL with optional date range.
     // Newer Prisma client versions reject Date objects in tagged-template form
     // ("Expected Flat JSON array, got JSON date object"), so we use
     // $queryRawUnsafe with a positional param array and ::timestamptz casts.
     // Build the date predicates conditionally so we never have to invent
-    // sentinel dates — passing the JS max date (8640000000000000) overflows
+    // sentinel dates - passing the JS max date (8640000000000000) overflows
     // Postgres's timezone range and fails with code 22009.
     const params: any[] = [organizationId];
     let dateClause = '';

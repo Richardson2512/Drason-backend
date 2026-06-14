@@ -8,7 +8,7 @@
  *
  * Identity snapshot: we store user email + name verbatim at the moment of
  * consent. This means even after a User row is erased (right of erasure under
- * GDPR Art. 17), the consent record remains a valid audit artifact — we can
+ * GDPR Art. 17), the consent record remains a valid audit artifact - we can
  * still answer "who agreed to what, when?" without resurrecting deleted PII.
  *
  * Forensics: IP + user-agent are captured from the request. They survive User
@@ -43,7 +43,7 @@ export type ConsentChannel =
     | 'reacceptance_modal'
     | 'cookie_banner'
     | 'oauth_callback'
-    | 'oauth_consent_screen'               // /oauth/consent — MCP client authorization screen
+    | 'oauth_consent_screen'               // /oauth/consent - MCP client authorization screen
     | 'dashboard_billing_cancel'           // billing page cancellation modal
     | 'wizard_step'
     | 'api';
@@ -93,7 +93,7 @@ export const extractUserAgent = (req: Request): string | null => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Record a consent grant. Idempotent only by virtue of being append-only —
+ * Record a consent grant. Idempotent only by virtue of being append-only -
  * calling twice creates two rows (which is fine; both are valid evidence the
  * user re-affirmed).
  */
@@ -164,7 +164,7 @@ export const hasValidConsent = async (
 };
 
 /**
- * Withdraw a previously-granted consent. Does NOT delete the original row —
+ * Withdraw a previously-granted consent. Does NOT delete the original row -
  * it sets withdrawn_at + reason so the audit trail captures the full lifecycle.
  */
 export const withdrawConsent = async (
@@ -218,7 +218,7 @@ export const listConsentsForUser = async (userId: string) => {
 };
 
 /**
- * Current legal-document versions — exposed for the frontend so signup can
+ * Current legal-document versions - exposed for the frontend so signup can
  * submit them verbatim and so the re-acceptance modal can label what's new.
  */
 export const getCurrentVersions = () => ({

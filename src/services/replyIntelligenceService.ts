@@ -1,5 +1,5 @@
 /**
- * Reply intelligence — second-pass enrichment over rule-based replyClassifier.
+ * Reply intelligence - second-pass enrichment over rule-based replyClassifier.
  *
  * Two enrichment paths share this service:
  *
@@ -14,7 +14,7 @@
  *      Mon"). Date is returned in ISO; the worker stamps it on
  *      CampaignLead.ooo_until so the dispatcher honors it.
  *
- * Both paths gracefully degrade when GEMINI_API_KEY is unset — the regex
+ * Both paths gracefully degrade when GEMINI_API_KEY is unset - the regex
  * OOO parser still runs, AI re-classification becomes a no-op. No code
  * change required to flip between modes.
  */
@@ -29,14 +29,14 @@ const VALID_CLASSES: ReplyQualityClass[] = [
 ];
 
 // ────────────────────────────────────────────────────────────────────
-// AI re-classification — Gemini Flash second-pass
+// AI re-classification - Gemini Flash second-pass
 // ────────────────────────────────────────────────────────────────────
 
 export interface AiReclassifyInput {
     subject: string;
     body: string; // plain text preferred, but accepts HTML too
     /** The rule-based classifier's verdict, passed in for prompt context.
-     *  We don't *trust* it — we re-classify from scratch — but giving
+     *  We don't *trust* it - we re-classify from scratch - but giving
      *  the model the rule output lets it disagree with reasoning. */
     ruleClass: ReplyQualityClass;
     ruleConfidence: 'high' | 'medium' | 'low';
@@ -62,23 +62,23 @@ export function shouldAiReclassify(rule: ReplyClassification): boolean {
 
 const RECLASSIFY_PROMPT_TEMPLATE = (input: AiReclassifyInput) => `You are a cold-email reply classifier. Read the reply below and pick exactly one class from this list:
 
-  positive      — clearly interested, wants to talk or learn more
-  qualified     — open but with a condition (timing, role, etc.)
-  objection     — concrete reason it's not a fit (uses competitor, has internal team)
-  referral      — pointing the sender to someone else
-  soft_no       — polite decline, no fire ("not right now", "I'll pass")
-  hard_no       — explicit, sometimes hostile no ("stop emailing", "unsubscribe")
-  angry         — hostile, frustrated, complaining
-  auto          — autoresponder / out-of-office / vacation / delivery notification
-  unclassified  — none of the above; genuinely cannot tell
+  positive      - clearly interested, wants to talk or learn more
+  qualified     - open but with a condition (timing, role, etc.)
+  objection     - concrete reason it's not a fit (uses competitor, has internal team)
+  referral      - pointing the sender to someone else
+  soft_no       - polite decline, no fire ("not right now", "I'll pass")
+  hard_no       - explicit, sometimes hostile no ("stop emailing", "unsubscribe")
+  angry         - hostile, frustrated, complaining
+  auto          - autoresponder / out-of-office / vacation / delivery notification
+  unclassified  - none of the above; genuinely cannot tell
 
 Also report confidence:
-  high   — clear signal, unambiguous wording
-  medium — leaning one way but some uncertainty
-  low    — ambiguous, could plausibly be two classes
+  high   - clear signal, unambiguous wording
+  medium - leaning one way but some uncertainty
+  low    - ambiguous, could plausibly be two classes
 
 Rule-based classifier guessed: ${input.ruleClass} (${input.ruleConfidence} confidence).
-You are the second-pass review — disagree freely if the evidence supports it.
+You are the second-pass review - disagree freely if the evidence supports it.
 
 Subject: ${(input.subject || '').slice(0, 200)}
 
@@ -105,7 +105,7 @@ export async function aiReclassify(input: AiReclassifyInput): Promise<AiReclassi
         const parsed = JSON.parse(text) as { class?: string; confidence?: string; reasoning?: string };
         const cls = (parsed.class || '').toLowerCase().trim();
         if (!VALID_CLASSES.includes(cls as ReplyQualityClass)) {
-            logger.warn('[REPLY_AI] Gemini returned unknown class — discarding', { returned: parsed.class });
+            logger.warn('[REPLY_AI] Gemini returned unknown class - discarding', { returned: parsed.class });
             return null;
         }
         const conf = (parsed.confidence || '').toLowerCase().trim();
@@ -119,7 +119,7 @@ export async function aiReclassify(input: AiReclassifyInput): Promise<AiReclassi
             invoked: true,
         };
     } catch (err) {
-        logger.warn('[REPLY_AI] aiReclassify failed (non-fatal — keeping rule output)', {
+        logger.warn('[REPLY_AI] aiReclassify failed (non-fatal - keeping rule output)', {
             err: err instanceof Error ? err.message : String(err),
         });
         return null;
@@ -151,7 +151,7 @@ function stripHtml(html: string): string {
  *
  * Returns the FIRST plausible return-date >= today + 1 day. Earlier
  * dates (e.g. "I was out from May 1 to May 3" sent on May 5) are
- * ignored — the operator's intent is "when can I send again."
+ * ignored - the operator's intent is "when can I send again."
  */
 export function extractOooDateRegex(body: string, now: Date = new Date()): Date | null {
     const text = stripHtml(body).toLowerCase();

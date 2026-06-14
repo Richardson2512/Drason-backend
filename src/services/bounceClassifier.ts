@@ -31,7 +31,7 @@ export interface BounceClassification {
 
 /**
  * SMTP response pattern matchers.
- * Ordered by specificity — first match wins.
+ * Ordered by specificity - first match wins.
  * Patterns are derived from real SMTP responses from major providers.
  */
 const SMTP_PATTERNS: Array<{
@@ -175,7 +175,7 @@ export function classifyBounce(
 
 /**
  * Classify the failure type from an SMTP response string.
- * First match wins — patterns are ordered by specificity.
+ * First match wins - patterns are ordered by specificity.
  */
 export function classifyFailureType(smtpResponse: string): BounceFailureType {
     if (!smtpResponse || smtpResponse.trim().length === 0) {

@@ -12,14 +12,14 @@
 import { renderEmailTemplate, renderEmailPlainText, type RenderEmailParams } from '../transactionalEmailTemplates';
 import type { RenderedEmail } from './dispatcher';
 
-// ─── 1. Trial ending — 3 days out ───────────────────────────────────────
+// ─── 1. Trial ending - 3 days out ───────────────────────────────────────
 
 export interface TrialEndingEmailParams {
     organizationName: string;
     daysRemaining: number;
     /** When the trial actually ends (UTC). */
     trialEndsAt: Date;
-    /** Current sends used + included this trial — surfaces value being delivered. */
+    /** Current sends used + included this trial - surfaces value being delivered. */
     sendsUsed?: number | null;
     /** /dashboard/billing on the frontend. */
     billingUrl: string;
@@ -41,9 +41,9 @@ export function trialEndingEmail(p: TrialEndingEmailParams): RenderedEmail {
         preheader,
         eyebrow: 'Trial reminder',
         heading: `Your trial ends in ${p.daysRemaining} day${p.daysRemaining === 1 ? '' : 's'}`,
-        intro: `Heads-up — the Superkabe trial for <strong>${escapeHtml(p.organizationName)}</strong> ends on <strong>${escapeHtml(formatDate(p.trialEndsAt))}</strong>. After that, sending pauses until a paid plan is selected.`,
+        intro: `Heads-up - the Superkabe trial for <strong>${escapeHtml(p.organizationName)}</strong> ends on <strong>${escapeHtml(formatDate(p.trialEndsAt))}</strong>. After that, sending pauses until a paid plan is selected.`,
         facts,
-        body: `Pick a plan before then to keep campaigns sending without a hiccup. You can upgrade or downgrade later — billing prorates automatically.`,
+        body: `Pick a plan before then to keep campaigns sending without a hiccup. You can upgrade or downgrade later - billing prorates automatically.`,
         ctaLabel: 'Choose a plan',
         ctaUrl: p.billingUrl,
     };
@@ -65,7 +65,7 @@ export function trialExpiredEmail(p: TrialExpiredEmailParams): RenderedEmail {
         preheader,
         eyebrow: 'Trial ended',
         heading: 'Your trial has ended',
-        intro: `The 14-day trial for <strong>${escapeHtml(p.organizationName)}</strong> has ended. We've automatically paused all active campaigns to prevent unmonitored sending — your mailboxes and domain reputation stay safe.`,
+        intro: `The 14-day trial for <strong>${escapeHtml(p.organizationName)}</strong> has ended. We've automatically paused all active campaigns to prevent unmonitored sending - your mailboxes and domain reputation stay safe.`,
         body: `Pick a paid plan and your campaigns will resume from where they left off. Your data, sequences, leads, and mailbox connections are all preserved.`,
         ctaLabel: 'Upgrade now',
         ctaUrl: p.billingUrl,
@@ -77,7 +77,7 @@ export function trialExpiredEmail(p: TrialExpiredEmailParams): RenderedEmail {
 
 export interface PaymentFailedEmailParams {
     organizationName: string;
-    /** Polar attempt id when available — useful for support correlation. */
+    /** Polar attempt id when available - useful for support correlation. */
     attemptId?: string | null;
     /** Amount that failed, in major units (dollars), pre-formatted. */
     amountLabel?: string | null;
@@ -88,7 +88,7 @@ export interface PaymentFailedEmailParams {
 }
 
 export function paymentFailedEmail(p: PaymentFailedEmailParams): RenderedEmail {
-    const subject = 'Payment failed — action needed';
+    const subject = 'Payment failed - action needed';
     const preheader = `We couldn't charge your card for the latest Superkabe invoice. Update your payment method to avoid service interruption.`;
 
     const facts: { label: string; value: string; mono?: boolean }[] = [];
@@ -136,7 +136,7 @@ export function subscriptionCanceledEmail(p: SubscriptionCanceledEmailParams): R
         heading: 'Subscription canceled',
         intro: `We've recorded the cancellation for <strong>${escapeHtml(p.organizationName)}</strong>. Your subscription will not auto-renew, but full service stays active until <strong>${escapeHtml(formatDate(p.activeUntil))}</strong>.`,
         facts,
-        body: `If this wasn't you, or you change your mind, you can resubscribe anytime — your data, sequences, and integrations are preserved. We'd love to know what didn't work; reply to this email and we'll listen.`,
+        body: `If this wasn't you, or you change your mind, you can resubscribe anytime - your data, sequences, and integrations are preserved. We'd love to know what didn't work; reply to this email and we'll listen.`,
         ctaLabel: 'Resubscribe',
         ctaUrl: p.billingUrl,
     };
@@ -149,7 +149,7 @@ export interface SubscriptionChangedEmailParams {
     organizationName: string;
     fromTier: string;
     toTier: string;
-    /** "upgrade" | "downgrade" — affects copy. */
+    /** "upgrade" | "downgrade" - affects copy. */
     direction: 'upgrade' | 'downgrade';
     /** When the new tier takes effect. */
     effectiveAt: Date;
@@ -186,14 +186,14 @@ export interface InvoicePaidEmailParams {
     amountLabel: string;             // pre-formatted "$49.00 USD"
     paidAt: Date;
     nextBillingDate?: Date | null;
-    /** Hosted invoice URL from Polar — receipt PDF / page. */
+    /** Hosted invoice URL from Polar - receipt PDF / page. */
     receiptUrl?: string | null;
     /** Fallback CTA if receiptUrl is null. */
     billingUrl: string;
 }
 
 export function invoicePaidEmail(p: InvoicePaidEmailParams): RenderedEmail {
-    const subject = `Payment receipt — ${p.amountLabel}`;
+    const subject = `Payment receipt - ${p.amountLabel}`;
     const preheader = `Thanks for renewing Superkabe.${p.nextBillingDate ? ` Next charge: ${formatDate(p.nextBillingDate)}.` : ''}`;
 
     const facts: { label: string; value: string; mono?: boolean }[] = [
@@ -239,7 +239,7 @@ export function usageThresholdEmail(p: UsageThresholdEmailParams): RenderedEmail
         ? `${capitalize(metricLabel)} cap reached for ${p.organizationName}`
         : `${p.percentUsed}% of ${metricLabel} used`;
     const preheader = p.percentUsed >= 100
-        ? `Sending is throttled until your plan refreshes${p.resetsAt ? ` on ${formatDate(p.resetsAt)}` : ''} — or upgrade to lift the cap.`
+        ? `Sending is throttled until your plan refreshes${p.resetsAt ? ` on ${formatDate(p.resetsAt)}` : ''} - or upgrade to lift the cap.`
         : `${p.used} of ${p.limit} ${metricLabel} used. Plan ahead before you hit 100%.`;
 
     const facts: { label: string; value: string }[] = [
@@ -257,7 +257,7 @@ export function usageThresholdEmail(p: UsageThresholdEmailParams): RenderedEmail
             : `You've used ${p.percentUsed}% of your ${metricLabel}`,
         intro: p.percentUsed >= 100
             ? `<strong>${escapeHtml(p.organizationName)}</strong> has consumed the full ${metricLabel} allowance for this billing period. To keep sending without waiting for the reset, upgrade to a higher plan.`
-            : `Just a heads-up — <strong>${escapeHtml(p.organizationName)}</strong> has used <strong>${p.used} of ${p.limit}</strong> ${metricLabel} this billing period.`,
+            : `Just a heads-up - <strong>${escapeHtml(p.organizationName)}</strong> has used <strong>${p.used} of ${p.limit}</strong> ${metricLabel} this billing period.`,
         facts,
         body: p.percentUsed >= 100
             ? 'Your data is safe. New sends are queued and will dispatch as soon as the cap resets, or immediately if you upgrade.'

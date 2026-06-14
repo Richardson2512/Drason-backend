@@ -3,7 +3,7 @@
  *
  * Manages warmup-phase tracking for automated mailbox recovery during the
  * 5-phase healing pipeline. Native sending uses SendEvent and BounceEvent
- * counts directly — no upstream platform API.
+ * counts directly - no upstream platform API.
  *
  * Volume control: this service writes Mailbox.warmup_limit during recovery.
  * The dispatcher (sendQueueService) honors warmup_limit > 0 as a per-mailbox
@@ -12,7 +12,7 @@
  * for lead-admission decisions. On graduation, warmup_limit is set back to 0
  * which restores the normal cap.
  *
- * KNOWN GAP — active engagement: in the previous platform-driven flow,
+ * KNOWN GAP - active engagement: in the previous platform-driven flow,
  * Smartlead/Lemwarm/Instantly's warmup networks sent synthetic engagement
  * emails (auto-opens, auto-replies, mark-not-spam) that ACTIVELY rebuilt
  * sender reputation during recovery. With native sending, no such network
@@ -30,7 +30,7 @@ import * as notificationService from './notificationService';
 import { RecoveryPhase, GRADUATION_CRITERIA, MONITORING_THRESHOLDS } from '../types';
 
 /**
- * Native equivalent of the platform's `getMailboxDetails(..)` — counts real
+ * Native equivalent of the platform's `getMailboxDetails(..)` - counts real
  * SendEvent and BounceEvent rows for this mailbox. Returns the same shape
  * the rest of this service expects.
  */
@@ -52,7 +52,7 @@ async function getMailboxNativeStats(mailboxId: string): Promise<{
         spamCount: bounced,
         warmupSentCount: 0,
         warmupSpamCount: 0,
-        warmupReputation: '—',
+        warmupReputation: '-',
         warmupEnabled: false,
     };
 }
@@ -76,11 +76,11 @@ const WARMUP_CONFIG: Record<RecoveryPhase.RESTRICTED_SEND | RecoveryPhase.WARM_R
         targetSendsRepeat: 25            // Repeat offense requirement
     },
     [RecoveryPhase.WARM_RECOVERY]: {
-        total_warmup_per_day: 50,        // Higher volume — aligns with SendGrid/AWS SES post-warmup baselines
+        total_warmup_per_day: 50,        // Higher volume - aligns with SendGrid/AWS SES post-warmup baselines
         daily_rampup: 5,                 // Increase 5 emails/day
         reply_rate_percentage: 40,       // Target 40% engagement
         targetSends: 50,                 // Clean send requirement
-        minDays: 7                       // Minimum 7 days in phase — Microsoft reputation lag
+        minDays: 7                       // Minimum 7 days in phase - Microsoft reputation lag
     }
 };
 
@@ -119,7 +119,7 @@ export const enableWarmupForRecovery = async (
             throw new Error(`Invalid recovery phase for warmup: ${recoveryPhase}`);
         }
 
-        // Native sending — use real SendEvent / BounceEvent counts as the
+        // Native sending - use real SendEvent / BounceEvent counts as the
         // baseline. Volume during recovery is controlled by lowering
         // Mailbox.daily_send_limit; the dispatcher honors that cap.
         const stats = await getMailboxNativeStats(mailboxId);
@@ -218,7 +218,7 @@ export const updateWarmupForPhaseTransition = async (
             return { success: false };
         }
 
-        // Native sending — fresh baseline from SendEvent / BounceEvent counts.
+        // Native sending - fresh baseline from SendEvent / BounceEvent counts.
         const stats = await getMailboxNativeStats(mailboxId);
         const baselineSends = stats.dailySentCount;
         const baselineSpam = stats.spamCount;
@@ -300,7 +300,7 @@ export const disableWarmup = async (
             keepMaintenance: keepMaintenanceWarmup
         });
 
-        // Native sending — graduating to HEALTHY removes the warmup-imposed
+        // Native sending - graduating to HEALTHY removes the warmup-imposed
         // volume cap on the Mailbox. The dispatcher then sends at the
         // ConnectedAccount's daily_send_limit instead of warmup_limit.
         await prisma.mailbox.update({
@@ -365,18 +365,18 @@ export const checkGraduationCriteria = async (
         };
     }
 
-    // Manual intervention gate — block graduation when an operator must review
+    // Manual intervention gate - block graduation when an operator must review
     if (mailbox.manual_intervention_required) {
         return {
             readyForGraduation: false,
             currentSends: 0,
             targetSends: 0,
             daysInPhase: 0,
-            reason: 'Manual intervention required — graduation blocked until operator clears flag'
+            reason: 'Manual intervention required - graduation blocked until operator clears flag'
         };
     }
 
-    // Native sending — graduation is computed from real SendEvent /
+    // Native sending - graduation is computed from real SendEvent /
     // BounceEvent counts since phase_entered_at, comparing against the
     // baselines stored when the mailbox entered this phase.
     const phaseStart = mailbox.phase_entered_at || new Date(0);
@@ -386,7 +386,7 @@ export const checkGraduationCriteria = async (
     ]);
     const totalSent = phaseSends;
     const totalSpam = phaseBounces;
-    const warmupReputation = '—';
+    const warmupReputation = '-';
 
     // Calculate days in current phase
     const daysInPhase = mailbox.phase_entered_at
@@ -402,7 +402,7 @@ export const checkGraduationCriteria = async (
             ? (config.targetSendsRepeat || 25)
             : (config.targetSends || 15);
 
-        // Time floor — prevents same-day burst graduation. Anchored in Spamhaus
+        // Time floor - prevents same-day burst graduation. Anchored in Spamhaus
         // 2-4 week guidance + Microsoft reputation-lag patterns.
         const minDays = isRepeat
             ? GRADUATION_CRITERIA.restricted_to_warm.repeatMinDays
@@ -415,7 +415,7 @@ export const checkGraduationCriteria = async (
 
         const reasonParts: string[] = [];
         if (totalSent < targetSends) reasonParts.push(`${targetSends - totalSent} more sends`);
-        if (totalSpam > 0) reasonParts.push('hard bounce — relapse path will fire');
+        if (totalSpam > 0) reasonParts.push('hard bounce - relapse path will fire');
         if (daysInPhase < minDays) reasonParts.push(`${minDays - daysInPhase} more days`);
 
         return {

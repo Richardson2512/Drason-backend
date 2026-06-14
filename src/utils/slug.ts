@@ -2,7 +2,7 @@
  * URL-safe Organization slug generation.
  *
  * Slug uniqueness is global at the DB level (`Organization.slug @unique`).
- * Callers MUST use this helper rather than rolling their own — a per-account
+ * Callers MUST use this helper rather than rolling their own - a per-account
  * check would happily return a candidate that the subsequent INSERT then
  * 500s on.
  *

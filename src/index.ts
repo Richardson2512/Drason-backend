@@ -26,7 +26,7 @@ function validateEnvironment(): void {
 
     // Google's OAuth 2.0 web-server doc: "Redirect URIs must use the HTTPS
     // scheme, not plain HTTP. Localhost URIs are exempt." Catch the misconfig
-    // at boot — otherwise users hit a confusing redirect_uri_mismatch the
+    // at boot - otherwise users hit a confusing redirect_uri_mismatch the
     // first time they click Connect.
     if (process.env.NODE_ENV === 'production') {
         const backendUrl = process.env.BACKEND_URL || '';
@@ -128,7 +128,7 @@ import { scheduleMailboxIpBlacklist } from './workers/mailboxIpBlacklistWorker';
 import { scheduleColdCallListSnapshots } from './workers/coldCallListWorker';
 import * as infrastructureAssessmentService from './services/infrastructureAssessmentService';
 
-// Lead Processor — background job that pushes held leads through the execution gate
+// Lead Processor - background job that pushes held leads through the execution gate
 import './processor';
 
 import cookieParser from 'cookie-parser';
@@ -172,7 +172,7 @@ app.use(cors({
 app.use(cookieParser());
 
 // Capture raw body for HMAC signature verification on inbound webhooks.
-// Slack and Polar both sign the byte-exact request payload — re-stringifying
+// Slack and Polar both sign the byte-exact request payload - re-stringifying
 // req.body produces different bytes (whitespace/key-order), so we need the
 // original buffer. Restricted to known webhook prefixes so we don't double
 // the memory cost on every API request.
@@ -201,7 +201,7 @@ app.use(metricsMiddleware);
 app.use('/api', rateLimit);
 
 // ============================================================================
-// HEALTH CHECK — Verifies all dependencies
+// HEALTH CHECK - Verifies all dependencies
 // ============================================================================
 
 app.get('/health', asyncHandler(async (req: express.Request, res: express.Response) => {
@@ -275,20 +275,20 @@ app.use('/api', extractOrgContext);
 app.use('/api', (req, res, next) => {
     const prefixExempt = ['/auth/', '/billing/', '/monitor/', '/ingest/', '/oauth/', '/integrations/hubspot/callback', '/integrations/salesforce/callback', '/integrations/hubspot/webhooks'];
     if (prefixExempt.some(p => req.path.startsWith(p))) return next();
-    // OAuth callbacks from Google/Microsoft don't carry our auth — exempt them
+    // OAuth callbacks from Google/Microsoft don't carry our auth - exempt them
     if (req.path === '/sequencer/accounts/google/callback' || req.path === '/sequencer/accounts/microsoft/callback') return next();
-    // Allow only GET /user/me so the dashboard shell can render — block all other user routes
+    // Allow only GET /user/me so the dashboard shell can render - block all other user routes
     if (req.path === '/user/me' && req.method === 'GET') return next();
     // Anonymous-friendly consent endpoint (cookie banner). Other /consent/* paths
     // are authenticated and DO go through subscription gating.
     if (req.path === '/consent/cookies') return next();
-    // AWS SNS posts SES bounce/complaint events here without our auth — bypass
+    // AWS SNS posts SES bounce/complaint events here without our auth - bypass
     // subscription gating entirely; the controller validates source via SourceArn.
     if (req.path === '/super-sender/ses-notification') return next();
     checkSubscriptionStatus(req, res, next);
 });
 
-// Consent freshness gate — runs after subscription check, before routes.
+// Consent freshness gate - runs after subscription check, before routes.
 // Returns 412 with a structured payload when the user hasn't accepted the
 // current ToS or Privacy version. Frontend interceptor renders a blocking
 // re-acceptance modal that calls /api/auth/accept-current-terms to resolve.
@@ -322,7 +322,7 @@ app.use('/api/ai', aiRoutes);
 import superSenderRoutes from './routes/superSender';
 app.use('/api/super-sender', superSenderRoutes);
 app.use('/api/webhooks', webhookRoutes);
-app.use('/t', trackingRoutes); // public, no auth — tracking pixels + click redirects + unsubscribe
+app.use('/t', trackingRoutes); // public, no auth - tracking pixels + click redirects + unsubscribe
 
 // ── MCP OAuth 2.0 / DCR (RFC 7591) ──────────────────────────────────
 // Mounts /.well-known/oauth-authorization-server, /.well-known/oauth-
@@ -337,7 +337,7 @@ import * as oauthConsentController from './controllers/oauthConsentController';
 // WWW-Authenticate header advertise. This MUST be:
 //   1. A syntactically valid URL (new URL() must not throw)
 //   2. HTTPS in production (the MCP spec mandates it)
-//   3. The public URL clients (claude.ai) actually connect to —
+//   3. The public URL clients (claude.ai) actually connect to -
 //      NOT the Railway-internal hostname BACKEND_URL is sometimes
 //      set to, since OAuth metadata must be reachable from the
 //      same origin the client is talking to.
@@ -360,16 +360,16 @@ function resolveOAuthIssuer(): string {
         try {
             const u = new URL(withScheme);
             if (process.env.NODE_ENV === 'production' && isRailwayInternal(u.hostname)) {
-                console.warn(`[STARTUP] OAuth issuer candidate "${raw}" is a Railway-internal hostname — skipping (clients connect via the public domain)`);
+                console.warn(`[STARTUP] OAuth issuer candidate "${raw}" is a Railway-internal hostname - skipping (clients connect via the public domain)`);
                 continue;
             }
             if (process.env.NODE_ENV === 'production' && u.protocol !== 'https:') {
-                console.warn(`[STARTUP] OAuth issuer candidate "${raw}" is not HTTPS — coercing`);
+                console.warn(`[STARTUP] OAuth issuer candidate "${raw}" is not HTTPS - coercing`);
                 u.protocol = 'https:';
             }
             return u.origin;
         } catch {
-            console.warn(`[STARTUP] OAuth issuer candidate "${raw}" is not a valid URL — skipping`);
+            console.warn(`[STARTUP] OAuth issuer candidate "${raw}" is not a valid URL - skipping`);
         }
     }
     return process.env.NODE_ENV === 'production'
@@ -380,7 +380,7 @@ const PUBLIC_BACKEND_URL = resolveOAuthIssuer();
 console.log(`[STARTUP] OAuth issuer resolved to ${PUBLIC_BACKEND_URL}`);
 
 // Mount the MCP OAuth router defensively. If the SDK rejects our
-// configuration, log it loudly and continue booting — the rest of the
+// configuration, log it loudly and continue booting - the rest of the
 // backend (REST API, dashboard) must come up regardless so existing
 // users aren't blocked by an OAuth-only misconfig.
 try {
@@ -393,28 +393,28 @@ try {
     }));
     console.log(`[STARTUP] MCP OAuth router mounted (issuer=${PUBLIC_BACKEND_URL})`);
 } catch (err) {
-    console.error('[STARTUP] Failed to mount MCP OAuth router — /authorize, /token, /register endpoints disabled', err);
+    console.error('[STARTUP] Failed to mount MCP OAuth router - /authorize, /token, /register endpoints disabled', err);
 }
 
-// Consent UI bridge — frontend at /oauth/consent calls these.
+// Consent UI bridge - frontend at /oauth/consent calls these.
 // approveConsent requires login; denyConsent does not.
 app.get('/api/oauth/consent/details', asyncHandler(oauthConsentController.getConsentDetails));
 app.post('/api/oauth/consent/approve', asyncHandler(oauthConsentController.approveConsent));
 app.post('/api/oauth/consent/deny', asyncHandler(oauthConsentController.denyConsent));
 
-// OAuth connection management — surfaces active grants on the
+// OAuth connection management - surfaces active grants on the
 // dashboard integrations page and lets users disconnect.
 import * as oauthConnectionsController from './controllers/oauthConnectionsController';
 app.get('/api/oauth/connections', asyncHandler(oauthConnectionsController.listOAuthConnections));
 app.post('/api/oauth/connections/revoke', asyncHandler(oauthConnectionsController.revokeOAuthConnection));
 
-// CRM integrations (Phase 1 — connection list, detail, disconnect).
+// CRM integrations (Phase 1 - connection list, detail, disconnect).
 import * as crmIntegrationsController from './controllers/crmIntegrationsController';
 app.get('/api/integrations/crm/connections', asyncHandler(crmIntegrationsController.listConnections));
 app.get('/api/integrations/crm/connections/:id', asyncHandler(crmIntegrationsController.getConnectionDetail));
 app.post('/api/integrations/crm/connections/:id/disconnect', asyncHandler(crmIntegrationsController.disconnectConnection));
 
-// CRM — HubSpot (Phase 2). /authorize requires login; /callback is the
+// CRM - HubSpot (Phase 2). /authorize requires login; /callback is the
 // public OAuth landing.
 import * as hubspotIntegrationController from './controllers/hubspotIntegrationController';
 app.get('/api/integrations/hubspot/authorize', asyncHandler(hubspotIntegrationController.authorize));
@@ -422,14 +422,14 @@ app.get('/api/integrations/hubspot/lists', asyncHandler(hubspotIntegrationContro
 app.get('/api/integrations/hubspot/fields', asyncHandler(hubspotIntegrationController.describeFields));
 app.post('/api/integrations/hubspot/import', asyncHandler(hubspotIntegrationController.startImport));
 
-// CRM — Salesforce (Phase 3).
+// CRM - Salesforce (Phase 3).
 import * as salesforceIntegrationController from './controllers/salesforceIntegrationController';
 app.get('/api/integrations/salesforce/authorize', asyncHandler(salesforceIntegrationController.authorize));
 app.get('/api/integrations/salesforce/list-views', asyncHandler(salesforceIntegrationController.listViews));
 app.get('/api/integrations/salesforce/fields', asyncHandler(salesforceIntegrationController.describeFields));
 app.post('/api/integrations/salesforce/import', asyncHandler(salesforceIntegrationController.startImport));
 
-// Lead-source integrations (Phase 5+) — provider-blind reads + Apollo flow.
+// Lead-source integrations (Phase 5+) - provider-blind reads + Apollo flow.
 import * as leadSourcesController from './controllers/leadSourcesController';
 app.get('/api/integrations/lead-sources/connections', asyncHandler(leadSourcesController.listConnections));
 app.get('/api/integrations/lead-sources/connections/:id', asyncHandler(leadSourcesController.getConnectionDetail));
@@ -441,7 +441,7 @@ app.post('/api/integrations/apollo/parse-url', asyncHandler(apolloIntegrationCon
 app.post('/api/integrations/apollo/import', asyncHandler(apolloIntegrationController.startImport));
 app.get('/api/integrations/apollo/jobs/:id', asyncHandler(apolloIntegrationController.getJobStatus));
 
-// Outreach.io — outbound prospect/sequence push (Phase 6).
+// Outreach.io - outbound prospect/sequence push (Phase 6).
 import * as outreachIntegrationController from './controllers/outreachIntegrationController';
 app.get('/api/integrations/outreach/authorize', asyncHandler(outreachIntegrationController.authorize));
 app.get('/api/integrations/outreach/connection', asyncHandler(outreachIntegrationController.getConnection));
@@ -452,7 +452,7 @@ app.get('/api/integrations/outreach/mailboxes', asyncHandler(outreachIntegration
 app.post('/api/integrations/outreach/exports', asyncHandler(outreachIntegrationController.startExport));
 app.get('/api/integrations/outreach/exports/:id', asyncHandler(outreachIntegrationController.getExportJob));
 
-// JustCall.io — outbound voice/SMS dialer push. API key + secret auth
+// JustCall.io - outbound voice/SMS dialer push. API key + secret auth
 // (no OAuth), so there's no /authorize or /callback route.
 //
 // Mutating endpoints are gated by `access_integrations` so client users
@@ -470,7 +470,7 @@ app.post('/api/integrations/justcall/campaigns', requireCapability('access_integ
 app.post('/api/integrations/justcall/exports', requireCapability('access_integrations'), asyncHandler(justcallIntegrationController.startExport));
 app.get('/api/integrations/justcall/exports/:id', asyncHandler(justcallIntegrationController.getExportJob));
 
-// Public OAuth callback endpoints — must be reachable without an
+// Public OAuth callback endpoints - must be reachable without an
 // authenticated session (the browser is mid-redirect from the CRM).
 // Mounted under /api so the global rate-limit + correlation middleware
 // still apply, but with their own bypass on extractOrgContext via the
@@ -479,7 +479,7 @@ app.get('/api/integrations/hubspot/callback', asyncHandler(hubspotIntegrationCon
 app.get('/api/integrations/salesforce/callback', asyncHandler(salesforceIntegrationController.callback));
 app.get('/api/integrations/outreach/callback', asyncHandler(outreachIntegrationController.callback));
 
-// HubSpot webhooks — POST from HubSpot's servers, no Superkabe session.
+// HubSpot webhooks - POST from HubSpot's servers, no Superkabe session.
 // Auth is via HMAC-SHA256 signature on every request (verified inside
 // the controller). Whitelisted in extractOrgContext / subscription gate.
 import { handleHubSpotWebhook } from './controllers/hubspotWebhooksController';
@@ -488,18 +488,18 @@ app.post('/api/integrations/hubspot/webhooks', asyncHandler(handleHubSpotWebhook
 // ── MCP (Model Context Protocol) ────────────────────────────────────
 // Public path /mcp for Claude.ai browser integrations and any remote
 // MCP client. Auth supports OAuth 2.0 (oat_*) tokens and Bearer API
-// keys (sk_*) — both go through extractOrgContext.
+// keys (sk_*) - both go through extractOrgContext.
 import { handleMcpRequest, handleMcpMethodNotAllowed } from './mcp/transport';
 
 // RFC 9728 OAuth 2.0 Protected Resource Metadata. Claude.ai (and any
 // MCP-spec client) probes this endpoint to discover which authorization
 // server protects /mcp before ever attempting an unauthenticated call.
-// Without it, the OAuth handshake never bootstraps — the user clicks
+// Without it, the OAuth handshake never bootstraps - the user clicks
 // "Connect" in Claude and nothing happens.
 //
 // Two shapes are advertised:
-//   - bare `/mcp` (back-compat) — any valid token for the user's org
-//   - `/mcp/<org-slug>` (per-org) — token must be issued for that org.
+//   - bare `/mcp` (back-compat) - any valid token for the user's org
+//   - `/mcp/<org-slug>` (per-org) - token must be issued for that org.
 //     This is what an agency uses to wire up Claude.ai once per client
 //     org, with separate connectors that don't cross-talk.
 const buildResourceMetadata = (resourceUrl: string) => ({
@@ -555,12 +555,12 @@ const advertiseResourceMetadata = (req: express.Request, res: express.Response, 
     next();
 };
 
-// Bare /mcp — back-compat. Any valid token works; org comes from the token.
+// Bare /mcp - back-compat. Any valid token works; org comes from the token.
 app.post('/mcp', advertiseResourceMetadata, extractOrgContext, checkSubscriptionStatus, asyncHandler(handleMcpRequest));
 app.get('/mcp', advertiseResourceMetadata, handleMcpMethodNotAllowed);
 app.delete('/mcp', advertiseResourceMetadata, handleMcpMethodNotAllowed);
 
-// Per-org /mcp/<slug> — token must have been issued for that org. This is
+// Per-org /mcp/<slug> - token must have been issued for that org. This is
 // the recommended URL shape for new connectors; it prevents cross-org
 // token cross-talk (the bug an agency would hit when one Claude.ai account
 // caches a grant from a previously-authorized Superkabe org).
@@ -575,13 +575,13 @@ app.post('/api/ingest/clay', asyncHandler(ingestionController.ingestClayWebhook)
 // Monitoring endpoints
 app.post('/api/monitor/event', asyncHandler(monitoringController.triggerEvent));
 
-// Postmaster Tools (Google reputation API) — OAuth + status + reputation read
+// Postmaster Tools (Google reputation API) - OAuth + status + reputation read
 app.post('/api/postmaster/connect', asyncHandler(postmasterController.startConnect));
 app.post('/api/postmaster/disconnect', asyncHandler(postmasterController.disconnect));
 app.post('/api/postmaster/fetch-now', asyncHandler(postmasterController.fetchNow));
 app.get('/api/postmaster/status', asyncHandler(postmasterController.getStatus));
 app.get('/api/dashboard/domains/:id/reputation', asyncHandler(postmasterController.getDomainReputation));
-// Public OAuth callback — Google redirects here without our auth context.
+// Public OAuth callback - Google redirects here without our auth context.
 app.get('/oauth/callback/postmaster', asyncHandler(postmasterController.oauthCallback));
 
 // Migration tool (one-time import from Smartlead). Feature-flag gated by
@@ -604,7 +604,7 @@ app.post('/api/migration/from-instantly/preview',      asyncHandler(migrationIns
 app.post('/api/migration/from-instantly/start',        asyncHandler(migrationInstantlyController.start));
 app.get('/api/migration/from-instantly/status',       asyncHandler(migrationInstantlyController.status));
 
-// Consent endpoints — cookies (anonymous-friendly), DSAR audit, withdrawal.
+// Consent endpoints - cookies (anonymous-friendly), DSAR audit, withdrawal.
 app.post('/api/consent/cookies',  asyncHandler(consentController.recordCookieConsent));
 app.get('/api/consent/mine',      asyncHandler(consentController.listMyConsents));
 app.post('/api/consent/withdraw', asyncHandler(consentController.withdrawMyConsent));
@@ -616,7 +616,7 @@ app.get('/api/account/delete-request',    asyncHandler(dataRightsController.getD
 app.post('/api/account/cancel-deletion',  asyncHandler(dataRightsController.cancelAccountDeletion));
 
 // ============================================================================
-// ADMIN ENDPOINTS — DLQ, Replay, System Metrics
+// ADMIN ENDPOINTS - DLQ, Replay, System Metrics
 // ============================================================================
 
 import { getDeadLetterJobs, retryDeadLetterJob, retryAllDeadLetterJobs } from './services/eventQueue';
@@ -700,7 +700,7 @@ app.get('/api/dashboard/system-metrics', requireRole(UserRole.ADMIN), asyncHandl
     // Queue status
     const queueStatus = await getQueueStatus();
 
-    // Circuit breaker status — Gmail, Microsoft Graph, SMTP send paths
+    // Circuit breaker status - Gmail, Microsoft Graph, SMTP send paths
     const circuitBreakerStatus = getAllBreakerStatuses();
 
     // Lead health worker status
@@ -832,7 +832,7 @@ app.patch('/api/organization', asyncHandler(async (req, res) => {
         return res.status(400).json({ success: false, error: 'Invalid system_mode. Must be: observe, suggest, or enforce' });
     }
 
-    // Validate mailing_address — CAN-SPAM § 5(a)(5) requires a valid postal
+    // Validate mailing_address - CAN-SPAM § 5(a)(5) requires a valid postal
     // address. Minimum sanity check: not empty + has at least one comma or
     // newline (street + city/country). Real-world addresses are too varied to
     // strictly validate; we just rule out obvious garbage like single tokens.
@@ -846,7 +846,7 @@ app.patch('/api/organization', asyncHandler(async (req, res) => {
         if (!/,|\n/.test(mailing_address)) {
             return res.status(400).json({
                 success: false,
-                error: 'mailing_address looks incomplete — please include street, city, and country separated by commas or line breaks.',
+                error: 'mailing_address looks incomplete - please include street, city, and country separated by commas or line breaks.',
             });
         }
     }
@@ -895,7 +895,7 @@ import { AppError } from './utils/appError';
 import { ZodError } from 'zod';
 
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
-    // Log the FULL error details — not just "Unhandled error"
+    // Log the FULL error details - not just "Unhandled error"
     logger.error(`Unhandled error: ${err.message}`, err, {
         method: req.method,
         path: req.path,
@@ -921,7 +921,7 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
         });
     }
 
-    // 3. Programming/Unknown Errors — hide internal details in production
+    // 3. Programming/Unknown Errors - hide internal details in production
     res.status(500).json({
         success: false,
         error: process.env.NODE_ENV === 'production'
@@ -959,7 +959,7 @@ if (process.env.SALESFORCE_CLIENT_ID && process.env.SALESFORCE_CLIENT_SECRET) {
     registerProvider(salesforceFactory);
 }
 
-// Lead-source providers (Phase 5+). API-key driven — no env-gating;
+// Lead-source providers (Phase 5+). API-key driven - no env-gating;
 // availability is per-org via LeadSourceConnection rows.
 import { registerLeadSourceProvider } from './services/leadSources/registry';
 import { apolloFactory } from './services/leadSources/apollo/factory';
@@ -975,7 +975,7 @@ const server = app.listen(PORT, () => {
     startMetricsWorker();
     logger.info('Metrics worker started');
 
-    // CRM workers (Phase 2 / Phase 3) — provider-blind, dispatch via the
+    // CRM workers (Phase 2 / Phase 3) - provider-blind, dispatch via the
     // factory registry. Started unconditionally; if no factories are
     // registered (env vars missing) the workers loop with no-ops.
     import('./workers/crmActivityPushWorker').then(m => m.startCrmActivityPushWorker());
@@ -983,30 +983,30 @@ const server = app.listen(PORT, () => {
     import('./workers/crmSuppressionSyncWorker').then(m => m.startCrmSuppressionSyncWorker());
     import('./workers/crmIncrementalImportScheduler').then(m => m.startCrmIncrementalImportScheduler());
 
-    // Lead-source import worker (Phase 5+) — Apollo + future ZoomInfo.
+    // Lead-source import worker (Phase 5+) - Apollo + future ZoomInfo.
     import('./workers/apolloImportWorker').then(m => m.startLeadSourceImportWorker());
 
-    // Outreach.io export worker — pushes Superkabe leads to Outreach prospects + sequences.
+    // Outreach.io export worker - pushes Superkabe leads to Outreach prospects + sequences.
     import('./workers/outreachExportWorker').then(m => m.startOutreachExportWorker());
 
-    // JustCall.io export worker — pushes Superkabe leads to a sales-dialer campaign.
+    // JustCall.io export worker - pushes Superkabe leads to a sales-dialer campaign.
     import('./workers/justcallExportWorker').then(m => m.startJustCallExportWorker());
 
-    // Lead enrichment worker — Jina-scrapes each lead's company_linkedin_url
+    // Lead enrichment worker - Jina-scrapes each lead's company_linkedin_url
     // / website and caches a LeadProfileV1 used as RECIPIENT CONTEXT during
     // AI email generation. Pacing is built-in (one Jina call per ~2s).
     import('./workers/leadEnrichmentWorker').then(m => m.startLeadEnrichmentWorker());
 
-    // AI profile extraction worker — consumes the BullMQ queue for async
+    // AI profile extraction worker - consumes the BullMQ queue for async
     // POST /api/ai/profile/jobs. Bounded concurrency so a spike of org
     // signups can't blow the OpenAI quota in a single burst.
     import('./services/aiProfileExtractionQueue').then(m => m.startExtractionWorker());
 
-    // Warmup pool — four cooperating workers + corpus seed.
-    //   sender    — schedules sends across the pool (every 15 min)
-    //   dispatch  — sends scheduled exchanges via SMTP (every 1 min)
-    //   recipient — IMAP-polls for delivered warmup, marks read, recovers from spam (every 5 min)
-    //   ramp      — daily volume cadence + spam-rate adaptation (every 6 hours)
+    // Warmup pool - four cooperating workers + corpus seed.
+    //   sender    - schedules sends across the pool (every 15 min)
+    //   dispatch  - sends scheduled exchanges via SMTP (every 1 min)
+    //   recipient - IMAP-polls for delivered warmup, marks read, recovers from spam (every 5 min)
+    //   ramp      - daily volume cadence + spam-rate adaptation (every 6 hours)
     // Seed runs once at startup; idempotent so re-deploys don't duplicate.
     import('./services/warmup/seedCorpus').then(m =>
         m.seedWarmupCorpus().catch(err => logger.warn('[WARMUP] corpus seed failed (non-fatal)', { err: err?.message })),
@@ -1016,7 +1016,7 @@ const server = app.listen(PORT, () => {
     import('./workers/warmupRecipientWorker').then(m => m.startWarmupRecipientWorker());
     import('./workers/warmupRampWorker').then(m => m.startWarmupRampWorker());
 
-    // Super Sender — drives DedicatedIp state machine (provisioning + ramp).
+    // Super Sender - drives DedicatedIp state machine (provisioning + ramp).
     // Stub-mode in dev/staging cycles a row through the full lifecycle in
     // ~10s; real-mode polls AWS SES and ramps daily over 30 days.
     import('./workers/dedicatedIpWorker').then(m => m.startDedicatedIpWorker());
@@ -1036,21 +1036,21 @@ const server = app.listen(PORT, () => {
     schedulePostmasterFetch();
     logger.info('Postmaster Tools worker started (daily fetch at 03:00 UTC)');
 
-    // Start import-key TTL sweep (every 15 min) — wipes expired one-time-import keys
+    // Start import-key TTL sweep (every 15 min) - wipes expired one-time-import keys
     scheduleImportKeyTtlSweep();
     logger.info('Import-key TTL worker started (sweep every 15m)');
 
-    // Start Zapmail reconciliation worker — sweeps abandoned oauth_pending +
+    // Start Zapmail reconciliation worker - sweeps abandoned oauth_pending +
     // provisioning_failed ConnectedAccount rows from the Zapmail import flow.
     scheduleZapmailReconciliationWorker();
     logger.info('Zapmail reconciliation worker started (sweep every 15m)');
 
-    // Start DSAR account-deletion worker — executes deletion requests after
+    // Start DSAR account-deletion worker - executes deletion requests after
     // the 30-day grace period. Required for GDPR Art. 17 compliance.
     scheduleAccountDeletionWorker();
     logger.info('Account deletion worker started (sweep every 6h)');
 
-    // Weekly performance digest — fires Mondays at 09:00 UTC, idempotent
+    // Weekly performance digest - fires Mondays at 09:00 UTC, idempotent
     // per (org, ISO week). Skips dormant workspaces and canceled subs.
     scheduleWeeklyDigestWorker();
     logger.info('Weekly digest worker started (checks every 5m, fires Mondays 09:00 UTC)');
@@ -1097,7 +1097,7 @@ const server = app.listen(PORT, () => {
     scheduleColdCallListSnapshots();
     logger.info('Cold Call List snapshot worker scheduled (hourly tick, 06:00 workspace-local trigger)');
 
-    // Seed DNSBL lists (upserts — safe to run on every startup)
+    // Seed DNSBL lists (upserts - safe to run on every startup)
     import('./services/dnsblService').then(dnsblService => {
         dnsblService.seedDnsblLists().catch(err => {
             logger.error('Failed to seed DNSBL lists', err instanceof Error ? err : new Error(String(err)));
@@ -1187,11 +1187,11 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // ============================================================================
-// CRASH HANDLERS — Prevent silent deaths in production
+// CRASH HANDLERS - Prevent silent deaths in production
 // ============================================================================
 
 process.on('uncaughtException', (err) => {
-    logger.error('UNCAUGHT EXCEPTION — process will exit', err, {
+    logger.error('UNCAUGHT EXCEPTION - process will exit', err, {
         type: 'uncaughtException',
         message: err.message,
         stack: err.stack,
@@ -1207,6 +1207,6 @@ process.on('unhandledRejection', (reason) => {
         message: err.message,
         stack: err.stack,
     });
-    // Don't exit on unhandled rejections — log and continue
+    // Don't exit on unhandled rejections - log and continue
     // Node.js 15+ would crash by default; this handler prevents that
 });

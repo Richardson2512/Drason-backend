@@ -1,5 +1,5 @@
 /**
- * Outreach connection persistence — owns:
+ * Outreach connection persistence - owns:
  *   - Token encryption / decryption (AES-256-GCM via utils/encryption)
  *   - Upsert on connect, refresh-token write-back, soft-disconnect
  *   - Active connection lookup for the worker

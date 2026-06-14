@@ -1,7 +1,7 @@
 /**
  * Premium Inboxes mailbox-import provider.
  *
- * STUB — Premium Inboxes does not publish API documentation publicly.
+ * STUB - Premium Inboxes does not publish API documentation publicly.
  * The customer-facing flow they support today is "request a CSV export"
  * via their dashboard, which delivers email + app password tuples.
  *

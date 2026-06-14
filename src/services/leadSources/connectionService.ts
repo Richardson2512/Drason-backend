@@ -7,7 +7,7 @@
  *   - Active-connection lookup for workers
  *   - Job-history reads for the dashboard
  *
- * Provider-blind — nothing about Apollo/ZoomInfo specifics leaks here.
+ * Provider-blind - nothing about Apollo/ZoomInfo specifics leaks here.
  */
 
 import { prisma } from '../../index';

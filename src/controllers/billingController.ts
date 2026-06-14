@@ -41,24 +41,24 @@ export const handlePolarWebhook = async (req: Request, res: Response): Promise<R
         }
 
         // Standard Webhooks: signature is over `${id}.${ts}.${rawBody}`. We
-        // need the original bytes — express.json() captures them via
+        // need the original bytes - express.json() captures them via
         // verifyRawBody for /api/billing/* and stores on req.rawBody.
         const rawBody = (req as any).rawBody as Buffer | undefined;
         if (!rawBody) {
-            logger.error('[BILLING] rawBody missing on Polar webhook — bodyParser misconfigured', undefined, { eventType, dataId });
+            logger.error('[BILLING] rawBody missing on Polar webhook - bodyParser misconfigured', undefined, { eventType, dataId });
             return res.status(500).json({ success: false, error: 'Server misconfiguration' });
         }
 
         const isValid = polarClient.verifyPolarWebhook(rawBody, req.headers as any, webhookSecret);
         if (!isValid) {
-            logger.warn('[BILLING] Invalid Polar webhook signature — rejected', { eventType, dataId });
+            logger.warn('[BILLING] Invalid Polar webhook signature - rejected', { eventType, dataId });
             return res.status(401).json({ success: false, error: 'Invalid signature' });
         }
 
         await billingService.processWebhook(req.body);
         return res.json({ success: true, received: true });
     } catch (error) {
-        // Log the actual message — the prior version logged just a prefix
+        // Log the actual message - the prior version logged just a prefix
         // and the underlying error never made it to Railway, leaving us
         // blind to root causes for paying customers stuck on trial.
         const errMsg = error instanceof Error ? error.message : String(error);
@@ -77,12 +77,12 @@ export const handlePolarWebhook = async (req: Request, res: Response): Promise<R
 // ============================================================================
 
 /**
- * Create a Polar checkout session for ANY plan transition — initial
+ * Create a Polar checkout session for ANY plan transition - initial
  * subscribe, upgrade, downgrade, or re-subscribe after cancellation.
  *
  * The "every plan change goes through checkout" model. Earlier we had a
  * second path (PATCH /subscriptions via change-plan) that tried to be
- * smart with proration — but that path didn't take a payment, so coupon
+ * smart with proration - but that path didn't take a payment, so coupon
  * customers could upgrade themselves to a higher tier without paying.
  * Routing every change through checkout makes coupon/non-coupon and
  * upgrade/downgrade behave identically: customer pays the new tier price,
@@ -94,7 +94,7 @@ export const createCheckout = async (req: Request, res: Response): Promise<Respo
         const orgId = getOrgId(req);
         const { tier } = req.body;
 
-        // Defensive — the route's Zod middleware already enforces this,
+        // Defensive - the route's Zod middleware already enforces this,
         // but if a path ever reaches here without that middleware (e.g.
         // future internal calls) we still want a clear error rather than
         // a downstream Polar 4xx.
@@ -190,17 +190,17 @@ export const getSubscriptionStatus = async (req: Request, res: Response): Promis
  *
  * GDPR / DPDP / PDPA: we can't silently retain user data after the paid
  * relationship ends. The body MUST carry data_retention ('keep' | 'delete')
- * — Zod middleware enforces this. Behavior per choice:
+ * - Zod middleware enforces this. Behavior per choice:
  *
- *   keep   — record an affirmative Consent row (audit-grade artifact: who,
+ *   keep   - record an affirmative Consent row (audit-grade artifact: who,
  *            when, IP, UA, document version) and proceed with a normal
  *            Polar cancel_at_period_end. Customer keeps full access until
  *            period end; we keep their data for re-subscription afterwards.
  *
- *   delete — record a deletion-request audit log keyed at period end, then
+ *   delete - record a deletion-request audit log keyed at period end, then
  *            cancel Polar at period end. The existing accountDeletionWorker
  *            picks up the audit row after the grace window and erases.
- *            We do NOT delete now — the customer paid for the period and
+ *            We do NOT delete now - the customer paid for the period and
  *            should keep using the product until it ends.
  */
 export const cancelSubscription = async (req: Request, res: Response): Promise<Response> => {
@@ -213,7 +213,7 @@ export const cancelSubscription = async (req: Request, res: Response): Promise<R
             return res.status(401).json({ success: false, error: 'Authentication required' });
         }
 
-        // Cancel Polar subscription first — if this fails we don't want
+        // Cancel Polar subscription first - if this fails we don't want
         // a stale consent or deletion request lying around with no actual
         // cancellation backing it. Polar takes effect at period end, so
         // the access window is preserved for the customer either way.
@@ -247,7 +247,7 @@ export const cancelSubscription = async (req: Request, res: Response): Promise<R
         if (data_retention === 'delete') {
             // Schedule account deletion. We mirror the dataRights flow:
             // an AuditLog row with entity='account_deletion' is the
-            // source of truth — accountDeletionWorker scans for these.
+            // source of truth - accountDeletionWorker scans for these.
             // Idempotent: don't double-schedule if a request already exists.
             const existing = await prisma.auditLog.findFirst({
                 where: {
@@ -325,7 +325,7 @@ export const getInvoices = async (req: Request, res: Response): Promise<Response
             return res.json({ success: true, invoices: [] });
         }
 
-        // Fallback prices in cents — only used for legacy SubscriptionEvent
+        // Fallback prices in cents - only used for legacy SubscriptionEvent
         // rows written before we started capturing amount_cents from the
         // Polar payload. New rows always have the real amount.
         const tierFallbackCents: Record<string, number> = {
@@ -346,7 +346,7 @@ export const getInvoices = async (req: Request, res: Response): Promise<Response
             const tier = e.new_tier || org.subscription_tier;
             const amount = e.amount_cents ?? tierFallbackCents[tier] ?? 0;
             const currency = (e.currency || 'USD').toLowerCase();
-            // Prefer Polar's hosted invoice — it's the legally-relevant
+            // Prefer Polar's hosted invoice - it's the legally-relevant
             // document with proper tax handling, invoice number, and refund
             // adjustments. Fall back to our PDFKit-rendered version when
             // Polar didn't send a URL (legacy rows, non-invoice events like
@@ -385,11 +385,11 @@ export const getTiers = async (_req: Request, res: Response): Promise<Response> 
         trial:      { name: 'Free Trial', price: '$0',     priceValue: 0,   color: '#6B7280' },
         starter:    { name: 'Starter',    price: '$19',    priceValue: 19,  color: '#3B82F6' },
         pro:        { name: 'Pro',        price: '$49',    priceValue: 49,  color: '#6366F1' },
-        pro_80k:    { name: 'Pro — 80K',  price: '$59',    priceValue: 59,  color: '#6366F1' },
-        pro_100k:   { name: 'Pro — 100K', price: '$79',    priceValue: 79,  color: '#6366F1' },
-        pro_150k:   { name: 'Pro — 150K', price: '$109',   priceValue: 109, color: '#6366F1' },
-        pro_200k:   { name: 'Pro — 200K', price: '$139',   priceValue: 139, color: '#6366F1' },
-        pro_250k:   { name: 'Pro — 250K', price: '$169',   priceValue: 169, color: '#6366F1' },
+        pro_80k:    { name: 'Pro - 80K',  price: '$59',    priceValue: 59,  color: '#6366F1' },
+        pro_100k:   { name: 'Pro - 100K', price: '$79',    priceValue: 79,  color: '#6366F1' },
+        pro_150k:   { name: 'Pro - 150K', price: '$109',   priceValue: 109, color: '#6366F1' },
+        pro_200k:   { name: 'Pro - 200K', price: '$139',   priceValue: 139, color: '#6366F1' },
+        pro_250k:   { name: 'Pro - 250K', price: '$169',   priceValue: 169, color: '#6366F1' },
         growth:     { name: 'Growth',     price: '$199',   priceValue: 199, color: '#8B5CF6' },
         scale:      { name: 'Scale',      price: '$349',   priceValue: 349, color: '#22C55E' },
         enterprise: { name: 'Enterprise', price: 'Custom', priceValue: 0,   color: '#F59E0B' },
@@ -431,7 +431,7 @@ export const changePlan = async (req: Request, res: Response): Promise<Response>
         const orgId = getOrgId(req);
         const { tier, confirm } = req.body;
 
-        // Defensive validation — Zod middleware already accepts the same
+        // Defensive validation - Zod middleware already accepts the same
         // list. Keep these in sync with SUBSCRIBABLE_TIERS in validation.ts
         // and PRODUCT_IDS in services/polarClient.ts.
         const validTiers = ['starter', 'pro', 'pro_80k', 'pro_100k', 'pro_150k', 'pro_200k', 'pro_250k', 'growth', 'scale'];
@@ -466,7 +466,7 @@ export const changePlan = async (req: Request, res: Response): Promise<Response>
             return res.status(400).json({ success: false, error: `Already on the ${tier} plan.` });
         }
 
-        // Plan changes now go through Polar checkout — same flow as the
+        // Plan changes now go through Polar checkout - same flow as the
         // initial purchase. Customer pays the new tier's price, Polar
         // fires subscription.created, our webhook updates the org and
         // cancels the old subscription. No proration weirdness, no card-
@@ -516,7 +516,7 @@ export const downloadInvoicePdf = async (req: Request, res: Response): Promise<v
         const userId = req.orgContext?.userId;
         const user = userId ? await prisma.user.findUnique({ where: { id: userId }, select: { email: true } }) : null;
 
-        // Tier base prices — only used as fallback when we don't have the
+        // Tier base prices - only used as fallback when we don't have the
         // real Polar-charged amount on the event row. The Pro plan has
         // multiple send-volume variants priced differently; for Pro the
         // fallback is the lowest tier, which is fine for legacy rows that
@@ -536,7 +536,7 @@ export const downloadInvoicePdf = async (req: Request, res: Response): Promise<v
         res.setHeader('Content-Disposition', `attachment; filename="${invoiceNumber}.pdf"`);
         doc.pipe(res);
 
-        // Header — brand bar
+        // Header - brand bar
         doc.rect(0, 0, 595.28, 100).fill('#4F46E5');
         doc.fontSize(28).fillColor('#FFFFFF').text('INVOICE', 50, 35);
         doc.fontSize(10).fillColor('#E0E7FF').text(`Invoice #: ${invoiceNumber}`, 50, 68);
@@ -544,7 +544,7 @@ export const downloadInvoicePdf = async (req: Request, res: Response): Promise<v
 
         // Logo + Company info (right side of header)
         const logoPath = path.join(__dirname, '..', 'assets', 'logo.png');
-        try { doc.image(logoPath, 480, 25, { width: 50 }); } catch { /* logo missing — skip */ }
+        try { doc.image(logoPath, 480, 25, { width: 50 }); } catch { /* logo missing - skip */ }
         doc.fontSize(14).fillColor('#FFFFFF').text('Superkabe', 350, 35, { width: 125, align: 'left' });
         doc.fontSize(9).fillColor('#E0E7FF').text('support@superkabe.com', 350, 55, { width: 125, align: 'left' });
 
@@ -571,7 +571,7 @@ export const downloadInvoicePdf = async (req: Request, res: Response): Promise<v
         // Table row
         const rowTop = tableTop + 40;
         doc.fillColor('#111827').fontSize(10);
-        doc.text(`Superkabe ${tierName} Plan — Monthly Subscription`, 60, rowTop);
+        doc.text(`Superkabe ${tierName} Plan - Monthly Subscription`, 60, rowTop);
         doc.text('1', 320, rowTop, { width: 50, align: 'center' });
         doc.text(`$${amountDollars}`, 380, rowTop, { width: 80, align: 'right' });
         doc.text(`$${amountDollars}`, 470, rowTop, { width: 70, align: 'right' });
@@ -602,7 +602,7 @@ export const downloadInvoicePdf = async (req: Request, res: Response): Promise<v
         // Footer
         doc.font('Helvetica').fillColor('#94A3B8').fontSize(8);
         doc.text('Thank you for your business.', 50, 750, { align: 'center', width: 495 });
-        doc.text('Superkabe — Outbound Execution Control Layer', 50, 762, { align: 'center', width: 495 });
+        doc.text('Superkabe - Outbound Execution Control Layer', 50, 762, { align: 'center', width: 495 });
 
         doc.end();
     } catch (error) {

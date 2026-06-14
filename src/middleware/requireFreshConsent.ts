@@ -7,7 +7,7 @@
  * re-acceptance modal.
  *
  * Required for GDPR Art. 7(3): "the data subject shall have the right to
- * withdraw his or her consent at any time" — which we honor by treating each
+ * withdraw his or her consent at any time" - which we honor by treating each
  * version bump as a fresh consent ask, never inferring acceptance of a new
  * version from acceptance of an old one.
  *

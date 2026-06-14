@@ -69,13 +69,13 @@ export enum EventType {
  * and healing behaviors.
  */
 export enum BounceFailureType {
-    HARD_INVALID = 'hard_invalid',             // User unknown — permanent, immediate
-    HARD_DOMAIN = 'hard_domain',               // Domain doesn't exist — permanent
-    PROVIDER_SPAM_REJECTION = 'provider_spam_rejection', // Reputation damage — slow recovery
-    PROVIDER_THROTTLE = 'provider_throttle',   // Rate limiting — self-resolving (hours)
-    TEMPORARY_NETWORK = 'temporary_network',   // Network failure — self-resolving (minutes)
-    AUTH_FAILURE = 'auth_failure',             // SPF/DKIM/DMARC config error — needs fix
-    UNKNOWN = 'unknown'                        // Unclassifiable — treated as warning
+    HARD_INVALID = 'hard_invalid',             // User unknown - permanent, immediate
+    HARD_DOMAIN = 'hard_domain',               // Domain doesn't exist - permanent
+    PROVIDER_SPAM_REJECTION = 'provider_spam_rejection', // Reputation damage - slow recovery
+    PROVIDER_THROTTLE = 'provider_throttle',   // Rate limiting - self-resolving (hours)
+    TEMPORARY_NETWORK = 'temporary_network',   // Network failure - self-resolving (minutes)
+    AUTH_FAILURE = 'auth_failure',             // SPF/DKIM/DMARC config error - needs fix
+    UNKNOWN = 'unknown'                        // Unclassifiable - treated as warning
 }
 
 /**
@@ -121,7 +121,7 @@ export enum RecoveryPhase {
  *   - Microsoft sender-reputation recovery: minor 2-4 weeks, moderate 4-8 weeks
  *   - Practitioner consensus (Mailreach, Lemwarm, AWS SES): graduated ramp, not same-day
  * The 3d/7d RESTRICTED_SEND floor and 7d/14d WARM_RECOVERY floor sit at the
- * conservative end of that range — enough to surface delayed bounce signals
+ * conservative end of that range - enough to surface delayed bounce signals
  * without dragging recovery out unnecessarily.
  */
 export const GRADUATION_CRITERIA = {
@@ -137,12 +137,12 @@ export const GRADUATION_CRITERIA = {
     restricted_to_warm: {
         firstOffenseCleanSends: 15,          // 15 clean sends with 0 hard bounces
         repeatCleanSends: 25,
-        firstOffenseMinDays: 3,              // Time floor — prevents same-day burst graduation
+        firstOffenseMinDays: 3,              // Time floor - prevents same-day burst graduation
         repeatMinDays: 7,                    // Repeat offenders held longer at low volume
     },
     warm_to_healthy: {
         minSends: 50,                        // 50 sends minimum
-        firstOffenseMinDays: 7,              // Sustained recovery window — Microsoft reputation lag
+        firstOffenseMinDays: 7,              // Sustained recovery window - Microsoft reputation lag
         repeatMinDays: 14,                   // Repeat offenders held longer
         maxBounceRate: 0.02,                 // Below 2% bounce rate (industry standard)
         maxComplaintRate: 0.001,             // Below 0.1% spam-complaint rate (Gmail/Yahoo target)
@@ -175,7 +175,7 @@ export enum TrendState {
 
 /**
  * Data quality tag for diagnosis findings.
- * Replaces confidence buckets — simpler, more actionable.
+ * Replaces confidence buckets - simpler, more actionable.
  */
 export enum DataQuality {
     SUFFICIENT = 'sufficient_data',     // ≥50 sends, ≥2 windows
@@ -199,7 +199,7 @@ export enum EmailProvider {
 }
 
 /**
- * Healing origin — distinguishes inherited damage from operational damage.
+ * Healing origin - distinguishes inherited damage from operational damage.
  */
 export enum HealingOrigin {
     REHAB = 'rehab',       // Inherited from brownfield onboarding
@@ -224,7 +224,7 @@ export enum MailboxState {
     QUARANTINE = 'quarantine',
     RESTRICTED_SEND = 'restricted_send',
     WARM_RECOVERY = 'warm_recovery',
-    RECOVERING = 'recovering'       // Legacy — kept for backward compat
+    RECOVERING = 'recovering'       // Legacy - kept for backward compat
 }
 
 /**
@@ -237,7 +237,7 @@ export enum DomainState {
     QUARANTINE = 'quarantine',
     RESTRICTED_SEND = 'restricted_send',
     WARM_RECOVERY = 'warm_recovery',
-    RECOVERING = 'recovering'       // Legacy — kept for backward compat
+    RECOVERING = 'recovering'       // Legacy - kept for backward compat
 }
 
 /**
@@ -476,16 +476,16 @@ export const MONITORING_THRESHOLDS = {
     MAILBOX_WARNING_BOUNCES: 3,       // 3 bounces → WARNING
     MAILBOX_WARNING_WINDOW: 60,       // within 60 sends (5% rate)
 
-    // PAUSE threshold: Hard stop (absolute bounce count — safety net)
+    // PAUSE threshold: Hard stop (absolute bounce count - safety net)
     MAILBOX_PAUSE_BOUNCES: 5,         // 5 bounces → PAUSE
     MAILBOX_PAUSE_WINDOW: 100,        // within 100 sends (5% rate)
 
-    // PAUSE threshold: Percentage-based (primary — fires once total_sent_count ≥ MIN_SENDS)
+    // PAUSE threshold: Percentage-based (primary - fires once total_sent_count ≥ MIN_SENDS)
     MAILBOX_PAUSE_BOUNCE_RATE: 0.03,        // 3% bounce rate → PAUSE
     MAILBOX_PAUSE_BOUNCE_RATE_MIN_SENDS: 60, // Only applies once mailbox has sent this many
     MAILBOX_WARNING_BOUNCE_RATE: 0.02,      // 2% bounce rate → WARNING (used in infrastructure assessment)
 
-    // Rotation: campaigns above this bounce rate are considered toxic — skip rotating into them
+    // Rotation: campaigns above this bounce rate are considered toxic - skip rotating into them
     ROTATION_MAX_CAMPAIGN_BOUNCE_RATE: 0.05, // 5%
 
     // =========================================================================
@@ -542,8 +542,8 @@ export const MONITORING_THRESHOLDS = {
     // - >0.10% has measurable negative impact on inbox placement
     // - >0.30% triggers "ineligible for mitigation" status at Gmail
     // We treat 0.30% as a relapse trigger and 0.10% as the healthy ceiling.
-    COMPLAINT_RATE_HEALTHY_THRESHOLD: 0.001,   // 0.1% — required for HEALTHY graduation
-    COMPLAINT_RATE_RELAPSE_THRESHOLD: 0.003,   // 0.3% — triggers relapse during recovery
+    COMPLAINT_RATE_HEALTHY_THRESHOLD: 0.001,   // 0.1% - required for HEALTHY graduation
+    COMPLAINT_RATE_RELAPSE_THRESHOLD: 0.003,   // 0.3% - triggers relapse during recovery
     COMPLAINT_RATE_MIN_SENDS: 1000,            // Minimum sample size before complaint-rate gate applies
 
     // =========================================================================
@@ -551,12 +551,12 @@ export const MONITORING_THRESHOLDS = {
     // =========================================================================
     // Soft bounces from PROVIDER_THROTTLE classification are reputation signals
     // at Microsoft (documented). A spike (>10% over 50 sends) escalates the
-    // mailbox to WARNING — not full pause, since soft bounces self-resolve.
+    // mailbox to WARNING - not full pause, since soft bounces self-resolve.
     SOFT_BOUNCE_SPIKE_RATE: 0.10,
     SOFT_BOUNCE_SPIKE_WINDOW: 50,
 
     // =========================================================================
-    // consecutive_pauses decay (no industry standard — defensible practitioner choice)
+    // consecutive_pauses decay (no industry standard - defensible practitioner choice)
     // =========================================================================
     // After 30 days of clean HEALTHY operation, decrement consecutive_pauses
     // by 1. Mirrors the inactivity-decay pattern from warmup vendor consensus
@@ -579,7 +579,7 @@ export const MONITORING_THRESHOLDS = {
     // 10–20% of volume. We use 25% (slightly conservative) and limit to first 2
     // sequence steps so we don't burn reputation on unproven addresses.
     YELLOW_LEAD_MAX_STEP: 2,                    // Stop YELLOW leads after step 2
-    // Per-mailbox YELLOW cap — at most LIMIT YELLOW recipients within the
+    // Per-mailbox YELLOW cap - at most LIMIT YELLOW recipients within the
     // most recent WINDOW_SIZE sends from a single mailbox. Enforced in
     // executionGateService.canSendNow at send time.
     YELLOW_LEAD_PER_MAILBOX_WINDOW_SIZE: 60,
@@ -598,12 +598,12 @@ export const MONITORING_THRESHOLDS = {
     // Recipient-domain complaint rate gate (Google/Yahoo Feb 2024 thresholds)
     // =========================================================================
     // Computed locally from BounceEvent + SendEvent (we don't get per-recipient-
-    // domain reputation from Postmaster Tools — only per sending domain).
+    // domain reputation from Postmaster Tools - only per sending domain).
     // Mirrors the same 0.10% / 0.30% framework Google uses, applied to recipient
     // domains we send TO. Prevents enrolling more leads from a domain we already
     // generate complaints to.
-    RECIPIENT_DOMAIN_COMPLAINT_THRESHOLD: 0.003,    // 0.3% — block enrollment
-    RECIPIENT_DOMAIN_THROTTLE_THRESHOLD: 0.001,     // 0.1% — throttle to 30%
+    RECIPIENT_DOMAIN_COMPLAINT_THRESHOLD: 0.003,    // 0.3% - block enrollment
+    RECIPIENT_DOMAIN_THROTTLE_THRESHOLD: 0.001,     // 0.1% - throttle to 30%
     RECIPIENT_DOMAIN_THROTTLE_FACTOR: 0.30,         // Volume cap when throttled
     RECIPIENT_DOMAIN_MIN_SENDS: 1000,               // Min sample size before gate applies
     RECIPIENT_DOMAIN_WINDOW_DAYS: 30,               // Rolling window for rate calc
@@ -654,7 +654,7 @@ export const STATE_TRANSITIONS = {
         held: ['active', 'paused', 'blocked'],
         active: ['paused', 'completed', 'blocked'],
         paused: ['active', 'completed', 'blocked'],
-        blocked: [],  // Terminal state — health gate rejection
+        blocked: [],  // Terminal state - health gate rejection
         completed: []  // Terminal state
     }
 } as const;

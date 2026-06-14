@@ -1,5 +1,5 @@
 /**
- * /api/webhooks — customer-facing webhook endpoint management.
+ * /api/webhooks - customer-facing webhook endpoint management.
  * Org-scoped via the global orgContext middleware. Subscription status is
  * checked inside createEndpoint so we don't block reads behind feature gate.
  */

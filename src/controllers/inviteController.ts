@@ -16,7 +16,7 @@
  *
  * Token security:
  *   - Raw token is 32 random bytes hex-encoded (64 chars). Only sent in the
- *     email body and the client URL — never persisted raw on the server.
+ *     email body and the client URL - never persisted raw on the server.
  *   - DB stores SHA-256(token). DB compromise alone doesn't yield a usable
  *     token.
  *   - 7-day TTL enforced at lookup time.
@@ -35,7 +35,7 @@ import { CAPABILITY_KEYS } from '../middleware/requireCapability';
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** Capability whitelist — single source of truth lives in requireCapability.ts.
+/** Capability whitelist - single source of truth lives in requireCapability.ts.
  *  /user/me also returns this list to the frontend so the invite modal's
  *  checkbox UI can't drift either. */
 const VALID_CAPABILITIES: ReadonlySet<string> = new Set(CAPABILITY_KEYS);
@@ -59,7 +59,7 @@ class InviteRaceError extends Error {
  *
  * Agency-owner only. Creates a WorkspaceInvite row and sends the magic-link
  * email. If a previous pending invite exists for the same (workspace, email),
- * we revoke it (consume) before creating the new one — this is the natural
+ * we revoke it (consume) before creating the new one - this is the natural
  * behavior of "Resend invite" in the UI.
  */
 export const createWorkspaceInvite = async (req: Request, res: Response): Promise<void> => {
@@ -105,7 +105,7 @@ export const createWorkspaceInvite = async (req: Request, res: Response): Promis
         }
 
         // Block creating an invite for an email already actively a member of
-        // this workspace — prevents accidental capability overrides without
+        // this workspace - prevents accidental capability overrides without
         // an explicit "edit" path.
         const existingMember = await prisma.workspaceMembership.findFirst({
             where: { organization_id: workspaceId, user: { email } },
@@ -141,7 +141,7 @@ export const createWorkspaceInvite = async (req: Request, res: Response): Promis
             },
         });
 
-        // Build the magic-link URL — pre-populates the /set-password page.
+        // Build the magic-link URL - pre-populates the /set-password page.
         const frontendBase = process.env.FRONTEND_URL || 'http://localhost:3000';
         const magicLinkUrl = `${frontendBase}/set-password?token=${rawToken}` +
             `&workspace=${encodeURIComponent(workspace.slug)}&email=${encodeURIComponent(email)}`;
@@ -212,7 +212,7 @@ export const createWorkspaceInvite = async (req: Request, res: Response): Promis
 
 /**
  * GET /api/auth/invite?token=…
- * Public — no auth. Validates a magic-link token. Used by /set-password to
+ * Public - no auth. Validates a magic-link token. Used by /set-password to
  * decide which form to render (valid / expired / unknown).
  */
 export const validateInviteToken = async (req: Request, res: Response): Promise<void> => {
@@ -266,7 +266,7 @@ export const validateInviteToken = async (req: Request, res: Response): Promise<
  * POST /api/auth/invite/complete
  * Body: { token: string, password: string }
  *
- * Public — no auth. Consumes the invite token: creates the User row scoped
+ * Public - no auth. Consumes the invite token: creates the User row scoped
  * to the workspace, creates the WorkspaceMembership with the capabilities
  * the agency picked, marks the invite consumed. After success the client
  * redirects to /login and signs in via the client login flow.
@@ -354,7 +354,7 @@ export const completeInvite = async (req: Request, res: Response): Promise<void>
                         account_id: null, // clients don't belong to the agency's Account directly
                         is_agency_owner: false,
                         scoped_organization_id: orgId, // hard-lock to this workspace
-                        // password_changed_at deliberately left NULL on creation —
+                        // password_changed_at deliberately left NULL on creation -
                         // the auth middleware compares JWT iat to this column and
                         // setting it to "now" creates a sub-second race that
                         // invalidates the very token the client is about to use.
@@ -393,7 +393,7 @@ export const completeInvite = async (req: Request, res: Response): Promise<void>
 
         const newUser = createdUser;
 
-        // Record consent — accepting the magic-link invite is the implicit
+        // Record consent - accepting the magic-link invite is the implicit
         // consent moment. Without these rows the requireFreshConsent
         // middleware blocks every subsequent request, so this isn't optional.
         {

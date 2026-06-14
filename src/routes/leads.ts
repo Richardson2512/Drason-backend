@@ -6,7 +6,7 @@ import { requireCapability } from '../middleware/requireCapability';
 
 const router = Router();
 
-// Lead ingestion — protection coverage is unlimited at every tier; metering
+// Lead ingestion - protection coverage is unlimited at every tier; metering
 // happens on monthly send volume + validation credits, not per-lead.
 router.post('/', requireCapability('add_leads'), validateBody(ingestLeadSchema), leadController.ingestLead);
 

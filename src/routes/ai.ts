@@ -1,5 +1,5 @@
 /**
- * AI routes — business profile + copy generation.
+ * AI routes - business profile + copy generation.
  *
  * Mounted at /api/ai. All routes are org-scoped via orgContext middleware
  * (already applied at the /api root in index.ts).
@@ -20,7 +20,7 @@ router.patch('/profile', asyncHandler(profile.patchProfile));
 router.post('/profile/refresh', asyncHandler(profile.refreshProfile));
 router.delete('/profile', asyncHandler(profile.deleteProfile));
 
-// Async extraction — for high-concurrency / spike-load scenarios.
+// Async extraction - for high-concurrency / spike-load scenarios.
 // Same input as POST /profile, but returns 202 with a job id so the
 // HTTP connection isn't held while Jina + OpenAI run.
 router.post('/profile/jobs', asyncHandler(profile.queueProfile));

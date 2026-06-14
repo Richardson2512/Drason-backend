@@ -1,5 +1,5 @@
 /**
- * Demo Account Seed — populates demo@superkabe.com / Demo Agency with
+ * Demo Account Seed - populates demo@superkabe.com / Demo Agency with
  * realistic-looking placeholder content so screenshots show populated pages.
  *
  * STAGING DATABASE ONLY. Will not run if DATABASE_URL points to a host that
@@ -20,7 +20,7 @@ const FORCE = process.argv.includes('--force');
 const prisma = new PrismaClient();
 
 // ============================================================================
-// FAKE DATA POOLS — generic-but-believable B2B SaaS targets
+// FAKE DATA POOLS - generic-but-believable B2B SaaS targets
 // ============================================================================
 
 const FIRST_NAMES = [
@@ -92,46 +92,46 @@ const TEMPLATE_BANK = [
         name: 'Pain-First Cold Open',
         category: 'introduction',
         subject: 'Quick question about {{company}}\'s outbound',
-        body_html: '<p>Hi {{first_name}},</p><p>Noticed {{company}} is hiring SDRs aggressively — usually that means current outbound isn\'t pulling its weight. Curious: what\'s your bounce rate looking like across your sequencer?</p><p>Most ops teams I talk to are quietly burning through domain reputation without realizing it. Worth a 15-min look?</p><p>— James</p>',
+        body_html: '<p>Hi {{first_name}},</p><p>Noticed {{company}} is hiring SDRs aggressively - usually that means current outbound isn\'t pulling its weight. Curious: what\'s your bounce rate looking like across your sequencer?</p><p>Most ops teams I talk to are quietly burning through domain reputation without realizing it. Worth a 15-min look?</p><p>- James</p>',
     },
     {
-        name: 'Followup #1 — Soft Bump',
+        name: 'Followup #1 - Soft Bump',
         category: 'follow-up',
         subject: 'Re: Quick question about {{company}}\'s outbound',
-        body_html: '<p>Hi {{first_name}},</p><p>Bumping this up. Even if it\'s not the right time, would love to hear what platform you\'re running. Quick gut-check: do you know your last-30-day complaint rate?</p><p>— James</p>',
+        body_html: '<p>Hi {{first_name}},</p><p>Bumping this up. Even if it\'s not the right time, would love to hear what platform you\'re running. Quick gut-check: do you know your last-30-day complaint rate?</p><p>- James</p>',
     },
     {
-        name: 'Followup #2 — Case Study',
+        name: 'Followup #2 - Case Study',
         category: 'follow-up',
         subject: 'How {{company}} could cut bounces by 60%',
         body_html: '<p>Hi {{first_name}},</p><p>Last customer: B2B SaaS, ~50K sends/month. Bounce rate was 8.2% before they switched. After 30 days: 1.1%. The unlock was a real recovery pipeline instead of a daily-cap "deliverability shield."</p><p>Worth a 15-min walkthrough?</p>',
     },
     {
-        name: 'Breakup — Final Touch',
+        name: 'Breakup - Final Touch',
         category: 'breakup',
         subject: 'Closing the loop, {{first_name}}',
-        body_html: '<p>{{first_name}},</p><p>Going to stop following up — clearly not the right time. If outbound deliverability ever creeps up the priority list, my calendar is here: superkabe.com/demo</p><p>— James</p>',
+        body_html: '<p>{{first_name}},</p><p>Going to stop following up - clearly not the right time. If outbound deliverability ever creeps up the priority list, my calendar is here: superkabe.com/demo</p><p>- James</p>',
     },
     {
         name: 'Referral Ask',
         category: 'referral',
         subject: 'Wrong person at {{company}}?',
-        body_html: '<p>Hi {{first_name}},</p><p>I might be off-base reaching out to you about cold-email infrastructure — apologies if so. Mind pointing me at whoever owns sender reputation / outbound tooling at {{company}}?</p><p>Appreciate it, James</p>',
+        body_html: '<p>Hi {{first_name}},</p><p>I might be off-base reaching out to you about cold-email infrastructure - apologies if so. Mind pointing me at whoever owns sender reputation / outbound tooling at {{company}}?</p><p>Appreciate it, James</p>',
     },
     {
         name: 'Meeting Confirm',
         category: 'meeting',
-        subject: 'Confirmed: {{first_name}} × Superkabe — Tuesday 2pm',
-        body_html: '<p>Hi {{first_name}},</p><p>Confirmed for Tuesday 2pm ET. I\'ll send a calendar hold separately. Will walk through the recovery pipeline, dual-enrollment detection, and the live deliverability dashboard.</p><p>If anything comes up, just hit reply.</p><p>— James</p>',
+        subject: 'Confirmed: {{first_name}} × Superkabe - Tuesday 2pm',
+        body_html: '<p>Hi {{first_name}},</p><p>Confirmed for Tuesday 2pm ET. I\'ll send a calendar hold separately. Will walk through the recovery pipeline, dual-enrollment detection, and the live deliverability dashboard.</p><p>If anything comes up, just hit reply.</p><p>- James</p>',
     },
 ];
 
 const CAMPAIGN_NAMES = [
-    'Q2 — SaaS Founders, North America',
-    'VP Sales — Series A to C',
-    'Marketing Directors — DACH region',
-    'Outbound Tooling — Renewals',
-    'Reactivation — Cold Q4 leads',
+    'Q2 - SaaS Founders, North America',
+    'VP Sales - Series A to C',
+    'Marketing Directors - DACH region',
+    'Outbound Tooling - Renewals',
+    'Reactivation - Cold Q4 leads',
 ];
 
 // ============================================================================
@@ -236,7 +236,7 @@ async function wipeDemoContent(orgId: string): Promise<void> {
 }
 
 // ============================================================================
-// SEED — DOMAINS + MAILBOXES + ACCOUNTS
+// SEED - DOMAINS + MAILBOXES + ACCOUNTS
 // ============================================================================
 
 interface SeededMailbox {
@@ -294,7 +294,7 @@ async function seedInfra(orgId: string): Promise<{ domains: { id: string; name: 
         },
     });
 
-    // Postmaster reputation snapshots — one per domain per recent day.
+    // Postmaster reputation snapshots - one per domain per recent day.
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
     for (let dayOffset = 0; dayOffset < 14; dayOffset++) {
@@ -415,7 +415,7 @@ async function seedInfra(orgId: string): Promise<{ domains: { id: string; name: 
 }
 
 // ============================================================================
-// SEED — TEMPLATES + SIGNATURES + SETTINGS
+// SEED - TEMPLATES + SIGNATURES + SETTINGS
 // ============================================================================
 
 async function seedTemplatesAndSettings(orgId: string): Promise<void> {
@@ -436,7 +436,7 @@ async function seedTemplatesAndSettings(orgId: string): Promise<void> {
     await prisma.emailSignature.create({
         data: {
             organization_id: orgId,
-            name: 'Default — James Mercer',
+            name: 'Default - James Mercer',
             html_content: '<p style="font-size:14px;color:#333;margin:0;"><strong>James Mercer</strong><br/>Founder, Demo Agency<br/><a href="https://demoagency.io">demoagency.io</a> · <a href="https://calendly.com/demoagency">Book 15 min</a></p>',
             is_default: true,
         },
@@ -471,7 +471,7 @@ async function seedTemplatesAndSettings(orgId: string): Promise<void> {
 }
 
 // ============================================================================
-// SEED — LEADS
+// SEED - LEADS
 // ============================================================================
 
 interface SeededLead {
@@ -557,7 +557,7 @@ async function seedLeads(orgId: string, count: number): Promise<SeededLead[]> {
 }
 
 // ============================================================================
-// SEED — CAMPAIGNS + STEPS + LEADS
+// SEED - CAMPAIGNS + STEPS + LEADS
 // ============================================================================
 
 interface SeededCampaign {
@@ -593,7 +593,7 @@ async function seedCampaigns(
                 name,
                 organization_id: orgId,
                 status,
-                paused_reason: status === 'paused' ? 'Manual pause — reviewing reply-rate data' : null,
+                paused_reason: status === 'paused' ? 'Manual pause - reviewing reply-rate data' : null,
                 paused_at: status === 'paused' ? new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) : null,
                 tags: pickN(['Q2', 'outbound', 'enterprise', 'mid-market', 'reactivation'], rand(1, 3)),
                 schedule_timezone: 'America/New_York',
@@ -629,7 +629,7 @@ async function seedCampaigns(
         }
 
         // Enrol 30-60 leads per campaign (some leads will be in multiple campaigns
-        // — that's the dual-enrolment scenario)
+        // - that's the dual-enrolment scenario)
         const enrolCount = rand(30, 60);
         const enrolees = pickN(enrollableLeads, enrolCount);
 
@@ -706,7 +706,7 @@ async function seedCampaigns(
             where: { id: campaignId },
             data: {
                 total_leads: enrolees.length,
-                total_sent: sentSoFar * rand(1, 3), // approximate — real numbers come from SendEvents below
+                total_sent: sentSoFar * rand(1, 3), // approximate - real numbers come from SendEvents below
             },
         });
 
@@ -719,7 +719,7 @@ async function seedCampaigns(
 }
 
 // ============================================================================
-// SEED — EVENTS (sends / opens / clicks / replies / bounces)
+// SEED - EVENTS (sends / opens / clicks / replies / bounces)
 // ============================================================================
 
 async function seedEvents(
@@ -732,7 +732,7 @@ async function seedEvents(
     let sends = 0, opens = 0, clicks = 0, replies = 0, bounces = 0;
 
     for (const c of campaigns) {
-        // Sends per campaign — enough to make analytics charts look full
+        // Sends per campaign - enough to make analytics charts look full
         const sendCount = c.status === 'completed' ? rand(120, 280) : rand(60, 200);
         for (let i = 0; i < sendCount; i++) {
             const idx = Math.floor(Math.random() * c.leadEmails.length);
@@ -823,7 +823,7 @@ async function seedEvents(
 }
 
 // ============================================================================
-// SEED — UNIBOX THREADS
+// SEED - UNIBOX THREADS
 // ============================================================================
 
 async function seedUniboxThreads(
@@ -834,14 +834,14 @@ async function seedUniboxThreads(
     console.log('Seeding unibox threads…');
 
     const sampleReplies = [
-        { class: 'qualified', text: 'Interesting timing — we just had a domain pause incident last week. Can you send over a quick deck?' },
+        { class: 'qualified', text: 'Interesting timing - we just had a domain pause incident last week. Can you send over a quick deck?' },
         { class: 'positive', text: 'Yes please, send the demo link. Tuesday 2pm ET works.' },
         { class: 'objection', text: 'We just signed with Smartlead 3 months ago. Maybe revisit next year?' },
         { class: 'soft_no', text: 'Not a priority for us this quarter, but feel free to follow up Q4.' },
-        { class: 'referral', text: 'You\'ll want to talk to our Head of Demand Gen — adding Sasha to this thread.' },
+        { class: 'referral', text: 'You\'ll want to talk to our Head of Demand Gen - adding Sasha to this thread.' },
         { class: 'qualified', text: 'What\'s the pricing for 5 mailboxes?' },
         { class: 'angry', text: 'Take me off your list. This is the third email this month.' },
-        { class: 'positive', text: 'Booked — see calendar invite. Looking forward to it.' },
+        { class: 'positive', text: 'Booked - see calendar invite. Looking forward to it.' },
     ];
 
     let count = 0;
@@ -916,7 +916,7 @@ async function seedUniboxThreads(
 
 async function main() {
     console.log('═══════════════════════════════════════════════════════════════');
-    console.log('  Superkabe — Demo Account Content Seeder');
+    console.log('  Superkabe - Demo Account Content Seeder');
     console.log('═══════════════════════════════════════════════════════════════\n');
 
     assertStagingDb();
@@ -933,7 +933,7 @@ async function main() {
         where: { id: user.organization_id },
         select: { id: true, name: true, slug: true },
     });
-    console.log(`Demo org: ${org?.name} (${org?.slug}) — ${org?.id}\n`);
+    console.log(`Demo org: ${org?.name} (${org?.slug}) - ${org?.id}\n`);
     const orgId = user.organization_id;
 
     await wipeDemoContent(orgId);

@@ -27,7 +27,7 @@ import {
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 // In subdomain-split mode, /dashboard/* lives on the app host (e.g.
-// app.superkabe.com) — APP_URL points there. In single-domain mode this
+// app.superkabe.com) - APP_URL points there. In single-domain mode this
 // falls back to FRONTEND_URL so the build still works.
 const APP_URL = process.env.APP_URL || FRONTEND_URL;
 
@@ -58,10 +58,10 @@ export const googleCallback = async (req: Request, res: Response): Promise<void>
     }
 
     // Validate state against the server-side store (CSRF protection). Any
-    // failure here means the callback wasn't initiated by us — abort.
+    // failure here means the callback wasn't initiated by us - abort.
     const orgId = await consumeSequencerGoogleState(String(state));
     if (!orgId) {
-        logger.warn('[OAUTH] Google callback rejected — invalid state');
+        logger.warn('[OAUTH] Google callback rejected - invalid state');
         return res.redirect(`${APP_URL}/dashboard/sequencer/accounts?error=invalid_state`);
     }
     const parsed = { orgId };
@@ -69,7 +69,7 @@ export const googleCallback = async (req: Request, res: Response): Promise<void>
     try {
         const { access_token, refresh_token, expires_at, email, name } = await exchangeGoogleCodeForTokens(String(code));
 
-        // Upsert ConnectedAccount — if this org already has this email as google, update tokens
+        // Upsert ConnectedAccount - if this org already has this email as google, update tokens
         const existing = await prisma.connectedAccount.findUnique({
             where: { organization_id_email: { organization_id: parsed.orgId, email } },
         });
@@ -108,7 +108,7 @@ export const googleCallback = async (req: Request, res: Response): Promise<void>
             accountId = created.id;
         }
 
-        // Idempotent — creates shadow Mailbox + Domain if missing, no-op if already exists.
+        // Idempotent - creates shadow Mailbox + Domain if missing, no-op if already exists.
         // Synchronous so that a provisioning failure leaves the row in
         // `provisioning_failed` instead of a silently-half-set-up `active` state.
         // The reconciliation worker re-tries `provisioning_failed` rows.
@@ -134,7 +134,7 @@ export const googleCallback = async (req: Request, res: Response): Promise<void>
             }).catch(() => undefined);
         }
 
-        // Record OAuth consent — captures scope + identity for the audit trail.
+        // Record OAuth consent - captures scope + identity for the audit trail.
         try {
             const orgFirstUser = await prisma.user.findFirst({
                 where: { organization_id: parsed.orgId },
@@ -157,7 +157,7 @@ export const googleCallback = async (req: Request, res: Response): Promise<void>
             });
         } catch (consentErr) {
             logger.error(
-                '[OAUTH] Google consent record failed — manual remediation required',
+                '[OAUTH] Google consent record failed - manual remediation required',
                 consentErr instanceof Error ? consentErr : new Error(String(consentErr)),
                 { orgId: parsed.orgId, email },
             );
@@ -243,7 +243,7 @@ export const microsoftCallback = async (req: Request, res: Response): Promise<vo
             accountId = created.id;
         }
 
-        // Synchronous — see Google branch for the rationale.
+        // Synchronous - see Google branch for the rationale.
         try {
             await provisionMailboxForConnectedAccount({
                 connectedAccountId: accountId,
@@ -289,7 +289,7 @@ export const microsoftCallback = async (req: Request, res: Response): Promise<vo
             });
         } catch (consentErr) {
             logger.error(
-                '[OAUTH] Microsoft consent record failed — manual remediation required',
+                '[OAUTH] Microsoft consent record failed - manual remediation required',
                 consentErr instanceof Error ? consentErr : new Error(String(consentErr)),
                 { orgId: parsed.orgId, email },
             );

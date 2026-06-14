@@ -22,7 +22,7 @@ router.get('/system/csv', controller.downloadSystemListCsv);
 router.post('/custom/generate', controller.generateCustomList);
 router.post('/custom/csv', controller.downloadCustomListCsv);
 
-// Manual trigger — useful for staging seeding. Same org-scoped middleware.
+// Manual trigger - useful for staging seeding. Same org-scoped middleware.
 router.post('/system/trigger', controller.triggerDailyForOrg);
 
 export default router;

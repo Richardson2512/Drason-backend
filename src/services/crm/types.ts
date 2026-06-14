@@ -1,5 +1,5 @@
 /**
- * CRM integration foundation types — Phase 1.
+ * CRM integration foundation types - Phase 1.
  *
  * Provider-agnostic interface that HubSpot and Salesforce clients
  * implement in Phase 2 / Phase 3. Connection lifecycle, contact import,
@@ -11,7 +11,7 @@
 /** All supported CRM providers. Keep narrow on purpose. */
 export type CrmProvider = 'hubspot' | 'salesforce';
 
-/** Connection status — mirrors what the dashboard renders. */
+/** Connection status - mirrors what the dashboard renders. */
 export type CrmConnectionStatus = 'active' | 'error' | 'expired' | 'disconnected';
 
 /** Outbound event types we push to CRMs. Subset of webhook-bus events. */
@@ -49,7 +49,7 @@ export interface CrmContact {
     optedOut?: boolean;
 }
 
-/** A pushable activity — written to the CRM contact's timeline / Task. */
+/** A pushable activity - written to the CRM contact's timeline / Task. */
 export interface CrmActivity {
     type: CrmActivityEventType;
     occurredAt: Date;
@@ -81,7 +81,7 @@ export type CrmContactFilter =
 export interface CrmPagedContacts {
     contacts: CrmContact[];
     nextCursor: string | null;
-    /** Best-effort total — may be null for providers that don't report it. */
+    /** Best-effort total - may be null for providers that don't report it. */
     totalCount?: number | null;
 }
 
@@ -113,7 +113,7 @@ export interface CrmClient {
     /** Exchange an authorization code for tokens at the end of the OAuth flow. */
     exchangeCodeForTokens(opts: { code: string; redirectUri: string }): Promise<CrmOAuthTokens>;
 
-    /** Refresh an expired access token. Throws if refresh fails — caller marks connection expired. */
+    /** Refresh an expired access token. Throws if refresh fails - caller marks connection expired. */
     refreshTokens(refreshToken: string): Promise<CrmOAuthTokens>;
 
     /** Look up the CRM-side org identity (portal_id / organization_id) for display. */
@@ -149,7 +149,7 @@ export interface CrmClient {
 }
 
 /**
- * Factory function shape — each provider exports one of these. Phase 1
+ * Factory function shape - each provider exports one of these. Phase 1
  * has no implementations yet; Phase 2 (HubSpot) and Phase 3 (Salesforce)
  * will register their factories with the connection service.
  */
@@ -159,7 +159,7 @@ export interface CrmClientFactory {
         accessToken: string;
         refreshToken?: string | null;
         instanceUrl?: string | null;
-        /** Called when the factory's caller refreshes tokens — connection service persists them. */
+        /** Called when the factory's caller refreshes tokens - connection service persists them. */
         onTokensRefreshed?: (tokens: CrmOAuthTokens) => Promise<void>;
     }): CrmClient;
 }

@@ -1,13 +1,13 @@
 /**
  * JustCall.io integration controller.
  *
- *   POST /api/integrations/justcall/connect            — paste & validate API key + secret
- *   GET  /api/integrations/justcall/connection         — current connection info
- *   POST /api/integrations/justcall/disconnect         — wipe stored credentials
- *   GET  /api/integrations/justcall/campaigns          — list sales-dialer campaigns
- *   POST /api/integrations/justcall/campaigns          — create a fresh campaign
- *   POST /api/integrations/justcall/exports            — enqueue an export job
- *   GET  /api/integrations/justcall/exports/:id        — job status
+ *   POST /api/integrations/justcall/connect            - paste & validate API key + secret
+ *   GET  /api/integrations/justcall/connection         - current connection info
+ *   POST /api/integrations/justcall/disconnect         - wipe stored credentials
+ *   GET  /api/integrations/justcall/campaigns          - list sales-dialer campaigns
+ *   POST /api/integrations/justcall/campaigns          - create a fresh campaign
+ *   POST /api/integrations/justcall/exports            - enqueue an export job
+ *   GET  /api/integrations/justcall/exports/:id        - job status
  *
  * Differs from OutreachIntegrationController only where JustCall genuinely
  * differs: there's no OAuth dance (so no /authorize or /callback), and the
@@ -26,7 +26,7 @@ import {
 import { JustCallClient } from '../services/justcall/client';
 import { JustCallError } from '../services/justcall/types';
 
-const MAX_EXPORT_LEADS = 5_000; // matches Outreach — keeps a single job tractable
+const MAX_EXPORT_LEADS = 5_000; // matches Outreach - keeps a single job tractable
 
 // ── Connect ───────────────────────────────────────────────────────────
 
@@ -42,7 +42,7 @@ export async function connect(req: Request, res: Response): Promise<Response> {
     }
 
     // Validate the credentials by hitting /users. If the pair is bad,
-    // the client throws JustCallError(unauthorized) — we surface that
+    // the client throws JustCallError(unauthorized) - we surface that
     // as a 400 to keep the dashboard's error UX consistent.
     let info;
     try {

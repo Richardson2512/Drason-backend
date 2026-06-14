@@ -73,11 +73,11 @@ async function loadRealClient(): Promise<{
             // call PutDedicatedIpInPool, but you first need an IP allocated
             // to the account. The cleanest pattern is to use
             // CreateDedicatedIpPool with ScalingMode=MANAGED, which lets
-            // SES auto-scale IPs into the pool — that's what we use here.
+            // SES auto-scale IPs into the pool - that's what we use here.
             // If a specific IP must be moved, the operator can do it from
             // the AWS console.
             //
-            // We don't have an IP to return at create-time — it's assigned
+            // We don't have an IP to return at create-time - it's assigned
             // asynchronously by SES, and shows up in subsequent
             // GetDedicatedIpPool calls.
             return null;
@@ -87,11 +87,11 @@ async function loadRealClient(): Promise<{
             try {
                 const res = await client.send(new sdk.GetDedicatedIpPoolCommand({ PoolName: poolName }));
                 // If the pool exists, AWS owns the readiness signal. The
-                // most reliable proxy: list IPs on the pool — if any
+                // most reliable proxy: list IPs on the pool - if any
                 // non-empty, it's ready.
                 const list = await client.send(new sdk.GetDedicatedIpsCommand({ PoolName: poolName }));
                 if (list.DedicatedIps && list.DedicatedIps.length > 0) {
-                    // Any IP in the pool counts as available — the warmup
+                    // Any IP in the pool counts as available - the warmup
                     // status is tracked separately in our DB.
                     return 'AVAILABLE';
                 }
@@ -108,7 +108,7 @@ async function loadRealClient(): Promise<{
                 await client.send(new sdk.DeleteDedicatedIpPoolCommand({ PoolName: poolName }));
             } catch (err: unknown) {
                 const e = err as { name?: string };
-                // NotFound is fine — pool already gone.
+                // NotFound is fine - pool already gone.
                 if (e?.name !== 'NotFoundException') throw err;
             }
         },
@@ -144,7 +144,7 @@ function stubStatusFromName(poolName: string): SesIpStatus {
 }
 
 function stubIpAddress(poolName: string): string {
-    // Synthesize a deterministic 10.x.x.x address from the pool name —
+    // Synthesize a deterministic 10.x.x.x address from the pool name -
     // never used for real sends in stub mode, just a UI placeholder.
     let h = 0;
     for (let i = 0; i < poolName.length; i++) h = (h * 31 + poolName.charCodeAt(i)) & 0xffffffff;
@@ -162,7 +162,7 @@ export async function provisionDedicatedIp(opts: { accountId: string; ipId: stri
     const poolName = stubPoolName(opts);
 
     if (!isSesConfigured()) {
-        logger.info('[SES_PROVISION] Stub mode — pool created instantly', { poolName });
+        logger.info('[SES_PROVISION] Stub mode - pool created instantly', { poolName });
         return {
             poolName,
             ipAddress: stubIpAddress(poolName),
@@ -184,7 +184,7 @@ export async function getDedicatedIpStatus(poolName: string): Promise<SesIpStatu
 
 export async function deleteDedicatedIp(poolName: string): Promise<void> {
     if (!isSesConfigured()) {
-        logger.info('[SES_PROVISION] Stub mode — pool delete no-op', { poolName });
+        logger.info('[SES_PROVISION] Stub mode - pool delete no-op', { poolName });
         return;
     }
     const client = await loadRealClient();

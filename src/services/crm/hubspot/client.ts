@@ -49,11 +49,11 @@ export class HubSpotCrmClient implements CrmClient {
         this.onTokensRefreshed = opts.onTokensRefreshed;
     }
 
-    // ── OAuth lifecycle (factory uses these statically — instance methods just delegate) ──
+    // ── OAuth lifecycle (factory uses these statically - instance methods just delegate) ──
 
     generateAuthUrl(opts: { state: string; redirectUri: string; scopes?: string[] }): string {
         // HubSpot's redirect_uri must match what's registered on the dev app, so
-        // we ignore opts.redirectUri here — the env var is the source of truth.
+        // we ignore opts.redirectUri here - the env var is the source of truth.
         return generateAuthUrlCore({ state: opts.state, scopes: opts.scopes ?? HUBSPOT_DEFAULT_SCOPES });
     }
 
@@ -177,7 +177,7 @@ export class HubSpotCrmClient implements CrmClient {
             };
         }
 
-        // 'all' — straight contacts list
+        // 'all' - straight contacts list
         const url = new URL(`${HUBSPOT_API.base}/crm/v3/objects/contacts`);
         url.searchParams.set('limit', String(limit));
         url.searchParams.set('properties', properties.join(','));

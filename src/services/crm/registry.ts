@@ -1,5 +1,5 @@
 /**
- * Provider registry — maps a CrmProvider string to its CrmClientFactory.
+ * Provider registry - maps a CrmProvider string to its CrmClientFactory.
  *
  * Workers (activity push, contact import) look up the right factory here
  * by connection.provider, so neither workers nor controllers need to
@@ -14,7 +14,7 @@ const factories = new Map<CrmProvider, CrmClientFactory>();
 
 export function registerProvider(factory: CrmClientFactory): void {
     if (factories.has(factory.provider)) {
-        logger.warn(`[CRM_REGISTRY] provider ${factory.provider} already registered — overwriting`);
+        logger.warn(`[CRM_REGISTRY] provider ${factory.provider} already registered - overwriting`);
     }
     factories.set(factory.provider, factory);
     logger.info(`[CRM_REGISTRY] registered provider ${factory.provider}`);

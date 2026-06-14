@@ -7,3 +7,9 @@ test-results
 
 /src/generated/prisma
 prisma/dev.db
+
+# Local dev backups + tmp dumps (do not commit)
+.staging-db-backup*/
+.tmp_*
+*.sql.bak
+.tmp_prod_check.sql

@@ -11,7 +11,7 @@
  * same chunk. JustCall dedupes by phone number on the campaign side,
  * so a re-import lands as "skipped" rather than producing duplicates.
  * Rows pushed without a phone number rely on JustCall's own validation
- * for per-row dedup/rejection — the response's skipped/failed counters
+ * for per-row dedup/rejection - the response's skipped/failed counters
  * surface that to the operator.
  *
  * Failure modes:
@@ -115,7 +115,7 @@ async function processJob(jobId: string): Promise<void> {
     const cLeadById = new Map(campaignLeads.map(c => [c.id, c]));
 
     // Build the JustCall contact payload. For parity with the Outreach
-    // export, every prospect in the chunk is pushed — phone_number is
+    // export, every prospect in the chunk is pushed - phone_number is
     // omitted when no phone is on file. JustCall itself decides whether
     // a phoneless row is usable for the sales dialer; phone-validation
     // outcomes flow back through the bulk_import response (skipped/failed).
@@ -183,20 +183,20 @@ async function processJob(jobId: string): Promise<void> {
                 chunkSkipped += result.skipped;
                 chunkFailed += result.failed;
             } catch (err) {
-                // Auth + retryable failures must still bubble up — they
+                // Auth + retryable failures must still bubble up - they
                 // affect every subsequent call, not just this batch.
                 if (err instanceof JustCallError) {
                     if (err.status === 401 || err.status === 403 || err.retryable) {
                         throw err;
                     }
                 } else {
-                    // Network / unexpected error — treat as retryable and bubble.
+                    // Network / unexpected error - treat as retryable and bubble.
                     throw err;
                 }
                 // Validation-class non-retryable JustCallError (typically 422
                 // for "phone_number required") is isolated to phoneless rows.
                 chunkFailed += withoutPhone.length;
-                logger.warn('[JUSTCALL_EXPORT] phoneless batch rejected — counted as failed, with-phone rows unaffected', {
+                logger.warn('[JUSTCALL_EXPORT] phoneless batch rejected - counted as failed, with-phone rows unaffected', {
                     jobId: job.id,
                     phonelessRows: withoutPhone.length,
                     providerCode: (err as JustCallError).providerCode,
@@ -254,7 +254,7 @@ async function processJob(jobId: string): Promise<void> {
                     total_failed: totalFailed,
                 },
             });
-            logger.warn('[JUSTCALL_EXPORT] retryable failure — will retry', { jobId: job.id, code, status, msg: message });
+            logger.warn('[JUSTCALL_EXPORT] retryable failure - will retry', { jobId: job.id, code, status, msg: message });
         } else {
             await prisma.justCallExportJob.update({
                 where: { id: job.id },

@@ -1,10 +1,10 @@
 /**
- * Resolve the public-facing backend URL — what customers, Polar, Google,
+ * Resolve the public-facing backend URL - what customers, Polar, Google,
  * Microsoft, Slack, Clay, etc. should see as our origin.
  *
  * Resolution order:
- *   1. PUBLIC_BACKEND_URL — explicit override, always wins.
- *   2. BACKEND_URL — only if NOT a Railway-internal hostname
+ *   1. PUBLIC_BACKEND_URL - explicit override, always wins.
+ *   2. BACKEND_URL - only if NOT a Railway-internal hostname
  *      (`*.up.railway.app` / `*.railway.internal`). Railway-internal
  *      hostnames pass our healthchecks but are NOT what customers should
  *      see in dashboard URLs, OAuth redirect_uris, tracking pixels, or
@@ -15,7 +15,7 @@
  *   3. https://api.superkabe.com hardcoded fallback for production.
  *   4. http://localhost:<PORT> for development.
  *
- * Strips trailing slashes — every caller does `${url}/api/...` and a
+ * Strips trailing slashes - every caller does `${url}/api/...` and a
  * stray `//` produces a redirect_uri / webhook URL that won't match
  * what was registered upstream (exact-string matching is the rule).
  */
@@ -35,7 +35,7 @@ export function getPublicBackendUrl(): string {
         const trimmed = raw.replace(/\/+$/, '');
         if (!trimmed) continue;
         if (process.env.NODE_ENV === 'production' && isRailwayInternal(trimmed)) {
-            console.warn(`[BACKEND_URL] "${raw}" is a Railway-internal hostname — skipping for public URLs`);
+            console.warn(`[BACKEND_URL] "${raw}" is a Railway-internal hostname - skipping for public URLs`);
             continue;
         }
         return trimmed;

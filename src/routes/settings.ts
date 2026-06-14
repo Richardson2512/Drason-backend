@@ -6,7 +6,7 @@ import { requireAgencyOwner } from '../middleware/requireCapability';
 const router = Router();
 
 router.get('/', settingsController.getSettings);
-// Org-level settings (system_mode, mailing_address, etc.) — agency owners only.
+// Org-level settings (system_mode, mailing_address, etc.) - agency owners only.
 // These knobs affect every workspace under the account; clients should never
 // be able to change them, regardless of their per-workspace capabilities.
 router.post('/', requireAgencyOwner, validateBody(updateSettingsSchema), settingsController.updateSettings);

@@ -96,7 +96,7 @@ export async function checkCampaignHealth(
     let status: CampaignStatus = 'active';
 
     if (campaign.mailboxes.length === 0) {
-        // No mailboxes at all — campaign cannot send, pause it
+        // No mailboxes at all - campaign cannot send, pause it
         status = 'paused';
     } else {
         const healthyMailboxes = campaign.mailboxes.filter(m =>
@@ -107,10 +107,10 @@ export async function checkCampaignHealth(
         );
 
         if (healthyMailboxes.length === 0) {
-            // ALL mailboxes are paused/removed — pause campaign
+            // ALL mailboxes are paused/removed - pause campaign
             status = 'paused';
         } else if (pausedOrRemovedMailboxes.length > campaign.mailboxes.length * MONITORING_THRESHOLDS.CAMPAIGN_DEGRADATION_RATIO) {
-            // > CAMPAIGN_DEGRADATION_RATIO of mailboxes are degraded — warn
+            // > CAMPAIGN_DEGRADATION_RATIO of mailboxes are degraded - warn
             status = 'warning';
         }
     }
@@ -121,7 +121,7 @@ export async function checkCampaignHealth(
         totalSent: campaign.total_sent,
         totalBounced: campaign.total_bounced,
         warningCount: campaign.warning_count,
-        isPoisoning: false, // Poisoning detection removed — bounce rate doesn't pause campaigns
+        isPoisoning: false, // Poisoning detection removed - bounce rate doesn't pause campaigns
         affectedMailboxes
     };
 }
@@ -131,7 +131,7 @@ export async function checkCampaignHealth(
 // ============================================================================
 
 /**
- * Pause a campaign — updates local DB AND syncs to external platform.
+ * Pause a campaign - updates local DB AND syncs to external platform.
  */
 export async function pauseCampaign(
     organizationId: string,
@@ -180,7 +180,7 @@ export async function pauseCampaign(
 
     logger.info(`[CAMPAIGN] Paused campaign ${campaignId}: ${reason}`);
 
-    // Native sending — Campaign.status='paused' is the source of truth for the
+    // Native sending - Campaign.status='paused' is the source of truth for the
     // sequencer dispatcher.
 
     // Notify user
@@ -222,7 +222,7 @@ export async function pauseCampaign(
             audience: { kind: 'org-admins', organizationId },
             category: 'operational_alert',
             eventKind: 'campaign_paused',
-            // Per-campaign + 15-min bucket — re-pauses outside the window
+            // Per-campaign + 15-min bucket - re-pauses outside the window
             // re-notify; storms inside the window collapse to one email.
             idempotencyKey: `campaign-paused:${campaignId}:${coalesceBucket()}`,
         });
@@ -232,7 +232,7 @@ export async function pauseCampaign(
 }
 
 /**
- * Resume a campaign — updates local DB AND syncs to external platform.
+ * Resume a campaign - updates local DB AND syncs to external platform.
  */
 export async function resumeCampaign(
     organizationId: string,
@@ -278,7 +278,7 @@ export async function resumeCampaign(
 
     logger.info(`[CAMPAIGN] Resumed campaign ${campaignId}`);
 
-    // Native sending — Campaign.status='active' is the source of truth for the
+    // Native sending - Campaign.status='active' is the source of truth for the
     // sequencer dispatcher; the next 60s tick picks it up automatically.
 
     // Notify user
@@ -360,7 +360,7 @@ export async function warnCampaign(
  * Called when a bounce event is received from Smartlead.
  *
  * NOTE: This only updates bounce STATS (for reporting).
- * It does NOT pause/warn the campaign — campaigns are paused based on
+ * It does NOT pause/warn the campaign - campaigns are paused based on
  * infrastructure health (all mailboxes paused/removed), never bounce rate.
  */
 export async function recordCampaignBounce(
@@ -381,7 +381,7 @@ export async function recordCampaignBounce(
     });
 
     if (campaign && campaign.total_sent > 0) {
-        // Store as percentage (0-100) — consistent with bounceProcessingService
+        // Store as percentage (0-100) - consistent with bounceProcessingService
         const bounceRate = (campaign.total_bounced / campaign.total_sent) * 100;
         await prisma.campaign.update({
             where: { id: campaignId },

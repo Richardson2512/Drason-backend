@@ -1,5 +1,5 @@
 /**
- * Data export confirmation — sent right after a GDPR Art. 15 / CCPA
+ * Data export confirmation - sent right after a GDPR Art. 15 / CCPA
  * "right-to-know" export is generated. The export itself is delivered
  * via the original HTTP response (synchronous JSON download); this
  * email is the security-audit trail saying "your data was exported on
@@ -46,7 +46,7 @@ export function dataExportReadyEmail(p: DataExportReadyEmailParams): RenderedEma
         heading: 'Your data export was generated',
         intro: `${greeting} As requested, ${p.organizationName ? `<strong>${escapeHtml(p.organizationName)}</strong>` : 'your account'} data was exported and delivered to your browser as a JSON file. Below is a confirmation summary for your records.`,
         facts,
-        body: `<strong style="color:#111827;">If this wasn't you</strong>, your account may be compromised. Reset your password immediately and contact <a href="mailto:security@superkabe.com" style="color:#1C4532;text-decoration:underline;">security@superkabe.com</a>. Data exports include your contacts, campaign metadata, and consent history — even though they exclude credentials and OAuth tokens, that's still sensitive information.`,
+        body: `<strong style="color:#111827;">If this wasn't you</strong>, your account may be compromised. Reset your password immediately and contact <a href="mailto:security@superkabe.com" style="color:#1C4532;text-decoration:underline;">security@superkabe.com</a>. Data exports include your contacts, campaign metadata, and consent history - even though they exclude credentials and OAuth tokens, that's still sensitive information.`,
         ctaLabel: 'Review data rights',
         ctaUrl: p.dataRightsUrl,
     };

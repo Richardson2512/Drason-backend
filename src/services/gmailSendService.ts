@@ -16,7 +16,7 @@ import { logger } from './observabilityService';
 import { verifyGrantedScopes, verifyIdTokenEmail } from '../utils/googleOAuth';
 import { createState, consumeState } from './oauthStateService';
 
-// Sequencer Google OAuth scope set — DELIBERATELY NON-RESTRICTED.
+// Sequencer Google OAuth scope set - DELIBERATELY NON-RESTRICTED.
 //
 // We previously requested gmail.send + gmail.modify (Restricted scopes) for
 // API-based sending and reply detection. That path required:
@@ -26,12 +26,12 @@ import { createState, consumeState } from './oauthStateService';
 //
 // We now send via SMTP (smtp.gmail.com:587) using app passwords supplied
 // by mailbox resellers (Zapmail, etc.) and read replies via IMAP. Both
-// paths use Gmail's normal authenticated-user infrastructure — same inbox
+// paths use Gmail's normal authenticated-user infrastructure - same inbox
 // placement, same authentication, same delivery quality as the API path.
 // Neither requires Gmail-specific OAuth scopes.
 //
 // What remains here (openid + email + profile) is the basic identity
-// triplet — non-sensitive, no verification needed. It lets the sequencer
+// triplet - non-sensitive, no verification needed. It lets the sequencer
 // confirm WHICH Google account someone is connecting (email + name from
 // the signed id_token), without ever asking Google for permission to send
 // or read mail.
@@ -46,7 +46,7 @@ const SCOPES = [
     'profile',
 ];
 
-// All scopes in SCOPES are non-sensitive identity triplet — Google grants
+// All scopes in SCOPES are non-sensitive identity triplet - Google grants
 // them as a bundle. There's no granular per-scope consent screen for these
 // like there was for gmail.send/modify. Verifying email-scope-granted is
 // enough to know identity worked.
@@ -56,7 +56,7 @@ const REQUIRED_SCOPES = [
 
 // Use the canonical public-URL resolver from utils/publicBackendUrl.
 // This was inlined here originally for the redirect_uri_mismatch fix
-// — same logic now lives in the shared util so all customer-facing URL
+// - same logic now lives in the shared util so all customer-facing URL
 // builders agree on the answer.
 import { getPublicBackendUrl } from '../utils/publicBackendUrl';
 
@@ -76,7 +76,7 @@ function getOAuthClient() {
 
 export async function getGoogleAuthorizationUrl(orgId: string, loginHint?: string): Promise<string> {
     const oauth2Client = getOAuthClient();
-    // Server-side state nonce — replaces the earlier base64-encoded JSON
+    // Server-side state nonce - replaces the earlier base64-encoded JSON
     // scheme that was structurally validated only and trivially forgeable
     // (anyone could mint a state with any orgId).
     const state = await createState({ purpose: 'sequencer_google_oauth', organizationId: orgId });
@@ -196,7 +196,7 @@ export async function sendEmailViaGmailApi(
     options?: {
         inReplyTo?: string | null;
         references?: string | null;
-        /** RFC 2369 + RFC 8058 unsubscribe URL — populates List-Unsubscribe headers
+        /** RFC 2369 + RFC 8058 unsubscribe URL - populates List-Unsubscribe headers
          *  required by Gmail's bulk-sender requirements (Feb 2024) and Yahoo's
          *  parallel rules. Pass null to omit headers (e.g., transactional mail). */
         unsubscribeUrl?: string | null;
@@ -209,7 +209,7 @@ export async function sendEmailViaGmailApi(
 
     const messageId = `<${crypto.randomUUID()}@superkabe.com>`;
 
-    // Build MIME headers — include In-Reply-To / References for RFC-compliant threading
+    // Build MIME headers - include In-Reply-To / References for RFC-compliant threading
     // on the recipient side. Without these headers the message appears as a new thread.
     const headerLines: string[] = [
         `From: ${from}`,
@@ -234,7 +234,7 @@ export async function sendEmailViaGmailApi(
 
     // If replying, look up the threadId of the original message so Gmail clusters the
     // outbound in the sender's own "Sent" folder too (In-Reply-To alone does NOT group
-    // in Gmail's UI on the sender side — it needs threadId).
+    // in Gmail's UI on the sender side - it needs threadId).
     let threadId: string | undefined;
     if (options?.inReplyTo) {
         try {
@@ -245,7 +245,7 @@ export async function sendEmailViaGmailApi(
             });
             const match = listRes.data.messages?.[0];
             if (match?.threadId) threadId = match.threadId;
-        } catch { /* fall through — headers alone still thread on recipient side */ }
+        } catch { /* fall through - headers alone still thread on recipient side */ }
     }
 
     const response = await gmail.users.messages.send({

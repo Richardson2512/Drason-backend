@@ -64,7 +64,7 @@ export interface BounceProcessingParams {
 // ============================================================================
 
 /**
- * Process a bounce event — unified path for ALL platforms.
+ * Process a bounce event - unified path for ALL platforms.
  *
  * Called by the BullMQ event worker (or sync fallback) after the webhook
  * controller has already stored the raw event and enqueued the job.
@@ -88,7 +88,7 @@ export async function processBounce(params: BounceProcessingParams): Promise<voi
     });
 
     if (!mailbox) {
-        logger.warn('[BOUNCE] Mailbox not found — webhook arrived before sync', {
+        logger.warn('[BOUNCE] Mailbox not found - webhook arrived before sync', {
             organizationId,
             mailboxId,
         });
@@ -112,7 +112,7 @@ export async function processBounce(params: BounceProcessingParams): Promise<voi
         bounceType: bounceType || 'hard',
     });
 
-    // ── Step 3: Create BounceEvent record (ALWAYS — for analytics) ──
+    // ── Step 3: Create BounceEvent record (ALWAYS - for analytics) ──
     let leadId: string | undefined;
     const normalizedRecipient = recipientEmail?.toLowerCase().trim();
     if (normalizedRecipient) {
@@ -164,9 +164,9 @@ export async function processBounce(params: BounceProcessingParams): Promise<voi
             entityId: mailboxId,
             trigger: 'bounce_processing',
             action: 'transient_bounce',
-            details: `${classification.failureType} from ${classification.provider} — not degrading health. Reason: ${classification.rawReason}`,
+            details: `${classification.failureType} from ${classification.provider} - not degrading health. Reason: ${classification.rawReason}`,
         });
-        logger.info('[BOUNCE] Transient bounce — skipping threshold checks', {
+        logger.info('[BOUNCE] Transient bounce - skipping threshold checks', {
             organizationId,
             mailboxId,
             failureType: classification.failureType,
@@ -310,7 +310,7 @@ export async function processBounce(params: BounceProcessingParams): Promise<voi
             reason,
         );
 
-        logger.warn('[BOUNCE] Recovery relapse — mailbox bounced during recovery', {
+        logger.warn('[BOUNCE] Recovery relapse - mailbox bounced during recovery', {
             organizationId,
             mailboxId,
             fromPhase: currentPhase,
@@ -320,7 +320,7 @@ export async function processBounce(params: BounceProcessingParams): Promise<voi
         return; // Relapse handler manages state transitions
     }
 
-    // ── Step 9: Percentage threshold (PRIMARY) — see MAILBOX_PAUSE_BOUNCE_RATE ──
+    // ── Step 9: Percentage threshold (PRIMARY) - see MAILBOX_PAUSE_BOUNCE_RATE ──
     if (updatedMailbox.total_sent_count >= MAILBOX_PAUSE_BOUNCE_RATE_MIN_SENDS) {
         const bounceRate = updatedMailbox.hard_bounce_count / updatedMailbox.total_sent_count;
 
@@ -333,7 +333,7 @@ export async function processBounce(params: BounceProcessingParams): Promise<voi
         }
     }
 
-    // ── Step 10: Absolute window threshold (SAFETY NET) — 5 bounces in window ──
+    // ── Step 10: Absolute window threshold (SAFETY NET) - 5 bounces in window ──
     if (updatedMailbox.window_bounce_count >= MAILBOX_PAUSE_BOUNCES) {
         if (updatedMailbox.status !== 'paused') {
             await monitoringService.pauseMailbox(
@@ -344,7 +344,7 @@ export async function processBounce(params: BounceProcessingParams): Promise<voi
         }
     }
 
-    // ── Step 11: Early warning — 3 bounces within 60 sends ──
+    // ── Step 11: Early warning - 3 bounces within 60 sends ──
     if (
         updatedMailbox.window_bounce_count >= MAILBOX_WARNING_BOUNCES &&
         updatedMailbox.window_sent_count <= MAILBOX_WARNING_WINDOW &&

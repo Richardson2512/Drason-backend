@@ -105,7 +105,7 @@ export function isWorkerRunning(): boolean {
  */
 async function runWorkerCycle(): Promise<void> {
     if (isCycleActive) {
-        logger.warn('Metrics cycle skipped — previous still running');
+        logger.warn('Metrics cycle skipped - previous still running');
         return;
     }
 
@@ -124,7 +124,7 @@ async function runWorkerCycle(): Promise<void> {
 
         // Run consecutive_pauses decay no more than once per 24h. Cheap query
         // for the common case (nothing to decay) and idempotent if it overlaps
-        // with another tick — the LATEST `consecutive_pauses_decayed_at` filter
+        // with another tick - the LATEST `consecutive_pauses_decayed_at` filter
         // prevents double-decrementing the same entity.
         if (!lastDecayRunAt || Date.now() - lastDecayRunAt.getTime() >= DECAY_TICK_INTERVAL_MS) {
             try {
@@ -204,7 +204,7 @@ async function processMailbox(
     mailbox: { id: string; status: string; domain_id: string; smtp_status: boolean; imap_status: boolean },
     systemMode: string
 ): Promise<void> {
-    // CRITICAL: Skip disconnected mailboxes — their status is managed by sync, not metrics
+    // CRITICAL: Skip disconnected mailboxes - their status is managed by sync, not metrics
     if (mailbox.smtp_status === false || mailbox.imap_status === false) {
         logger.debug('Skipping disconnected mailbox', { mailboxId: mailbox.id, smtp: mailbox.smtp_status, imap: mailbox.imap_status });
         return;
@@ -235,7 +235,7 @@ async function processMailbox(
             reason = `Risk score ${risk.riskScore} dropped below warning threshold`;
         }
     } else if (currentState === MailboxState.RECOVERING) {
-        // Legacy RECOVERING state — migrate to proper healing pipeline
+        // Legacy RECOVERING state - migrate to proper healing pipeline
         // Transition to QUARANTINE so the warmup worker can manage graduation
         targetState = MailboxState.QUARANTINE;
         reason = 'Migrating legacy RECOVERING state to QUARANTINE healing pipeline';
@@ -286,8 +286,8 @@ async function checkRecoveryEligibility(
 ): Promise<void> {
     const now = new Date();
 
-    // Find system-paused mailboxes with expired cooldowns (or null cooldown — treat as immediately eligible)
-    // Exclude manually paused mailboxes — those should only be resumed by the user
+    // Find system-paused mailboxes with expired cooldowns (or null cooldown - treat as immediately eligible)
+    // Exclude manually paused mailboxes - those should only be resumed by the user
     // NOTE: Use NOT + equals instead of { not: 'manual' } because Prisma's `not` excludes null values
     const eligibleMailboxes = await prisma.mailbox.findMany({
         where: {
@@ -315,7 +315,7 @@ async function checkRecoveryEligibility(
                 organizationId,
                 mailbox.id,
                 MailboxState.QUARANTINE,
-                'Cooldown expired — entering quarantine (no sending, DNS re-check required)',
+                'Cooldown expired - entering quarantine (no sending, DNS re-check required)',
                 TriggerType.COOLDOWN_COMPLETE
             );
 
@@ -342,8 +342,8 @@ async function checkRecoveryEligibility(
         }
     }
 
-    // Find system-paused domains with expired cooldowns (or null cooldown — treat as immediately eligible)
-    // Exclude manually paused domains — those should only be resumed by the user
+    // Find system-paused domains with expired cooldowns (or null cooldown - treat as immediately eligible)
+    // Exclude manually paused domains - those should only be resumed by the user
     // NOTE: Use NOT + equals instead of { not: 'manual' } because Prisma's `not` excludes null values
     const eligibleDomains = await prisma.domain.findMany({
         where: {
@@ -371,7 +371,7 @@ async function checkRecoveryEligibility(
                 organizationId,
                 domain.id,
                 DomainState.QUARANTINE,
-                'Cooldown expired — entering quarantine (DNS re-check required)',
+                'Cooldown expired - entering quarantine (DNS re-check required)',
                 TriggerType.COOLDOWN_COMPLETE
             );
 

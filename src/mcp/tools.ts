@@ -1,9 +1,9 @@
 /**
- * Superkabe MCP tool registrations — backend-mounted version.
+ * Superkabe MCP tool registrations - backend-mounted version.
  *
  * Builds an McpServer pre-loaded with all 17 tools, each delegating to
  * the corresponding v1 controller via invokeAndUnwrap(). Tools never
- * leave the process — no internal HTTP, no service layer to maintain
+ * leave the process - no internal HTTP, no service layer to maintain
  * separately, controllers stay as the single source of truth.
  *
  * Used by transport.ts which mounts the server on POST /mcp.
@@ -120,7 +120,7 @@ export function createMcpServer(orgContext: OrgContext): McpServer {
         'validate_leads',
         {
             title: 'Validate Lead Emails',
-            description: 'Trigger email validation on a set of leads. Provide either lead IDs or email addresses. Validation runs asynchronously — use list_leads to check results after a few seconds.',
+            description: 'Trigger email validation on a set of leads. Provide either lead IDs or email addresses. Validation runs asynchronously - use list_leads to check results after a few seconds.',
             inputSchema: {
                 lead_ids: z.array(z.string()).optional().describe('Array of lead IDs to validate'),
                 emails: z.array(z.string()).optional().describe('Array of email addresses to validate (must already exist in Superkabe)'),
@@ -142,7 +142,7 @@ export function createMcpServer(orgContext: OrgContext): McpServer {
         'get_validation_results',
         {
             title: 'Get Validation Analytics',
-            description: 'Get email validation analytics — total validated count and breakdown by status (valid, risky, invalid, unknown).',
+            description: 'Get email validation analytics - total validated count and breakdown by status (valid, risky, invalid, unknown).',
         },
         async () => {
             try {
@@ -229,7 +229,7 @@ export function createMcpServer(orgContext: OrgContext): McpServer {
         'update_campaign',
         {
             title: 'Update Campaign',
-            description: "Update a campaign's name, schedule, or daily limit. Campaign must be paused or in draft — cannot update while active.",
+            description: "Update a campaign's name, schedule, or daily limit. Campaign must be paused or in draft - cannot update while active.",
             inputSchema: {
                 campaign_id: z.string().describe('The campaign ID'),
                 name: z.string().optional().describe('New campaign name'),

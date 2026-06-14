@@ -1,5 +1,5 @@
 /**
- * Workspace invite email — sent when an agency owner creates a client login
+ * Workspace invite email - sent when an agency owner creates a client login
  * for one of their workspaces. The email body contains the workspace slug
  * and email so the client has everything they need to sign in even if the
  * magic link is misplaced or expires.
@@ -13,18 +13,18 @@ import { renderEmailTemplate, renderEmailPlainText, type RenderEmailParams } fro
 import type { RenderedEmail } from './dispatcher';
 
 export interface WorkspaceInviteEmailParams {
-    /** Display name for the recipient (optional — falls back to "there"). */
+    /** Display name for the recipient (optional - falls back to "there"). */
     recipientName: string | null;
-    /** Recipient email — surfaced in the body as a fact so the client knows
+    /** Recipient email - surfaced in the body as a fact so the client knows
      *  exactly which address the workspace login is bound to. */
     recipientEmail: string;
     /** The agency's display name shown in the subject + intro. */
     agencyName: string;
-    /** Workspace name as the agency wrote it (e.g. "Acme — Q2 outbound"). */
+    /** Workspace name as the agency wrote it (e.g. "Acme - Q2 outbound"). */
     workspaceName: string;
     /** URL-safe workspace identifier the client types at /login. */
     workspaceSlug: string;
-    /** The magic-link URL — points at /set-password?token=…&workspace=…&email=… */
+    /** The magic-link URL - points at /set-password?token=…&workspace=…&email=… */
     magicLinkUrl: string;
     /** TTL label surfaced in the body. Default "7 days". */
     ttlLabel?: string;
@@ -45,7 +45,7 @@ export function workspaceInviteEmail(params: WorkspaceInviteEmailParams): Render
         preheader,
         eyebrow: `${params.agencyName} · powered by Superkabe`,
         heading: `You've been invited to ${escapeHtml(params.workspaceName)}`,
-        intro: `${greeting} <strong>${escapeHtml(params.agencyName)}</strong> invited you as a client on their Superkabe workspace. Set your password using the button below — the link expires in <strong>${escapeHtml(ttl)}</strong>.`,
+        intro: `${greeting} <strong>${escapeHtml(params.agencyName)}</strong> invited you as a client on their Superkabe workspace. Set your password using the button below - the link expires in <strong>${escapeHtml(ttl)}</strong>.`,
         facts,
         ctaLabel: 'Set my password',
         ctaUrl: params.magicLinkUrl,

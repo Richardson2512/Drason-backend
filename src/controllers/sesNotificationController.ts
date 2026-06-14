@@ -7,11 +7,11 @@
  * The endpoint handles three SNS message types:
  *   - SubscriptionConfirmation: AWS sends this once when the SNS topic
  *     is first subscribed. We auto-confirm by GETting SubscribeURL.
- *   - Notification: the actual SES event payload (wrapped twice — once
+ *   - Notification: the actual SES event payload (wrapped twice - once
  *     by SNS, once by SES).
  *   - UnsubscribeConfirmation: logged, no action.
  *
- * Auto-pause thresholds — AWS publishes these as the levels at which
+ * Auto-pause thresholds - AWS publishes these as the levels at which
  * SES itself starts throttling. We trip a few hundred basis points
  * earlier so we never let one of our IPs degrade the whole AWS account:
  *
@@ -65,7 +65,7 @@ interface SesNotification {
 export const handleSesNotification = async (req: Request, res: Response): Promise<Response> => {
     const envelope = (req.body || {}) as SnsEnvelope;
 
-    // 1. SNS handshake — auto-confirm subscriptions. AWS will not deliver
+    // 1. SNS handshake - auto-confirm subscriptions. AWS will not deliver
     // events until SubscribeURL is fetched once.
     if (envelope.Type === 'SubscriptionConfirmation' && envelope.SubscribeURL) {
         try {

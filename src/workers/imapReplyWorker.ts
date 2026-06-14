@@ -57,7 +57,7 @@ async function notifyMailboxDisconnected(
             audience: { kind: 'org-admins', organizationId: account.organization_id },
             category: 'integration',
             eventKind: 'mailbox_oauth_disconnected',
-            // Per (mailbox, error-class) — the same disconnection won't
+            // Per (mailbox, error-class) - the same disconnection won't
             // re-notify on every poll. A NEW class of failure (e.g. imap
             // auth after oauth revoke is fixed) WILL re-notify.
             idempotencyKey: `mailbox-disconnected:${accountId}:${errorClass}`,
@@ -90,7 +90,7 @@ interface IncomingEmail {
     references?: string;
     receivedAt: Date;
     hasAttachments: boolean;
-    /** Raw RFC 5322 source — used by the DSN parser when this message is a
+    /** Raw RFC 5322 source - used by the DSN parser when this message is a
      *  delivery-status notification. Optional because some IMAP fetches don't
      *  retain the full source. */
     raw?: string;
@@ -167,7 +167,7 @@ async function processReply(
     const senderEmail = email.from.toLowerCase();
 
     try {
-        // 0a. DSN detection — RFC 3464 delivery-status notifications. When the
+        // 0a. DSN detection - RFC 3464 delivery-status notifications. When the
         //     sending mailbox receives an asynchronous bounce, it arrives as a
         //     multipart/report message we must NOT thread into the Unibox.
         //     Parse, record a BounceEvent, and skip the reply pipeline.
@@ -186,7 +186,7 @@ async function processReply(
         // 0b. Top-of-function message dedup: relying on Gmail's `is:unread` to gate
         //    fetches caused replies to be missed once the user opened Gmail. We
         //    now fetch every message in the time window and dedupe by message_id
-        //    here, BEFORE any counter increments — so re-fetching is safe.
+        //    here, BEFORE any counter increments - so re-fetching is safe.
         if (email.messageId) {
             const existingMessage = await prisma.emailMessage.findFirst({
                 where: { message_id: email.messageId },
@@ -195,7 +195,7 @@ async function processReply(
             if (existingMessage) return;
         }
 
-        // 1. Find CampaignLead(s) matching this sender — any status. Replies that come
+        // 1. Find CampaignLead(s) matching this sender - any status. Replies that come
         //    in after a lead finishes its sequence (status=completed) or from leads
         //    already marked 'replied' should still surface in the Unibox and analytics.
         const matchingLeads = await prisma.campaignLead.findMany({
@@ -212,7 +212,7 @@ async function processReply(
         if (matchingLeads.length === 0) {
             // Non-campaign inbound: warmup traffic, vendor broadcasts, newsletter noise,
             // cold inbound that isn't tied to any sequence we sent. The Unibox is a
-            // campaign-conversation tool — polluting it with these creates pressure on
+            // campaign-conversation tool - polluting it with these creates pressure on
             // the user to triage emails that aren't theirs to action. Log for
             // diagnostics and skip thread creation entirely.
             logger.info(`[${LOG_TAG}] Skipping non-campaign inbound from ${senderEmail} (no matching CampaignLead)`);
@@ -222,7 +222,7 @@ async function processReply(
         for (const lead of matchingLeads) {
             const wasFirstReply = !lead.replied_at;
 
-            // 2. Update lead: replied, stop sequence (idempotent — safe to re-run).
+            // 2. Update lead: replied, stop sequence (idempotent - safe to re-run).
             //    `replied_at` is set ONCE on the first reply (gated by `lead.replied_at ||`)
             //    so it represents the first-reply timestamp; counter increments below
             //    happen on every reply message so the displayed "Replies: N" reflects
@@ -238,14 +238,14 @@ async function processReply(
 
             // 3. Increment reply counters on EVERY reply message.
             //    Counters surfaced in UI:
-            //      - Campaign.reply_count  (sequencer analytics — total reply messages)
-            //      - Lead.emails_replied   (Protection lead row — total inbound from this lead)
+            //      - Campaign.reply_count  (sequencer analytics - total reply messages)
+            //      - Lead.emails_replied   (Protection lead row - total inbound from this lead)
             //      - Mailbox.reply_count_lifetime (Protection mailbox/domain dashboards).
             //        accountId === Mailbox.id via the shadow-mailbox mapping established
             //        in mailboxProvisioningService, so we update the mailbox directly. The
             //        Domain.total_replies aggregate catches up within 60s via metricsWorker.
             //    For "reply rate" (unique repliers / sends), compute downstream from
-            //    CampaignLead.replied_at IS NOT NULL — never derive from reply_count.
+            //    CampaignLead.replied_at IS NOT NULL - never derive from reply_count.
             await prisma.campaign.update({
                 where: { id: lead.campaign_id },
                 data: { reply_count: { increment: 1 } },
@@ -310,7 +310,7 @@ async function processReply(
                     entityId: lead.campaign_id,
                     severity: 'info',
                     title: '🎉 First reply on campaign',
-                    message: `*${campaignName}* received its first reply — from \`${senderEmail}\`.`,
+                    message: `*${campaignName}* received its first reply - from \`${senderEmail}\`.`,
                 }).catch((err) => logger.warn(`[${LOG_TAG}] Slack alert failed (campaign.first_reply)`, { error: err?.message }));
             }
         }
@@ -332,7 +332,7 @@ async function createOrUpdateThread(
         // Try to find existing thread by In-Reply-To or contact email + account
         let thread = null;
 
-        // First try matching by In-Reply-To header — most reliable for threading
+        // First try matching by In-Reply-To header - most reliable for threading
         if (email.inReplyTo) {
             const referencedMessage = await prisma.emailMessage.findFirst({
                 where: { message_id: email.inReplyTo },
@@ -411,7 +411,7 @@ async function createOrUpdateThread(
         }
 
         // Run rule-based classification BEFORE the insert so the row lands
-        // already-tagged. Pure function, sub-millisecond — adding it inline is
+        // already-tagged. Pure function, sub-millisecond - adding it inline is
         // fine on the IMAP hot path.
         const quality = classifyReply({
             subject: email.subject,
@@ -445,7 +445,7 @@ async function createOrUpdateThread(
             },
         });
 
-        // Outbound webhook fan-out — fires both reply.received and lead.replied.
+        // Outbound webhook fan-out - fires both reply.received and lead.replied.
         webhookBus.emitReplyReceived(organizationId, {
             thread_id: thread.id,
             campaign_id: thread.campaign_id,
@@ -457,7 +457,7 @@ async function createOrUpdateThread(
             snippet,
         });
 
-        // Second-pass enrichment — AI re-classification, OOO date extraction,
+        // Second-pass enrichment - AI re-classification, OOO date extraction,
         // and auto-action execution. Runs detached from the main code path so
         // a slow Gemini call (or a missing API key) never blocks the worker
         // tick. Each branch logs its own failures; nothing here throws.
@@ -579,7 +579,7 @@ async function fetchRepliesFromOAuthAccount(account: {
                 hasAttachments: r.hasAttachments,
             };
 
-            // Check if this is a bounce notification (DSN/NDR) first — if so,
+            // Check if this is a bounce notification (DSN/NDR) first - if so,
             // route to Protection pipeline, don't treat as a normal reply.
             const isBounce = await tryProcessBounce(account.id, account.organization_id, email);
             if (isBounce) continue;
@@ -593,7 +593,7 @@ async function fetchRepliesFromOAuthAccount(account: {
         if (err.message?.includes('invalid_grant') || err.message?.includes('AADSTS')) {
             await prisma.connectedAccount.update({
                 where: { id: account.id },
-                data: { connection_status: 'error', last_error: 'OAuth token expired or revoked — reconnect the mailbox' },
+                data: { connection_status: 'error', last_error: 'OAuth token expired or revoked - reconnect the mailbox' },
             }).catch(() => {});
             void notifyMailboxDisconnected(account.id, 'oauth_revoked', err.message || 'invalid_grant');
         }
@@ -673,14 +673,14 @@ async function fetchRepliesFromAccount(account: {
 
                     // ── Warmup-pool isolation guard ────────────────────────
                     // Messages carrying the signed X-Superkabe-Warmup header
-                    // belong to the warmup pool — they're handled by
+                    // belong to the warmup pool - they're handled by
                     // workers/warmupRecipientWorker.ts and MUST NOT enter
                     // the unibox / reply-classification / bounce pipelines.
                     // Detection is a header substring scan against the raw
                     // source; HMAC verification happens in the warmup worker.
                     if (msg.source) {
                         const sourceStr = msg.source.toString();
-                        // Cap the search to the first 8 KB — header section
+                        // Cap the search to the first 8 KB - header section
                         // is always at the top, no need to scan body bytes.
                         const headerSection = sourceStr.slice(0, 8 * 1024);
                         if (/^x-superkabe-warmup:/im.test(headerSection)) continue;
@@ -718,7 +718,7 @@ async function fetchRepliesFromAccount(account: {
                         hasAttachments: (msg.bodyStructure?.childNodes?.length || 0) > 1,
                     };
 
-                    // Check if this is a bounce NDR first — if so, route to Protection pipeline
+                    // Check if this is a bounce NDR first - if so, route to Protection pipeline
                     const isBounce = await tryProcessBounce(account.id, account.organization_id, incoming);
                     if (!isBounce) {
                         await processReply(account.id, account.organization_id, incoming);
@@ -741,7 +741,7 @@ async function fetchRepliesFromAccount(account: {
         if (err.authenticationFailed || err.message?.includes('auth') || err.message?.includes('AUTH')) {
             await prisma.connectedAccount.update({
                 where: { id: account.id },
-                data: { connection_status: 'error', last_error: 'IMAP authentication failed — check credentials' },
+                data: { connection_status: 'error', last_error: 'IMAP authentication failed - check credentials' },
             }).catch(() => {});
             void notifyMailboxDisconnected(account.id, 'imap_auth', err.message || 'IMAP auth failed');
             logger.error(`[${LOG_TAG}] Auth failed for ${account.email}`, err);
@@ -764,7 +764,7 @@ export async function checkReplies(): Promise<void> {
     logger.info(`[${LOG_TAG}] Starting reply check`);
 
     try {
-        // Get all active connected accounts — either IMAP or OAuth
+        // Get all active connected accounts - either IMAP or OAuth
         const accounts = await prisma.connectedAccount.findMany({
             where: {
                 connection_status: 'active',
@@ -807,7 +807,7 @@ export async function checkReplies(): Promise<void> {
                     // Route priority must mirror emailSendAdapters: prefer IMAP
                     // when SMTP/IMAP credentials are present, fall back to API
                     // for legacy OAuth-only accounts. Mailbox resellers (Zapmail
-                    // etc.) populate smtp_password via bulk import — those
+                    // etc.) populate smtp_password via bulk import - those
                     // accounts may also have access_token from a stale OAuth
                     // flow but should NEVER route to the API path because the
                     // new OAuth scopes (openid+email+profile only) lack the
@@ -865,7 +865,7 @@ export function scheduleImapPolling(): NodeJS.Timeout {
 }
 
 /**
- * Reply enrichment — runs detached from the IMAP hot path.
+ * Reply enrichment - runs detached from the IMAP hot path.
  *
  *   1. If rule output is unclassified/low, ask Gemini Flash for a
  *      second opinion. Update the EmailMessage row with the AI verdict.
@@ -906,7 +906,7 @@ async function processReplyEnrichment(input: {
             ruleConfidence: rulePass.confidence,
         });
         if (ai) {
-            // Trust the AI verdict — that's the whole point of escalation —
+            // Trust the AI verdict - that's the whole point of escalation -
             // but keep the original rule signals on the row so we never
             // lose the audit trail. The 'ai_reclassified' marker signals to
             // analytics that this row was second-passed.
@@ -934,7 +934,7 @@ async function processReplyEnrichment(input: {
         }
     }
 
-    // 2. OOO date extraction — only when the final class is 'auto'.
+    // 2. OOO date extraction - only when the final class is 'auto'.
     if (finalClass === 'auto' && input.campaignId) {
         const oooDate = await extractOooDate({ subject: input.subject, body: input.bodyText || input.bodyHtml });
         if (oooDate) {

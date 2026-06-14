@@ -54,7 +54,7 @@ async function processJob(jobId: string): Promise<void> {
     }
 
     const factory = getLeadSourceFactory(connRow.provider as LeadSourceProvider);
-    if (!factory) return; // wrong process — skip
+    if (!factory) return; // wrong process - skip
 
     const decrypted = await getLeadSourceConnection(connRow.id, connRow.organization_id);
     if (!decrypted) {
@@ -278,7 +278,7 @@ async function finalize(
         data: { last_used_at: new Date() },
     });
 
-    // Import-complete email — fire-and-forget. Idempotent on jobId so a
+    // Import-complete email - fire-and-forget. Idempotent on jobId so a
     // duplicate finalize call can't double-send.
     if (job) {
         try {

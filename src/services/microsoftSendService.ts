@@ -12,7 +12,7 @@ import crypto from 'crypto';
 import { logger } from './observabilityService';
 import { getPublicBackendUrl } from '../utils/publicBackendUrl';
 
-// Scopes for Microsoft OAuth — DELIBERATELY MINIMAL.
+// Scopes for Microsoft OAuth - DELIBERATELY MINIMAL.
 //
 // We previously requested Mail.Send + Mail.Read for Graph-API-based
 // sending and reply detection. Symmetric to the Gmail decision: we now
@@ -25,7 +25,7 @@ import { getPublicBackendUrl } from '../utils/publicBackendUrl';
 // of these require admin consent or the Microsoft App Compliance Program.
 //
 // The legacy Graph code paths in THIS FILE (sendEmailViaGraph,
-// fetchMicrosoftReplies) are kept intact — pre-existing OAuth-connected
+// fetchMicrosoftReplies) are kept intact - pre-existing OAuth-connected
 // users already granted Mail.Send/Mail.Read and keep working until they
 // re-import via SMTP.
 const SCOPES = [
@@ -78,7 +78,7 @@ export async function getMicrosoftAuthorizationUrl(orgId: string, loginHint?: st
         redirectUri: getRedirectUri(),
         state,
         // When a login_hint is supplied (Zapmail bulk-import flow) we skip the
-        // account picker — Azure jumps straight to the "Allow" screen for that
+        // account picker - Azure jumps straight to the "Allow" screen for that
         // mailbox. Without a hint, fall back to select_account.
         prompt: loginHint ? 'login' : 'select_account',
         ...(loginHint ? { loginHint } : {}),
@@ -217,7 +217,7 @@ export async function sendEmailViaGraph(
     options?: {
         inReplyTo?: string | null;
         references?: string | null;
-        /** RFC 2369 + RFC 8058 unsubscribe URL — populates List-Unsubscribe headers
+        /** RFC 2369 + RFC 8058 unsubscribe URL - populates List-Unsubscribe headers
          *  required by Gmail's bulk-sender requirements (Feb 2024). */
         unsubscribeUrl?: string | null;
     }
@@ -257,7 +257,7 @@ export async function sendEmailViaGraph(
     // names. Detect that specific failure and retry without List-Unsubscribe so
     // the email still goes out (the body footer's unsubscribe link still works).
     // Surface a logger.warn so the operator knows compliance headers are missing
-    // for that tenant — the right fix is to switch that mailbox to SMTP submission.
+    // for that tenant - the right fix is to switch that mailbox to SMTP submission.
     if (!res.ok && options?.unsubscribeUrl) {
         const errText = await res.text().catch(() => '');
         const looksLikeHeaderRejection =
@@ -271,12 +271,12 @@ export async function sendEmailViaGraph(
             if (res.ok) {
                 // The email shipped without RFC 8058 List-Unsubscribe headers.
                 // Footer link still works (visible body unsubscribe), but Gmail's
-                // one-click button won't render — non-compliant for bulk senders
+                // one-click button won't render - non-compliant for bulk senders
                 // (>5K msgs/day to Gmail per Feb 2024 requirements). Surface this
                 // at error level so operators see it in alerts, and tag it so
                 // monitoring can fire on accumulation.
                 logger.error(
-                    `[MS-GRAPH] COMPLIANCE: tenant stripped List-Unsubscribe headers — sent without RFC 8058 one-click. Switch mailbox ${accessToken ? '(token present)' : ''} to SMTP submission for Gmail bulk-sender compliance.`,
+                    `[MS-GRAPH] COMPLIANCE: tenant stripped List-Unsubscribe headers - sent without RFC 8058 one-click. Switch mailbox ${accessToken ? '(token present)' : ''} to SMTP submission for Gmail bulk-sender compliance.`,
                     undefined,
                     {
                         compliance_drop: 'list_unsubscribe_headers',

@@ -50,7 +50,7 @@ router.post('/change-plan', validateBody(changePlanSchema), billingController.ch
 /**
  * POST /api/billing/cancel
  * Cancel current subscription. Requires explicit data-retention consent
- * (GDPR/DPDP) — body must include `data_retention: 'keep' | 'delete'`.
+ * (GDPR/DPDP) - body must include `data_retention: 'keep' | 'delete'`.
  */
 router.post('/cancel', validateBody(cancelSubscriptionSchema), billingController.cancelSubscription);
 

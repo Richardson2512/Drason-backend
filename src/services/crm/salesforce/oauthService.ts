@@ -10,8 +10,8 @@
  * Required env vars:
  *   SALESFORCE_CLIENT_ID
  *   SALESFORCE_CLIENT_SECRET
- *   SALESFORCE_REDIRECT_URI    — must match the Connected App's callback
- *   JWT_SECRET                  — reused for state signing
+ *   SALESFORCE_REDIRECT_URI    - must match the Connected App's callback
+ *   JWT_SECRET                  - reused for state signing
  */
 
 import jwt from 'jsonwebtoken';

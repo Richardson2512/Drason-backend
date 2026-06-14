@@ -2,9 +2,9 @@
  * Consent Controller
  *
  * Public + authenticated endpoints for consent operations beyond the auth flow:
- *   POST /api/consent/cookies   — anonymous-friendly cookie banner submission
- *   GET  /api/consent/mine      — list of authenticated user's consent records
- *   POST /api/consent/withdraw  — withdraw a revocable consent (cookies, marketing, OAuth, import-key)
+ *   POST /api/consent/cookies   - anonymous-friendly cookie banner submission
+ *   GET  /api/consent/mine      - list of authenticated user's consent records
+ *   POST /api/consent/withdraw  - withdraw a revocable consent (cookies, marketing, OAuth, import-key)
  */
 
 import type { Request, Response } from 'express';
@@ -18,7 +18,7 @@ import {
 import { COOKIE_POLICY_VERSION } from '../constants/legalDocVersions';
 
 /**
- * Cookie banner submission — works without authentication so visitors browsing
+ * Cookie banner submission - works without authentication so visitors browsing
  * the marketing site can record analytics-cookie preference before signing up.
  * If the user is later authenticated and we have their userId in orgContext,
  * the consent row gets attached to them.
@@ -80,7 +80,7 @@ export const recordCookieConsent = async (req: Request, res: Response): Promise<
 };
 
 /**
- * GET /api/consent/mine — authenticated user's full consent history (DSAR audit).
+ * GET /api/consent/mine - authenticated user's full consent history (DSAR audit).
  */
 export const listMyConsents = async (req: Request, res: Response): Promise<void> => {
     try {
@@ -98,7 +98,7 @@ export const listMyConsents = async (req: Request, res: Response): Promise<void>
 };
 
 /**
- * POST /api/consent/withdraw — withdraw a previously-granted revocable consent.
+ * POST /api/consent/withdraw - withdraw a previously-granted revocable consent.
  * Body: { consentId, reason? }
  *
  * Only revocable types may be withdrawn; ToS / Privacy acceptance is not

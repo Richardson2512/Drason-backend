@@ -2,14 +2,14 @@
  * Per-Lead AI Enrichment Service
  *
  * Mirrors aiCopywritingService but operates on a single Lead instead of
- * the org's BusinessProfile. The output is a LeadProfileV1 — a subset of
+ * the org's BusinessProfile. The output is a LeadProfileV1 - a subset of
  * BusinessProfileV1 focused on the recipient's *company* (not the
  * recipient personally; LinkedIn personal profiles are blocked by Jina).
  *
  * Source URL preference order:
- *   1. Lead.company_linkedin_url   — richest signal that Jina can reach
- *   2. Lead.website                — fallback if no LinkedIn company page
- *   3. (skip)                      — leave LeadProfile in 'skipped' state
+ *   1. Lead.company_linkedin_url   - richest signal that Jina can reach
+ *   2. Lead.website                - fallback if no LinkedIn company page
+ *   3. (skip)                      - leave LeadProfile in 'skipped' state
  *
  * The cached profile is spliced into the email-generation prompt as
  * "RECIPIENT CONTEXT" so the same template emits per-lead-personalized
@@ -22,7 +22,7 @@ import { scrapeUrl } from './aiCopywritingService';
 import { safeCompletion } from './openaiClient';
 
 // ────────────────────────────────────────────────────────────────────
-// Types — LeadProfileV1: the recipient-side analog of BusinessProfileV1
+// Types - LeadProfileV1: the recipient-side analog of BusinessProfileV1
 // ────────────────────────────────────────────────────────────────────
 
 export interface LeadProfileV1 {
@@ -42,7 +42,7 @@ export interface LeadProfileV1 {
      *  what the recipient's company emphasizes (e.g. "scaling outbound"
      *  → likely cares about deliverability). */
     inferred_pain_points: string[];
-    /** Distinctive vocabulary used by the recipient's brand — handy for
+    /** Distinctive vocabulary used by the recipient's brand - handy for
      *  matching their voice when writing copy. */
     distinctive_phrases: string[];
     /** Free-form list of recent / notable signals (a launch, hiring spree,
@@ -61,22 +61,22 @@ const MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
  *  fast; the worker won't drown in re-scrapes. */
 const LEAD_PROFILE_TTL_DAYS = parseInt(process.env.LEAD_PROFILE_TTL_DAYS || '60', 10);
 /** Max chars from Jina to feed into extraction. Smaller than the org
- *  profile cap because we run this per-lead — keeping prompts short
+ *  profile cap because we run this per-lead - keeping prompts short
  *  matters more here for cost. */
 const LEAD_MAX_SCRAPE_CHARS = 60_000;
 
-// OpenAI calls go through openaiClient.safeCompletion — that helper owns
+// OpenAI calls go through openaiClient.safeCompletion - that helper owns
 // retry/backoff and the in-process concurrency semaphore for the whole
 // process, so this service stays free of client plumbing.
 
 // ────────────────────────────────────────────────────────────────────
-// URL selection — pick the best source we have for a Lead
+// URL selection - pick the best source we have for a Lead
 // ────────────────────────────────────────────────────────────────────
 
 export type LeadSourceKind = 'linkedin_company' | 'website';
 
 /** Decide which URL to enrich from. Returns null when the lead has no
- *  reachable source — caller marks the row as 'skipped'. */
+ *  reachable source - caller marks the row as 'skipped'. */
 export function pickEnrichmentSource(lead: {
     company_linkedin_url?: string | null;
     website?: string | null;
@@ -93,7 +93,7 @@ export function pickEnrichmentSource(lead: {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Extraction prompt — produces LeadProfileV1
+// Extraction prompt - produces LeadProfileV1
 // ────────────────────────────────────────────────────────────────────
 
 const LEAD_PROFILE_SYSTEM_PROMPT = `You are a business analyst extracting a structured profile of a SALES PROSPECT'S company from a public web page (their LinkedIn company page or homepage).
@@ -109,7 +109,7 @@ Produce a JSON object that conforms exactly to LeadProfileV1:
 Rules:
 - Prefer specificity over vagueness. "Series-A B2B fintech" > "tech company".
 - NEVER invent facts. If you cannot find evidence on the page, leave the field blank or use an empty array.
-- Pain points are INFERRED from the company's stated focus — flag them as the kind of problem this company would care about, not problems you assume because of their industry.
+- Pain points are INFERRED from the company's stated focus - flag them as the kind of problem this company would care about, not problems you assume because of their industry.
 - Output MUST be valid JSON matching the schema exactly.`;
 
 async function extractLeadProfile(
@@ -164,12 +164,12 @@ export interface EnrichmentRunResult {
  * End-to-end enrichment for one lead. Caches the result on `LeadProfile`.
  *
  * - Picks the best source URL (LinkedIn company > website).
- * - Marks 'skipped' if no source exists — caller should not retry until
+ * - Marks 'skipped' if no source exists - caller should not retry until
  *   the lead's company_linkedin_url / website is updated.
  * - On scrape / extract failure, stores 'failed' with last_error so the
  *   operator can see what went wrong from the dashboard.
  *
- * Idempotent — calling it on a 'ready' row re-runs and overwrites if
+ * Idempotent - calling it on a 'ready' row re-runs and overwrites if
  * called explicitly. The worker uses TTL to decide when to re-run.
  */
 export async function enrichLead(leadId: string): Promise<EnrichmentRunResult> {
@@ -227,7 +227,7 @@ export async function enrichLead(leadId: string): Promise<EnrichmentRunResult> {
 
     try {
         const scraped = await scrapeUrl(source.url);
-        // Cap separately from org profile — per-lead prompts stay tight.
+        // Cap separately from org profile - per-lead prompts stay tight.
         const trimmed = scraped.markdown.length > LEAD_MAX_SCRAPE_CHARS
             ? scraped.markdown.slice(0, LEAD_MAX_SCRAPE_CHARS)
             : scraped.markdown;

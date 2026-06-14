@@ -40,7 +40,7 @@ export const acknowledgeTransition = async (req: Request, res: Response): Promis
         if (!acknowledged) {
             res.status(400).json({
                 success: false,
-                error: 'No acknowledgment needed — either score is above threshold or already acknowledged'
+                error: 'No acknowledgment needed - either score is above threshold or already acknowledged'
             });
             return;
         }
@@ -76,7 +76,7 @@ export const clearManualIntervention = async (req: Request, res: Response): Prom
             return;
         }
         if (!note || typeof note !== 'string' || note.trim().length < 5) {
-            res.status(400).json({ success: false, error: 'note is required (min 5 chars) — explain what was reviewed and resolved' });
+            res.status(400).json({ success: false, error: 'note is required (min 5 chars) - explain what was reviewed and resolved' });
             return;
         }
 

@@ -207,7 +207,7 @@ async function runUpgradeCycle(): Promise<{ processed: number; upgraded: number 
  * Downgrades to YELLOW only if (a) score drops ≥HEALTH_DOWNGRADE_MIN_DROP AND
  * (b) lead is NOT in an active campaign sequence (status != 'active').
  *
- * Industry alignment: M3AAWG BCP §3.4 — bi-directional hygiene; quarterly
+ * Industry alignment: M3AAWG BCP §3.4 - bi-directional hygiene; quarterly
  * full re-verification with conservative thresholds to avoid disrupting
  * in-flight sequences.
  */

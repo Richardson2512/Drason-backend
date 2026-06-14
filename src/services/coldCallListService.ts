@@ -4,16 +4,16 @@
  * Surfaces high-intent prospects for SDR outreach. Two modes share a single
  * scoring engine:
  *
- *   1. Daily System List — cron-generated at 06:00 workspace-local time with
+ *   1. Daily System List - cron-generated at 06:00 workspace-local time with
  *      hard-coded rules. Top 100, fresh-list rotation via 5-day exclusion.
- *   2. Custom List       — workspace-configured rules generated on demand,
+ *   2. Custom List       - workspace-configured rules generated on demand,
  *      capped by the user's max_list_size (default 200, range 10–1000).
  *
- * Driven by EmailOpenEvent / EmailClickEvent — opens and clicks captured by
+ * Driven by EmailOpenEvent / EmailClickEvent - opens and clicks captured by
  * the native sequencer's tracking pixel + click handler.
  *
  * Scoring weights live in a single place (computeScore) so both list types
- * stay consistent. The list-generation pipeline is also shared — only the
+ * stay consistent. The list-generation pipeline is also shared - only the
  * filter rules differ between system + custom.
  */
 
@@ -27,7 +27,7 @@ export interface ListRules {
     timeWindowDays: number;
     /**
      * When true, a candidate must have BOTH (opens ≥ minOpens) AND (clicks ≥ 1)
-     * to qualify. Strict mode — used when the operator wants only clear
+     * to qualify. Strict mode - used when the operator wants only clear
      * commercial-intent prospects.
      */
     requireClick: boolean;
@@ -157,7 +157,7 @@ export function computeScore(opens: OpenSignal[], clicks: ClickSignal[]): number
     }
 
     // ── Clicks ─────────────────────────────────────────────────────────────
-    // Same 5s dedup as opens — kills link-preview re-fetches that would
+    // Same 5s dedup as opens - kills link-preview re-fetches that would
     // otherwise flood the score on a single human click.
     const sortedClicks = [...clicks].sort((a, b) => a.clicked_at.getTime() - b.clicked_at.getTime());
     const dedupedClicks: ClickSignal[] = [];
@@ -211,7 +211,7 @@ interface AggregateRow {
 export async function generateProspectList(ctx: ScoringContext): Promise<ProspectRow[]> {
     const { organizationId, rules, excludeCampaignLeadIds } = ctx;
     const windowStart = new Date(Date.now() - rules.timeWindowDays * 86_400_000);
-    // Click window matches spec: "1 link click in last 14 days" — but only
+    // Click window matches spec: "1 link click in last 14 days" - but only
     // when the user *narrowed* their open window. We use max(timeWindow, 14)
     // so the system list's 7d open window doesn't accidentally hide a click
     // from day 8–14 that should still qualify.
@@ -233,7 +233,7 @@ export async function generateProspectList(ctx: ScoringContext): Promise<Prospec
     const campaignNameById = new Map(activeCampaigns.map((c) => [c.id, c.name]));
 
     // Step 2: pull all open + click events in window for those campaigns.
-    // We pull broad and aggregate in JS — postgres GROUP BY would force us
+    // We pull broad and aggregate in JS - postgres GROUP BY would force us
     // to drop per-event timestamps needed for MPP filtering and 1h bonus.
     const [opens, clicks] = await Promise.all([
         prisma.emailOpenEvent.findMany({
@@ -321,7 +321,7 @@ export async function generateProspectList(ctx: ScoringContext): Promise<Prospec
     for (const row of aggregates) {
         if (excludeCampaignLeadIds.has(row.campaign_lead_id)) continue;
 
-        // Suppression — locked on, both lists.
+        // Suppression - locked on, both lists.
         if (row.bounced_at !== null) continue;
         if (row.unsubscribed_at !== null) continue;
         if (row.status === 'bounced' || row.status === 'unsubscribed') continue;
@@ -331,7 +331,7 @@ export async function generateProspectList(ctx: ScoringContext): Promise<Prospec
         const oList = opensByLead.get(row.campaign_lead_id) ?? [];
         const cList = clicksByLead.get(row.campaign_lead_id) ?? [];
 
-        // Qualification — three distinct modes driven by explicit ListRules
+        // Qualification - three distinct modes driven by explicit ListRules
         // flags so system + custom can never accidentally diverge:
         //
         //   requireClick=true                → opens ≥ minOpens AND clicks ≥ 1
@@ -340,7 +340,7 @@ export async function generateProspectList(ctx: ScoringContext): Promise<Prospec
         //   requireClick=false,
         //     clickAloneQualifies=false      → opens ≥ minOpens                  (strict custom)
         //
-        // Open count is pre-MPP-filter — MPP is a *scoring* discount, not a
+        // Open count is pre-MPP-filter - MPP is a *scoring* discount, not a
         // qualification cut, so a prospect who opened 5× via Apple Mail still
         // qualifies; their score will simply be lower than a non-MPP opener.
         const opensInWindow = oList.length;
@@ -381,7 +381,7 @@ export async function generateProspectList(ctx: ScoringContext): Promise<Prospec
     const cappedCampaignLeadIds = capped.map((x) => x.row.campaign_lead_id);
     const cappedEmails = Array.from(new Set(capped.map((x) => x.row.email)));
 
-    // Subjects sent so far — last 5 unique step subjects per CampaignLead.
+    // Subjects sent so far - last 5 unique step subjects per CampaignLead.
     const sendsForSubjects = await prisma.sendEvent.findMany({
         where: {
             organization_id: organizationId,
@@ -471,12 +471,12 @@ function describeReason(
     const ageHours = lastSignal ? Math.round((Date.now() - lastSignal.getTime()) / 3_600_000) : null;
     const ageStr = ageHours === null ? '' : ageHours < 48 ? `${ageHours}h` : `${Math.round(ageHours / 24)}d`;
     if (clicks > 0 && opens > 0) {
-        return `Opened ${opens}× and clicked ${clicks}× — last activity ${ageStr} ago`;
+        return `Opened ${opens}× and clicked ${clicks}× - last activity ${ageStr} ago`;
     }
     if (clicks > 0) {
-        return `Clicked ${clicks} link${clicks === 1 ? '' : 's'} — last click ${ageStr} ago`;
+        return `Clicked ${clicks} link${clicks === 1 ? '' : 's'} - last click ${ageStr} ago`;
     }
-    return `Opened ${opens} time${opens === 1 ? '' : 's'} — last open ${ageStr} ago`;
+    return `Opened ${opens} time${opens === 1 ? '' : 's'} - last open ${ageStr} ago`;
 }
 
 // ─── Rotation exclusion (with hot-prospect override) ────────────────────────
@@ -487,7 +487,7 @@ function describeReason(
  * Plain rotation says: "if a prospect was on a list within the last N days,
  * skip them today." That's good for cold prospects we don't want to hammer.
  * But for prospects who took a NEW high-intent action (a click) AFTER their
- * last appearance, the SDR almost certainly wants to see them again — they
+ * last appearance, the SDR almost certainly wants to see them again - they
  * just signaled fresh intent.
  *
  * Algorithm:
@@ -497,7 +497,7 @@ function describeReason(
  *   3. If a prospect has any click strictly AFTER their last inclusion time,
  *      release them from the exclusion set.
  *
- * Opens are intentionally NOT a release signal — they're trivially trippable
+ * Opens are intentionally NOT a release signal - they're trivially trippable
  * by MPP/scanners and re-pitching on re-opens alone would dilute SDR focus.
  */
 async function buildRotationExclusion(
@@ -587,7 +587,7 @@ export async function buildCustomRotationExclusion(
 
 /**
  * Resolve workspace timezone with UTC fallback. SequencerSettings is the
- * source of truth — falls back to UTC when the org has never opened the
+ * source of truth - falls back to UTC when the org has never opened the
  * Sequencer settings page.
  */
 export async function getWorkspaceTimezone(organizationId: string): Promise<string> {
@@ -600,7 +600,7 @@ export async function getWorkspaceTimezone(organizationId: string): Promise<stri
 
 /**
  * Today's date in workspace local time, as a YYYY-MM-DD string. Used to
- * key ColdCallDailySnapshot rows. Never throws on bad timezone — falls back
+ * key ColdCallDailySnapshot rows. Never throws on bad timezone - falls back
  * to UTC silently and logs a warning.
  */
 export function workspaceLocalDate(now: Date, timezone: string): Date {
@@ -637,7 +637,7 @@ export function workspaceLocalHour(now: Date, timezone: string): number {
 }
 
 /**
- * Generate today's system list snapshot for one organization. Idempotent —
+ * Generate today's system list snapshot for one organization. Idempotent -
  * does nothing if today's row already exists. Returns the persisted snapshot
  * so the caller can log status.
  */
@@ -654,7 +654,7 @@ export async function generateDailySnapshot(organizationId: string): Promise<{
     });
     if (existing) return { skipped: true, status: existing.status as 'success' | 'no_campaigns' | 'no_engagement' | 'error', prospectCount: existing.prospect_count };
 
-    // Rotation exclusion (with hot-prospect override) — any prospect on this
+    // Rotation exclusion (with hot-prospect override) - any prospect on this
     // org's last N days of snapshots is excluded UNLESS they took a fresh
     // high-intent action (click) after their most recent inclusion.
     const excluded = await buildSystemRotationExclusion(organizationId, todayLocal);
@@ -715,7 +715,7 @@ export async function generateDailySnapshot(organizationId: string): Promise<{
 /**
  * Hydrate a stored daily snapshot back into ProspectRow[] for the page.
  * Re-fetches current Lead status (replied / bounced / unsubscribed) so the
- * UI can flag prospects whose state changed AFTER the snapshot — the
+ * UI can flag prospects whose state changed AFTER the snapshot - the
  * snapshot itself is immutable.
  */
 export async function hydrateDailySnapshot(organizationId: string, snapshotDate: Date): Promise<{

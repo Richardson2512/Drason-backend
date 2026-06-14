@@ -1,7 +1,7 @@
 /**
  * Instantly one-time-import controller.
  *
- * Same shape and feature-flag wiring as the Smartlead controller — both flows
+ * Same shape and feature-flag wiring as the Smartlead controller - both flows
  * gate on MIGRATION_TOOL_ENABLED so they roll out together. Per-platform
  * specifics:
  *   • Key validation calls `GET /api/v2/workspaces/current` (Instantly's
@@ -55,7 +55,7 @@ export const keyStatus = async (req: Request, res: Response): Promise<void> => {
     try {
         const orgId = getOrgId(req);
         const status = await importJob.getKeyStatus(orgId);
-        // Only surface as "connected" if the key on file is FOR Instantly —
+        // Only surface as "connected" if the key on file is FOR Instantly -
         // a Smartlead key in the same column shouldn't make this wizard
         // think it has a key.
         const isOurs = status.connected && status.platform === 'instantly';
@@ -87,7 +87,7 @@ const probeKey = async (apiKey: string): Promise<{ ok: true; workspaceId: string
         if (err instanceof InstantlyPaymentRequiredError) {
             return { ok: false, status: 402, error: err.message };
         }
-        // Network / 5xx — distinguish from auth so the wizard can render
+        // Network / 5xx - distinguish from auth so the wizard can render
         // "Instantly is unreachable, retry" instead of "your key is bad".
         throw err;
     }
@@ -111,7 +111,7 @@ export const validateKey = async (req: Request, res: Response): Promise<void> =>
         logger.error('[MIGRATION-INSTANTLY] validateKey infra error', err);
         res.status(503).json({
             success: false,
-            error: 'Could not reach Instantly — try again in a few minutes',
+            error: 'Could not reach Instantly - try again in a few minutes',
         });
     }
 };
@@ -133,7 +133,7 @@ export const storeKey = async (req: Request, res: Response): Promise<void> => {
     }
     try {
         const orgId = getOrgId(req);
-        // Re-probe before persisting — never store a bad key.
+        // Re-probe before persisting - never store a bad key.
         const probe = await probeKey(apiKey);
         if (!probe.ok) {
             res.status(probe.status).json({ success: false, error: probe.error });
@@ -176,7 +176,7 @@ export const storeKey = async (req: Request, res: Response): Promise<void> => {
             });
         } catch (consentErr) {
             logger.error(
-                '[MIGRATION-INSTANTLY] import-key consent record failed — manual remediation required',
+                '[MIGRATION-INSTANTLY] import-key consent record failed - manual remediation required',
                 consentErr instanceof Error ? consentErr : new Error(String(consentErr)),
                 { orgId },
             );
@@ -241,7 +241,7 @@ export const start = async (req: Request, res: Response): Promise<void> => {
             rawMode === 'aggressive' ? 'aggressive' : 'conservative';
         const includeRecentContacts = !!req.body?.includeRecentContacts && mode === 'aggressive';
 
-        // Concurrent-import guard — return the in-flight job rather than
+        // Concurrent-import guard - return the in-flight job rather than
         // starting a parallel one for the same org.
         const latest = await importJob.getLatestImportJob(orgId);
         if (latest && (latest.status === 'pending' || latest.status === 'running' || latest.status === 'paused_source')) {
@@ -271,7 +271,7 @@ export const status = async (req: Request, res: Response): Promise<void> => {
     try {
         const orgId = getOrgId(req);
         const latest = await importJob.getLatestImportJob(orgId);
-        // Only show Instantly jobs through this controller — running a Smartlead
+        // Only show Instantly jobs through this controller - running a Smartlead
         // job shouldn't surface here as if it were ours.
         const job = latest && latest.platform === 'instantly' ? latest : null;
         res.json({ success: true, job });

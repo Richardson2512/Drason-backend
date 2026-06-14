@@ -1,7 +1,7 @@
 /**
  * Backfill sending IPs for every existing mailbox.
  *
- * Idempotent — re-running re-resolves rows whose TTL has expired and skips
+ * Idempotent - re-running re-resolves rows whose TTL has expired and skips
  * fresh ones. Use --force to override the TTL and re-resolve everything.
  *
  * Usage:
@@ -21,7 +21,7 @@ async function main() {
     const orgId = orgFlag ? orgFlag.slice(6) : null;
     const force = args.includes('--force');
 
-    console.log('Mailbox IP backfill —', JSON.stringify({ orgId, force }, null, 2));
+    console.log('Mailbox IP backfill -', JSON.stringify({ orgId, force }, null, 2));
 
     const where: any = {};
     if (orgId) where.organization_id = orgId;

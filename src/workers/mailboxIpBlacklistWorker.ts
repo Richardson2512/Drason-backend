@@ -5,7 +5,7 @@
  * DNSBL lists the domain assessor uses. Stores summary on Mailbox so the
  * UI can show "this mailbox's IP is listed on N critical blacklists."
  *
- * Cadence: every 6 hours (matches espPerformanceWorker — same workload
+ * Cadence: every 6 hours (matches espPerformanceWorker - same workload
  * shape, both heavy + non-urgent).
  *
  * Skip rules:
@@ -14,7 +14,7 @@
  *   - last_ip_blacklist_check within last 5h → skip (cadence guard so two
  *     boots in a row don't burn lookups)
  *
- * DNSBL coverage is comprehensive at every tier — protection is a flat
+ * DNSBL coverage is comprehensive at every tier - protection is a flat
  * capability, not a metered one.
  */
 
@@ -25,7 +25,7 @@ import { pauseMailbox } from '../services/monitoringService';
 
 const LOG_TAG = 'MAILBOX_IP_BL';
 const RUN_INTERVAL_MS = 6 * 60 * 60 * 1000;     // 6 hours
-const MIN_GAP_BETWEEN_CHECKS_MS = 5 * 60 * 60 * 1000; // 5h — guards against double-runs
+const MIN_GAP_BETWEEN_CHECKS_MS = 5 * 60 * 60 * 1000; // 5h - guards against double-runs
 
 let interval: NodeJS.Timeout | null = null;
 
@@ -45,7 +45,7 @@ export function stopMailboxIpBlacklist(): void {
 }
 
 /**
- * One full pass — pulls eligible mailboxes per-org, runs DNSBL checks, writes
+ * One full pass - pulls eligible mailboxes per-org, runs DNSBL checks, writes
  * results back. Exposed publicly so an admin endpoint or a test can trigger
  * an immediate run without waiting for the timer.
  */
@@ -93,7 +93,7 @@ export async function runOnce(): Promise<{ checked: number; listed: number; skip
                 const result = await dnsbl.checkIpBlacklists(mb.sending_ip, mb.id, lists);
 
                 // Reshape summary into the columns we store on Mailbox. The
-                // dnsblService summary already aggregates by tier — we keep
+                // dnsblService summary already aggregates by tier - we keep
                 // the same shape for parity with Domain.blacklist_results so
                 // a single UI component can render either.
                 const summary = result.summary as Record<string, any>;
@@ -134,7 +134,7 @@ export async function runOnce(): Promise<{ checked: number; listed: number; skip
                 // Idempotency: don't re-pause an already-paused mailbox. The
                 // state machine would reject the transition anyway, but
                 // pauseMailbox runs correlation queries + Slack alert before
-                // hitting the rejection — wasted DB work + duplicate notifs.
+                // hitting the rejection - wasted DB work + duplicate notifs.
                 const policy = dnsbl.isBlockingBlacklisted(result.results, lists);
                 if (policy.shouldPause && mb.status !== 'paused') {
                     try {

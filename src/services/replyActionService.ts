@@ -1,19 +1,19 @@
 /**
- * Reply action executor — applies per-org auto-actions configured against
+ * Reply action executor - applies per-org auto-actions configured against
  * reply quality classes.
  *
  * Inputs: the classified reply (final class after AI re-classification) +
  * thread context (org, lead, campaign).
  *
- * Outputs: side effects only — logs each action taken so the operator can
- * audit later. Never throws on individual action failure — one broken
+ * Outputs: side effects only - logs each action taken so the operator can
+ * audit later. Never throws on individual action failure - one broken
  * action shouldn't block the rest of the IMAP worker's processing.
  *
  * Action kinds:
- *   'suppress'   — add to OrgReplySuppression. Future campaign creates +
+ *   'suppress'   - add to OrgReplySuppression. Future campaign creates +
  *                  addLeads consult this list and drop matching emails.
- *   'pause_lead' — set CampaignLead.status='paused', clear next_send_at.
- *   'alert'      — create a Notification row for the org owner.
+ *   'pause_lead' - set CampaignLead.status='paused', clear next_send_at.
+ *   'alert'      - create a Notification row for the org owner.
  */
 
 import { prisma } from '../index';
@@ -26,7 +26,7 @@ export interface ReplyActionContext {
     /** Resolved final class (post-AI). 'unclassified' is allowed but no
      *  action will match it by default. */
     replyClass: string;
-    /** Optional — when present we'll also pause the lead in this campaign. */
+    /** Optional - when present we'll also pause the lead in this campaign. */
     campaignId?: string | null;
 }
 
@@ -41,11 +41,11 @@ const DEFAULT_RULES: Array<{ reply_class: string; action_kind: string; enabled: 
     { reply_class: 'positive', action_kind: 'alert', enabled: true },
     { reply_class: 'qualified', action_kind: 'alert', enabled: true },
     // 'auto' (OOO) is handled separately via CampaignLead.ooo_until in the
-    // dispatcher — not via this auto-action path. We deliberately leave
+    // dispatcher - not via this auto-action path. We deliberately leave
     // it off the defaults here to avoid double-pausing.
 ];
 
-/** Ensure default rules exist for an org. Idempotent — uses createMany
+/** Ensure default rules exist for an org. Idempotent - uses createMany
  *  with skipDuplicates so re-running just no-ops. */
 async function ensureDefaultRules(organizationId: string): Promise<void> {
     const existing = await prisma.replyActionConfig.count({
@@ -192,7 +192,7 @@ export async function isOrgSuppressed(organizationId: string, email: string): Pr
     return Boolean(row);
 }
 
-/** Bulk variant — used by lead-import flows. */
+/** Bulk variant - used by lead-import flows. */
 export async function getSuppressedEmailSet(organizationId: string, emails: string[]): Promise<Set<string>> {
     if (emails.length === 0) return new Set();
     const lower = Array.from(new Set(emails.map(e => e.trim().toLowerCase()).filter(Boolean)));

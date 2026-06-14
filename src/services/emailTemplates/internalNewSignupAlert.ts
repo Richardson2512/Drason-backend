@@ -1,5 +1,5 @@
 /**
- * Internal new-signup alert — fires to the Superkabe team every time a new
+ * Internal new-signup alert - fires to the Superkabe team every time a new
  * user finishes registration. NOT user-facing. Used to track signup volume
  * in real time without polling the dashboard / DB.
  *
@@ -13,13 +13,13 @@ import { renderEmailTemplate, renderEmailPlainText, type RenderEmailParams } fro
 import type { RenderedEmail } from './dispatcher';
 
 export interface InternalNewSignupAlertParams {
-    /** New user's email — primary identifier in the alert. */
+    /** New user's email - primary identifier in the alert. */
     userEmail: string;
     /** Display name from registration. May be null/empty. */
     userName: string | null;
     /** Organization name created or joined. */
     organizationName: string | null;
-    /** Which signup flow fired this — useful for spotting trends. */
+    /** Which signup flow fired this - useful for spotting trends. */
     signupSource: 'email_password' | 'google_workspace' | 'google_gmail';
     /** Plan selected at signup, if any (e.g. "starter", "pro"). */
     plan?: string | null;
@@ -36,13 +36,13 @@ const SOURCE_LABEL: Record<InternalNewSignupAlertParams['signupSource'], string>
 };
 
 export function internalNewSignupAlert(params: InternalNewSignupAlertParams): RenderedEmail {
-    const subject = `New signup — ${params.userEmail}`;
+    const subject = `New signup - ${params.userEmail}`;
     const preheader = `${params.userName || params.userEmail} just signed up via ${SOURCE_LABEL[params.signupSource]}.`;
 
     const rows: Array<[string, string]> = [
         ['Email', params.userEmail],
-        ['Name', params.userName || '—'],
-        ['Organization', params.organizationName || '—'],
+        ['Name', params.userName || '-'],
+        ['Organization', params.organizationName || '-'],
         ['Source', SOURCE_LABEL[params.signupSource]],
     ];
     if (params.plan) rows.push(['Plan', params.plan]);

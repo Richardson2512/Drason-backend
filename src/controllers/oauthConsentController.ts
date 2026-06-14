@@ -17,14 +17,14 @@ import { recordConsentFromRequest } from '../services/consentService';
 /**
  * Pull the org slug out of an RFC 8707 resource URL like
  * `https://api.superkabe.com/mcp/<slug>`. Returns null for the bare
- * `/mcp` URL (back-compat — no per-org binding requested) or anything
+ * `/mcp` URL (back-compat - no per-org binding requested) or anything
  * that doesn't match the expected shape.
  */
 function extractOrgSlugFromResource(resource: string | undefined): string | null {
     if (!resource) return null;
     try {
         const u = new URL(resource);
-        // Match /mcp/<slug> only — bare /mcp returns null.
+        // Match /mcp/<slug> only - bare /mcp returns null.
         const m = u.pathname.match(/^\/mcp\/([^\/]+)$/);
         return m ? m[1] : null;
     } catch {
@@ -122,7 +122,7 @@ export async function approveConsent(req: Request, res: Response): Promise<Respo
     // Per-org URL flow: if the resource pinned a specific org, verify the
     // signed-in user actually belongs to it. Without this check, a user
     // logged into Org A could approve a Claude.ai connector pointed at
-    // `/mcp/org-b` and the resulting token would still bind to Org A —
+    // `/mcp/org-b` and the resulting token would still bind to Org A -
     // the URL would lie about which org Claude is talking to. Reject with
     // a message that tells them what to do (log into the right account).
     const targetSlug = extractOrgSlugFromResource(payload.resource);
@@ -138,7 +138,7 @@ export async function approveConsent(req: Request, res: Response): Promise<Respo
             });
         }
         if (targetOrg.id !== orgId) {
-            logger.warn('[OAUTH] Consent denied — signed-in org does not match resource slug', {
+            logger.warn('[OAUTH] Consent denied - signed-in org does not match resource slug', {
                 userId,
                 signedInOrgId: orgId,
                 targetSlug,
@@ -164,14 +164,14 @@ export async function approveConsent(req: Request, res: Response): Promise<Respo
     });
 
     // Record an audit-grade consent row. MCP OAuth grants give third-party
-    // AI clients (Claude.ai, etc.) ongoing access to the user's data — that's
+    // AI clients (Claude.ai, etc.) ongoing access to the user's data - that's
     // a substantial privacy decision and needs a Consent row alongside the
     // OAuthAccessToken/AuthorizationCode. The token's revocation lifecycle
     // is functional state; this Consent record is the legal artifact saying
     // "user X authorized client Y for scopes Z on date D from IP/UA".
     // Snapshotted email/name + IP/UA come from the request via
     // recordConsentFromRequest so the row stays valid even if the user is
-    // erased later. Best-effort — failure must not break the OAuth flow.
+    // erased later. Best-effort - failure must not break the OAuth flow.
     try {
         const userRow = await prisma.user.findUnique({
             where: { id: userId },
@@ -183,7 +183,7 @@ export async function approveConsent(req: Request, res: Response): Promise<Respo
         });
         await recordConsentFromRequest(req, {
             consentType: 'mcp_oauth_grant',
-            // Canonical scope-string is the "version" of what was granted —
+            // Canonical scope-string is the "version" of what was granted -
             // a re-authorization with different scopes produces a distinct
             // Consent row, which is exactly what we want.
             documentVersion: payload.scopes.slice().sort().join(' '),
@@ -202,7 +202,7 @@ export async function approveConsent(req: Request, res: Response): Promise<Respo
             },
         });
     } catch (err) {
-        // Don't break the user's OAuth flow if consent recording fails —
+        // Don't break the user's OAuth flow if consent recording fails -
         // log loudly so ops can backfill if needed.
         logger.error('[OAUTH] Failed to record MCP grant consent (non-fatal)',
             err instanceof Error ? err : new Error(String(err)));

@@ -4,7 +4,7 @@
  * Phase 3 of the workspaces build: clients invited into a workspace via
  * /agency/workspaces/:id/invites get a per-membership capability list
  * (e.g. ['view_campaigns', 'view_analytics', 'reply_to_messages']). Without
- * this middleware those capabilities exist only as bookkeeping — a client
+ * this middleware those capabilities exist only as bookkeeping - a client
  * with read-only caps could still call POST /campaigns/:id/launch and the
  * route would happily run.
  *
@@ -20,7 +20,7 @@
  *
  * Performance: each gated request adds one DB read (membership). For routes
  * called many times per request this can be cached on req via a parent
- * resolver, but Phase 3 v1 keeps it simple — the existing orgContext
+ * resolver, but Phase 3 v1 keeps it simple - the existing orgContext
  * middleware already does similar lookups on every authed request.
  */
 
@@ -84,7 +84,7 @@ export function requireCapability(cap: Capability) {
             // Legacy single-tenant fallback. A user with neither account_id
             // nor scoped_organization_id pre-dates the workspaces feature
             // and was never assigned a membership. Don't retroactively
-            // 403 them — they are the seed admin of an unmigrated org.
+            // 403 them - they are the seed admin of an unmigrated org.
             if (!user.account_id && !user.scoped_organization_id) {
                 return next();
             }
@@ -98,7 +98,7 @@ export function requireCapability(cap: Capability) {
                 select: { capabilities: true },
             });
             if (!membership) {
-                logger.warn('[CAPABILITY] Denied — no active membership', { userId, orgId, cap });
+                logger.warn('[CAPABILITY] Denied - no active membership', { userId, orgId, cap });
                 res.status(403).json({
                     success: false,
                     error: 'You do not have access to this workspace',
@@ -110,7 +110,7 @@ export function requireCapability(cap: Capability) {
                 return next();
             }
 
-            logger.warn('[CAPABILITY] Denied — missing capability', { userId, orgId, cap, has: membership.capabilities });
+            logger.warn('[CAPABILITY] Denied - missing capability', { userId, orgId, cap, has: membership.capabilities });
             res.status(403).json({
                 success: false,
                 error: `You don't have permission to perform this action.`,
@@ -126,7 +126,7 @@ export function requireCapability(cap: Capability) {
 /**
  * Restricts a route to agency owners only. Used for operator/admin actions
  * that aren't represented in the capability model (org settings, healing
- * intervention overrides, etc.) — these should never be reachable by a
+ * intervention overrides, etc.) - these should never be reachable by a
  * scoped client even with '*' membership.
  *
  * Behavior:

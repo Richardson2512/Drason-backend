@@ -1,5 +1,5 @@
 /**
- * Warmup Send Service — isolated from production sends.
+ * Warmup Send Service - isolated from production sends.
  *
  * Responsibilities (the user explicitly asked for these to be isolated):
  *   - Send warmup emails via SMTP, never via the production
@@ -10,9 +10,9 @@
  *       * The user's Sent folder is NOT polluted.
  *   - Stamp the X-Superkabe-Warmup HMAC header so the recipient worker
  *     can identify warmup emails on arrival and route them into the
- *     warmup lane (and the imapReplyWorker can SKIP them — see
+ *     warmup lane (and the imapReplyWorker can SKIP them - see
  *     workers/imapReplyWorker.ts patch).
- *   - Bypass List-Unsubscribe / signature / tracking pixels —
+ *   - Bypass List-Unsubscribe / signature / tracking pixels -
  *     warmup traffic is intra-pool, not customer-facing.
  *
  * Auth strategy:
@@ -85,7 +85,7 @@ function readSecret(stored: string | null): string | null {
 // ────────────────────────────────────────────────────────────────────
 
 async function buildTransporter(account: ConnectedAccountForWarmup): Promise<Transporter> {
-    // SMTP-password path — same as production.
+    // SMTP-password path - same as production.
     if (account.smtp_host && account.smtp_password) {
         const port = account.smtp_port || 587;
         return nodemailer.createTransport({
@@ -103,7 +103,7 @@ async function buildTransporter(account: ConnectedAccountForWarmup): Promise<Tra
         });
     }
 
-    // OAuth path — Google / Microsoft. SMTP via XOAUTH2.
+    // OAuth path - Google / Microsoft. SMTP via XOAUTH2.
     const accessToken = await getValidOAuthAccessToken(account);
     const isGoogle = account.provider === 'google' || account.provider === 'GOOGLE';
     const host = isGoogle ? 'smtp.gmail.com' : 'smtp.office365.com';
@@ -169,7 +169,7 @@ async function getValidOAuthAccessToken(account: ConnectedAccountForWarmup): Pro
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Public API — single send.
+// Public API - single send.
 // ────────────────────────────────────────────────────────────────────
 
 export async function sendWarmupEmail(input: WarmupSendInput): Promise<WarmupSendResult> {
@@ -216,7 +216,7 @@ export async function sendWarmupEmail(input: WarmupSendInput): Promise<WarmupSen
     });
 
     // Construct the mail. NO signature, NO List-Unsubscribe, NO tracking
-    // pixels — those are production-only concerns. Custom warmup header
+    // pixels - those are production-only concerns. Custom warmup header
     // is required so the recipient worker can identify and route.
     const mailOpts: any = {
         from: account.email,
@@ -238,7 +238,7 @@ export async function sendWarmupEmail(input: WarmupSendInput): Promise<WarmupSen
 
     try {
         const info = await transporter.sendMail(mailOpts);
-        // Tear down — no caching for warmup transporters.
+        // Tear down - no caching for warmup transporters.
         try { transporter.close(); } catch { /* swallow */ }
         const finalMessageId = (info as any).messageId || messageId;
         return { success: true, messageId: String(finalMessageId).replace(/[<>]/g, '') };

@@ -26,7 +26,7 @@ import { uniqueSlug } from '../utils/slug';
  *      matches (case-insensitive).
  *   3. Verifying password.
  *
- * Returns a JWT scoped to that workspace. The client cannot switch — the
+ * Returns a JWT scoped to that workspace. The client cannot switch - the
  * `switch-workspace` endpoint enforces that.
  *
  * Agency owners attempting this endpoint will fail because their User rows
@@ -58,7 +58,7 @@ export const clientLogin = async (req: Request, res: Response) => {
         // The partial unique on (scoped_organization_id, email) WHERE
         // scoped_organization_id IS NOT NULL guarantees this lookup hits at
         // most one row, so findFirst is safe. Email is stored as the user
-        // typed it (no suffix) — see migration 20260506041000.
+        // typed it (no suffix) - see migration 20260506041000.
         const user = await prisma.user.findFirst({
             where: {
                 scoped_organization_id: org.id,
@@ -137,7 +137,7 @@ export const login = async (req: Request, res: Response) => {
         // Agency-side login. Client logins come through /auth/login/client which
         // also passes a workspace slug, so we restrict this lookup to non-scoped
         // users. The new partial unique on (email) WHERE scoped_organization_id IS NULL
-        // makes findFirst safe — at most one row matches.
+        // makes findFirst safe - at most one row matches.
         const user = await prisma.user.findFirst({
             where: { email, scoped_organization_id: null },
             include: { organization: true }
@@ -178,7 +178,7 @@ export const login = async (req: Request, res: Response) => {
 
             if (lockUntil) {
                 logger.warn('Account locked after too many failed attempts', { email, attempts: newCount });
-                // Fire-and-forget security notification. Don't await — the
+                // Fire-and-forget security notification. Don't await - the
                 // login response should not be slowed by an email send.
                 void dispatchEmail({
                     rendered: accountLockedEmail({
@@ -248,7 +248,7 @@ export const register = async (req: Request, res: Response) => {
             password,
             organizationName,
             tier,
-            // Legal-doc consent (required) — frontend submits the version
+            // Legal-doc consent (required) - frontend submits the version
             // strings the user actually saw. We compare against the current
             // server-side versions and reject mismatches so a stale frontend
             // can't sneak through with an old version.
@@ -261,7 +261,7 @@ export const register = async (req: Request, res: Response) => {
         }
 
         // Required ToS + Privacy consent. We block signup outright if either
-        // is missing or stale — under GDPR Art. 7(1) we must demonstrate
+        // is missing or stale - under GDPR Art. 7(1) we must demonstrate
         // current-version consent, and we cannot create the account otherwise.
         if (acceptedTosVersion !== TOS_VERSION) {
             return res.status(400).json({
@@ -278,7 +278,7 @@ export const register = async (req: Request, res: Response) => {
             });
         }
 
-        // Agency-side signup — collision check only against the agency-side namespace.
+        // Agency-side signup - collision check only against the agency-side namespace.
         // Client users (scoped_organization_id IS NOT NULL) live in a per-workspace namespace.
         const existingUser = await prisma.user.findFirst({
             where: { email, scoped_organization_id: null },
@@ -289,13 +289,13 @@ export const register = async (req: Request, res: Response) => {
         }
 
         // Two people from the same company are intentionally allowed to each
-        // hold a fully independent account under the same company name —
+        // hold a fully independent account under the same company name -
         // e.g. two Scale-tier subscriptions for double the monthly send
         // budget. Each becomes a separate Organization with its own trial,
         // billing, mailboxes, leads, etc. The internal `slug` auto-suffixes
         // on collision (acme, acme-2, acme-3, …); the human-visible `name`
         // stays as the user typed it for both. Scopes to every tier
-        // including trial — no gating.
+        // including trial - no gating.
         const slug = await uniqueSlug(organizationName);
 
         const salt = await bcrypt.genSalt(10);
@@ -306,7 +306,7 @@ export const register = async (req: Request, res: Response) => {
             const trialStartedAt = new Date();
             const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 14 days from now
 
-            // Signup always starts as trial — paid tiers require checkout
+            // Signup always starts as trial - paid tiers require checkout
             const subscriptionTier = 'trial';
 
             // Generate Clay webhook secret for HMAC validation
@@ -341,7 +341,7 @@ export const register = async (req: Request, res: Response) => {
             return { org, user };
         });
 
-        // Record consent grants — two append-only rows, forensically self-contained
+        // Record consent grants - two append-only rows, forensically self-contained
         // via identity snapshots so the audit record survives any later User erasure.
         const ipAddress = extractClientIp(req);
         const userAgent = extractUserAgent(req);
@@ -377,7 +377,7 @@ export const register = async (req: Request, res: Response) => {
             // created in the transaction above), but we MUST log the failure
             // loudly because a missing audit row is a compliance gap.
             logger.error(
-                '[REGISTER] Consent recording failed after signup — manual remediation required',
+                '[REGISTER] Consent recording failed after signup - manual remediation required',
                 consentErr instanceof Error ? consentErr : new Error(String(consentErr)),
                 { userId: result.user.id, orgId: result.org.id },
             );
@@ -387,7 +387,7 @@ export const register = async (req: Request, res: Response) => {
 
         logger.info('User registered', { userId: result.user.id, email: result.user.email });
 
-        // Welcome email — fire-and-forget so it doesn't block the response.
+        // Welcome email - fire-and-forget so it doesn't block the response.
         // Idempotency on user.id ensures a retry of the (already-rare) double-
         // submit doesn't double-send.
         void dispatchEmail({
@@ -403,7 +403,7 @@ export const register = async (req: Request, res: Response) => {
             idempotencyKey: `welcome:${result.user.id}`,
         });
 
-        // Internal alert — let the team know about every new signup.
+        // Internal alert - let the team know about every new signup.
         const internalAlertTo = process.env.INTERNAL_SIGNUP_ALERT_TO || 'richardson@superkabe.com';
         void dispatchEmail({
             rendered: internalNewSignupAlert({
@@ -446,7 +446,7 @@ export const register = async (req: Request, res: Response) => {
 };
 
 /**
- * Refresh token — issues a new JWT if the current one is still valid.
+ * Refresh token - issues a new JWT if the current one is still valid.
  * Called periodically by the frontend to extend the session.
  * Requires a valid (non-expired) JWT in the cookie or Authorization header.
  */
@@ -527,7 +527,7 @@ export const refreshToken = async (req: Request, res: Response) => {
 };
 
 /**
- * Logout — clears the auth cookie.
+ * Logout - clears the auth cookie.
  */
 export const logout = async (_req: Request, res: Response) => {
     clearTokenCookie(res);
@@ -540,7 +540,7 @@ export const logout = async (_req: Request, res: Response) => {
 //   1. POST /api/auth/forgot-password { email }
 //      → generates a 32-byte random token, stores SHA-256(token) on the user
 //        with a 1-hour expiry, emails the raw token in a reset URL.
-//      → ALWAYS returns 200 success — anti-enumeration. The response is the
+//      → ALWAYS returns 200 success - anti-enumeration. The response is the
 //        same whether or not the email exists in the system.
 //   2. GET /api/auth/reset-password/verify?token=...
 //      → checks token validity so the reset page can render or show an
@@ -551,7 +551,7 @@ export const logout = async (_req: Request, res: Response) => {
 //        the reset_token columns. Returns 200 on success.
 
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;            // 1 hour
-const RESET_TOKEN_BYTES = 32;                         // 256 bits — 64 hex chars
+const RESET_TOKEN_BYTES = 32;                         // 256 bits - 64 hex chars
 
 function hashResetToken(rawToken: string): string {
     return crypto.createHash('sha256').update(rawToken).digest('hex');
@@ -568,7 +568,7 @@ function buildResetUrl(rawToken: string): string {
 /**
  * POST /api/auth/forgot-password
  * Body: { email }
- * Always 200 — does not leak whether the email exists.
+ * Always 200 - does not leak whether the email exists.
  */
 export const forgotPassword = async (req: Request, res: Response): Promise<void> => {
     try {
@@ -588,7 +588,7 @@ export const forgotPassword = async (req: Request, res: Response): Promise<void>
         };
 
         if (!user) {
-            logger.info('[AUTH] forgot-password for unknown email — returning generic success', { email: emailLower });
+            logger.info('[AUTH] forgot-password for unknown email - returning generic success', { email: emailLower });
             res.json(successResponse);
             return;
         }
@@ -596,7 +596,7 @@ export const forgotPassword = async (req: Request, res: Response): Promise<void>
         // OAuth-only accounts have no password to reset; behave the same to the caller
         // but skip the email send so we don't suggest a flow that won't work.
         if (!user.password_hash) {
-            logger.info('[AUTH] forgot-password for OAuth-only user — skipping email', { userId: user.id });
+            logger.info('[AUTH] forgot-password for OAuth-only user - skipping email', { userId: user.id });
             res.json(successResponse);
             return;
         }
@@ -625,7 +625,7 @@ export const forgotPassword = async (req: Request, res: Response): Promise<void>
             audience: { kind: 'email', email: user.email },
             category: 'account_security',
             eventKind: 'password_reset_requested',
-            // Token hash uniquely names THIS reset cycle — re-issuing a new
+            // Token hash uniquely names THIS reset cycle - re-issuing a new
             // token rotates the key and Resend will send the new email.
             idempotencyKey: `pwreset:${user.id}:${tokenHash.slice(0, 16)}`,
         });
@@ -699,7 +699,7 @@ export const resetPassword = async (req: Request, res: Response): Promise<void> 
             data: {
                 password_hash: newHash,
                 password_changed_at: changedAt,     // invalidates any pre-existing JWTs
-                reset_token_hash: null,             // single-use — burn it
+                reset_token_hash: null,             // single-use - burn it
                 reset_token_expires_at: null,
                 failed_login_count: 0,              // a successful reset clears any lockout
                 locked_until: null,
@@ -710,7 +710,7 @@ export const resetPassword = async (req: Request, res: Response): Promise<void> 
         // session too so the new password is effectively a clean slate.
         clearTokenCookie(res);
 
-        // Security notification — confirm the change and surface a recovery
+        // Security notification - confirm the change and surface a recovery
         // path if the user wasn't the one who reset it.
         const userRecord = await prisma.user.findUnique({
             where: { id: user.id },
@@ -741,7 +741,7 @@ export const resetPassword = async (req: Request, res: Response): Promise<void> 
 };
 
 /**
- * Public endpoint — returns the current legal-doc versions so the signup form
+ * Public endpoint - returns the current legal-doc versions so the signup form
  * can pin them to the submission and the re-acceptance modal can label what
  * the user is accepting. No authentication required.
  */

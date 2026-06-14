@@ -1,7 +1,7 @@
 /**
- * Warmup Ramp Worker — daily volume cadence + spam-rate adaptation.
+ * Warmup Ramp Worker - daily volume cadence + spam-rate adaptation.
  *
- * Cadence: every 6 hours (idempotent — only the first tick after
+ * Cadence: every 6 hours (idempotent - only the first tick after
  * midnight UTC actually mutates ramp state; later ticks are no-ops).
  *
  * On each tick (after the daily threshold):
@@ -76,7 +76,7 @@ async function processMembership(membership: {
             health: decision.nextHealth,
             spam_rate_30d: spamRate,
             last_error: decision.nextHealth === 'error'
-                ? `Spam rate ${(spamRate ?? 0).toFixed(3)} exceeded error threshold — operator review required.`
+                ? `Spam rate ${(spamRate ?? 0).toFixed(3)} exceeded error threshold - operator review required.`
                 : null,
         },
     });

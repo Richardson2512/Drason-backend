@@ -1,5 +1,5 @@
 /**
- * Reply-action configuration — read + write the org's mapping from
+ * Reply-action configuration - read + write the org's mapping from
  * reply quality classes to automatic actions. See replyActionService for
  * the action kinds and the auto-applied defaults.
  */

@@ -104,7 +104,7 @@ export const getOrganizations = async (req: Request, res: Response, next: NextFu
         // Platform monitoring for today's product surface (native sequencer,
         // Super Sender, Agency). The console historically only tracked the
         // protection/validation layer. NOTE: LinkedIn ("Super LinkedIn") is a
-        // staging-only feature — its models are not in this branch's schema, so
+        // staging-only feature - its models are not in this branch's schema, so
         // it is intentionally omitted here to avoid a runtime crash on prod.
         const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
         const [

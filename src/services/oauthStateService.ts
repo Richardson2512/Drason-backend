@@ -1,11 +1,11 @@
 /**
- * OAuth `state` nonce service — DB-backed, single-use, TTL-bound.
+ * OAuth `state` nonce service - DB-backed, single-use, TTL-bound.
  *
  * Replaces the per-flow ad-hoc state handling that the OAuth audit flagged
  * as CSRF-vulnerable in three places:
- *   - Postmaster (state was just the orgId — guessable)
+ *   - Postmaster (state was just the orgId - guessable)
  *   - Sequencer Gmail (state was structurally validated only)
- *   - User-login (state was in-memory Map — lost on restart, broken under
+ *   - User-login (state was in-memory Map - lost on restart, broken under
  *     horizontal scale)
  *
  * Security properties:
@@ -46,7 +46,7 @@ interface ConsumeResult {
 
 /**
  * Mint a new state nonce. Returns the opaque hex string to send to Google.
- * Caller must persist nothing else — the row carries all context.
+ * Caller must persist nothing else - the row carries all context.
  */
 export async function createState(args: CreateArgs): Promise<string> {
     const state = crypto.randomBytes(32).toString('hex');
@@ -66,7 +66,7 @@ export async function createState(args: CreateArgs): Promise<string> {
 /**
  * Consume a state nonce. Returns the original organizationId/metadata if the
  * nonce exists, hasn't expired, and was minted for the expected purpose.
- * Returns null on any failure — caller MUST treat that as a CSRF rejection.
+ * Returns null on any failure - caller MUST treat that as a CSRF rejection.
  *
  * Single-use: the row is deleted before this returns, regardless of outcome.
  * Lazy sweep: also drops any other expired rows so the table stays small.
@@ -76,12 +76,12 @@ export async function consumeState(
     expectedPurpose: OAuthPurpose,
 ): Promise<ConsumeResult | null> {
     if (!state || typeof state !== 'string') return null;
-    // Reject anything that doesn't smell like our 64-char hex nonce — short-
+    // Reject anything that doesn't smell like our 64-char hex nonce - short-
     // circuits before hitting the DB on obviously-malformed inputs.
     if (!/^[a-f0-9]{64}$/i.test(state)) return null;
 
     try {
-        // Lazy cleanup of expired rows — cheap, indexed.
+        // Lazy cleanup of expired rows - cheap, indexed.
         await prisma.oAuthState.deleteMany({
             where: { expires_at: { lt: new Date() } },
         });

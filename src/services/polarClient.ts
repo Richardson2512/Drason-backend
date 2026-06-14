@@ -16,7 +16,7 @@ import { prisma } from '../index';
 /**
  * Tier-based caps. Only two real meters: monthly send volume and email-validation
  * credits. Everything else (leads, domains, mailboxes, DNSBL depth, webhook count)
- * is unlimited at every paid tier — the protection layer is a flat capability,
+ * is unlimited at every paid tier - the protection layer is a flat capability,
  * not a metered one. This keeps the pricing message simple ("send N/mo, validate
  * N/mo, everything else unlimited") and avoids charging for protection on a
  * per-entity basis.
@@ -36,7 +36,7 @@ export interface CheckoutSession {
 // ============================================================================
 
 // ────────────────────────────────────────────────────────────────────
-// Pro tier — volume dropdown
+// Pro tier - volume dropdown
 // ────────────────────────────────────────────────────────────────────
 // Each variant maps to a distinct Polar product so checkout can be routed
 // correctly once the product IDs are filled in. Keep this array in sync with
@@ -72,7 +72,7 @@ const PRO_TIER_LIMITS: Record<string, TierLimits> = Object.fromEntries(
 export const TIER_LIMITS: Record<string, TierLimits> = {
     trial:      { validationCredits: 10000,    monthlySendLimit: 60000 },
     starter:    { validationCredits: 3000,     monthlySendLimit: 20000 },
-    // Pro family — default 60k anchor + 5 dropdown variants (80k/100k/150k/200k/250k).
+    // Pro family - default 60k anchor + 5 dropdown variants (80k/100k/150k/200k/250k).
     ...PRO_TIER_LIMITS,
     growth:     { validationCredits: 60000,    monthlySendLimit: 300000 },
     scale:      { validationCredits: 100000,   monthlySendLimit: 600000 },
@@ -99,7 +99,7 @@ export function isProTier(tierKey: string): boolean {
 const POLAR_API_BASE = 'https://api.polar.sh/v1';
 const POLAR_ACCESS_TOKEN = process.env.POLAR_ACCESS_TOKEN;
 
-// Polar product IDs — every tier the dashboard exposes. The hardcoded
+// Polar product IDs - every tier the dashboard exposes. The hardcoded
 // fallback for each entry is the live Polar product UUID confirmed by the
 // operator on 2026-05-04; env vars override only if explicitly set, which
 // is normally only needed for staging vs prod splits.
@@ -109,7 +109,7 @@ const POLAR_ACCESS_TOKEN = process.env.POLAR_ACCESS_TOKEN;
 // silently routed Pro checkouts to the Starter product (or vice versa
 // when a Starter-named env var actually held a Pro UUID), producing the
 // "I clicked Starter but landed on Pro" mis-route. Removing the chain so
-// each tier resolves only to its own ID — there is no cross-tier
+// each tier resolves only to its own ID - there is no cross-tier
 // fallback path in this map by design.
 const PRODUCT_IDS: Record<string, string> = {
     starter:  process.env.POLAR_STARTER_PRODUCT_ID  || 'dfa51c15-8e20-452d-b51a-476d94b73d21',
@@ -131,12 +131,12 @@ const PRODUCT_IDS: Record<string, string> = {
     const seen = new Map<string, string>();
     for (const [tier, id] of Object.entries(PRODUCT_IDS)) {
         if (!id) {
-            console.warn(`[POLAR] No product ID configured for tier "${tier}" — checkout will fail`);
+            console.warn(`[POLAR] No product ID configured for tier "${tier}" - checkout will fail`);
             continue;
         }
         const prior = seen.get(id);
         if (prior) {
-            console.warn(`[POLAR] Tier "${tier}" and "${prior}" both map to product ID ${id} — fix the env var override or the hardcoded fallback`);
+            console.warn(`[POLAR] Tier "${tier}" and "${prior}" both map to product ID ${id} - fix the env var override or the hardcoded fallback`);
         }
         seen.set(id, tier);
     }
@@ -159,7 +159,7 @@ export const polarApi = axios.create({
  * should funnel through this so Railway logs reliably contain the actual
  * Polar rejection (status + response body) instead of just the axios
  * wrapper Error.message ("Request failed with status code 422"). Returns
- * a string suitable for re-throwing as the user-facing error message —
+ * a string suitable for re-throwing as the user-facing error message -
  * Polar's `detail` / `error` fields usually surface the field that failed
  * validation, which is what an operator (or the customer in the dashboard)
  * actually needs to act on.
@@ -171,7 +171,7 @@ function logPolarError(prefix: string, error: any, context: Record<string, any>)
 
     // Console.error so Railway captures the structured detail; logger.error
     // is for indexed structured logs and only sees the wrapper Error.
-    console.error(`${prefix} — Polar API error detail`, {
+    console.error(`${prefix} - Polar API error detail`, {
         ...context,
         status,
         responseBody: data,
@@ -282,7 +282,7 @@ export async function ensurePolarCustomer(orgId: string): Promise<string> {
 // ============================================================================
 
 /**
- * Create a Polar checkout session for any paid tier — initial subscription
+ * Create a Polar checkout session for any paid tier - initial subscription
  * or plan change. The checkout flow is the single payment path: every
  * subscribe / upgrade / downgrade / re-subscribe goes through here so
  * coupon and non-coupon customers are treated identically and the new
@@ -351,12 +351,12 @@ export async function createCheckoutSession(
  * Uses the canonical Polar pattern: PATCH /v1/subscriptions/{id} with
  * `cancel_at_period_end: true`. The prior version POSTed to
  * `/subscriptions/{id}/cancel` which is not part of Polar's documented v1
- * surface — that 404'd, threw, and showed users the same opaque "Failed
+ * surface - that 404'd, threw, and showed users the same opaque "Failed
  * to cancel subscription" we just fixed for plan changes.
  *
  * Customer keeps access until next_billing_date; on that date, Polar fires
  * subscription.canceled and our webhook handler flips the status. To
- * cancel immediately instead, use revokeSubscription (not implemented —
+ * cancel immediately instead, use revokeSubscription (not implemented -
  * we always honor the paid period).
  */
 export async function cancelSubscription(orgId: string): Promise<void> {
@@ -389,7 +389,7 @@ export async function cancelSubscription(orgId: string): Promise<void> {
 /**
  * Change subscription to a different tier (upgrade or downgrade).
  *
- * Polar's `PATCH /v1/subscriptions/{id}` uses Polar-specific vocabulary —
+ * Polar's `PATCH /v1/subscriptions/{id}` uses Polar-specific vocabulary -
  * NOT Stripe's. The prior version sent `proration_behavior:
  * 'create_prorations'` which is a Stripe-only value Polar rejects with
  * 422, and the resulting error body never made it to Railway logs because
@@ -427,14 +427,14 @@ export async function changeSubscription(orgId: string, newTier: string): Promis
     // Build the request body. Both upgrades and downgrades take effect
     // immediately on Polar's side; the difference is only in how the
     // dollar diff lands:
-    //   - upgrade   → 'invoice' — charge the prorated difference NOW on a
+    //   - upgrade   → 'invoice' - charge the prorated difference NOW on a
     //                 new invoice. Customer pays, gets new tier instantly.
-    //   - downgrade → 'prorate' — apply the prorated credit to the NEXT
+    //   - downgrade → 'prorate' - apply the prorated credit to the NEXT
     //                 invoice. Customer keeps the rest of the higher-tier
     //                 features they already paid for (Polar bills the
     //                 lower amount minus credit at next renewal).
     // Sending no proration_behavior at all lets Polar pick a default which
-    // varies by account settings — explicit is better.
+    // varies by account settings - explicit is better.
     const body: Record<string, any> = {
         product_id: newProductId,
         proration_behavior: isUpgrade ? 'invoice' : 'prorate',
@@ -443,7 +443,7 @@ export async function changeSubscription(orgId: string, newTier: string): Promis
     try {
         await polarApi.patch(`/subscriptions/${org.polar_subscription_id}`, body);
 
-        // Don't pre-emptively flip the local tier here — the
+        // Don't pre-emptively flip the local tier here - the
         // subscription.updated webhook fires immediately after Polar
         // accepts the PATCH and our handler updates the org row from the
         // authoritative payload. Updating locally before the webhook
@@ -490,9 +490,9 @@ export async function getSubscription(subscriptionId: string): Promise<any> {
  * (https://www.standardwebhooks.com/) that Polar adopted in 2024+.
  *
  * Polar sends three headers:
- *   webhook-id        — unique delivery identifier
- *   webhook-timestamp — unix seconds at delivery time
- *   webhook-signature — space-separated list, each entry "v1,<base64-hmac>"
+ *   webhook-id        - unique delivery identifier
+ *   webhook-timestamp - unix seconds at delivery time
+ *   webhook-signature - space-separated list, each entry "v1,<base64-hmac>"
  *                       (multiple sigs let Polar rotate keys without an
  *                       atomic cutover; verify if ANY entry matches)
  *
@@ -503,7 +503,7 @@ export async function getSubscription(subscriptionId: string): Promise<any> {
  * Returns true on first matching signature, false otherwise. Never throws
  * (constant-time check uses fixed-length buffers; bad input → false rather
  * than crashing the request, which previously got swallowed by an outer
- * try/catch that returned 200 — the bug that left customers stuck on trial).
+ * try/catch that returned 200 - the bug that left customers stuck on trial).
  */
 export function verifyPolarWebhook(
     rawBody: Buffer | string,
@@ -523,11 +523,11 @@ export function verifyPolarWebhook(
     const sigHeader = get('webhook-signature');
     if (!webhookId || !webhookTs || !sigHeader) return false;
 
-    // Reject deliveries older than 5 minutes — protects against replay if
+    // Reject deliveries older than 5 minutes - protects against replay if
     // the secret leaks. Polar's own client uses the same window.
     const tsSec = parseInt(webhookTs, 10);
     if (!Number.isFinite(tsSec) || Math.abs(Date.now() / 1000 - tsSec) > 300) {
-        logger.warn('[POLAR] Webhook rejected — timestamp outside 5-min window', { webhookTs });
+        logger.warn('[POLAR] Webhook rejected - timestamp outside 5-min window', { webhookTs });
         return false;
     }
 
@@ -550,7 +550,7 @@ export function verifyPolarWebhook(
         .update(signedPayload, 'utf8')
         .digest('base64');
 
-    // Header looks like "v1,abc... v1,def..." — possibly multiple. Try each.
+    // Header looks like "v1,abc... v1,def..." - possibly multiple. Try each.
     for (const part of sigHeader.split(/\s+/)) {
         const idx = part.indexOf(',');
         if (idx < 0) continue;
@@ -571,13 +571,13 @@ export function verifyPolarWebhook(
 
 /**
  * @deprecated Kept for callers that haven't migrated yet. Always returns
- * false in production — forces an explicit migration to verifyPolarWebhook.
+ * false in production - forces an explicit migration to verifyPolarWebhook.
  */
 export function validateWebhookSignature(
     _payload: string,
     _signature: string,
     _secret: string
 ): boolean {
-    logger.error('[POLAR] validateWebhookSignature is deprecated — use verifyPolarWebhook with rawBody + headers');
+    logger.error('[POLAR] validateWebhookSignature is deprecated - use verifyPolarWebhook with rawBody + headers');
     return false;
 }

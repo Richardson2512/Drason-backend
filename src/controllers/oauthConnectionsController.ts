@@ -1,8 +1,8 @@
 /**
- * OAuth connections controller — surfaces a user-friendly summary of
+ * OAuth connections controller - surfaces a user-friendly summary of
  * active OAuth grants (DCR-registered MCP clients) for the current org.
  *
- * Used by the dashboard Integrations page to show "Claude — Connected"
+ * Used by the dashboard Integrations page to show "Claude - Connected"
  * once the user has completed an OAuth flow from claude.ai. Each row is
  * one (client × user × org) grant; tokens that are revoked or expired
  * are excluded.

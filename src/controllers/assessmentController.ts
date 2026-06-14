@@ -21,7 +21,7 @@ export const getReport = async (req: Request, res: Response): Promise<void> => {
         const orgId = getOrgId(req);
         const report = await assessmentService.getLatestReport(orgId);
 
-        // No report yet is an empty state, not an error — return 200 with
+        // No report yet is an empty state, not an error - return 200 with
         // null data so the frontend can render an "assessment hasn't run
         // yet" empty card instead of a "Failed to load" toast.
         res.json({ success: true, data: report || null });
@@ -55,10 +55,10 @@ export const getReports = async (req: Request, res: Response): Promise<void> => 
 /**
  * POST /api/assessment/run
  * Trigger a manual re-assessment.
- * Used after DNS fixes to verify recovery — DNS-based recovery requires
+ * Used after DNS fixes to verify recovery - DNS-based recovery requires
  * manual re-assessment trigger, no auto-resume.
  */
-// A run is considered stale (likely crashed) after this many ms — the start
+// A run is considered stale (likely crashed) after this many ms - the start
 // endpoint will accept a fresh trigger past this threshold even if
 // assessment_running is still true.
 const STALE_RUN_MS = 10 * 60 * 1000;
@@ -68,7 +68,7 @@ export const runAssessment = async (req: Request, res: Response): Promise<void> 
         const orgId = getOrgId(req);
 
         // Reject duplicate starts. Frontend polls /status to discover
-        // completion — there's no value in queueing a second run while one
+        // completion - there's no value in queueing a second run while one
         // is in flight, and the DNSBL probes are expensive.
         const org = await prisma.organization.findUnique({
             where: { id: orgId },
@@ -89,7 +89,7 @@ export const runAssessment = async (req: Request, res: Response): Promise<void> 
 
         // Fire and forget. The service writes its own start/success/fail
         // state to the Organization row; the frontend polls /status.
-        // We deliberately do NOT await — POST returns 202 immediately.
+        // We deliberately do NOT await - POST returns 202 immediately.
         assessmentService
             .assessInfrastructure(orgId, 'manual_reassessment')
             .catch((err) => {
@@ -102,7 +102,7 @@ export const runAssessment = async (req: Request, res: Response): Promise<void> 
         res.status(202).json({
             success: true,
             status: 'started',
-            message: 'Infrastructure assessment started — poll /api/assessment/status for completion',
+            message: 'Infrastructure assessment started - poll /api/assessment/status for completion',
         });
     } catch (e: any) {
         logger.error('Failed to start assessment', e);
@@ -165,7 +165,7 @@ export const getAssessmentStatus = async (req: Request, res: Response): Promise<
                 finishedAt: org.assessment_finished_at,
                 lastError: org.assessment_last_error,
                 hasReport,
-                // Legacy field — kept for any caller still reading it, but
+                // Legacy field - kept for any caller still reading it, but
                 // status above is the durable signal.
                 inProgress: running,
             },
@@ -219,7 +219,7 @@ export const getDomainDNS = async (req: Request, res: Response): Promise<void> =
  * preview. This endpoint runs the same DNS sweep the periodic worker runs and
  * writes the result back to the Domain row, so the Domains UI reflects fresh
  * state immediately after the user clicks "Check now". Findings are NOT
- * regenerated here — that's owned by the assessment worker's full sweep — but
+ * regenerated here - that's owned by the assessment worker's full sweep - but
  * the per-record badges on the DNS Authentication card flip the moment this
  * call returns.
  *

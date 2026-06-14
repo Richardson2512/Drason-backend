@@ -3,11 +3,11 @@
  *
  * Pulls the CRM's opt-out / do-not-contact list every 6 hours per
  * active connection and blocks matching Superkabe leads. Provider-
- * blind — uses the registry to dispatch to HubSpot or Salesforce
+ * blind - uses the registry to dispatch to HubSpot or Salesforce
  * client.listSuppressions().
  *
  * Cadence is enforced by reading the most recent completed
- * `suppression_pull` CrmSyncJob for the connection — no schema change
+ * `suppression_pull` CrmSyncJob for the connection - no schema change
  * needed. Tick frequency is 30 minutes; per-connection sync only
  * runs when the prior one completed >6h ago.
  */

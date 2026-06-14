@@ -2,11 +2,11 @@
  * HubSpot integration controller.
  *
  * Endpoints:
- *   GET    /api/integrations/hubspot/authorize       — kicks off OAuth (signs state, redirects to HubSpot)
- *   GET    /api/integrations/hubspot/callback        — exchanges code, persists connection, redirects to dashboard
- *   GET    /api/integrations/hubspot/lists           — paginated list of HubSpot v3 lists for the import picker
- *   GET    /api/integrations/hubspot/fields          — describe contact fields (for field-mapping UI)
- *   POST   /api/integrations/hubspot/import          — body: { list_id, field_mapping } → enqueues CrmSyncJob
+ *   GET    /api/integrations/hubspot/authorize       - kicks off OAuth (signs state, redirects to HubSpot)
+ *   GET    /api/integrations/hubspot/callback        - exchanges code, persists connection, redirects to dashboard
+ *   GET    /api/integrations/hubspot/lists           - paginated list of HubSpot v3 lists for the import picker
+ *   GET    /api/integrations/hubspot/fields          - describe contact fields (for field-mapping UI)
+ *   POST   /api/integrations/hubspot/import          - body: { list_id, field_mapping } → enqueues CrmSyncJob
  */
 
 import type { Request, Response } from 'express';
@@ -57,7 +57,7 @@ export async function authorize(req: Request, res: Response): Promise<void> {
 
 /**
  * GET /api/integrations/hubspot/callback?code=…&state=…
- * Public path (no extractOrgContext) — auth is reconstructed from the
+ * Public path (no extractOrgContext) - auth is reconstructed from the
  * state JWT. Exchanges the code for tokens, persists the CrmConnection,
  * then redirects the user back to the dashboard.
  */
@@ -147,7 +147,7 @@ async function loadHubSpotClientForOrg(req: Request): Promise<LoadedHubSpot> {
     return { kind: 'ok', connectionId: decrypted.id, client };
 }
 
-/** GET /api/integrations/hubspot/lists — surface HubSpot v3 lists for the import picker. */
+/** GET /api/integrations/hubspot/lists - surface HubSpot v3 lists for the import picker. */
 export async function listLists(req: Request, res: Response): Promise<Response> {
     const loaded = await loadHubSpotClientForOrg(req);
     if (loaded.kind === 'err') {
@@ -184,7 +184,7 @@ export async function listLists(req: Request, res: Response): Promise<Response> 
     }
 }
 
-/** GET /api/integrations/hubspot/fields — describe contact fields. */
+/** GET /api/integrations/hubspot/fields - describe contact fields. */
 export async function describeFields(req: Request, res: Response): Promise<Response> {
     const loaded = await loadHubSpotClientForOrg(req);
     if (loaded.kind === 'err') {

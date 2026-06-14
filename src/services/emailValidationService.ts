@@ -90,7 +90,7 @@ async function getDomainInsight(
     // Perform fresh DNS checks
     const result = await checkDomain(domain);
 
-    // Cache result. catch_all_checked stays false here — DNS check cannot
+    // Cache result. catch_all_checked stays false here - DNS check cannot
     // confirm catch-all; only MillionVerifier flips this true (see step 4).
     await prisma.domainInsight.upsert({
         where: { organization_id_domain: { organization_id: organizationId, domain } },
@@ -133,7 +133,7 @@ async function checkDomain(domain: string): Promise<DomainCheckResult> {
                 .map(r => ({ priority: r.priority, exchange: r.exchange }));
         }
     } catch {
-        // No MX records — domain likely invalid
+        // No MX records - domain likely invalid
         has_mx = false;
     }
 
@@ -252,7 +252,7 @@ export async function validateLeadEmail(
     }
 
     // ── Step 4: MillionVerifier API (conditional, tier-gated) ──
-    // Starter/trial: NEVER call API — internal only
+    // Starter/trial: NEVER call API - internal only
     // Growth: call API only if internal score < 60 (risky leads)
     // Scale/enterprise: call API if internal score < 75 (medium + high risk)
     const tier = (subscriptionTier || 'starter').toLowerCase();
@@ -284,7 +284,7 @@ export async function validateLeadEmail(
                 },
             };
 
-            // MillionVerifier ran for this domain — record catch-all verification
+            // MillionVerifier ran for this domain - record catch-all verification
             // status either way, so subsequent leads under the same domain in the
             // cache window can earn (or be denied) the catch-all bonus correctly.
             await prisma.domainInsight.updateMany({
@@ -300,7 +300,7 @@ export async function validateLeadEmail(
             await recordAttempt(organizationId, emailLower, result, durationMs);
             return result;
         }
-        // API not configured or failed — fall through to internal result
+        // API not configured or failed - fall through to internal result
     }
 
     // ── Step 5: Return internal-only result ──
@@ -339,14 +339,14 @@ async function recordAttempt(
     durationMs: number
 ): Promise<void> {
     try {
-        // Find the lead — skip recording if lead doesn't exist yet (will be recorded post-upsert)
+        // Find the lead - skip recording if lead doesn't exist yet (will be recorded post-upsert)
         const lead = await prisma.lead.findUnique({
             where: { organization_id_email: { organization_id: organizationId, email } },
             select: { id: true },
         });
 
         if (!lead) {
-            logger.debug('[VALIDATION] Skipping attempt record — lead not yet created', { email });
+            logger.debug('[VALIDATION] Skipping attempt record - lead not yet created', { email });
             return;
         }
 
@@ -362,7 +362,7 @@ async function recordAttempt(
             },
         });
     } catch (err) {
-        // Non-fatal — don't let audit recording block validation
+        // Non-fatal - don't let audit recording block validation
         logger.warn('[VALIDATION] Failed to record attempt', { error: String(err) });
     }
 }
@@ -398,7 +398,7 @@ export async function clearValidationOnHardBounce(
 }
 
 /**
- * Mark a Lead's validation as risky after a spam complaint. Doesn't clear —
+ * Mark a Lead's validation as risky after a spam complaint. Doesn't clear -
  * downgrades the recorded validation to reflect the negative signal.
  */
 export async function markValidationRiskyOnComplaint(

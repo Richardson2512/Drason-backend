@@ -2,10 +2,10 @@
  * Apollo integration controller (Phase 5).
  *
  * Endpoints:
- *   POST  /api/integrations/apollo/connect     — validate API key + persist
- *   POST  /api/integrations/apollo/parse-url   — preview parsed filters + count
- *   POST  /api/integrations/apollo/import      — enqueue an import job
- *   GET   /api/integrations/apollo/jobs/:id    — job status (polled by UI)
+ *   POST  /api/integrations/apollo/connect     - validate API key + persist
+ *   POST  /api/integrations/apollo/parse-url   - preview parsed filters + count
+ *   POST  /api/integrations/apollo/import      - enqueue an import job
+ *   GET   /api/integrations/apollo/jobs/:id    - job status (polled by UI)
  *
  * Disconnect lives on the provider-blind /api/integrations/lead-sources/...
  * routes since it doesn't need Apollo-specific knowledge.
@@ -83,7 +83,7 @@ export async function connect(req: Request, res: Response): Promise<Response> {
  * Body: { url: string }
  * Parses the URL the user pasted, surfaces a human-readable summary of
  * filters, and runs a 1-record search to estimate the result count.
- * No credits consumed (search-only — credits only flow through
+ * No credits consumed (search-only - credits only flow through
  * bulk_match during the actual import).
  */
 export async function parseUrl(req: Request, res: Response): Promise<Response> {
@@ -118,7 +118,7 @@ export async function parseUrl(req: Request, res: Response): Promise<Response> {
     try {
         estimate = await client.estimateContactCount(filter);
     } catch (err) {
-        // Non-fatal — caller can still kick off the import without an estimate.
+        // Non-fatal - caller can still kick off the import without an estimate.
         logger.warn('[APOLLO] estimate failed', {
             err: (err as Error).message?.slice(0, 200),
         });
@@ -176,7 +176,7 @@ export async function startImport(req: Request, res: Response): Promise<Response
         });
     }
 
-    // Hard-cap defensive — Apollo's own ceiling is 50K per search
+    // Hard-cap defensive - Apollo's own ceiling is 50K per search
     const safeCap = typeof cap === 'number' && cap > 0 ? Math.min(cap, 50_000) : null;
 
     const job = await prisma.leadSourceImportJob.create({

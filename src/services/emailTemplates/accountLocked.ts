@@ -1,5 +1,5 @@
 /**
- * Account locked email — sent when consecutive failed logins trip the
+ * Account locked email - sent when consecutive failed logins trip the
  * lockout threshold. Tells the user they're locked, when access will
  * auto-restore, and how to reset their password if they're stuck.
  */
@@ -37,7 +37,7 @@ export function accountLockedEmail(params: AccountLockedEmailParams): RenderedEm
         preheader,
         eyebrow: 'Account security',
         heading: 'Your account is temporarily locked',
-        intro: `${greeting} We locked your Superkabe account after ${params.failedAttempts} consecutive failed sign-in attempts. This is automatic protection against brute-force attacks — your password and account data are unchanged.`,
+        intro: `${greeting} We locked your Superkabe account after ${params.failedAttempts} consecutive failed sign-in attempts. This is automatic protection against brute-force attacks - your password and account data are unchanged.`,
         facts,
         body:
             `<strong style="color:#111827;">If this was you</strong>, wait until the auto-unlock time above, or reset your password right now to skip the wait.` +

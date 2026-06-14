@@ -4,7 +4,7 @@ import { handleSesNotification } from '../controllers/sesNotificationController'
 
 const router = Router();
 
-// SES SNS notification webhook — public (no auth) by allowlist in
+// SES SNS notification webhook - public (no auth) by allowlist in
 // orgContext + subscription-gate exemption in index.ts. Mounted before
 // the auth-gated routes so the unauth path is unambiguous.
 router.post('/ses-notification', handleSesNotification);

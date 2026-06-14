@@ -1,7 +1,7 @@
 /**
  * Contact Controller
  *
- * List, create, delete, and export contacts — unified view over:
+ * List, create, delete, and export contacts - unified view over:
  *  - Standalone Leads (main Lead table, from manual add / Clay / API ingestion)
  *  - CampaignLeads (leads assigned to specific SendCampaigns)
  *
@@ -43,7 +43,7 @@ function parseCsv(raw: string | undefined): string[] {
  * Returns the distinct companies and titles in the org's contact pool, with
  * counts. Powers the multi-select filters in the contacts page so users see
  * actual values rather than typing free text. Capped per facet to keep the
- * payload sane on large orgs — top FACET_LIMIT by frequency, then alpha.
+ * payload sane on large orgs - top FACET_LIMIT by frequency, then alpha.
  */
 const FACET_LIMIT = 200;
 
@@ -53,7 +53,7 @@ export const getContactFacets = async (req: Request, res: Response): Promise<Res
 
         // Prisma groupBy orderBy can't use the grouped field itself
         // (it'd require id in `by`). Order by count of a guaranteed-non-null
-        // column — email — so we get rows-per-group count, top-down.
+        // column - email - so we get rows-per-group count, top-down.
         const [companyGroups, titleGroups, sourceGroups] = await Promise.all([
             prisma.lead.groupBy({
                 by: ['company'],
@@ -119,11 +119,11 @@ export const listContacts = async (req: Request, res: Response): Promise<Respons
         // tag_ids filters to leads that carry AT LEAST ONE of the given tags.
         const tagIds = parseCsv(req.query.tag_ids as string | undefined);
 
-        // Query the main Lead table — source of truth for all contacts.
+        // Query the main Lead table - source of truth for all contacts.
         // Campaign assignments are counted separately.
         //
         // Hard-exclude PII-erased tombstone rows (deleted contacts kept on for
-        // audit / re-import suppression — see piiErasureService). They have
+        // audit / re-import suppression - see piiErasureService). They have
         // status='erased' and email rewritten to `erased-{uuid}@anonymized.invalid`.
         // Operators must never see these in the UI; even an explicit
         // ?status=erased query param is silently ignored.
@@ -137,7 +137,7 @@ export const listContacts = async (req: Request, res: Response): Promise<Respons
         if (titles.length > 0) leadWhere.title = { in: titles };
         if (sources.length > 0) leadWhere.source = { in: sources };
         if (tagIds.length > 0) {
-            // OR semantics — match leads tagged with any of the given tag IDs.
+            // OR semantics - match leads tagged with any of the given tag IDs.
             // For AND ("must have ALL of these tags") we'd need a different
             // query shape; keeping OR for now since it matches typical UX.
             leadWhere.tags = { some: { tag_id: { in: tagIds } } };
@@ -167,7 +167,7 @@ export const listContacts = async (req: Request, res: Response): Promise<Respons
         ]);
 
         // Count how many sequencer campaigns each lead is assigned to (via CampaignLead.email match).
-        // Post-merge Campaign table holds both legacy and sequencer campaigns — filter to sequencer.
+        // Post-merge Campaign table holds both legacy and sequencer campaigns - filter to sequencer.
         const emails = leads.map((l) => l.email);
         const orgCampaigns = await prisma.campaign.findMany({
             where: { organization_id: orgId },
@@ -311,7 +311,7 @@ export const getContact = async (req: Request, res: Response): Promise<Response>
  * Updates editable Lead detail fields. Body may include any of:
  *   first_name, last_name, full_name, company, website, title, phone, linkedin_url
  * Empty string clears the field; undefined leaves it unchanged. Email is
- * intentionally not editable here — it is the unique identity key for the
+ * intentionally not editable here - it is the unique identity key for the
  * lead within the org and changing it would orphan campaign history.
  */
 const EDITABLE_FIELDS = ['first_name', 'last_name', 'full_name', 'company', 'website', 'title', 'phone', 'linkedin_url', 'company_linkedin_url'] as const;
@@ -364,7 +364,7 @@ export const updateContactDetails = async (req: Request, res: Response): Promise
 /**
  * PATCH /api/sequencer/contacts/:id/notes
  * Updates the operator notes on a Lead. Body: { notes: string | null }.
- * No history kept — this is intentionally a scratch field, not a thread.
+ * No history kept - this is intentionally a scratch field, not a thread.
  */
 export const updateContactNotes = async (req: Request, res: Response): Promise<Response> => {
     try {
@@ -393,7 +393,7 @@ export const updateContactNotes = async (req: Request, res: Response): Promise<R
  * PUT /api/sequencer/contacts/:id/tags
  * Body: { tagIds: string[] }
  *
- * Replaces the lead's tag set wholesale. Atomic — caller-friendly because
+ * Replaces the lead's tag set wholesale. Atomic - caller-friendly because
  * the frontend sends the full desired state on each save, no need to
  * compute add/remove deltas client-side.
  *
@@ -414,7 +414,7 @@ export const setContactTags = async (req: Request, res: Response): Promise<Respo
         if (!lead) return res.status(404).json({ success: false, error: 'Contact not found' });
 
         // Validate all tagIds belong to this org. Reject the whole request
-        // on any mismatch — partial application would surprise the operator.
+        // on any mismatch - partial application would surprise the operator.
         if (tagIds.length > 0) {
             const validTags = await prisma.tag.findMany({
                 where: { id: { in: tagIds }, organization_id: orgId },
@@ -490,7 +490,7 @@ export const bulkTagContacts = async (req: Request, res: Response): Promise<Resp
  * POST /api/sequencer/contacts
  * Create an individual contact in the main Lead table.
  * The contact becomes available in the campaign creation wizard's "From Lead Database" tab.
- * Runs through the lead health gate — RED leads (disposable, role, etc.) are rejected.
+ * Runs through the lead health gate - RED leads (disposable, role, etc.) are rejected.
  */
 export const createContact = async (req: Request, res: Response): Promise<Response> => {
     try {
@@ -511,7 +511,7 @@ export const createContact = async (req: Request, res: Response): Promise<Respon
             return res.status(409).json({ success: false, error: 'A contact with this email already exists' });
         }
 
-        // Health gate — block RED leads at creation time
+        // Health gate - block RED leads at creation time
         const health = await classifyLeadHealth(emailLower).catch(() => ({
             classification: 'yellow' as const,
             reasons: ['Health check failed'],
@@ -529,7 +529,7 @@ export const createContact = async (req: Request, res: Response): Promise<Respon
             [first_name?.trim(), last_name?.trim()].filter(Boolean).join(' ') ||
             null;
 
-        // Persona is a required routing bucket — derive from title if not explicitly provided.
+        // Persona is a required routing bucket - derive from title if not explicitly provided.
         // This keeps the UX simple (one field instead of two) while preserving routing functionality.
         const finalPersona = persona?.trim()
             || title?.trim().toLowerCase()
@@ -587,7 +587,7 @@ export const createContact = async (req: Request, res: Response): Promise<Respon
 /**
  * POST /api/sequencer/contacts/bulk
  * Bulk-import contacts from a CSV. Each row runs through the same health gate
- * as single-add — RED leads are rejected, duplicates are skipped, valid ones
+ * as single-add - RED leads are rejected, duplicates are skipped, valid ones
  * are upserted into the Lead table.
  *
  * Body: { contacts: [{ email, first_name?, last_name?, full_name?, company?,
@@ -630,7 +630,7 @@ export const bulkCreateContacts = async (req: Request, res: Response): Promise<R
         });
         const existingSet = new Set(existingLeads.map((l) => l.email));
 
-        // Process each contact — run health gate, upsert Lead. Keeps the flow identical
+        // Process each contact - run health gate, upsert Lead. Keeps the flow identical
         // to single-add so duplicates/invalid emails get the same treatment.
         for (const c of contacts as any[]) {
             const rawEmail = typeof c?.email === 'string' ? c.email.trim().toLowerCase() : '';
@@ -682,7 +682,7 @@ export const bulkCreateContacts = async (req: Request, res: Response): Promise<R
 
                 if (existingSet.has(rawEmail)) {
                     duplicates++;
-                    // Update non-destructive fields only — don't override validation/campaign assignments
+                    // Update non-destructive fields only - don't override validation/campaign assignments
                     await prisma.lead.update({
                         where: { organization_id_email: { organization_id: orgId, email: rawEmail } },
                         data: {
@@ -789,7 +789,7 @@ export const validateContacts = async (req: Request, res: Response): Promise<Res
     try {
         const orgId = getOrgId(req);
         // Accept EITHER explicit lead ids OR a single tagId. tagId mode resolves
-        // to "every lead in this org carrying that tag" — used by the Email
+        // to "every lead in this org carrying that tag" - used by the Email
         // Validation page's "Validate by tag" flow. Either way, downstream
         // logic operates on a concrete list of lead ids.
         let ids: string[] | undefined = Array.isArray(req.body?.ids) ? req.body.ids : undefined;
@@ -822,7 +822,7 @@ export const validateContacts = async (req: Request, res: Response): Promise<Res
         const tierLimits = TIER_LIMITS[tier] || TIER_LIMITS.trial;
 
         // Count validations already used this calendar month (ValidationAttempt is
-        // the unified record — covers ingestion, batch, and single-lead flows).
+        // the unified record - covers ingestion, batch, and single-lead flows).
         const monthStart = new Date();
         monthStart.setDate(1);
         monthStart.setHours(0, 0, 0, 0);
@@ -877,7 +877,7 @@ export const validateContacts = async (req: Request, res: Response): Promise<Res
             try {
                 const result = await validateLeadEmail(orgId, lead.email, tier);
 
-                // ESP classification (best-effort — matches batch flow)
+                // ESP classification (best-effort - matches batch flow)
                 const domain = lead.email.split('@')[1];
                 let espBucket: string | null = null;
                 try {
@@ -896,7 +896,7 @@ export const validateContacts = async (req: Request, res: Response): Promise<Res
                 }
 
                 // Persist validation fields on the Lead (ValidationAttempt is created
-                // inside validateLeadEmail — that's what drives credit counting).
+                // inside validateLeadEmail - that's what drives credit counting).
                 await prisma.lead.update({
                     where: { id: lead.id },
                     data: {
@@ -1230,7 +1230,7 @@ export const assignToCampaign = async (req: Request, res: Response): Promise<Res
             return res.status(400).json({ success: false, error: 'campaign_id is required' });
         }
 
-        // Default ON — safer for cold-email reputation. Operators can disable
+        // Default ON - safer for cold-email reputation. Operators can disable
         // with explicit false (e.g., intentional BDR→AE handoff).
         const excludeDualEnrolled = exclude_dual_enrolled !== false;
 
@@ -1266,7 +1266,7 @@ export const assignToCampaign = async (req: Request, res: Response): Promise<Res
         );
         const excludedDualEnrolled = excludedLeadIds.size;
 
-        // Block RED leads at assignment time — consistent with campaign creation flow
+        // Block RED leads at assignment time - consistent with campaign creation flow
         const eligible = leads.filter((l) =>
             l.health_classification !== 'red' &&
             !excludedLeadIds.has(l.id)
@@ -1310,7 +1310,7 @@ export const assignToCampaign = async (req: Request, res: Response): Promise<Res
             // updateMany covers the happy path in one round-trip; the entityStateService
             // transition is then applied per-lead so state-transition audit + history
             // recording stays correct. Failures here are non-critical to the sequencer
-            // assignment — they only affect the Protection-side view, so each step is
+            // assignment - they only affect the Protection-side view, so each step is
             // guarded independently.
             await prisma.lead.updateMany({
                 where: { id: { in: eligible.map((l) => l.id) }, organization_id: orgId },

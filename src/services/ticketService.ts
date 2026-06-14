@@ -20,7 +20,7 @@ function getTransporter() {
     const pass = process.env.SMTP_PASS;
 
     if (!host || !user || !pass) {
-        logger.warn('SMTP not configured — ticket emails will be skipped');
+        logger.warn('SMTP not configured - ticket emails will be skipped');
         return null;
     }
 

@@ -52,7 +52,7 @@ let rateLimiters: Record<string, RateLimiterAbstract> = {};
  * When Redis is available, each tier uses RateLimiterRedis as the primary
  * store with a RateLimiterMemory `insuranceLimiter` as fallback. The
  * library transparently delegates to the insurance limiter on Redis errors
- * — without it, a Redis outage causes every consume() to reject, which
+ * - without it, a Redis outage causes every consume() to reject, which
  * our catch block then treats as "rate limit exceeded" and 429s every
  * authenticated request. That bricks the API for the duration of the
  * outage. Insurance keeps things working (with per-process state) until
@@ -114,7 +114,7 @@ export async function rateLimit(req: Request, res: Response, next: NextFunction)
     const limiter = rateLimiters[tier] || rateLimiters['general'];
 
     if (!limiter) {
-        // Limiters not initialized yet — allow request
+        // Limiters not initialized yet - allow request
         next();
         return;
     }
@@ -132,14 +132,14 @@ export async function rateLimit(req: Request, res: Response, next: NextFunction)
         next();
     } catch (rejRes: any) {
         // rate-limiter-flexible distinguishes two reject shapes:
-        //   - RateLimiterRes (real rate-limit hit) — has msBeforeNext + remainingPoints
-        //   - Error (storage/Redis failure) — opaque
+        //   - RateLimiterRes (real rate-limit hit) - has msBeforeNext + remainingPoints
+        //   - Error (storage/Redis failure) - opaque
         // Without this check, a Redis outage rejects with an Error; our old
         // code would interpret that as "rate limit exceeded" and 429 every
         // request. Fail open for storage errors so the API stays up.
         const isRateLimitHit = rejRes && typeof rejRes.msBeforeNext === 'number';
         if (!isRateLimitHit) {
-            logger.warn('[RATE-LIMIT] Limiter store error — failing open', {
+            logger.warn('[RATE-LIMIT] Limiter store error - failing open', {
                 tier,
                 err: rejRes instanceof Error ? rejRes.message : String(rejRes),
             });
@@ -187,7 +187,7 @@ function getClientIdentifier(req: Request): string {
         try {
             const decoded = jwt.verify(token, JWT_SECRET) as { userId?: string };
             if (decoded?.userId) return `user:${decoded.userId}`;
-        } catch { /* not a JWT — treat as API key */ }
+        } catch { /* not a JWT - treat as API key */ }
         return `key:${token.substring(0, 16)}`;
     }
 

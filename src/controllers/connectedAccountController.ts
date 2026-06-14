@@ -44,7 +44,7 @@ export const listAccounts = async (req: Request, res: Response): Promise<Respons
         });
 
         const data = accounts.map((a) => {
-            // ── Protection status — from shadow Mailbox (unified Option B) ──
+            // ── Protection status - from shadow Mailbox (unified Option B) ──
             // status: 'healthy' | 'warning' | 'paused'
             // recovery_phase: 'healthy' | 'paused' | 'quarantine' | 'restricted_send' | 'warm_recovery'
             const mailboxStatus = a.mailbox?.status || 'healthy';
@@ -70,11 +70,11 @@ export const listAccounts = async (req: Request, res: Response): Promise<Respons
 
             // Pick the disabled reason for UI tooltip
             let disabledReason: string | null = null;
-            if (isConnectionBroken) disabledReason = `Connection ${a.connection_status} — reconnect mailbox`;
+            if (isConnectionBroken) disabledReason = `Connection ${a.connection_status} - reconnect mailbox`;
             else if (recoveryPhase === 'paused' || mailboxStatus === 'paused') disabledReason = 'Mailbox paused by Protection layer';
-            else if (recoveryPhase === 'quarantine') disabledReason = 'Mailbox in quarantine — healing in progress';
-            else if (recoveryPhase === 'restricted_send') disabledReason = 'Mailbox in restricted sending — healing phase';
-            else if (recoveryPhase === 'warm_recovery') disabledReason = 'Mailbox in warm recovery — healing phase';
+            else if (recoveryPhase === 'quarantine') disabledReason = 'Mailbox in quarantine - healing in progress';
+            else if (recoveryPhase === 'restricted_send') disabledReason = 'Mailbox in restricted sending - healing phase';
+            else if (recoveryPhase === 'warm_recovery') disabledReason = 'Mailbox in warm recovery - healing phase';
 
             return {
                 id: a.id,
@@ -89,7 +89,7 @@ export const listAccounts = async (req: Request, res: Response): Promise<Respons
                 warmup_complete: a.warmup_complete,
                 signature_html: a.signature_html,
                 campaign_count: a.campaignAccounts.length,
-                // How this mailbox got into Superkabe — drives the Source
+                // How this mailbox got into Superkabe - drives the Source
                 // column + filter on the mailboxes page.
                 source: a.source,
                 // Protection + utilization signals for campaign mailbox picker
@@ -130,7 +130,7 @@ export const createAccount = async (req: Request, res: Response): Promise<Respon
             return res.status(400).json({ success: false, error: 'email and provider are required' });
         }
 
-        // Mailbox count is unmetered — connect as many as you like at any tier.
+        // Mailbox count is unmetered - connect as many as you like at any tier.
         // Use the org's Sequencer default if no explicit value provided
         const orgSettings = await getSequencerSettings(orgId);
         const effectiveDailyLimit = dailySendLimit || orgSettings.default_daily_limit;
@@ -142,7 +142,7 @@ export const createAccount = async (req: Request, res: Response): Promise<Respon
             provider,
             daily_send_limit: effectiveDailyLimit,
             // Single-mailbox connections from the "Connect Mailbox" modal
-            // are tagged 'manual' regardless of OAuth/SMTP — the OAuth case
+            // are tagged 'manual' regardless of OAuth/SMTP - the OAuth case
             // is overridden later in the OAuth callback (oauthConnectController).
             source: 'manual',
         };
@@ -156,7 +156,7 @@ export const createAccount = async (req: Request, res: Response): Promise<Respon
             data.smtp_port = smtpPort;
             data.smtp_username = smtpUsername;
             // Encrypt at rest. The schema marks this field encrypted but
-            // historic code stored plaintext — this fixes the gap. Consumers
+            // historic code stored plaintext - this fixes the gap. Consumers
             // (emailSendAdapters, imapReplyWorker) tolerate both encrypted
             // and legacy plaintext via isEncrypted() probe so existing rows
             // keep working without migration.
@@ -164,7 +164,7 @@ export const createAccount = async (req: Request, res: Response): Promise<Respon
             data.imap_host = imapHost || null;
             data.imap_port = imapPort || null;
         }
-        // For google/microsoft, OAuth is handled separately — just create the record
+        // For google/microsoft, OAuth is handled separately - just create the record
 
         const account = await prisma.connectedAccount.create({ data });
 
@@ -178,7 +178,7 @@ export const createAccount = async (req: Request, res: Response): Promise<Respon
             });
         } catch (provisionErr: any) {
             logger.error('[ACCOUNTS] Shadow mailbox provisioning failed', provisionErr);
-            // Non-fatal — account is still created. Protection will be degraded until resolved.
+            // Non-fatal - account is still created. Protection will be degraded until resolved.
         }
 
         return res.status(201).json({ success: true, data: account });
@@ -194,7 +194,7 @@ export const createAccount = async (req: Request, res: Response): Promise<Respon
 /**
  * POST /api/sequencer/accounts/bulk
  * Bulk-create connected accounts from a parsed CSV. Each row is validated and
- * created independently — one bad row does NOT abort the batch. Returns a per-
+ * created independently - one bad row does NOT abort the batch. Returns a per-
  * row status array so the frontend can show which rows succeeded and which
  * need attention.
  *
@@ -213,13 +213,13 @@ export const createAccount = async (req: Request, res: Response): Promise<Respon
  *     imapPort?: number
  *   }
  *
- * Tier limits are enforced against the running total — the loop stops issuing
+ * Tier limits are enforced against the running total - the loop stops issuing
  * creates the moment the org would exceed its mailbox cap (rather than rejecting
  * the entire batch). Already-created accounts persist; remaining rows return
  * a `tier_limit` error.
  *
  * google/microsoft rows are accepted but flagged `oauth_pending` since OAuth
- * tokens are obtained interactively — the bulk endpoint creates the
+ * tokens are obtained interactively - the bulk endpoint creates the
  * placeholder ConnectedAccount so the user can click "authorize" later from
  * the accounts list. SMTP rows are immediately usable if credentials work.
  *
@@ -266,7 +266,7 @@ export const bulkCreateAccounts = async (req: Request, res: Response): Promise<R
             return res.status(413).json({ success: false, error: `Too many rows. Max ${MAX_BULK_ROWS} per request.` });
         }
 
-        // Mailbox count is unmetered — no per-row tier-cap check.
+        // Mailbox count is unmetered - no per-row tier-cap check.
         const orgSettings = await getSequencerSettings(orgId);
         const defaultDailyLimit = orgSettings.default_daily_limit;
 
@@ -312,7 +312,7 @@ export const bulkCreateAccounts = async (req: Request, res: Response): Promise<R
                 data.smtp_host = row.smtpHost;
                 data.smtp_port = row.smtpPort;
                 data.smtp_username = row.smtpUsername;
-                // Encrypt at rest — see single-account create handler above.
+                // Encrypt at rest - see single-account create handler above.
                 data.smtp_password = row.smtpPassword ? encrypt(row.smtpPassword) : null;
                 data.imap_host = row.imapHost || null;
                 data.imap_port = row.imapPort || null;
@@ -321,7 +321,7 @@ export const bulkCreateAccounts = async (req: Request, res: Response): Promise<R
             try {
                 const account = await prisma.connectedAccount.create({ data: data as never });
                 // Best-effort shadow Mailbox provisioning. Logged on failure but doesn't
-                // block the row from being marked created — Protection coverage will
+                // block the row from being marked created - Protection coverage will
                 // gracefully recover on the next assessment cycle.
                 try {
                     await provisionMailboxForConnectedAccount({
@@ -391,7 +391,7 @@ export const deleteAccount = async (req: Request, res: Response): Promise<Respon
 
         // Revoke the Google grant before clearing local state. Google's
         // OAuth best-practices: "Revoke tokens as soon as they are no
-        // longer needed." Best-effort — never block deletion on revoke
+        // longer needed." Best-effort - never block deletion on revoke
         // failure (the user always sees an honest UI), but the grant
         // SHOULD be killed on Google's side regardless of our DB state.
         if (account.provider === 'google' && account.refresh_token) {
@@ -402,7 +402,7 @@ export const deleteAccount = async (req: Request, res: Response): Promise<Respon
                 const result = await revokeGoogleToken(refresh);
                 logger.info('[ACCOUNTS] Google revoke outcome', { accountId, revoked: result.revoked, status: result.status });
             } catch (revokeErr) {
-                logger.warn('[ACCOUNTS] Google revoke threw — proceeding with local cleanup', {
+                logger.warn('[ACCOUNTS] Google revoke threw - proceeding with local cleanup', {
                     accountId,
                     error: revokeErr instanceof Error ? revokeErr.message : String(revokeErr),
                 });
@@ -459,7 +459,7 @@ export const updateAccount = async (req: Request, res: Response): Promise<Respon
  * Probe live mailbox credentials. For SMTP-password accounts we run
  * nodemailer.verify() (issues a NOOP + AUTH against the configured host),
  * which catches changed passwords, blocked-by-ESP, and host-down cases
- * before a campaign send fails. OAuth accounts skip the probe — token
+ * before a campaign send fails. OAuth accounts skip the probe - token
  * validity is enforced at refresh time by emailSendAdapters.
  */
 export const testConnection = async (req: Request, res: Response): Promise<Response> => {
@@ -477,7 +477,7 @@ export const testConnection = async (req: Request, res: Response): Promise<Respo
             return res.json({
                 success: true,
                 status: 'oauth',
-                message: 'OAuth account — credentials revalidated at send time.',
+                message: 'OAuth account - credentials revalidated at send time.',
             });
         }
 
@@ -523,7 +523,7 @@ export const testConnection = async (req: Request, res: Response): Promise<Respo
  * POST /api/sequencer/accounts/:id/tracking-domain
  * Body: { domain: string | null }
  * Set or clear the per-mailbox custom tracking domain. Setting marks it
- * unverified — the user must call /verify before sends will use it.
+ * unverified - the user must call /verify before sends will use it.
  */
 export const setTrackingDomain = async (req: Request, res: Response): Promise<Response> => {
     try {

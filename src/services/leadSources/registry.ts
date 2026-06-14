@@ -1,5 +1,5 @@
 /**
- * Lead-source provider registry — analogous to services/crm/registry.ts.
+ * Lead-source provider registry - analogous to services/crm/registry.ts.
  * Each provider's factory.ts registers itself at server boot if env
  * vars are set. Workers + controllers look up the right factory here
  * by `connection.provider`.
@@ -12,7 +12,7 @@ const factories = new Map<LeadSourceProvider, LeadSourceClientFactory>();
 
 export function registerLeadSourceProvider(factory: LeadSourceClientFactory): void {
     if (factories.has(factory.provider)) {
-        logger.warn(`[LEAD_SOURCE_REGISTRY] provider ${factory.provider} already registered — overwriting`);
+        logger.warn(`[LEAD_SOURCE_REGISTRY] provider ${factory.provider} already registered - overwriting`);
     }
     factories.set(factory.provider, factory);
     logger.info(`[LEAD_SOURCE_REGISTRY] registered provider ${factory.provider}`);

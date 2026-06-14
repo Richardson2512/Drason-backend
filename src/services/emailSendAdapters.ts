@@ -32,7 +32,7 @@ interface ConnectedAccountInput {
     id: string;
     email: string;
     provider: string;
-    /** Set by the send-queue when fetching mailboxes — required for the
+    /** Set by the send-queue when fetching mailboxes - required for the
      *  Super Sender routing decision. Optional so legacy callers that
      *  build a partial input (transactional sends, tests) still type-check;
      *  routing falls back to native send when missing. */
@@ -100,7 +100,7 @@ export interface SendResult {
     success: boolean;
     messageId?: string;
     error?: string;
-    /** SMTP transcript capture — populated on every send, success or failure.
+    /** SMTP transcript capture - populated on every send, success or failure.
      *  Used by sendQueueService to convert 5xx synchronous bounces into
      *  BounceEvent rows in real time (no waiting for async DSN). */
     smtpCode?: string;        // e.g. "550", "5.7.1"
@@ -136,7 +136,7 @@ function extractSmtp(err: any): { smtpCode?: string; smtpResponse?: string } {
 export { extractSmtp, clipResponse };
 
 // ────────────────────────────────────────────────────────────────────
-// Transporter cache — reuse connections per account to avoid
+// Transporter cache - reuse connections per account to avoid
 // reconnecting on every email
 // ────────────────────────────────────────────────────────────────────
 
@@ -192,13 +192,13 @@ export function clearTransporterCache(accountId: string): void {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// SMTP Adapter — the real one
+// SMTP Adapter - the real one
 // ────────────────────────────────────────────────────────────────────
 
 export interface SendOptions {
     inReplyTo?: string | null;
     references?: string | null;
-    /** RFC 2369 + RFC 8058 unsubscribe URL — populates List-Unsubscribe headers
+    /** RFC 2369 + RFC 8058 unsubscribe URL - populates List-Unsubscribe headers
      *  required by Gmail's bulk-sender requirements (Feb 2024) and Yahoo's
      *  parallel rules. Null/undefined = no headers (transactional mail). */
     unsubscribeUrl?: string | null;
@@ -224,7 +224,7 @@ export async function sendViaSMTP(
     // Build the MIME message ONCE so we can both (a) send it via SMTP and
     // (b) APPEND the byte-identical message to the operator's Sent folder
     // afterwards. Nodemailer's internal MailComposer is what `sendMail`
-    // uses under the hood — using it directly here gives us the raw bytes.
+    // uses under the hood - using it directly here gives us the raw bytes.
     const mailOptions = {
         from: account.email,
         to,
@@ -235,7 +235,7 @@ export async function sendViaSMTP(
         ...(options?.references ? { references: options.references } : {}),
         headers: {
             'X-Mailer': 'Superkabe/1.0',
-            // RFC 2369 + RFC 8058 one-click unsubscribe headers — Gmail/Yahoo
+            // RFC 2369 + RFC 8058 one-click unsubscribe headers - Gmail/Yahoo
             // bulk-sender compliance.
             ...(options?.unsubscribeUrl
                 ? {
@@ -270,7 +270,7 @@ export async function sendViaSMTP(
 
     // Fire-and-forget: append the same message bytes to the operator's
     // Sent folder so it appears in their Gmail/Outlook UI under "Sent".
-    // SMTP alone doesn't do this — Gmail's web UI only shows messages
+    // SMTP alone doesn't do this - Gmail's web UI only shows messages
     // the server placed there directly. Failure here NEVER affects the
     // send result; we just log and move on.
     if (account.smtp_password && account.smtp_host) {
@@ -284,7 +284,7 @@ export async function sendViaSMTP(
             const username = account.smtp_username || account.email;
             // The smtp_password field stores the encrypted credential; we
             // need plaintext for IMAP auth. The transporter cache holds
-            // the same plaintext but isn't exposed — decrypt here.
+            // the same plaintext but isn't exposed - decrypt here.
             const plaintextPass = readSmtpPassword(account.smtp_password);
             if (plaintextPass) {
                 appendToSentFolder({
@@ -304,10 +304,10 @@ export async function sendViaSMTP(
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Gmail Adapter — prefers SMTP with app password
+// Gmail Adapter - prefers SMTP with app password
 //
 // Send priority is intentionally SMTP-FIRST. Reasons:
-//   1. SMTP requires no Restricted-scope verification or CASA — Google
+//   1. SMTP requires no Restricted-scope verification or CASA - Google
 //      treats SMTP via app password as a normal authenticated user.
 //   2. Inbox placement is identical (same Gmail outbound MTA either way).
 //   3. The Gmail API path is grandfathered for legacy users who connected
@@ -350,14 +350,14 @@ export async function sendViaGmail(
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Microsoft Adapter — prefers SMTP with app password
+// Microsoft Adapter - prefers SMTP with app password
 //
 // Same priority logic as Gmail: SMTP first (no Microsoft Graph permission
 // review needed), Graph API fallback for legacy connections.
 //
 // NOTE: Microsoft 365 SMTP AUTH must be enabled at the tenant level by
 // the Workspace admin. Some enterprise tenants disable it for security
-// policy reasons — those will fall through to the Graph API path.
+// policy reasons - those will fall through to the Graph API path.
 // ────────────────────────────────────────────────────────────────────
 
 export async function sendViaMicrosoft(
@@ -404,13 +404,13 @@ export async function sendEmail(
     options?: SendOptions
 ): Promise<SendResult> {
     try {
-        // Super Sender routing — if the workspace owns an active dedicated
+        // Super Sender routing - if the workspace owns an active dedicated
         // IP and the mailbox is SES-eligible (SMTP/relay, not OAuth), we
         // intercept and send through SES with the IP's pool. Daily-cap is
         // claimed atomically inside resolveRouteForSend; on cap exhaustion
         // or no IP we fall through to the native transport untouched.
         // Failure on the SES path refunds the cap claim and falls back to
-        // native — never blocks the send.
+        // native - never blocks the send.
         if (account.organization_id) {
             const { resolveRouteForSend, refundCapClaim } = await import('./superSenderRouting');
             const decision = await resolveRouteForSend({

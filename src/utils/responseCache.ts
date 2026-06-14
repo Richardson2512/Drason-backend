@@ -4,10 +4,10 @@
  * Designed for heavy dashboard endpoints that hit multiple DB queries.
  * Each cache entry is scoped to an organization ID to prevent data leaks.
  *
- * Primary backend: Redis (shared across backend replicas — safe for horizontal
+ * Primary backend: Redis (shared across backend replicas - safe for horizontal
  * scaling). Falls back to an in-process Map when Redis is unavailable (dev,
  * or when the Redis connection is temporarily down), so a cache miss or
- * network glitch never breaks the request — it just turns into a DB hit.
+ * network glitch never breaks the request - it just turns into a DB hit.
  */
 
 import { getRedisClient } from './redis';
@@ -53,7 +53,7 @@ export async function cached<T>(
                 return JSON.parse(hit) as T;
             }
         } catch (err) {
-            logger.warn(`[CACHE] Redis GET failed for ${rKey} — falling back`, { error: (err as Error).message });
+            logger.warn(`[CACHE] Redis GET failed for ${rKey} - falling back`, { error: (err as Error).message });
         }
     }
 
@@ -63,7 +63,7 @@ export async function cached<T>(
         return local.data as T;
     }
 
-    // 3. Miss — call factory and populate both layers.
+    // 3. Miss - call factory and populate both layers.
     const data = await factory();
     const serialized = JSON.stringify(data);
 
@@ -71,7 +71,7 @@ export async function cached<T>(
         try {
             await redis.set(rKey, serialized, 'EX', ttlSec);
         } catch (err) {
-            logger.warn(`[CACHE] Redis SET failed for ${rKey} — local only`, { error: (err as Error).message });
+            logger.warn(`[CACHE] Redis SET failed for ${rKey} - local only`, { error: (err as Error).message });
         }
     }
     localCache.set(lKey, { data, expiresAt: Date.now() + ttlMs });
@@ -80,7 +80,7 @@ export async function cached<T>(
 
 /**
  * Invalidate all cache entries for an organization.
- * Uses scanStream on Redis (never KEYS — non-blocking iteration) and wipes
+ * Uses scanStream on Redis (never KEYS - non-blocking iteration) and wipes
  * matching local-cache entries.
  */
 export async function invalidateOrg(orgId: string): Promise<void> {
@@ -131,7 +131,7 @@ export async function invalidateKey(orgId: string, key: string): Promise<void> {
     }
 }
 
-// Periodic cleanup of expired local entries (every 60 seconds) — Redis entries
+// Periodic cleanup of expired local entries (every 60 seconds) - Redis entries
 // expire automatically via EX, so we only need this for the in-process fallback.
 setInterval(() => {
     const now = Date.now();

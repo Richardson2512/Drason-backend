@@ -322,7 +322,7 @@ export const resolveStalledCampaign = async (req: Request, res: Response) => {
                 return res.status(400).json({ success: false, error: 'Must provide selectedMailboxIds' });
             }
 
-            // Native sending — connect mailboxes to the campaign in DB. The
+            // Native sending - connect mailboxes to the campaign in DB. The
             // dispatcher picks them up on its next 60s tick.
             const successCount = selectedMailboxIds.length;
             const prevCampaign = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { status: true } });
@@ -349,7 +349,7 @@ export const resolveStalledCampaign = async (req: Request, res: Response) => {
                 }
             });
 
-            // Native sending — Campaign.status='active' is enough; the
+            // Native sending - Campaign.status='active' is enough; the
             // dispatcher resumes on its next 60s tick.
 
             await logAction({
@@ -383,7 +383,7 @@ export const resolveStalledCampaign = async (req: Request, res: Response) => {
                 return res.json({ success: true, message: 'No active leads to reroute' });
             }
 
-            // Native sending — reroute by re-pointing Lead.assigned_campaign_id
+            // Native sending - reroute by re-pointing Lead.assigned_campaign_id
             // and creating a CampaignLead row in the target campaign. The
             // dispatcher picks up the new enrollment on its next tick.
             let reroutedCount = 0;
@@ -597,7 +597,7 @@ export const archiveCampaign = async (req: Request, res: Response) => {
             }
         });
 
-        // Native sending — Campaign.status='paused' (set above by entityState
+        // Native sending - Campaign.status='paused' (set above by entityState
         // transition) is enough; the dispatcher excludes archived campaigns.
 
         await logAction({

@@ -16,7 +16,7 @@ const AUTH_TAG_LENGTH = 16;
 const SALT_LENGTH = 32;
 const KEY_LENGTH = 32;
 
-// Legacy salt used in v1 format — only for decrypting old data
+// Legacy salt used in v1 format - only for decrypting old data
 const LEGACY_FIXED_SALT = 'fixed-salt';
 
 /**
@@ -108,7 +108,7 @@ export function decrypt(encryptedData: string): string {
 }
 
 /**
- * Check if a value is encrypted (has the expected format — v1 or v2)
+ * Check if a value is encrypted (has the expected format - v1 or v2)
  */
 export function isEncrypted(value: string): boolean {
     if (!value) return false;

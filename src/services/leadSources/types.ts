@@ -1,8 +1,8 @@
 /**
- * Lead-source integration types — Phase 5.
+ * Lead-source integration types - Phase 5.
  *
  * Provider-blind interfaces shared across Apollo (Phase 5) and ZoomInfo
- * (Phase 6+). Lead sources are read-only — we pull contacts; we don't
+ * (Phase 6+). Lead sources are read-only - we pull contacts; we don't
  * write activity back. That's the structural difference from CrmClient.
  */
 
@@ -10,7 +10,7 @@ export type LeadSourceProvider = 'apollo' | 'zoominfo';
 
 export type LeadSourceConnectionStatus = 'active' | 'error' | 'expired' | 'disconnected';
 
-/** Source descriptor — what the user pasted/picked. Drives the import path. */
+/** Source descriptor - what the user pasted/picked. Drives the import path. */
 export type LeadSourceFilter =
     | { kind: 'people_search'; params: Record<string, unknown> }
     | { kind: 'saved_list'; listId: string }
@@ -38,13 +38,13 @@ export interface LeadSourceContact {
 /** Paginated contact result from a list/search call. */
 export interface LeadSourcePagedContacts {
     contacts: LeadSourceContact[];
-    /** Opaque cursor — page number for Apollo, token for ZoomInfo. */
+    /** Opaque cursor - page number for Apollo, token for ZoomInfo. */
     nextCursor: string | null;
-    /** Best-effort total — used for the import preview's "estimated" count. */
+    /** Best-effort total - used for the import preview's "estimated" count. */
     totalCount?: number | null;
 }
 
-/** Account-info for the dashboard — workspace name, credit balance. */
+/** Account-info for the dashboard - workspace name, credit balance. */
 export interface LeadSourceAccountInfo {
     externalAccountId: string;
     externalAccountName: string;
@@ -90,7 +90,7 @@ export interface LeadSourceClient {
     estimateContactCount(filter: LeadSourceFilter): Promise<number | null>;
 }
 
-/** Provider factory — each provider exports one of these. */
+/** Provider factory - each provider exports one of these. */
 export interface LeadSourceClientFactory {
     readonly provider: LeadSourceProvider;
     create(opts: { apiKey: string }): LeadSourceClient;

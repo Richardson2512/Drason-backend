@@ -8,7 +8,7 @@
  * here orchestrates more API calls. The throttle inside the service caps
  * at 4 req/sec to stay under Scaled Mail's documented 5/sec ceiling.
  *
- * The mailbox response schema is undocumented publicly — see the comment
+ * The mailbox response schema is undocumented publicly - see the comment
  * block at the top of scaledMailService.ts for how field-name aliases
  * are handled. If a real customer's listing returns 0 mailboxes despite
  * having domains with provisioned mailboxes, check the [SCALEDMAIL] debug
@@ -31,7 +31,7 @@ export const scaledMailProvider: MailboxImportProvider = {
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             // validateScaledMailKey throws our standard friendly message
-            // on 401/403 — treat that as "key invalid" so the caller can
+            // on 401/403 - treat that as "key invalid" so the caller can
             // show a clean error instead of a 500. Genuine transport
             // failures (rate-limit, DNS, timeout) re-throw.
             if (msg.toLowerCase().includes('rejected the api key')) return false;

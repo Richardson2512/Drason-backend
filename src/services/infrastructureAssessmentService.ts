@@ -133,7 +133,7 @@ const MAILBOX_THRESHOLDS = {
     MIN_SENDS_FOR_WARNING: 20,      // Minimum sends before warning (early window, kept local)
 };
 
-// CAMPAIGN_THRESHOLDS removed — campaigns are NEVER paused based on bounce rate.
+// CAMPAIGN_THRESHOLDS removed - campaigns are NEVER paused based on bounce rate.
 // Campaigns pause only when ALL mailboxes are paused/removed.
 // See campaignHealthService.ts for the canonical rule.
 
@@ -157,8 +157,8 @@ interface DomainDNSResult {
 
 /**
  * Resolve a domain's MX records. Returns sorted [{priority, exchange}].
- * Treats NXDOMAIN / no-records as "no MX" (empty array, mxValid=false) — not
- * a hard error — so the assessment continues for misconfigured domains.
+ * Treats NXDOMAIN / no-records as "no MX" (empty array, mxValid=false) - not
+ * a hard error - so the assessment continues for misconfigured domains.
  */
 async function resolveMxRecords(domainName: string): Promise<Array<{ priority: number; exchange: string }>> {
     try {
@@ -169,7 +169,7 @@ async function resolveMxRecords(domainName: string): Promise<Array<{ priority: n
     } catch (err: unknown) {
         const code = (err as NodeJS.ErrnoException)?.code;
         if (code === 'ENODATA' || code === 'ENOTFOUND' || code === 'NXDOMAIN') return [];
-        // Transient errors (e.g. SERVFAIL) — log and treat as empty so the
+        // Transient errors (e.g. SERVFAIL) - log and treat as empty so the
         // domain isn't penalised for a brittle resolver. The next assessment
         // run will retry.
         logger.warn(`[DNS] MX lookup failed for ${domainName}`, { code, error: (err as Error).message });
@@ -267,7 +267,7 @@ async function enforceMailboxPause(
         message: `Mailbox \`${mailbox.email}\` has been paused during infrastructure assessment.\n*Reason:* ${reason}`,
     }).catch(err => logger.warn('[ASSESSMENT] Non-fatal Slack alert error', { error: String(err) }));
 
-    // Native sending — Mailbox.status='paused' is enforced by sendQueueService
+    // Native sending - Mailbox.status='paused' is enforced by sendQueueService
     // on its next 60s tick. No external platform call needed.
     const campaigns = await prisma.campaign.findMany({
         where: { mailboxes: { some: { id: mailbox.id } } },
@@ -308,7 +308,7 @@ async function checkSPF(domainName: string): Promise<boolean | null> {
         if (err.code === 'ENODATA' || err.code === 'ENOTFOUND') {
             return false;
         }
-        // DNS failure — cannot determine
+        // DNS failure - cannot determine
         return null;
     }
 }
@@ -330,7 +330,7 @@ async function checkDKIM(domainName: string): Promise<boolean | null> {
         }
     }
 
-    // None of the selectors matched — DKIM not configured on known selectors
+    // None of the selectors matched - DKIM not configured on known selectors
     return false;
 }
 
@@ -493,7 +493,7 @@ export async function assessInfrastructure(
         const dnsblLists = await dnsblService.getListsForRun('comprehensive');
         dnsblService.clearIpCache(); // Fresh cache for each assessment run
 
-        // Assess all domains — batch in groups of 10 to avoid overwhelming DNS resolvers
+        // Assess all domains - batch in groups of 10 to avoid overwhelming DNS resolvers
         const DOMAIN_BATCH_SIZE = 10;
         const dnsResults: PromiseSettledResult<DomainDNSResult>[] = [];
         for (let b = 0; b < domains.length; b += DOMAIN_BATCH_SIZE) {
@@ -509,7 +509,7 @@ export async function assessInfrastructure(
             const settled = dnsResults[i];
 
             if (settled.status === 'rejected') {
-                // Entire DNS assessment failed for this domain — treat conservatively as warning
+                // Entire DNS assessment failed for this domain - treat conservatively as warning
                 findings.push({
                     severity: 'warning',
                     category: 'domain_dns',
@@ -518,7 +518,7 @@ export async function assessInfrastructure(
                     entityName: domain.domain,
                     title: `DNS Assessment Failed: ${domain.domain}`,
                     details: `Could not assess DNS for this domain. Trigger a manual re-assessment.`,
-                    message: `Domain ${domain.domain}: DNS assessment failed — ${settled.reason?.message || 'unknown error'}.`,
+                    message: `Domain ${domain.domain}: DNS assessment failed - ${settled.reason?.message || 'unknown error'}.`,
                     remediation: `Verify DNS is accessible and trigger a manual re-assessment.`,
                 });
                 domainSummary.warning++;
@@ -530,7 +530,7 @@ export async function assessInfrastructure(
             // Determine domain state from DNS results
             let domainState = 'healthy';
 
-            // Check blacklists — tier-aware pause logic via dnsblService
+            // Check blacklists - tier-aware pause logic via dnsblService
             const dnsblCheck = dnsResult._dnsblCheckResult;
             if (dnsblCheck) {
                 const { shouldPause, reason } = dnsblService.isBlockingBlacklisted(dnsblCheck.results, dnsblLists);
@@ -553,7 +553,7 @@ export async function assessInfrastructure(
                         remediation: `Visit the blacklist removal pages and submit a delisting request. After confirmed removal, trigger a manual re-assessment.`,
                     });
                 } else if (dnsblCheck.summary.total_listed > 0) {
-                    // Listed on minor lists only — warning, no pause
+                    // Listed on minor lists only - warning, no pause
                     if (domainState === 'healthy') domainState = 'warning';
                     const minorListed = dnsblCheck.results
                         .filter(r => r.status === 'CONFIRMED' && r.tier === 'minor')
@@ -589,7 +589,7 @@ export async function assessInfrastructure(
                     });
                 }
             } else {
-                // No DNSBL check was performed — legacy fallback
+                // No DNSBL check was performed - legacy fallback
                 const hasConfirmedBlacklist = Object.values(dnsResult.blacklistResults)
                     .some(s => s === 'CONFIRMED');
                 if (hasConfirmedBlacklist) {
@@ -634,7 +634,7 @@ export async function assessInfrastructure(
                     entityId: domain.id,
                     entityName: domain.domain,
                     title: `SPF Check Failed: ${domain.domain}`,
-                    details: `DNS unreachable — cannot verify SPF. Trigger manual re-assessment.`,
+                    details: `DNS unreachable - cannot verify SPF. Trigger manual re-assessment.`,
                     message: `Domain ${domain.domain}: SPF record check failed (DNS unreachable).`,
                     remediation: `Verify DNS configuration is accessible. Trigger manual re-assessment.`,
                 });
@@ -741,7 +741,7 @@ export async function assessInfrastructure(
                     remediation: `Re-authorize this email account in Smartlead → Email Accounts → Reconnect.`,
                 });
 
-                // Force paused via state machine — skip bounce rate logic entirely
+                // Force paused via state machine - skip bounce rate logic entirely
                 if (mailbox.status !== 'paused') {
                     const pauseReason = `Connection failed: SMTP=${mailbox.smtp_status}, IMAP=${mailbox.imap_status}`;
                     await entityStateService.setInitialMailboxStatus(
@@ -818,7 +818,7 @@ export async function assessInfrastructure(
 
             // NOTE: Domain-health ceiling removed. Mailboxes are assessed independently
             // on their own bounce metrics. A domain DNS issue does not mean the mailbox
-            // itself is unhealthy — the mailbox status should reflect its own sending health.
+            // itself is unhealthy - the mailbox status should reflect its own sending health.
 
             // Update operational fields
             await prisma.mailbox.update({
@@ -842,7 +842,7 @@ export async function assessInfrastructure(
                 }
             }
 
-            // Sending-IP blacklist findings — emitted only when the IP-blacklist
+            // Sending-IP blacklist findings - emitted only when the IP-blacklist
             // worker has populated ip_blacklist_results AND there's at least one
             // critical or major listing. These are mailbox-scoped (not domain) so
             // a single SMTP relay's bad IP doesn't drag every domain into warning.
@@ -903,7 +903,7 @@ export async function assessInfrastructure(
             //       Campaigns warn when >50% of mailboxes are degraded.
             if (campaignState === 'active') {
                 if (campaign.mailboxes.length === 0) {
-                    // No mailboxes — campaign cannot send
+                    // No mailboxes - campaign cannot send
                     campaignState = 'paused';
                     findings.push({
                         severity: 'critical',
@@ -925,7 +925,7 @@ export async function assessInfrastructure(
                     );
 
                     if (healthyMailboxes.length === 0) {
-                        // ALL mailboxes paused/removed — pause campaign
+                        // ALL mailboxes paused/removed - pause campaign
                         campaignState = 'paused';
                         findings.push({
                             severity: 'critical',
@@ -939,7 +939,7 @@ export async function assessInfrastructure(
                             remediation: `Resolve mailbox health issues. Campaign will resume when healthy mailboxes are available.`,
                         });
                     } else if (pausedMailboxes.length > campaign.mailboxes.length * 0.5) {
-                        // >50% mailboxes degraded — warn
+                        // >50% mailboxes degraded - warn
                         campaignState = 'warning';
                         findings.push({
                             severity: 'warning',
@@ -1082,7 +1082,7 @@ export async function assessInfrastructure(
         // ── Step 10: Notify user of assessment results ──
         try {
             // Title and type align: a "Complete ✅" notification framed as
-            // ERROR (red) is confusing — the run *did* succeed, the findings
+            // ERROR (red) is confusing - the run *did* succeed, the findings
             // it surfaced are what's red. Pick a title that matches the
             // urgency the icon implies.
             const notifType = criticalCount > 0 ? 'ERROR' as const : warningCount > 0 ? 'WARNING' as const : 'SUCCESS' as const;
@@ -1123,7 +1123,7 @@ export async function assessInfrastructure(
             await notificationService.createNotification(organizationId, {
                 type: 'ERROR',
                 title: 'Infrastructure Assessment Failed',
-                message: `The infrastructure assessment could not be completed: ${error.message}. The execution gate remains locked — trigger a manual reassessment from the Infrastructure page.`,
+                message: `The infrastructure assessment could not be completed: ${error.message}. The execution gate remains locked - trigger a manual reassessment from the Infrastructure page.`,
             });
         } catch (notifError) {
             logger.warn('Failed to create assessment failure notification', { organizationId });

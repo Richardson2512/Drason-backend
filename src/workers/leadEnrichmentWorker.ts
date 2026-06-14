@@ -37,7 +37,7 @@ async function findCandidates(): Promise<string[]> {
     //  (a) Leads with company_linkedin_url or website but no LeadProfile row at all
     //  (b) Leads with a 'ready' LeadProfile that's older than TTL
     //
-    // Skipped/failed rows are intentionally NOT auto-retried — the
+    // Skipped/failed rows are intentionally NOT auto-retried - the
     // operator must touch the lead's source URLs to clear them. That
     // prevents a worker spin-loop on permanently-broken pages.
     const missing = await prisma.lead.findMany({
@@ -92,7 +92,7 @@ async function tick(): Promise<void> {
                 );
             }
             // Throttle between leads so Jina doesn't see a burst from us.
-            // Last lead in batch doesn't need to wait — next tick handles pacing.
+            // Last lead in batch doesn't need to wait - next tick handles pacing.
             if (id !== leadIds[leadIds.length - 1] && !stopped) {
                 await new Promise(resolve => setTimeout(resolve, JINA_THROTTLE_MS));
             }

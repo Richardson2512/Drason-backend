@@ -2,7 +2,7 @@
  * Template Folder Controller
  *
  * Flat (non-nested) organizational folders for EmailTemplate rows.
- * Templates with folder_id=null are "Uncategorized" — never auto-moved.
+ * Templates with folder_id=null are "Uncategorized" - never auto-moved.
  */
 
 import { Request, Response } from 'express';
@@ -91,7 +91,7 @@ export const renameFolder = async (req: Request, res: Response): Promise<Respons
 
 /**
  * DELETE /api/sequencer/template-folders/:id
- * Deletes the folder. Templates inside are NOT deleted — schema is SetNull,
+ * Deletes the folder. Templates inside are NOT deleted - schema is SetNull,
  * so they fall back to "Uncategorized." Operator never loses content.
  */
 export const deleteFolder = async (req: Request, res: Response): Promise<Response> => {

@@ -323,7 +323,7 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
             }
         }
 
-        // Assign leads if provided — runs through lead health gate (RED blocked, YELLOW paused, GREEN active)
+        // Assign leads if provided - runs through lead health gate (RED blocked, YELLOW paused, GREEN active)
         let leadsAssigned = 0;
         let leadsBlocked = 0;
         if (Array.isArray(lead_ids) && lead_ids.length > 0) {
@@ -340,7 +340,7 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
 
                 if (health.classification === 'red') {
                     leadsBlocked++;
-                    continue; // Skip — do not add RED leads to campaign
+                    continue; // Skip - do not add RED leads to campaign
                 }
 
                 await prisma.campaignLead.create({
@@ -382,7 +382,7 @@ export const listCampaigns = async (req: Request, res: Response): Promise<Respon
     const orgId = getOrgId(req);
 
     try {
-        // v1 API's sequencer campaigns endpoint — scoped to sequencer rows only.
+        // v1 API's sequencer campaigns endpoint - scoped to sequencer rows only.
         // Legacy platform-synced campaigns have their own lookup path.
         const campaigns = await prisma.campaign.findMany({
             where: { organization_id: orgId },
@@ -845,7 +845,7 @@ export const getAccount = async (req: Request, res: Response): Promise<Response>
 
         const limits = TIER_LIMITS[org.subscription_tier] || TIER_LIMITS.trial;
 
-        // Live usage — only sends + validation credits are metered today.
+        // Live usage - only sends + validation credits are metered today.
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
         const [emailsValidated, monthlySends] = await Promise.all([

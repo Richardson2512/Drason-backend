@@ -5,7 +5,7 @@
  * for every Org that has completed the OAuth connection. Runs at 03:00 UTC
  * to give Google's data the full 24-48h propagation buffer.
  *
- * Idempotent: each fetch upserts on (domain_id, source, date) — running
+ * Idempotent: each fetch upserts on (domain_id, source, date) - running
  * twice on the same day just overwrites with fresh data.
  *
  * Rate limit: Postmaster API is generous (1000 reads/day at the project
@@ -87,7 +87,7 @@ function msUntilNextRun(): number {
         RUN_HOUR_UTC, 0, 0, 0,
     ));
     if (next.getTime() <= now.getTime()) {
-        // Already past today's run time — schedule for tomorrow.
+        // Already past today's run time - schedule for tomorrow.
         next.setUTCDate(next.getUTCDate() + 1);
     }
     return next.getTime() - now.getTime();
@@ -108,7 +108,7 @@ export const schedulePostmasterFetch = (): void => {
         scheduled = setTimeout(tick, msUntilNextRun());
     };
     scheduled = setTimeout(tick, msUntilNextRun());
-    logger.info(`[POSTMASTER-WORKER] Scheduled — next run at ${new Date(Date.now() + msUntilNextRun()).toISOString()}`);
+    logger.info(`[POSTMASTER-WORKER] Scheduled - next run at ${new Date(Date.now() + msUntilNextRun()).toISOString()}`);
 };
 
 export const stopPostmasterFetch = (): void => {

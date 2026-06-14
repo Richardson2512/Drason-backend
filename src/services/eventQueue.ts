@@ -60,7 +60,7 @@ interface QueueStatus {
 // QUEUE & WORKER INSTANCES
 // ============================================================================
 
-// Queue names cannot contain ':' — BullMQ uses ':' internally to build
+// Queue names cannot contain ':' - BullMQ uses ':' internally to build
 // Redis keys (`bull:<queue>:waiting` etc.) and rejects names that would
 // collide with that delimiter. Using '-' instead.
 const QUEUE_NAME = 'drason-events';
@@ -89,7 +89,7 @@ export function initEventQueue(): boolean {
     const redisUrl = process.env.REDIS_URL;
 
     if (!redisUrl) {
-        logger.warn('[QUEUE] REDIS_URL not set — async processing disabled, using sync fallback');
+        logger.warn('[QUEUE] REDIS_URL not set - async processing disabled, using sync fallback');
         return false;
     }
 
@@ -136,7 +136,7 @@ export function initEventQueue(): boolean {
             const isFinalFailure = job && job.attemptsMade >= (job.opts?.attempts || 3);
 
             if (isFinalFailure) {
-                // DLQ — final failure after all retries exhausted
+                // DLQ - final failure after all retries exhausted
                 queueStatus.failedCount++;
                 queueStatus.lastError = err.message;
                 handleDeadLetter(job!, err);
@@ -174,8 +174,8 @@ export function initEventQueue(): boolean {
  */
 export async function enqueueEvent(data: EventJobData): Promise<boolean> {
     if (!eventQueue || !queueStatus.isRunning) {
-        // Sync fallback — process immediately
-        logger.info('[QUEUE] Sync fallback — processing event inline', {
+        // Sync fallback - process immediately
+        logger.info('[QUEUE] Sync fallback - processing event inline', {
             eventId: data.eventId,
             eventType: data.eventType,
         });
@@ -204,7 +204,7 @@ export async function enqueueEvent(data: EventJobData): Promise<boolean> {
 // ============================================================================
 
 /**
- * Process a sent event — unified for all platforms.
+ * Process a sent event - unified for all platforms.
  * Updates lead, campaign, and mailbox counters. Triggers sliding window.
  */
 async function processSentEvent(
@@ -252,7 +252,7 @@ async function processSentEvent(
                 },
             });
         } catch (err: any) {
-            // Best-effort — don't block the main sent processing path
+            // Best-effort - don't block the main sent processing path
             logger.warn(`[QUEUE] Failed to record SendEvent`, { error: err.message, mailboxId, recipientEmail });
         }
     }
@@ -287,7 +287,7 @@ async function processSentEvent(
         }
     }
 
-    // 2. Update campaign total_sent (CRITICAL — was missing for EB/Instantly)
+    // 2. Update campaign total_sent (CRITICAL - was missing for EB/Instantly)
     if (campaignId) {
         try {
             await prisma.campaign.updateMany({
@@ -361,7 +361,7 @@ async function slideWindow(mailboxId: string, organizationId: string): Promise<v
 }
 
 /**
- * Process engagement events (open/click/reply) — unified for all platforms.
+ * Process engagement events (open/click/reply) - unified for all platforms.
  * Updates lead, campaign, and mailbox counters. Recalculates lead score. Logs audit trail.
  */
 async function processEngagementEvent(
@@ -515,7 +515,7 @@ async function processEngagementEvent(
 }
 
 /**
- * Process spam complaint events — unified for all platforms.
+ * Process spam complaint events - unified for all platforms.
  * Blocks lead, increments mailbox spam_count, logs audit trail.
  */
 async function processSpamEvent(
@@ -570,7 +570,7 @@ async function processSpamEvent(
 }
 
 /**
- * Process unsubscribe events — unified for all platforms.
+ * Process unsubscribe events - unified for all platforms.
  * Blocks lead, updates campaign unsubscribed_count, logs audit trail.
  */
 async function processUnsubscribeEvent(
@@ -630,7 +630,7 @@ async function processUnsubscribeEvent(
 
 /**
  * Process a single event job from the queue.
- * This is the BullMQ job handler — runs in the worker.
+ * This is the BullMQ job handler - runs in the worker.
  */
 async function processEventJob(job: Job<EventJobData>): Promise<void> {
     const { eventId, eventType, entityId, campaignId, smtpResponse, recipientEmail } = job.data;
@@ -649,11 +649,11 @@ async function processEventJob(job: Job<EventJobData>): Promise<void> {
 }
 
 /**
- * Inline event processing — shared between async worker and sync fallback.
+ * Inline event processing - shared between async worker and sync fallback.
  */
 async function processEventInline(data: EventJobData): Promise<void> {
     const { eventType, entityId, campaignId, smtpResponse, organizationId } = data;
-    // Normalize email to lowercase — prevents case-mismatch lead lookup failures
+    // Normalize email to lowercase - prevents case-mismatch lead lookup failures
     const recipientEmail = data.recipientEmail?.toLowerCase().trim();
 
     switch (eventType) {
@@ -708,7 +708,7 @@ async function processEventInline(data: EventJobData): Promise<void> {
 // ============================================================================
 
 /**
- * Handle a permanently failed job — all retries exhausted.
+ * Handle a permanently failed job - all retries exhausted.
  * 1. Mark event as failed in DB
  * 2. Create a notification for the organization
  * 3. Log with full context
@@ -882,6 +882,6 @@ function parseRedisUrl(url: string): { host: string; port: number; password?: st
         return options;
     } catch (err) {
         logger.error('[QUEUE] Failed to parse REDIS_URL', err as Error);
-        throw new Error('Invalid REDIS_URL format — cannot connect to Redis');
+        throw new Error('Invalid REDIS_URL format - cannot connect to Redis');
     }
 }

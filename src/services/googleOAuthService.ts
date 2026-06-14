@@ -29,7 +29,7 @@ export interface GoogleUserInfo {
     family_name: string;
     picture: string;
     locale: string;
-    hd?: string; // Hosted domain — present for Google Workspace accounts (e.g., "acmecorp.com")
+    hd?: string; // Hosted domain - present for Google Workspace accounts (e.g., "acmecorp.com")
 }
 
 export interface GoogleTokens {
@@ -42,7 +42,7 @@ export interface GoogleTokens {
 /**
  * Generate Google OAuth authorization URL with state parameter for CSRF
  * protection. The state nonce is persisted in the DB-backed OAuthState
- * table — replaces the earlier in-memory Map which was lost on every
+ * table - replaces the earlier in-memory Map which was lost on every
  * restart and broken under horizontal scale.
  */
 export async function generateAuthUrl(options?: { plan?: string; source?: string }): Promise<{ url: string; state: string }> {
@@ -73,7 +73,7 @@ export async function generateAuthUrl(options?: { plan?: string; source?: string
  * Validate state parameter to prevent CSRF attacks.
  * Returns the stored metadata if valid, or null if invalid/expired.
  *
- * Async because the underlying store is the database — caller must await.
+ * Async because the underlying store is the database - caller must await.
  */
 export async function validateState(state: string): Promise<StateMetadata | null> {
     const result = await consumeState(state, 'user_login_oauth');
@@ -92,7 +92,7 @@ export async function exchangeCodeForTokens(code: string): Promise<GoogleTokens>
             throw new Error('No access token received from Google');
         }
 
-        // Verify the user granted the email scope at minimum — without it
+        // Verify the user granted the email scope at minimum - without it
         // we can't identify them and the login is meaningless. Profile is
         // nice-to-have; email is hard-required.
         const missing = verifyGrantedScopes(tokens.scope, USER_LOGIN_REQUIRED_SCOPES);

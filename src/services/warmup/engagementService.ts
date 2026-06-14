@@ -11,14 +11,14 @@
  * pattern used by imapReplyWorker / imapSentAppendService).
  *
  * Why IMAP and not provider APIs (Gmail / Microsoft Graph):
- *   - SMTP/IMAP is the lowest common denominator — every connected
+ *   - SMTP/IMAP is the lowest common denominator - every connected
  *     mailbox in the pool has IMAP creds.
  *   - Folder semantics work uniformly across Gmail, Outlook, custom
- *     SMTP — we don't have to maintain three branches.
+ *     SMTP - we don't have to maintain three branches.
  *   - The "move from junk to inbox" operation is the IMAP MOVE command,
  *     supported by every modern server.
  *
- * Provider-specific spam-folder names — handled by tryFolders below.
+ * Provider-specific spam-folder names - handled by tryFolders below.
  * Order matters: we look in Junk first (Outlook), then Spam (Gmail's
  * label is exposed to IMAP as a folder), then provider-specific
  * fallbacks.
@@ -126,14 +126,14 @@ export async function locateWarmupMessage(opts: {
     if (!client) return null;
 
     try {
-        // Inbox first — most messages should land here for an opted-in
+        // Inbox first - most messages should land here for an opted-in
         // pool member by definition.
         if (await tryOpenMailbox(client, INBOX_FOLDER_NAME)) {
             const uid = await searchByWarmupHeader(client, opts.headerValue);
             if (uid != null) return { folder: INBOX_FOLDER_NAME, uid, landedIn: 'inbox' };
         }
 
-        // Then promotions (Gmail) — counts as a "landed but not great"
+        // Then promotions (Gmail) - counts as a "landed but not great"
         // outcome for spam-rate accounting.
         for (const folder of PROMOTIONS_FOLDER_NAMES) {
             if (!(await tryOpenMailbox(client, folder))) continue;
@@ -141,7 +141,7 @@ export async function locateWarmupMessage(opts: {
             if (uid != null) return { folder, uid, landedIn: 'promotions' };
         }
 
-        // Spam / Junk — the "recover from spam" target.
+        // Spam / Junk - the "recover from spam" target.
         for (const folder of SPAM_FOLDER_NAMES) {
             if (!(await tryOpenMailbox(client, folder))) continue;
             const uid = await searchByWarmupHeader(client, opts.headerValue);
@@ -154,7 +154,7 @@ export async function locateWarmupMessage(opts: {
     }
 }
 
-/** Mark a message as read (\Seen flag). Idempotent — re-marking is a
+/** Mark a message as read (\Seen flag). Idempotent - re-marking is a
  *  no-op. */
 export async function markRead(opts: {
     creds: RecipientCredentials;
@@ -176,7 +176,7 @@ export async function markRead(opts: {
 }
 
 /**
- * Move a warmup message from Spam/Junk into Inbox — i.e., "report not
+ * Move a warmup message from Spam/Junk into Inbox - i.e., "report not
  * spam" from the recipient's side. ISPs (Gmail, Outlook) treat this
  * action as a strong positive signal toward the sender's reputation.
  *

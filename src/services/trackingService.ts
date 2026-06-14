@@ -31,7 +31,7 @@ function getTrackingBase(override?: string | null): string {
         const t = override.trim().replace(/\/+$/, '');
         return t.startsWith('http://') || t.startsWith('https://') ? t : `https://${t}`;
     }
-    // No per-campaign tracking domain override — fall back to the platform's
+    // No per-campaign tracking domain override - fall back to the platform's
     // public backend URL. Critical that this NEVER returns a Railway-internal
     // hostname: tracking pixels and click-through links land in customer
     // recipients' inboxes, where a `*.up.railway.app` URL looks broken (and
@@ -59,7 +59,7 @@ function injectOpenPixel(html: string, base: string, leadId: string): string {
  * Wrap every <a href="..."> URL in a click-tracking redirect.
  * Skips mailto:, tel:, anchor (#), and already-tracked links.
  * The signed token carries both leadId and the destination URL, so the controller
- * does not need to decode a base64 JSON blob — tampered tokens are rejected.
+ * does not need to decode a base64 JSON blob - tampered tokens are rejected.
  */
 function wrapClicks(html: string, base: string, leadId: string): string {
     return html.replace(/<a\b([^>]*?)\shref=(["'])([^"']+)\2([^>]*)>/gi, (match, preAttrs, quote, url, postAttrs) => {
@@ -155,7 +155,7 @@ export function applyTracking(html: string, options: TrackingOptions & {
 /**
  * Build the canonical one-click unsubscribe URL for a lead. Used by the send
  * services to populate the List-Unsubscribe + List-Unsubscribe-Post headers
- * (RFC 2369 + RFC 8058) — required by Gmail's bulk-sender requirements
+ * (RFC 2369 + RFC 8058) - required by Gmail's bulk-sender requirements
  * (Feb 2024) and Yahoo's parallel rules for senders >5K msgs/day.
  */
 export function buildUnsubscribeUrl(leadId: string, trackingDomain?: string | null): string {

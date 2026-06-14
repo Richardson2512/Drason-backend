@@ -1,5 +1,5 @@
 /**
- * Warmup Content Engine — produces the 3B+ unique permutations that
+ * Warmup Content Engine - produces the 3B+ unique permutations that
  * power our pool's reputation-building signal.
  *
  * Pipeline:
@@ -7,7 +7,7 @@
  *      templates from WarmupTemplate rows of the right kind.
  *   2. Run each through the existing spintax resolver (used in
  *      production sends today) to expand `{a|b|c}` blocks.
- *   3. Apply runtime jitter — random emoji 5%, plaintext-vs-HTML 50/50,
+ *   3. Apply runtime jitter - random emoji 5%, plaintext-vs-HTML 50/50,
  *      optional P.S. 10%, signature inclusion 70%, etc. These layers
  *      multiply the count well past the seed-corpus combinatorics.
  *
@@ -15,7 +15,7 @@
  *   - 50 body × 30 subject × 20 signoff × spintax internals = 3B+ raw.
  *   - Layered runtime jitter adds another order of magnitude and breaks
  *     the obvious "all warmup looks structurally the same" pattern.
- *   - The spintax resolver is the same one used for production sends —
+ *   - The spintax resolver is the same one used for production sends -
  *     same library, same rendered output style, so the warmup traffic
  *     is genuinely indistinguishable from real campaign output.
  */
@@ -26,7 +26,7 @@ import { resolveSpintax } from '../../utils/spintax';
 import type { WarmupTemplateKind } from './types';
 
 // ────────────────────────────────────────────────────────────────────
-// Header signing — every warmup email carries an HMAC-signed marker so
+// Header signing - every warmup email carries an HMAC-signed marker so
 // recipient mailboxes can identify and route them without false
 // positives from external traffic that happens to look similar.
 // ────────────────────────────────────────────────────────────────────
@@ -62,7 +62,7 @@ export function verifyWarmupHeader(headerValue: string): { exchangeId: string } 
     if (!exchangeId || !sig) return null;
 
     // We can only re-derive the signature if we know the sender +
-    // recipient mailbox ids — which we look up from the exchangeId.
+    // recipient mailbox ids - which we look up from the exchangeId.
     // The verification helper stays in this module but the caller
     // (recipient worker) loads the exchange row and feeds those in.
     // Here we just sanity-check shape; full crypto check happens via
@@ -91,7 +91,7 @@ export function getWarmupHeaderName(): string {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Template selection — weighted-random over WarmupTemplate rows.
+// Template selection - weighted-random over WarmupTemplate rows.
 // In-process LRU cache keyed on (kind, language) so the 4-worker hot
 // path doesn't hit the DB on every send.
 // ────────────────────────────────────────────────────────────────────
@@ -129,7 +129,7 @@ async function loadBucket(kind: WarmupTemplateKind, language = 'en'): Promise<Ca
     return bucket;
 }
 
-/** Invalidate the in-process cache — call after seeding/editing the
+/** Invalidate the in-process cache - call after seeding/editing the
  *  corpus. */
 export function invalidateContentCache(): void {
     cache.clear();
@@ -137,7 +137,7 @@ export function invalidateContentCache(): void {
 
 function pickWeighted(bucket: CachedBucket): { id: string; spintax: string } {
     const r = Math.random() * bucket.totalWeight;
-    // Linear scan — O(n) but n ≤ 50 in practice. Replace with binary
+    // Linear scan - O(n) but n ≤ 50 in practice. Replace with binary
     // search on bucket.cum if the corpus grows past a few hundred.
     for (const row of bucket.rows) {
         if (r < row.cum) return row;
@@ -146,7 +146,7 @@ function pickWeighted(bucket: CachedBucket): { id: string; spintax: string } {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Runtime jitter — variation layers stacked on top of spintax expansion
+// Runtime jitter - variation layers stacked on top of spintax expansion
 // to push the unique-permutation count well past the raw combinatorial
 // total of the seed corpus.
 // ────────────────────────────────────────────────────────────────────
@@ -155,7 +155,7 @@ const SOFT_EMOJI = ['🙂', '✌️', '👍', '🙏', '☕', '✨', '🤝', '�
 const PS_OPENERS = [
     'P.S. ',
     'p.s. ',
-    'PS — ',
+    'PS - ',
     'PS: ',
 ];
 const PS_BODIES = [
@@ -198,7 +198,7 @@ function maybeAttachSignoff(body: string, signoff: string | null): string {
 
 /** 50/50 plaintext vs minimal HTML (just <br> for line breaks). The
  *  sender adapter in the dispatch worker honors whichever shape this
- *  function returns — the result of `generate*` is the BODY exactly as
+ *  function returns - the result of `generate*` is the BODY exactly as
  *  it should hit the wire. */
 function maybeWrapHtml(text: string): { body: string; isHtml: boolean } {
     if (Math.random() < 0.5) {
@@ -217,7 +217,7 @@ function escapeHtml(s: string): string {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Public API — the sender worker calls these per scheduled exchange.
+// Public API - the sender worker calls these per scheduled exchange.
 // ────────────────────────────────────────────────────────────────────
 
 export interface GeneratedWarmupContent {
@@ -228,7 +228,7 @@ export interface GeneratedWarmupContent {
 
 /** Generate one fresh initial-message subject + body. Called by the
  *  dispatch worker right before send so we never store the rendered
- *  body — only a 200-char preview lands in WarmupExchange. */
+ *  body - only a 200-char preview lands in WarmupExchange. */
 export async function generateInitialMessage(opts: {
     senderName?: string | null;
 } = {}): Promise<GeneratedWarmupContent> {
@@ -239,7 +239,7 @@ export async function generateInitialMessage(opts: {
     ]);
 
     if (!subjectBucket || !bodyBucket) {
-        throw new Error('Warmup template corpus is empty — seed warmup_templates before sending');
+        throw new Error('Warmup template corpus is empty - seed warmup_templates before sending');
     }
 
     const rawSubject = resolveSpintax(pickWeighted(subjectBucket).spintax);
@@ -296,7 +296,7 @@ export async function generateThreadReply(parent: {
     return { subject, body: wrapped.body, isHtml: wrapped.isHtml };
 }
 
-/** Diagnostic — returns the in-process cache state for /api/ai/status
+/** Diagnostic - returns the in-process cache state for /api/ai/status
  *  style dashboards. No PII. */
 export function getContentEngineStats() {
     return {

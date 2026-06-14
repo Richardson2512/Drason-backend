@@ -1,5 +1,5 @@
 /**
- * Invariant Test Suite — Data Integrity Assertions
+ * Invariant Test Suite - Data Integrity Assertions
  *
  * Run with: npx ts-node src/tests/invariants.ts
  *
@@ -251,7 +251,7 @@ async function run() {
             const mbSent = d.mailboxes.reduce((sum, m) => sum + m.total_sent_count, 0);
             const mbOpens = d.mailboxes.reduce((sum, m) => sum + m.open_count_lifetime, 0);
 
-            // Allow 10% tolerance — domain aggregation happens async
+            // Allow 10% tolerance - domain aggregation happens async
             if (d.total_sent_lifetime > 0 && Math.abs(mbSent - d.total_sent_lifetime) / d.total_sent_lifetime > 0.1) {
                 violations.push(
                     `${d.domain}: domain.total_sent=${d.total_sent_lifetime} but mailbox sum=${mbSent}`

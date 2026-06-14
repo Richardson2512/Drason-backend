@@ -3,17 +3,17 @@
  *
  * Thin wrapper around Resend's HTTP API for system-generated emails
  * (webhook auto-disable alerts, dead-letter notifications, password reset
- * later, etc.). Distinct from the sequencer's outbound campaign sends —
+ * later, etc.). Distinct from the sequencer's outbound campaign sends -
  * those go through emailSendAdapters with the customer's connected
  * mailboxes; this is for messages FROM Superkabe TO operators.
  *
  * Configuration:
- *   RESEND_API_KEY     — required to actually send. Without it, calls log
+ *   RESEND_API_KEY     - required to actually send. Without it, calls log
  *                        the would-be email and resolve successfully so
  *                        the rest of the platform stays operable.
- *   RESEND_FROM_EMAIL  — e.g. "Superkabe <alerts@superkabe.com>"
+ *   RESEND_FROM_EMAIL  - e.g. "Superkabe <alerts@superkabe.com>"
  *                        (must be a verified Resend sender)
- *   RESEND_REPLY_TO    — optional reply-to address
+ *   RESEND_REPLY_TO    - optional reply-to address
  *
  * Resend docs: https://resend.com/docs/api-reference/emails/send-email
  */
@@ -31,7 +31,7 @@ export interface SendTransactionalEmailParams {
     from?: string;
     /** Optional reply-to override. */
     replyTo?: string;
-    /** Optional idempotency key — Resend dedupes deliveries with the same key. */
+    /** Optional idempotency key - Resend dedupes deliveries with the same key. */
     idempotencyKey?: string;
     /** Tag for delivery analytics in Resend dashboard. */
     tags?: { name: string; value: string }[];
@@ -41,7 +41,7 @@ export interface SendTransactionalEmailResult {
     sent: boolean;
     /** Resend message ID when sent; null when skipped (no API key). */
     id: string | null;
-    /** "missing_api_key" | "missing_from" | "resend_error" — only when sent=false. */
+    /** "missing_api_key" | "missing_from" | "resend_error" - only when sent=false. */
     skippedReason?: string;
 }
 
@@ -64,7 +64,7 @@ function htmlToText(html: string): string {
  * Send a transactional email via Resend.
  *
  * Returns `{ sent: false, skippedReason: 'missing_api_key' }` (not throwing)
- * if RESEND_API_KEY is unset — that lets dispatch flows that depend on this
+ * if RESEND_API_KEY is unset - that lets dispatch flows that depend on this
  * service degrade gracefully instead of crashing during local dev.
  */
 export async function sendTransactionalEmail(
@@ -75,7 +75,7 @@ export async function sendTransactionalEmail(
     const replyTo = params.replyTo || process.env.RESEND_REPLY_TO;
 
     if (!apiKey) {
-        logger.warn('[TX_EMAIL] RESEND_API_KEY not set — would have sent', {
+        logger.warn('[TX_EMAIL] RESEND_API_KEY not set - would have sent', {
             to: params.to,
             subject: params.subject,
         });

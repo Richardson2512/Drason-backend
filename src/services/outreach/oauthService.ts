@@ -1,14 +1,14 @@
 /**
  * Outreach.io OAuth 2.0 service.
  *
- * Pure functions — no DB. State CSRF protection via signed JWT.
+ * Pure functions - no DB. State CSRF protection via signed JWT.
  * Outreach uses Authorization Code flow with refresh tokens (rotated on refresh).
  *
  * Required env vars:
  *   OUTREACH_CLIENT_ID
  *   OUTREACH_CLIENT_SECRET
- *   OUTREACH_REDIRECT_URI       — e.g. https://api.superkabe.com/api/integrations/outreach/callback
- *   JWT_SECRET                  — reused for state signing
+ *   OUTREACH_REDIRECT_URI       - e.g. https://api.superkabe.com/api/integrations/outreach/callback
+ *   JWT_SECRET                  - reused for state signing
  *
  * Docs: https://api.outreach.io/api/v2/docs#authentication
  */
@@ -136,6 +136,6 @@ export async function refreshAccessToken(refreshToken: string): Promise<Outreach
         const detail = String(json?.error_description || json?.error || 'unknown').slice(0, 200);
         throw new Error(`Outreach refresh failed: ${detail}`);
     }
-    // Outreach rotates refresh tokens on every refresh — always take the new one.
+    // Outreach rotates refresh tokens on every refresh - always take the new one.
     return tokensFromResponse(json);
 }

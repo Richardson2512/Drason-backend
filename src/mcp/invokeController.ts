@@ -8,15 +8,15 @@
  * with a synthetic Express req/res pair and captures the response
  * payload.
  *
- * This keeps the controllers as the single source of truth — no
- * duplicated business logic, no service-layer refactor — while
+ * This keeps the controllers as the single source of truth - no
+ * duplicated business logic, no service-layer refactor - while
  * eliminating the in-process HTTP hop.
  */
 
 import type { Request, Response } from 'express';
 
 export interface InvocationInput {
-    /** Authenticated org context — must be populated by caller. */
+    /** Authenticated org context - must be populated by caller. */
     orgContext: NonNullable<Request['orgContext']>;
     /** Request body (for POST/PATCH). */
     body?: unknown;
@@ -75,7 +75,7 @@ export async function invokeController(
 }
 
 /**
- * Convenience wrapper — invokes a controller and returns the data
+ * Convenience wrapper - invokes a controller and returns the data
  * payload directly, throwing if the controller responded with an
  * error status.
  */

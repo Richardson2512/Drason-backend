@@ -1,13 +1,13 @@
 /**
  * Warmup Pool Controller
  *
- *   GET    /api/sequencer/warmup/overview              — org-level dashboard data
- *   GET    /api/sequencer/warmup/consent               — workspace-level consent state
- *   POST   /api/sequencer/warmup/consent               — { consent: bool } — opt the workspace into the cross-tenant pool
- *   GET    /api/sequencer/warmup/memberships           — list per-mailbox memberships
- *   POST   /api/sequencer/warmup/memberships/:mid/toggle — enable/disable per mailbox
- *   PATCH  /api/sequencer/warmup/memberships/:mid      — update ramp config (start/target/days)
- *   GET    /api/sequencer/warmup/memberships/:mid/exchanges — recent activity for one mailbox
+ *   GET    /api/sequencer/warmup/overview              - org-level dashboard data
+ *   GET    /api/sequencer/warmup/consent               - workspace-level consent state
+ *   POST   /api/sequencer/warmup/consent               - { consent: bool } - opt the workspace into the cross-tenant pool
+ *   GET    /api/sequencer/warmup/memberships           - list per-mailbox memberships
+ *   POST   /api/sequencer/warmup/memberships/:mid/toggle - enable/disable per mailbox
+ *   PATCH  /api/sequencer/warmup/memberships/:mid      - update ramp config (start/target/days)
+ *   GET    /api/sequencer/warmup/memberships/:mid/exchanges - recent activity for one mailbox
  *
  * All endpoints are org-scoped via getOrgId / orgContext middleware.
  */
@@ -29,7 +29,7 @@ import {
 import { MAX_TARGET_DAILY } from '../services/warmup/types';
 
 // ────────────────────────────────────────────────────────────────────
-// Workspace-level consent — required for cross-tenant participation.
+// Workspace-level consent - required for cross-tenant participation.
 // ────────────────────────────────────────────────────────────────────
 
 export async function getConsent(req: Request, res: Response): Promise<Response> {
@@ -47,7 +47,7 @@ export async function postConsent(req: Request, res: Response): Promise<Response
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Org overview — pool size, total volume today, top-line stats.
+// Org overview - pool size, total volume today, top-line stats.
 // ────────────────────────────────────────────────────────────────────
 
 export async function getOverview(req: Request, res: Response): Promise<Response> {
@@ -134,7 +134,7 @@ export async function listMemberships(req: Request, res: Response): Promise<Resp
         orderBy: { joined_at: 'asc' },
     });
 
-    // Per-mailbox sent/received today — counted from WarmupExchange so the
+    // Per-mailbox sent/received today - counted from WarmupExchange so the
     // UI shows live activity, not just lifetime totals.
     const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
     const todayExchanges = memberships.length === 0
@@ -266,7 +266,7 @@ export async function patchMembershipConfig(req: Request, res: Response): Promis
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Bulk pool config — applies the same config to every membership in
+// Bulk pool config - applies the same config to every membership in
 // this org. Useful for "I want all my mailboxes ramping at the same
 // pace" without clicking through each one.
 // ────────────────────────────────────────────────────────────────────

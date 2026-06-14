@@ -1,12 +1,12 @@
 /**
- * Mailbox Import Controller — provider-agnostic bulk import endpoints.
+ * Mailbox Import Controller - provider-agnostic bulk import endpoints.
  *
  * Routes (all under /api/sequencer/mailbox-import):
- *   GET  /providers                   — list all providers + status
- *   POST /:provider/connect           — store the customer's API key
- *   POST /:provider/disconnect        — clear the stored API key
- *   GET  /:provider/mailboxes         — list available mailboxes
- *   POST /:provider/import            — bulk-import selected mailboxes
+ *   GET  /providers                   - list all providers + status
+ *   POST /:provider/connect           - store the customer's API key
+ *   POST /:provider/disconnect        - clear the stored API key
+ *   GET  /:provider/mailboxes         - list available mailboxes
+ *   POST /:provider/import            - bulk-import selected mailboxes
  *
  * Today only the Zapmail provider is fully implemented. The other three
  * (Premium Inboxes, Mission Inbox, Scaled Mail) appear in /providers with
@@ -17,7 +17,7 @@
  *   - Zapmail key uses the existing Organization.zapmail_api_key column.
  *   - When the stub providers go live, each gets its own storage column
  *     OR we move all four into a new MailboxImportProviderConnection
- *     table. Deferred until at least two stubs need to ship — premature
+ *     table. Deferred until at least two stubs need to ship - premature
  *     abstraction otherwise.
  */
 
@@ -43,7 +43,7 @@ async function readStoredApiKey(orgId: string, providerKey: string): Promise<str
         try {
             return decrypt(org.zapmail_api_key);
         } catch {
-            // Legacy plaintext (pre-encryption rollout) — return as-is.
+            // Legacy plaintext (pre-encryption rollout) - return as-is.
             return org.zapmail_api_key;
         }
     }
@@ -183,7 +183,7 @@ export const listProviderMailboxes = async (req: Request, res: Response): Promis
             : [];
         const existingSet = new Set(existing.map(e => e.email));
 
-        // Strip credentials from the response — the frontend doesn't need
+        // Strip credentials from the response - the frontend doesn't need
         // them and we never want them on the wire more than once.
         return res.json({
             success: true,

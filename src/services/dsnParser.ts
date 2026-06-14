@@ -1,9 +1,9 @@
 /**
- * DSN parser — RFC 3464 Delivery Status Notifications.
+ * DSN parser - RFC 3464 Delivery Status Notifications.
  *
  * Async bounces returned to the sending mailbox arrive as multipart/report
  * messages with a `message/delivery-status` part. This parser extracts the
- * canonical fields without bringing in a full MIME library — we just need
+ * canonical fields without bringing in a full MIME library - we just need
  * Action, Status, Diagnostic-Code, Original-Recipient, and Reporting-MTA.
  *
  * Intentionally permissive: fields are case-insensitive and may have folded
@@ -17,7 +17,7 @@
 
 export interface DsnResult {
     isDsn: boolean;
-    /** RFC 3464 Action field — "failed" is the one that matters for bounces */
+    /** RFC 3464 Action field - "failed" is the one that matters for bounces */
     action?: 'failed' | 'delayed' | 'delivered' | 'relayed' | 'expanded';
     /** RFC 3463 enhanced status code, e.g. "5.1.1" */
     status?: string;
@@ -27,7 +27,7 @@ export interface DsnResult {
     originalRecipient?: string;
     /** MTA that generated the DSN */
     reportingMta?: string;
-    /** Top-level numeric class — 5 (permanent), 4 (transient), 2 (success) */
+    /** Top-level numeric class - 5 (permanent), 4 (transient), 2 (success) */
     statusClass?: number;
 }
 
@@ -43,7 +43,7 @@ const FIELD_REGEXES: Record<keyof Omit<DsnResult, 'isDsn' | 'statusClass'>, RegE
 };
 
 /**
- * Detect whether `raw` is a DSN. Strict-ish — both the top-level Content-Type
+ * Detect whether `raw` is a DSN. Strict-ish - both the top-level Content-Type
  * AND a `message/delivery-status` body part must appear.
  */
 export function isDsnMessage(raw: string): boolean {

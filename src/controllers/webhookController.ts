@@ -1,20 +1,20 @@
 /**
- * Webhook Controller — customer-facing CRUD for outbound webhook endpoints.
+ * Webhook Controller - customer-facing CRUD for outbound webhook endpoints.
  *
- *   GET    /api/webhooks                  — list endpoints (excludes internal=true)
- *   POST   /api/webhooks                  — create endpoint (tier-gated)
- *   GET    /api/webhooks/events           — list valid event types for the UI
- *   GET    /api/webhooks/:id              — get one
- *   PATCH  /api/webhooks/:id              — update name/url/events/active
- *   DELETE /api/webhooks/:id              — delete
- *   POST   /api/webhooks/:id/rotate       — generate a new secret
- *   POST   /api/webhooks/:id/reactivate   — clear auto-disabled state
- *   POST   /api/webhooks/:id/test         — send a synthetic event to the endpoint
+ *   GET    /api/webhooks                  - list endpoints (excludes internal=true)
+ *   POST   /api/webhooks                  - create endpoint (tier-gated)
+ *   GET    /api/webhooks/events           - list valid event types for the UI
+ *   GET    /api/webhooks/:id              - get one
+ *   PATCH  /api/webhooks/:id              - update name/url/events/active
+ *   DELETE /api/webhooks/:id              - delete
+ *   POST   /api/webhooks/:id/rotate       - generate a new secret
+ *   POST   /api/webhooks/:id/reactivate   - clear auto-disabled state
+ *   POST   /api/webhooks/:id/test         - send a synthetic event to the endpoint
  *
- *   GET    /api/webhooks/:id/deliveries              — recent delivery log
+ *   GET    /api/webhooks/:id/deliveries              - recent delivery log
  *   POST   /api/webhooks/:id/deliveries/:deliveryId/replay
  *
- * Internal endpoints (Slack-shim, etc.) are HIDDEN from this surface — the
+ * Internal endpoints (Slack-shim, etc.) are HIDDEN from this surface - the
  * SQL filters them out with `internal: false`. They cannot be created,
  * updated, or deleted via this controller.
  */
@@ -43,7 +43,7 @@ function validateUrl(url: unknown): { ok: true; url: string } | { ok: false; err
     const trimmed = url.trim();
     if (!URL_REGEX.test(trimmed)) return { ok: false, error: 'url must be a valid http(s) URL' };
     if (process.env.NODE_ENV === 'production' && trimmed.startsWith('http://')) {
-        return { ok: false, error: 'http:// URLs are blocked in production — use https://' };
+        return { ok: false, error: 'http:// URLs are blocked in production - use https://' };
     }
     return { ok: true, url: trimmed };
 }
@@ -116,7 +116,7 @@ export const listEndpoints = async (req: Request, res: Response): Promise<Respon
                 endpoints: endpoints.map(e => publicShape(e)),
                 limits: {
                     used: endpoints.length,
-                    max: null,    // unmetered — every tier gets unlimited webhook endpoints
+                    max: null,    // unmetered - every tier gets unlimited webhook endpoints
                 },
             },
         });
@@ -145,7 +145,7 @@ export const createEndpoint = async (req: Request, res: Response): Promise<Respo
     if (!providerV.ok) return res.status(400).json({ success: false, error: providerV.error });
 
     try {
-        // Subscription-status gate only — endpoint count is unmetered.
+        // Subscription-status gate only - endpoint count is unmetered.
         const org = await prisma.organization.findUnique({
             where: { id: orgId },
             select: { subscription_status: true },
@@ -169,7 +169,7 @@ export const createEndpoint = async (req: Request, res: Response): Promise<Respo
         });
 
         logger.info(`[WEBHOOKS] Endpoint created: ${endpoint.id} (org=${orgId})`);
-        // Secret is shown ONCE on creation — UI must surface it before navigating away.
+        // Secret is shown ONCE on creation - UI must surface it before navigating away.
         return res.status(201).json({ success: true, data: publicShape(endpoint, /* includeSecret */ true) });
     } catch (error) {
         logger.error('[WEBHOOKS] create failed', error instanceof Error ? error : new Error(String(error)));
@@ -291,7 +291,7 @@ export const rotateSecret = async (req: Request, res: Response): Promise<Respons
 };
 
 // ────────────────────────────────────────────────────────────────────
-// POST /api/webhooks/:id/reactivate — clear auto-disabled state
+// POST /api/webhooks/:id/reactivate - clear auto-disabled state
 // ────────────────────────────────────────────────────────────────────
 
 export const reactivateEndpoint = async (req: Request, res: Response): Promise<Response> => {
@@ -319,7 +319,7 @@ export const reactivateEndpoint = async (req: Request, res: Response): Promise<R
 };
 
 // ────────────────────────────────────────────────────────────────────
-// POST /api/webhooks/:id/test — fire a synthetic event to verify wiring
+// POST /api/webhooks/:id/test - fire a synthetic event to verify wiring
 // ────────────────────────────────────────────────────────────────────
 
 export const testEndpoint = async (req: Request, res: Response): Promise<Response> => {
@@ -330,7 +330,7 @@ export const testEndpoint = async (req: Request, res: Response): Promise<Respons
         });
         if (!endpoint) return res.status(404).json({ success: false, error: 'Webhook not found' });
         if (!endpoint.active || endpoint.disabled_at) {
-            return res.status(400).json({ success: false, error: 'Endpoint is inactive — reactivate before testing' });
+            return res.status(400).json({ success: false, error: 'Endpoint is inactive - reactivate before testing' });
         }
 
         // Use the user's chosen event allowlist or default to a benign event.
@@ -404,7 +404,7 @@ export const listDeliveries = async (req: Request, res: Response): Promise<Respo
 };
 
 // ────────────────────────────────────────────────────────────────────
-// GET /api/webhooks/:id/deliveries/:deliveryId — full payload + body
+// GET /api/webhooks/:id/deliveries/:deliveryId - full payload + body
 // ────────────────────────────────────────────────────────────────────
 
 export const getDelivery = async (req: Request, res: Response): Promise<Response> => {

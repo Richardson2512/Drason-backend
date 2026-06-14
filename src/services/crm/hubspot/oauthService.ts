@@ -9,8 +9,8 @@
  * Required env vars (set at deploy time):
  *   HUBSPOT_CLIENT_ID
  *   HUBSPOT_CLIENT_SECRET
- *   HUBSPOT_REDIRECT_URI       — e.g. https://api.superkabe.com/api/integrations/hubspot/callback
- *   JWT_SECRET                  — reused for state signing
+ *   HUBSPOT_REDIRECT_URI       - e.g. https://api.superkabe.com/api/integrations/hubspot/callback
+ *   JWT_SECRET                  - reused for state signing
  */
 
 import jwt from 'jsonwebtoken';
@@ -33,7 +33,7 @@ export const HUBSPOT_DEFAULT_SCOPES = [
     'timeline',
 ] as const;
 
-const STATE_TTL_SEC = 10 * 60; // 10 minutes — covers the longest realistic OAuth flow
+const STATE_TTL_SEC = 10 * 60; // 10 minutes - covers the longest realistic OAuth flow
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 
 interface StatePayload {

@@ -1,7 +1,7 @@
 /* eslint-disable */
 /**
  * Seeds a fully-populated demo organization for the staging environment.
- * Idempotent — re-running deletes the previous demo org and reseeds.
+ * Idempotent - re-running deletes the previous demo org and reseeds.
  *
  * Run: node scripts/seed-demo.js   (from Drason-backend-staging)
  */
@@ -16,7 +16,7 @@ const DEMO_EMAIL = 'demo@superkabe.com';
 const DEMO_PASSWORD = 'Demo2026!';
 const DEMO_ORG_SLUG = 'demo-agency';
 
-// Stable UUIDs — re-seeds keep the same User and Organization id, so live
+// Stable UUIDs - re-seeds keep the same User and Organization id, so live
 // JWT cookies stay valid (no "User not found" / "Organization not found"
 // after a re-seed). Other IDs (campaigns, mailboxes, leads, etc.) still
 // rotate on each run; only these two need stability for auth.
@@ -33,7 +33,7 @@ async function wipePreviousDemo() {
   const existing = await prisma.organization.findUnique({ where: { slug: DEMO_ORG_SLUG } });
   if (!existing) return;
   const orgId = existing.id;
-  console.log(`Existing demo org found (${orgId}) — wiping...`);
+  console.log(`Existing demo org found (${orgId}) - wiping...`);
 
   // Wipe orphan tables (no Organization FK) by org id first
   await prisma.sendEvent.deleteMany({ where: { organization_id: orgId } });
@@ -153,7 +153,7 @@ async function main() {
     prisma.emailTemplate.create({
       data: {
         organization_id: orgId,
-        name: 'Cold intro — SaaS founders',
+        name: 'Cold intro - SaaS founders',
         subject: 'Quick question, {{first_name}}',
         body_html: '<p>Hi {{first_name}},</p><p>Saw your work at {{company}} and wanted to reach out.</p><p>We help SaaS teams scale outbound without burning their domain reputation. Would a 15-min chat next week make sense?</p><p>{{signature}}</p>',
         category: 'introduction',
@@ -165,7 +165,7 @@ async function main() {
         organization_id: orgId,
         name: 'Follow-up #1',
         subject: 're: Quick question',
-        body_html: '<p>Hi {{first_name}},</p><p>Bumping this up — any thoughts?</p><p>{{signature}}</p>',
+        body_html: '<p>Hi {{first_name}},</p><p>Bumping this up - any thoughts?</p><p>{{signature}}</p>',
         category: 'follow-up',
         folder_id: folderFollowup.id,
       },
@@ -175,7 +175,7 @@ async function main() {
         organization_id: orgId,
         name: 'Breakup',
         subject: 'Should I close the loop?',
-        body_html: '<p>Hi {{first_name}},</p><p>Closing the loop on this — happy to circle back another time if the timing is off.</p><p>{{signature}}</p>',
+        body_html: '<p>Hi {{first_name}},</p><p>Closing the loop on this - happy to circle back another time if the timing is off.</p><p>{{signature}}</p>',
         category: 'breakup',
       },
     }),
@@ -373,7 +373,7 @@ async function main() {
   // ── Campaigns ──
   const campaignDefs = [
     { name: 'Q2 SaaS Founders Outbound', status: 'active', daily: 50, days_active: 14, total_leads: 150 },
-    { name: 'VP Marketing — Mid-Market', status: 'active', daily: 40, days_active: 9, total_leads: 100 },
+    { name: 'VP Marketing - Mid-Market', status: 'active', daily: 40, days_active: 9, total_leads: 100 },
     { name: 'Enterprise Champions (paused)', status: 'paused', daily: 30, days_active: 22, total_leads: 80, paused_reason: 'Awaiting new copy review' },
   ];
 
@@ -431,8 +431,8 @@ async function main() {
 
     // 3 sequence steps per campaign
     const stepBodies = [
-      { subject: 'Quick question, {{first_name}}', body: '<p>Hi {{first_name}},</p><p>Noticed {{company}} is scaling outbound — a few teams in your space have hit deliverability walls around 50k sends/mo.</p><p>Worth a 15-min chat next week?</p>' },
-      { subject: 're: Quick question', body: '<p>Hi {{first_name}},</p><p>Following up — does this fit your priorities right now?</p>' },
+      { subject: 'Quick question, {{first_name}}', body: '<p>Hi {{first_name}},</p><p>Noticed {{company}} is scaling outbound - a few teams in your space have hit deliverability walls around 50k sends/mo.</p><p>Worth a 15-min chat next week?</p>' },
+      { subject: 're: Quick question', body: '<p>Hi {{first_name}},</p><p>Following up - does this fit your priorities right now?</p>' },
       { subject: 'Should I close the loop?', body: '<p>Hi {{first_name}},</p><p>Closing the loop. If timing is off, happy to circle back next quarter.</p>' },
     ];
     for (let s = 0; s < stepBodies.length; s++) {
@@ -488,7 +488,7 @@ async function main() {
   const leads = [];
   const usedEmails = new Set();
   // Reserved E.164 phone block for documentation/test use (FCC-assigned 555-01XX),
-  // safe to embed in seed data — these numbers are not assignable to real subscribers.
+  // safe to embed in seed data - these numbers are not assignable to real subscribers.
   const phoneFor = (i) => `+1 555 0100${String(i).padStart(2, '0').slice(-2)}`;
   for (let i = 0; i < leadCount; i++) {
     const fn = pick(firstNames);
@@ -713,12 +713,12 @@ async function main() {
 
   // ── AuditLogs ──
   const auditEntries = [
-    { entity: 'mailbox', trigger: 'bounce_threshold', action: 'pause', details: 'Mailbox alex@acme-demo.com paused — 1h bounce rate 4.2% > 3.0%' },
+    { entity: 'mailbox', trigger: 'bounce_threshold', action: 'pause', details: 'Mailbox alex@acme-demo.com paused - 1h bounce rate 4.2% > 3.0%' },
     { entity: 'mailbox', trigger: 'recovery_window_complete', action: 'unpause', details: 'Mailbox alex@acme-demo.com resumed after 100 clean sends' },
     { entity: 'campaign', trigger: 'user_action', action: 'launch', details: 'Campaign "Q2 SaaS Founders Outbound" launched by demo@superkabe.com' },
     { entity: 'campaign', trigger: 'user_action', action: 'pause', details: 'Campaign "Enterprise Champions" paused for copy review' },
     { entity: 'lead', trigger: 'validation', action: 'block', details: '3 leads blocked: validation_status=invalid' },
-    { entity: 'domain', trigger: 'reputation_check', action: 'no_op', details: 'Daily Postmaster Tools fetch completed for acme-demo.com — reputation: HIGH' },
+    { entity: 'domain', trigger: 'reputation_check', action: 'no_op', details: 'Daily Postmaster Tools fetch completed for acme-demo.com - reputation: HIGH' },
     { entity: 'mailbox', trigger: 'ip_blacklist_check', action: 'no_op', details: '4 mailboxes scanned, 1 minor listing on taylor@beta-outreach.io' },
     { entity: 'campaign', trigger: 'analytics_worker', action: 'no_op', details: 'Daily metrics rolled up across 2 active campaigns' },
   ];
@@ -770,20 +770,20 @@ async function main() {
     {
       // Positive reply
       outboundSubject: 'Quick question, {{first_name}}',
-      outboundBody: '<p>Hi {{first_name}},</p><p>Saw {{company}} on the inbound side and wanted to reach out — we help SaaS teams scale outbound without burning their domain reputation.</p><p>Worth a 15-min chat next week?</p><p>Best,<br/>Demo User</p>',
+      outboundBody: '<p>Hi {{first_name}},</p><p>Saw {{company}} on the inbound side and wanted to reach out - we help SaaS teams scale outbound without burning their domain reputation.</p><p>Worth a 15-min chat next week?</p><p>Best,<br/>Demo User</p>',
       inboundSubject: 're: Quick question, {{first_name}}',
-      inboundBody: '<p>Hi Demo,</p><p>Yes — we&rsquo;re ramping outbound and bounce rates are starting to creep up. Could we do Tuesday at 11am ET?</p><p>{{first_name}}</p>',
+      inboundBody: '<p>Hi Demo,</p><p>Yes - we&rsquo;re ramping outbound and bounce rates are starting to creep up. Could we do Tuesday at 11am ET?</p><p>{{first_name}}</p>',
       qualityClass: 'positive',
       qualityConfidence: 'high',
       qualitySignals: ['agreed_meeting', 'shared_pain'],
-      followUpBody: '<p>Tuesday 11am ET works — sending the calendar invite now.</p>',
+      followUpBody: '<p>Tuesday 11am ET works - sending the calendar invite now.</p>',
       starred: true,
       isRead: false,
     },
     {
-      // Qualified — needs more info
+      // Qualified - needs more info
       outboundSubject: 'Worth a chat?',
-      outboundBody: '<p>Hi {{first_name}},</p><p>Curious how {{company}} is handling deliverability these days. We saw a 3x reply lift for an agency customer last quarter — happy to share the playbook.</p>',
+      outboundBody: '<p>Hi {{first_name}},</p><p>Curious how {{company}} is handling deliverability these days. We saw a 3x reply lift for an agency customer last quarter - happy to share the playbook.</p>',
       inboundSubject: 're: Worth a chat?',
       inboundBody: '<p>Could you send a one-pager first? Want to see if it&rsquo;s relevant before scheduling.</p>',
       qualityClass: 'qualified',
@@ -794,11 +794,11 @@ async function main() {
       isRead: false,
     },
     {
-      // Soft no — not now
+      // Soft no - not now
       outboundSubject: 'Bumping this up',
       outboundBody: '<p>Hi {{first_name}}, did you have a chance to look?</p>',
       inboundSubject: 're: Bumping this up',
-      inboundBody: '<p>Not the right time — we&rsquo;re focused on a product launch this quarter. Try me in Q3?</p>',
+      inboundBody: '<p>Not the right time - we&rsquo;re focused on a product launch this quarter. Try me in Q3?</p>',
       qualityClass: 'soft_no',
       qualityConfidence: 'high',
       qualitySignals: ['timing_objection'],
@@ -815,7 +815,7 @@ async function main() {
       qualityClass: 'objection',
       qualityConfidence: 'medium',
       qualitySignals: ['prior_attempt'],
-      followUpBody: '<p>Fair pushback — the difference is we control the send pipeline, so when bounces spike we pause before damage. Mind if I send a 2-min Loom?</p>',
+      followUpBody: '<p>Fair pushback - the difference is we control the send pipeline, so when bounces spike we pause before damage. Mind if I send a 2-min Loom?</p>',
       starred: true,
       isRead: false,
     },
@@ -824,18 +824,18 @@ async function main() {
       outboundSubject: 'Worth a chat?',
       outboundBody: '<p>Hi {{first_name}}, exploring whether deliverability is on your radar at {{company}}.</p>',
       inboundSubject: 're: Worth a chat?',
-      inboundBody: '<p>Not me — but our growth lead, Priya, owns this. I&rsquo;ll loop her in.</p>',
+      inboundBody: '<p>Not me - but our growth lead, Priya, owns this. I&rsquo;ll loop her in.</p>',
       qualityClass: 'referral',
       qualityConfidence: 'high',
       qualitySignals: ['internal_handoff'],
-      followUpBody: '<p>Appreciate the intro — happy to wait for Priya to ping me directly.</p>',
+      followUpBody: '<p>Appreciate the intro - happy to wait for Priya to ping me directly.</p>',
       starred: false,
       isRead: true,
     },
     {
       // Hard no
       outboundSubject: 'Bumping this up',
-      outboundBody: '<p>Hi {{first_name}}, circling back on this — any thoughts?</p>',
+      outboundBody: '<p>Hi {{first_name}}, circling back on this - any thoughts?</p>',
       inboundSubject: 're: Bumping this up',
       inboundBody: '<p>Please remove me from this list. Not interested.</p>',
       qualityClass: 'hard_no',
@@ -984,8 +984,8 @@ async function main() {
         },
       },
       findings: [
-        { severity: 'info', entity: 'domain', entity_id: domainBeta.id, message: 'beta-outreach.io DMARC policy is "none" — consider strengthening to "quarantine".', remediation: 'Update DMARC TXT record to p=quarantine.' },
-        { severity: 'low', entity: 'mailbox', entity_id: mailboxes[3].mailbox.id, message: 'Sending IP appears on 1 minor blacklist (UCEPROTECT-3) — typically auto-clears in 7 days.', remediation: 'No action needed; reassess in 7 days.' },
+        { severity: 'info', entity: 'domain', entity_id: domainBeta.id, message: 'beta-outreach.io DMARC policy is "none" - consider strengthening to "quarantine".', remediation: 'Update DMARC TXT record to p=quarantine.' },
+        { severity: 'low', entity: 'mailbox', entity_id: mailboxes[3].mailbox.id, message: 'Sending IP appears on 1 minor blacklist (UCEPROTECT-3) - typically auto-clears in 7 days.', remediation: 'No action needed; reassess in 7 days.' },
       ],
       recommendations: [
         { priority: 'medium', action: 'tighten_dmarc', details: 'Move beta-outreach.io DMARC from p=none to p=quarantine after monitoring reports for 14 days.' },

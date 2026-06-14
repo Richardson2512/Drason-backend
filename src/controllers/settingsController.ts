@@ -133,7 +133,7 @@ export const getClayWebhookUrl = async (req: Request, res: Response) => {
 
         // Use the canonical public-URL resolver so the Clay webhook URL we
         // hand the customer is the api.superkabe.com customer-facing domain
-        // — not a Railway-internal hostname that confuses customers and
+        // - not a Railway-internal hostname that confuses customers and
         // breaks if Railway changes the internal name.
         const baseUrl = getPublicBackendUrl();
 

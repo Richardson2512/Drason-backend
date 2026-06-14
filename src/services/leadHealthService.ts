@@ -75,11 +75,11 @@ const ROLE_EMAIL_PREFIXES = [
     'media', 'news', 'noreply', 'no-reply', 'donotreply', 'do-not-reply',
     'billing', 'accounts', 'enquiries', 'inquiries', 'feedback', 'general',
     'reception',
-    // RFC 2142 §3 — Business mailboxes
-    // (info, marketing, sales, support — already above)
-    // RFC 2142 §4 — Network operations
+    // RFC 2142 §3 - Business mailboxes
+    // (info, marketing, sales, support - already above)
+    // RFC 2142 §4 - Network operations
     'abuse', 'noc', 'security',
-    // RFC 2142 §5 — Support mailboxes
+    // RFC 2142 §5 - Support mailboxes
     'postmaster', 'hostmaster', 'usenet', 'news', 'webmaster', 'www', 'uucp', 'ftp',
     // Common system/daemon mailboxes (RFC 2142 + de facto)
     'mailer-daemon', 'mailerdaemon', 'listserv', 'root', 'daemon', 'nobody',
@@ -381,7 +381,7 @@ export async function applyHealthClassification(
                 message: `Lead "${lead?.email || leadId}" was blocked (score: ${healthResult.score}/100). Reasons: ${healthResult.reasons.join(', ')}.`,
             });
         } catch (notifError) {
-            // Non-critical — don't block the flow
+            // Non-critical - don't block the flow
         }
     }
 }

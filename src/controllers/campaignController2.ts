@@ -26,12 +26,12 @@ export const listCampaigns = async (req: Request, res: Response): Promise<Respon
         const page = parseInt(req.query.page as string) || 1;
         const limit = parseInt(req.query.limit as string) || 25;
         const status = (req.query.status as string) || undefined;
-        // Filter by org-level tag IDs (OR semantics — any tag matches).
+        // Filter by org-level tag IDs (OR semantics - any tag matches).
         const tagIdsRaw = (req.query.tag_ids as string) || '';
         const tagIds = tagIdsRaw.split(',').map(s => s.trim()).filter(Boolean);
 
         // List all of the org's campaigns. Campaign table is unified post-Phase-B
-        // (2026-04-26) — every row is a native sequencer campaign.
+        // (2026-04-26) - every row is a native sequencer campaign.
         const where: any = { organization_id: orgId };
         if (status && status !== 'all') where.status = status;
         if (tagIds.length > 0) {
@@ -62,7 +62,7 @@ export const listCampaigns = async (req: Request, res: Response): Promise<Respon
             id: c.id,
             name: c.name,
             status: c.status,
-            // Org-level tag relation — objects with { id, name, color }.
+            // Org-level tag relation - objects with { id, name, color }.
             // Used for the new tag UI on the campaigns list.
             tags: c.tagLinks.map(tl => ({ id: tl.tag.id, name: tl.tag.name, color: tl.tag.color })),
             // Legacy Smartlead-import string-array tags. Kept under a distinct
@@ -139,7 +139,7 @@ export const getCampaign = async (req: Request, res: Response): Promise<Response
             return acc;
         }, {});
 
-        // Lead-source provenance — every CSV upload / Clay ingest / manual add
+        // Lead-source provenance - every CSV upload / Clay ingest / manual add
         // is its own CampaignLeadImport row. Surface them so the detail page
         // can render a "Lead sources" panel with filenames + counts + dates.
         const leadImports = await prisma.campaignLeadImport.findMany({
@@ -244,13 +244,7 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
         const orgId = getOrgId(req);
         const {
             name, tags, steps, leads, schedule, settings, accountIds, skipDuplicatesAcrossCampaigns,
-            // New unified suppression model — see campaignSuppressionService.
-            // `suppressionRules` is the canonical shape; `skipDuplicatesAcrossCampaigns`
-            // is the legacy boolean preserved for backwards compat. When both are
-            // provided, the boolean is folded into the rules as an 'all_campaigns'
-            // rule so the resolver gets a single source of truth.
-            suppressionRules,
-            // Provenance for the initial leads — surfaced in the campaign detail
+            // Provenance for the initial leads - surfaced in the campaign detail
             // page's "Lead sources" panel. Defaults to 'manual' if the caller
             // doesn't say otherwise (e.g. the legacy wizard before this change).
             leadSource = 'manual',
@@ -261,13 +255,13 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
         if (!name) return res.status(400).json({ success: false, error: 'Campaign name is required' });
 
         // No automatic validation pass. Users pre-validate their leads via the
-        // "Verify Emails" button in the Leads step of the wizard before launch —
+        // "Verify Emails" button in the Leads step of the wizard before launch -
         // credits shouldn't be spent silently on campaign creation. classifyLeadHealth
         // still runs below, using cached validation_status from the Lead table when
         // available; otherwise it relies on light syntax/disposable/role checks.
         const leadValidations = new Map<string, { score: number; status: string; isDisposable: boolean; isCatchAll: boolean }>();
 
-        // Emails actually accepted into the campaign — populated inside the transaction,
+        // Emails actually accepted into the campaign - populated inside the transaction,
         // consumed after it commits to forward-wire Protection Lead rows.
         let acceptedEmails: string[] = [];
 
@@ -319,7 +313,6 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
                             delay_days: delayDays,
                             delay_hours: delayHours,
                             subject: step.subject || '',
-                            preheader: step.preheader ?? '',
                             body_html: bodyHtml,
                         },
                     });
@@ -332,7 +325,6 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
                                     step_id: createdStep.id,
                                     variant_label: variant.label || 'A',
                                     subject: variant.subject,
-                                    preheader: variant.preheader ?? '',
                                     body_html: variant.body_html ?? variant.bodyHtml ?? '',
                                     weight: variant.weight ?? 50,
                                 },
@@ -342,51 +334,30 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
                 }
             }
 
-            // 3. Create campaign leads — with health gate classification + validation
-            // Persist suppression rules and apply them before lead classification.
-            // The legacy `skipDuplicatesAcrossCampaigns` boolean is folded into the
-            // unified rule set as an 'all_campaigns' rule so the resolver is the
-            // single source of truth — no logic forks below this point.
-            const { setSuppressionRules, getSuppressedEmails, applySuppression } =
-                await import('../services/campaignSuppressionService');
-            const incomingRules = Array.isArray(suppressionRules) ? suppressionRules : [];
-            const foldedRules = [...incomingRules];
-            if (skipDuplicatesAcrossCampaigns && !foldedRules.some((r: any) => r?.kind === 'all_campaigns')) {
-                foldedRules.push({ kind: 'all_campaigns' });
-            }
-            if (foldedRules.length > 0) {
-                await setSuppressionRules({
-                    campaignId: camp.id,
-                    organizationId: orgId,
-                    rules: foldedRules,
-                    client: tx,
-                });
-            }
-
+            // 3. Create campaign leads - with health gate classification + validation
             if (leads && Array.isArray(leads) && leads.length > 0) {
+                // Optional cross-campaign dedupe: strip leads whose email already appears
+                // in any other campaign in the org. Prevents accidentally re-mailing the
+                // same person across multiple sequences.
                 let inputLeads: any[] = leads;
                 let skippedCrossCampaign = 0;
-                if (foldedRules.length > 0) {
-                    const suppressed = await getSuppressedEmails({ campaignId: camp.id, organizationId: orgId, client: tx });
-                    const { kept, skipped } = applySuppression(inputLeads, suppressed);
-                    inputLeads = kept;
-                    skippedCrossCampaign = skipped;
-                }
-
-                // Org-level reply-suppression — leads who replied 'hard_no' /
-                // 'angry' to any prior campaign should never be re-contacted
-                // unless the operator manually removes them from the list.
-                const { getSuppressedEmailSet } = await import('../services/replyActionService');
-                const orgSuppressed = await getSuppressedEmailSet(
-                    orgId,
-                    inputLeads.map((l: any) => l.email || '').filter(Boolean),
-                );
-                if (orgSuppressed.size > 0) {
-                    const before = inputLeads.length;
-                    inputLeads = inputLeads.filter((l: any) =>
-                        !orgSuppressed.has(String(l.email || '').trim().toLowerCase()),
-                    );
-                    skippedCrossCampaign += before - inputLeads.length;
+                if (skipDuplicatesAcrossCampaigns) {
+                    const emails = Array.from(new Set(inputLeads
+                        .map((l: any) => String(l.email || '').toLowerCase().trim())
+                        .filter((e: string) => !!e)));
+                    if (emails.length > 0) {
+                        const existing = await tx.campaignLead.findMany({
+                            where: {
+                                email: { in: emails },
+                                campaign: { organization_id: orgId },
+                            },
+                            select: { email: true },
+                        });
+                        const existingSet = new Set(existing.map((r) => r.email.toLowerCase()));
+                        const before = inputLeads.length;
+                        inputLeads = inputLeads.filter((l: any) => !existingSet.has(String(l.email || '').toLowerCase().trim()));
+                        skippedCrossCampaign = before - inputLeads.length;
+                    }
                 }
 
                 // Classify each lead using validation results as context
@@ -492,7 +463,7 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
         });
 
         // Forward-wire Protection Lead rows for any email that was accepted into
-        // the new campaign. This is done post-transaction — the sequencer-side
+        // the new campaign. This is done post-transaction - the sequencer-side
         // writes have committed, so failures here can't roll them back. Each
         // sub-step is isolated so one bad Lead row doesn't cascade.
         //
@@ -504,7 +475,7 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
         //     Protection perspective this lead has been released into execution).
         //   - If no Lead row exists (e.g. user uploaded emails inline without going
         //     through bulkImportContacts first), we intentionally do NOT auto-create
-        //     Lead rows here — that responsibility lives with the Contacts import path.
+        //     Lead rows here - that responsibility lives with the Contacts import path.
         if (acceptedEmails.length > 0) {
             await prisma.lead.updateMany({
                 where: { organization_id: orgId, email: { in: acceptedEmails } },
@@ -557,10 +528,7 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
         const campaignId = String(req.params.id);
         const {
             name, tags, schedule, settings, steps, accountIds, addLeads, removeLeadIds, skipDuplicatesAcrossCampaigns,
-            // Replace this campaign's suppression rules when provided. Pass null
-            // (or omit) to leave existing rules untouched; pass [] to clear them.
-            suppressionRules,
-            // Provenance for the leads being added in this update — defaults to
+            // Provenance for the leads being added in this update - defaults to
             // 'manual' (e.g. user added rows directly in the UI). CSV imports
             // pass leadSource='csv' + leadSourceFile=<filename>.
             leadSource = 'manual',
@@ -579,7 +547,7 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
 
         if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
 
-        // Editing is allowed on any status except archived/completed — replacing steps
+        // Editing is allowed on any status except archived/completed - replacing steps
         // on an active campaign is safe because CampaignLead.current_step is preserved
         // (leads continue from where they left off; leads past the new last step are
         // effectively done). Replacing mailboxes reroutes future sends.
@@ -635,7 +603,7 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
             if (dailyLim !== undefined) scalarUpdate.daily_limit = dailyLim;
         }
 
-        // No automatic validation on add — users run "Verify Emails" in the wizard
+        // No automatic validation on add - users run "Verify Emails" in the wizard
         // before saving if they want to pre-check credits against their list.
         const addList = Array.isArray(addLeads) ? addLeads : [];
         const leadValidations = new Map<string, { score: number; status: string; isDisposable: boolean; isCatchAll: boolean }>();
@@ -649,7 +617,7 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
             }
 
             if (wantsStepReplace) {
-                // Delete existing steps — variants cascade via SequenceStepVariant relation
+                // Delete existing steps - variants cascade via SequenceStepVariant relation
                 await tx.sequenceStep.deleteMany({ where: { campaign_id: campaignId } });
                 for (const step of steps as any[]) {
                     const stepNumber = step.step_number ?? step.stepNumber;
@@ -662,7 +630,6 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
                             delay_days: delayDays,
                             delay_hours: delayHours,
                             subject: step.subject ?? '',
-                            preheader: step.preheader ?? '',
                             body_html: step.body_html ?? step.bodyHtml ?? '',
                         },
                     });
@@ -673,7 +640,6 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
                                     step_id: created.id,
                                     variant_label: variant.variant_label ?? variant.label ?? 'B',
                                     subject: variant.subject ?? '',
-                                    preheader: variant.preheader ?? '',
                                     body_html: variant.body_html ?? variant.bodyHtml ?? '',
                                     weight: variant.weight ?? 50,
                                 },
@@ -703,32 +669,26 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
                 });
             }
 
-            // Replace suppression rules when the caller sent any (an explicit []
-            // clears them, undefined leaves them alone). Legacy boolean folds in.
-            const { setSuppressionRules, getSuppressedEmails, applySuppression } =
-                await import('../services/campaignSuppressionService');
-            if (Array.isArray(suppressionRules) || skipDuplicatesAcrossCampaigns !== undefined) {
-                const folded = Array.isArray(suppressionRules) ? [...suppressionRules] : [];
-                if (skipDuplicatesAcrossCampaigns && !folded.some((r: any) => r?.kind === 'all_campaigns')) {
-                    folded.push({ kind: 'all_campaigns' });
-                }
-                await setSuppressionRules({
-                    campaignId,
-                    organizationId: orgId,
-                    rules: folded,
-                    client: tx,
-                });
-            }
-
             if (addList.length > 0) {
-                // Apply this campaign's stored suppression rules to every lead-add.
-                // Same-campaign duplicates are always skipped via the unique
-                // constraint on (campaign_id, email).
+                // Strip leads already in OTHER campaigns when the flag is set. Same-campaign
+                // duplicates are always skipped via the unique constraint on (campaign_id, email).
                 let effectiveAddList: any[] = addList;
-                const suppressed = await getSuppressedEmails({ campaignId, organizationId: orgId, client: tx });
-                if (suppressed.size > 0) {
-                    const { kept } = applySuppression(effectiveAddList, suppressed);
-                    effectiveAddList = kept;
+                if (skipDuplicatesAcrossCampaigns) {
+                    const emails = Array.from(new Set(effectiveAddList
+                        .map((l: any) => String(l.email || '').toLowerCase().trim())
+                        .filter((e: string) => !!e)));
+                    if (emails.length > 0) {
+                        const existing = await tx.campaignLead.findMany({
+                            where: {
+                                email: { in: emails },
+                                campaign_id: { not: campaignId },
+                                campaign: { organization_id: orgId },
+                            },
+                            select: { email: true },
+                        });
+                        const existingSet = new Set(existing.map((r) => r.email.toLowerCase()));
+                        effectiveAddList = effectiveAddList.filter((l: any) => !existingSet.has(String(l.email || '').toLowerCase().trim()));
+                    }
                 }
 
                 const classifications = await Promise.all(
@@ -752,7 +712,7 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
                 const accepted = classifications.filter(({ result }) => result.classification !== 'red');
                 const rejected = classifications.filter(({ result }) => result.classification === 'red');
 
-                // Same provenance-batch pattern as createCampaign — every batch
+                // Same provenance-batch pattern as createCampaign - every batch
                 // of leads added in an update gets its own import row so the
                 // detail page can show "added 50 from leads_q3.csv on Mon at 14:32"
                 // separately from the original create-time import.
@@ -1003,7 +963,7 @@ export const resumeCampaign = async (req: Request, res: Response): Promise<Respo
  * Body: { tagIds: string[] }
  *
  * Replace the campaign's tag set wholesale. Mirror of contacts'
- * setContactTags — server-side validation that all tagIds belong to
+ * setContactTags - server-side validation that all tagIds belong to
  * the caller's org so cross-org tags can't be applied.
  */
 export const setCampaignTags = async (req: Request, res: Response): Promise<Response> => {
@@ -1085,126 +1045,5 @@ export const bulkTagCampaigns = async (req: Request, res: Response): Promise<Res
     } catch (err) {
         logger.error('[CAMPAIGNS2] bulkTagCampaigns failed', err instanceof Error ? err : new Error(String(err)));
         return res.status(500).json({ success: false, error: 'Failed to apply tag' });
-    }
-};
-
-// ────────────────────────────────────────────────────────────────────
-// Suppression — GET rules for hydration + lead-picker for the modal
-// ────────────────────────────────────────────────────────────────────
-
-/**
- * GET /api/sequencer/campaigns/:id/suppression
- *
- * Returns the campaign's current suppression rules so the edit-time
- * "add leads" flow can pre-populate the picker with what's already
- * applied. Cross-tenant safe: 404s if the campaign isn't in the caller's
- * org. The 'all_campaigns' rule has both source columns null; clients
- * use `kind` as the discriminator.
- */
-export const getCampaignSuppression = async (req: Request, res: Response): Promise<Response> => {
-    try {
-        const orgId = getOrgId(req);
-        const campaignId = String(req.params.id);
-        const campaign = await prisma.campaign.findFirst({
-            where: { id: campaignId, organization_id: orgId },
-            select: { id: true },
-        });
-        if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
-
-        const { listSuppressionRules } = await import('../services/campaignSuppressionService');
-        const rules = await listSuppressionRules(campaignId);
-        return res.json({ success: true, data: rules });
-    } catch (err) {
-        logger.error('[CAMPAIGNS2] getCampaignSuppression failed', err instanceof Error ? err : new Error(String(err)));
-        return res.status(500).json({ success: false, error: 'Failed to load suppression rules' });
-    }
-};
-
-/**
- * GET /api/sequencer/campaigns/lead-picker
- * Query: campaign_ids=csv,uuid,…  [search=]  [offset=0]  [limit=50]
- *
- * Lists leads from the named source campaigns so the wizard's "pick
- * leads" modal can render a scoped, searchable list. The picker is
- * intentionally scoped to user-selected campaigns (per the product
- * decision in the design Q&A) — never returns the whole org's leads.
- *
- * Cross-tenant safe via the campaign.organization_id join.
- */
-export const listLeadsForSuppression = async (req: Request, res: Response): Promise<Response> => {
-    try {
-        const orgId = getOrgId(req);
-        const raw = String(req.query.campaign_ids || '').trim();
-        const ids = raw.split(',').map(s => s.trim()).filter(Boolean);
-        if (ids.length === 0) {
-            return res.status(400).json({ success: false, error: 'campaign_ids is required' });
-        }
-        if (ids.length > 50) {
-            return res.status(400).json({ success: false, error: 'At most 50 campaigns at a time' });
-        }
-        const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
-        const offset = Math.max(0, Number(req.query.offset || 0) | 0);
-        const limit = Math.min(200, Math.max(1, Number(req.query.limit || 50) | 0));
-
-        const whereBase = {
-            campaign_id: { in: ids },
-            campaign: { organization_id: orgId },
-        };
-
-        // Search across email, first/last/full-name, company. Case-insensitive
-        // via Postgres ILIKE (Prisma mode: 'insensitive'). Index on email is the
-        // primary access path; the other fields are scanned on the campaign
-        // subset only, so latency is bounded by the campaign sizes selected.
-        const where = search
-            ? {
-                ...whereBase,
-                OR: [
-                    { email: { contains: search, mode: 'insensitive' as const } },
-                    { first_name: { contains: search, mode: 'insensitive' as const } },
-                    { last_name: { contains: search, mode: 'insensitive' as const } },
-                    { company: { contains: search, mode: 'insensitive' as const } },
-                ],
-            }
-            : whereBase;
-
-        const [total, rows] = await Promise.all([
-            prisma.campaignLead.count({ where }),
-            prisma.campaignLead.findMany({
-                where,
-                select: {
-                    id: true,
-                    email: true,
-                    first_name: true,
-                    last_name: true,
-                    company: true,
-                    campaign_id: true,
-                    campaign: { select: { id: true, name: true } },
-                },
-                orderBy: [{ email: 'asc' }],
-                skip: offset,
-                take: limit,
-            }),
-        ]);
-
-        return res.json({
-            success: true,
-            data: {
-                total,
-                offset,
-                limit,
-                leads: rows.map(r => ({
-                    id: r.id,
-                    email: r.email,
-                    first_name: r.first_name,
-                    last_name: r.last_name,
-                    company: r.company,
-                    campaign_id: r.campaign_id,
-                    campaign_name: r.campaign?.name ?? null,
-                })),
-            },
-        });
-    } catch (err) {
-        logger.error('[CAMPAIGNS2] listLeadsForSuppression failed', err instanceof Error ? err : new Error(String(err)));
-        return res.status(500).json({ success: false, error: 'Failed to load leads' });
     }
 };

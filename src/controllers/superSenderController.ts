@@ -1,10 +1,10 @@
 /**
- * Super Sender controller — REST surface for the dedicated-IP feature.
+ * Super Sender controller - REST surface for the dedicated-IP feature.
  *
- *   GET    /api/super-sender                 — list IPs in this account + summary
- *   POST   /api/super-sender/checkout        — create Polar checkout (qty + workspaces)
- *   POST   /api/super-sender/:id/assign      — assign a pool IP to a workspace
- *   POST   /api/super-sender/:id/unassign    — return an IP to the pool
+ *   GET    /api/super-sender                 - list IPs in this account + summary
+ *   POST   /api/super-sender/checkout        - create Polar checkout (qty + workspaces)
+ *   POST   /api/super-sender/:id/assign      - assign a pool IP to a workspace
+ *   POST   /api/super-sender/:id/unassign    - return an IP to the pool
  *
  * Tier and capability gates:
  *   - All endpoints require auth (extractOrgContext).
@@ -77,7 +77,7 @@ export const getSuperSenderOverview = async (req: Request, res: Response): Promi
     const orgId = getOrgId(req);
     const ctx = await resolveAccountContext(orgId);
     if (!ctx) {
-        // No agency Account context — single-org user. Synthesize a
+        // No agency Account context - single-org user. Synthesize a
         // single-workspace view using their Organization as both the
         // "account" and the only "workspace".
         const eligibility = await canPurchaseSuperSender(orgId);
@@ -243,7 +243,7 @@ export const unassign = async (req: Request, res: Response): Promise<Response> =
 // POST /api/super-sender/:id/pause       Body: { reason? }
 // POST /api/super-sender/:id/resume
 //
-// Manual operator controls — clears paused_reason on resume. Auto-pause
+// Manual operator controls - clears paused_reason on resume. Auto-pause
 // (set by the SES SNS handler) is also clearable via /resume; the
 // operator owns the override.
 // ────────────────────────────────────────────────────────────────────

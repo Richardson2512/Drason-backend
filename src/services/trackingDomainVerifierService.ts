@@ -6,11 +6,11 @@
  * that resolves to our `BACKEND_URL`). Before we route any production
  * tracking traffic through it we have to verify two things:
  *
- *   1. DNS — the domain resolves and ultimately maps to one of our known
+ *   1. DNS - the domain resolves and ultimately maps to one of our known
  *      tracking origins. We accept either CNAME-to-superkabe or A-record
  *      that matches our ingress IP set; in dev we also accept a
  *      .superkabe.local devhost via SUPERKABE_TRACKING_INGRESS_HOSTNAMES.
- *   2. HTTP — a HEAD against `https://<domain>/__tracking_health` returns
+ *   2. HTTP - a HEAD against `https://<domain>/__tracking_health` returns
  *      a 200 from our actual app (verified via a known response header
  *      `X-Superkabe-Tracking: ok`). This catches the case where DNS
  *      resolves correctly but TLS/proxy isn't terminating yet.
@@ -59,7 +59,7 @@ export interface VerificationResult {
 }
 
 /**
- * Pure check — does NOT mutate the row. Used by both the verify endpoint
+ * Pure check - does NOT mutate the row. Used by both the verify endpoint
  * and a periodic re-checker (re-runs daily on previously-verified rows
  * to catch DNS drift).
  */
@@ -77,7 +77,7 @@ export async function checkTrackingDomain(domain: string): Promise<VerificationR
             const cnames = await dns.resolveCname(host);
             cnameTarget = cnames[0]?.toLowerCase() || null;
         } catch {
-            // Not a CNAME — fall through to A-record check.
+            // Not a CNAME - fall through to A-record check.
         }
         try {
             aRecords = await dns.resolve4(host);
@@ -144,7 +144,7 @@ export async function checkTrackingDomain(domain: string): Promise<VerificationR
         return {
             ok: false,
             code: 'http_header_missing',
-            detail: 'Domain serves 200 but missing X-Superkabe-Tracking header — proxy not configured correctly',
+            detail: 'Domain serves 200 but missing X-Superkabe-Tracking header - proxy not configured correctly',
             cnameTarget,
             aRecords,
             httpStatus: response.status,

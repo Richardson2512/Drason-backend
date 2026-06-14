@@ -1,5 +1,5 @@
 /**
- * Warmup Recipient Worker — recipient-side actions on warmup emails.
+ * Warmup Recipient Worker - recipient-side actions on warmup emails.
  *
  * Cadence: every 5 minutes. On each tick:
  *   1. Pull recently-sent WarmupExchange rows that the recipient hasn't
@@ -14,7 +14,7 @@
  *      c. With probability REPLY_PROBABILITY (0.6), if thread_depth <
  *         MAX_THREAD_DEPTH, queue a reply WarmupExchange for the
  *         original sender (recipient becomes the reply's sender).
- *   4. Skip any message older than the freshness window — if the
+ *   4. Skip any message older than the freshness window - if the
  *      recipient hasn't picked it up in 6 hours, it's almost certainly
  *      undeliverable / quarantined upstream. Mark exchange state
  *      'bounced' for accounting.
@@ -47,7 +47,7 @@ interface RecipientCtx {
 }
 
 /** Resolve IMAP credentials for a recipient mailbox. Returns null if
- *  the mailbox lacks IMAP — that mailbox can still SEND warmup but
+ *  the mailbox lacks IMAP - that mailbox can still SEND warmup but
  *  can't perform engagement actions. */
 async function loadRecipientCreds(mailboxId: string): Promise<RecipientCtx | null> {
     const mailbox = await prisma.mailbox.findUnique({
@@ -106,7 +106,7 @@ async function processOne(exchange: {
     const ageMs = Date.now() - exchange.sent_at.getTime();
     if (ageMs > FRESHNESS_HOURS * 60 * 60 * 1000) {
         // Too old to plausibly still be undelivered. Mark as bounced
-        // (warmup-only — not the production bounce path).
+        // (warmup-only - not the production bounce path).
         await prisma.warmupExchange.update({
             where: { id: exchange.id },
             data: { state: 'bounced', error: 'Message not found in recipient mailbox after freshness window' },
@@ -155,7 +155,7 @@ async function processOne(exchange: {
     if (exchange.thread_depth >= MAX_THREAD_DEPTH) return;
     if (Math.random() >= REPLY_PROBABILITY) return;
 
-    // Queue a reply: roles flip — recipient becomes sender.
+    // Queue a reply: roles flip - recipient becomes sender.
     await prisma.warmupExchange.create({
         data: {
             sender_mailbox_id: exchange.recipient_mailbox_id,
