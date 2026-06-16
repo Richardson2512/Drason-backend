@@ -14,9 +14,14 @@
 
 import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
+import { withWorkerLock } from '../utils/workerJobControl';
 
 const POLL_INTERVAL_MS = 60 * 60 * 1000;            // 1 hour
 const PER_CONNECTION_INTERVAL_MS = 24 * 60 * 60 * 1000;  // 24 hours
+
+// Distributed lock so only one backend instance runs this scheduler per tick.
+const LOCK_KEY = 'worker:lock:crm_incremental_import';
+const LOCK_TTL_SECONDS = 300;
 
 let running = false;
 let stopped = false;
@@ -25,58 +30,60 @@ async function tick(): Promise<void> {
     if (running || stopped) return;
     running = true;
     try {
-        const connections = await prisma.crmConnection.findMany({
-            where: { status: 'active', disconnected_at: null },
-            select: { id: true, organization_id: true, provider: true },
+        await withWorkerLock(LOCK_KEY, LOCK_TTL_SECONDS, async () => {
+            const connections = await prisma.crmConnection.findMany({
+                where: { status: 'active', disconnected_at: null },
+                select: { id: true, organization_id: true, provider: true },
+            });
+
+            for (const conn of connections) {
+                if (stopped) break;
+
+                // Find the most recent completed import (initial OR incremental)
+                // - we reuse its source_filter so the cadence keeps pulling
+                // from the same HubSpot list / Salesforce view.
+                const lastImport = await prisma.crmSyncJob.findFirst({
+                    where: {
+                        crm_connection_id: conn.id,
+                        type: { in: ['initial_import', 'incremental_import'] },
+                        state: 'completed',
+                    },
+                    orderBy: { created_at: 'desc' },
+                    select: { source_filter: true, created_at: true },
+                });
+
+                // No prior import → user hasn't kicked one off yet, skip.
+                if (!lastImport) continue;
+
+                const ageMs = Date.now() - lastImport.created_at.getTime();
+                if (ageMs < PER_CONNECTION_INTERVAL_MS) continue;
+
+                // Don't double-queue if a pending/running import already exists.
+                const inflight = await prisma.crmSyncJob.findFirst({
+                    where: {
+                        crm_connection_id: conn.id,
+                        type: { in: ['initial_import', 'incremental_import'] },
+                        state: { in: ['pending', 'running'] },
+                    },
+                    select: { id: true },
+                });
+                if (inflight) continue;
+
+                await prisma.crmSyncJob.create({
+                    data: {
+                        crm_connection_id: conn.id,
+                        type: 'incremental_import',
+                        state: 'pending',
+                        source_filter: lastImport.source_filter ?? undefined,
+                    },
+                });
+                logger.info('[CRM_INCREMENTAL] scheduled', {
+                    connectionId: conn.id,
+                    orgId: conn.organization_id,
+                    provider: conn.provider,
+                });
+            }
         });
-
-        for (const conn of connections) {
-            if (stopped) break;
-
-            // Find the most recent completed import (initial OR incremental)
-            // - we reuse its source_filter so the cadence keeps pulling
-            // from the same HubSpot list / Salesforce view.
-            const lastImport = await prisma.crmSyncJob.findFirst({
-                where: {
-                    crm_connection_id: conn.id,
-                    type: { in: ['initial_import', 'incremental_import'] },
-                    state: 'completed',
-                },
-                orderBy: { created_at: 'desc' },
-                select: { source_filter: true, created_at: true },
-            });
-
-            // No prior import → user hasn't kicked one off yet, skip.
-            if (!lastImport) continue;
-
-            const ageMs = Date.now() - lastImport.created_at.getTime();
-            if (ageMs < PER_CONNECTION_INTERVAL_MS) continue;
-
-            // Don't double-queue if a pending/running import already exists.
-            const inflight = await prisma.crmSyncJob.findFirst({
-                where: {
-                    crm_connection_id: conn.id,
-                    type: { in: ['initial_import', 'incremental_import'] },
-                    state: { in: ['pending', 'running'] },
-                },
-                select: { id: true },
-            });
-            if (inflight) continue;
-
-            await prisma.crmSyncJob.create({
-                data: {
-                    crm_connection_id: conn.id,
-                    type: 'incremental_import',
-                    state: 'pending',
-                    source_filter: lastImport.source_filter ?? undefined,
-                },
-            });
-            logger.info('[CRM_INCREMENTAL] scheduled', {
-                connectionId: conn.id,
-                orgId: conn.organization_id,
-                provider: conn.provider,
-            });
-        }
     } finally {
         running = false;
     }

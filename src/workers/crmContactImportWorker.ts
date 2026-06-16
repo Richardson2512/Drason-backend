@@ -16,9 +16,14 @@ import { logger } from '../services/observabilityService';
 import { getFactory } from '../services/crm/registry';
 import { getConnection, updateRefreshedTokens, markConnectionFailed } from '../services/crm/connectionService';
 import type { CrmContact, CrmContactFilter } from '../services/crm/types';
+import { withWorkerLock } from '../utils/workerJobControl';
 
 const POLL_INTERVAL_MS = 30_000;
 const PAGE_SIZE = 100;
+
+// Distributed lock so only one backend instance drains this queue per tick.
+const LOCK_KEY = 'worker:lock:crm_contact_import';
+const LOCK_TTL_SECONDS = 300;
 
 let running = false;
 let stopped = false;
@@ -254,23 +259,25 @@ async function tick(): Promise<void> {
     if (running || stopped) return;
     running = true;
     try {
-        const jobs = await prisma.crmSyncJob.findMany({
-            where: {
-                type: { in: ['initial_import', 'incremental_import'] },
-                state: { in: ['pending', 'running'] },
-            },
-            orderBy: { created_at: 'asc' },
-            take: 5,
-            select: { id: true },
-        });
-        for (const j of jobs) {
-            if (stopped) break;
-            try {
-                await processJob(j.id);
-            } catch (err) {
-                logger.error('[CRM_IMPORT] processJob crashed', err instanceof Error ? err : new Error(String(err)));
+        await withWorkerLock(LOCK_KEY, LOCK_TTL_SECONDS, async () => {
+            const jobs = await prisma.crmSyncJob.findMany({
+                where: {
+                    type: { in: ['initial_import', 'incremental_import'] },
+                    state: { in: ['pending', 'running'] },
+                },
+                orderBy: { created_at: 'asc' },
+                take: 5,
+                select: { id: true },
+            });
+            for (const j of jobs) {
+                if (stopped) break;
+                try {
+                    await processJob(j.id);
+                } catch (err) {
+                    logger.error('[CRM_IMPORT] processJob crashed', err instanceof Error ? err : new Error(String(err)));
+                }
             }
-        }
+        });
     } finally {
         running = false;
     }

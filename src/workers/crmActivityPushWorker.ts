@@ -16,6 +16,7 @@ import { logger } from '../services/observabilityService';
 import { CrmPushError } from '../services/crm/types';
 import { getFactory } from '../services/crm/registry';
 import { getConnection, updateRefreshedTokens, markConnectionFailed } from '../services/crm/connectionService';
+import { withWorkerLock } from '../utils/workerJobControl';
 
 const POLL_INTERVAL_MS = 15_000; // every 15s - low enough to feel responsive, high enough to be cheap
 const BATCH_SIZE = 25;
@@ -28,6 +29,10 @@ const RETRY_BACKOFF_MS = [
     4 * 60 * 60 * 1000,  // 4h
     12 * 60 * 60 * 1000, // 12h
 ];
+
+// Distributed lock so only one backend instance drains this queue per tick.
+const LOCK_KEY = 'worker:lock:crm_activity_push';
+const LOCK_TTL_SECONDS = 300;
 
 let running = false;
 let stopped = false;
@@ -210,24 +215,26 @@ async function tick(): Promise<void> {
     if (running || stopped) return;
     running = true;
     try {
-        const candidates = await prisma.crmActivityPushItem.findMany({
-            where: {
-                state: 'pending',
-                next_attempt_at: { lte: new Date() },
-            },
-            orderBy: { next_attempt_at: 'asc' },
-            take: BATCH_SIZE,
-            select: { id: true },
-        });
+        await withWorkerLock(LOCK_KEY, LOCK_TTL_SECONDS, async () => {
+            const candidates = await prisma.crmActivityPushItem.findMany({
+                where: {
+                    state: 'pending',
+                    next_attempt_at: { lte: new Date() },
+                },
+                orderBy: { next_attempt_at: 'asc' },
+                take: BATCH_SIZE,
+                select: { id: true },
+            });
 
-        for (const c of candidates) {
-            if (stopped) break;
-            try {
-                await processOne(c.id);
-            } catch (err) {
-                logger.error('[CRM_PUSH_WORKER] processOne crashed', err instanceof Error ? err : new Error(String(err)));
+            for (const c of candidates) {
+                if (stopped) break;
+                try {
+                    await processOne(c.id);
+                } catch (err) {
+                    logger.error('[CRM_PUSH_WORKER] processOne crashed', err instanceof Error ? err : new Error(String(err)));
+                }
             }
-        }
+        });
     } finally {
         running = false;
     }

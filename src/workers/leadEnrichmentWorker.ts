@@ -20,11 +20,16 @@
 import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
 import { enrichLead } from '../services/leadProfileService';
+import { withWorkerLock } from '../utils/workerJobControl';
 
 const POLL_INTERVAL_MS = 60_000;
 const BATCH_PER_TICK = 10;
 const JINA_THROTTLE_MS = 2_000;
 const TTL_DAYS = parseInt(process.env.LEAD_PROFILE_TTL_DAYS || '60', 10);
+
+// Distributed lock so only one backend instance drains this queue per tick.
+const LOCK_KEY = 'worker:lock:lead_enrichment';
+const LOCK_TTL_SECONDS = 300;
 
 let running = false;
 let stopped = false;
@@ -72,31 +77,33 @@ async function tick(): Promise<void> {
     if (running || stopped) return;
     running = true;
     try {
-        const leadIds = await findCandidates();
-        if (leadIds.length === 0) return;
+        await withWorkerLock(LOCK_KEY, LOCK_TTL_SECONDS, async () => {
+            const leadIds = await findCandidates();
+            if (leadIds.length === 0) return;
 
-        logger.info('[LEAD_ENRICHMENT] Picked up batch', { count: leadIds.length });
+            logger.info('[LEAD_ENRICHMENT] Picked up batch', { count: leadIds.length });
 
-        for (const id of leadIds) {
-            if (stopped) break;
-            try {
-                const result = await enrichLead(id);
-                if (result.status === 'failed') {
-                    logger.warn('[LEAD_ENRICHMENT] enrichLead failed', { leadId: id, error: result.error });
+            for (const id of leadIds) {
+                if (stopped) break;
+                try {
+                    const result = await enrichLead(id);
+                    if (result.status === 'failed') {
+                        logger.warn('[LEAD_ENRICHMENT] enrichLead failed', { leadId: id, error: result.error });
+                    }
+                } catch (err) {
+                    logger.error(
+                        '[LEAD_ENRICHMENT] enrichLead crashed',
+                        err instanceof Error ? err : new Error(String(err)),
+                        { leadId: id },
+                    );
                 }
-            } catch (err) {
-                logger.error(
-                    '[LEAD_ENRICHMENT] enrichLead crashed',
-                    err instanceof Error ? err : new Error(String(err)),
-                    { leadId: id },
-                );
+                // Throttle between leads so Jina doesn't see a burst from us.
+                // Last lead in batch doesn't need to wait - next tick handles pacing.
+                if (id !== leadIds[leadIds.length - 1] && !stopped) {
+                    await new Promise(resolve => setTimeout(resolve, JINA_THROTTLE_MS));
+                }
             }
-            // Throttle between leads so Jina doesn't see a burst from us.
-            // Last lead in batch doesn't need to wait - next tick handles pacing.
-            if (id !== leadIds[leadIds.length - 1] && !stopped) {
-                await new Promise(resolve => setTimeout(resolve, JINA_THROTTLE_MS));
-            }
-        }
+        });
     } finally {
         running = false;
     }

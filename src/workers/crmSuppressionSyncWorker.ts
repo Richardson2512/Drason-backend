@@ -16,10 +16,15 @@ import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
 import { getFactory } from '../services/crm/registry';
 import { getConnection, updateRefreshedTokens, markConnectionFailed } from '../services/crm/connectionService';
+import { withWorkerLock } from '../utils/workerJobControl';
 
 const POLL_INTERVAL_MS = 30 * 60 * 1000;       // 30 minutes
 const PER_CONNECTION_INTERVAL_MS = 6 * 60 * 60 * 1000;  // 6 hours
 const PAGE_HARD_CAP = 50;                       // safety: never page more than 50 times in one run
+
+// Distributed lock so only one backend instance runs this sweep per tick.
+const LOCK_KEY = 'worker:lock:crm_suppression_sync';
+const LOCK_TTL_SECONDS = 300;
 
 let running = false;
 let stopped = false;
@@ -122,28 +127,30 @@ async function tick(): Promise<void> {
     if (running || stopped) return;
     running = true;
     try {
-        const connections = await prisma.crmConnection.findMany({
-            where: { status: 'active', disconnected_at: null },
-            select: { id: true },
-        });
-
-        for (const conn of connections) {
-            if (stopped) break;
-
-            const lastJob = await prisma.crmSyncJob.findFirst({
-                where: { crm_connection_id: conn.id, type: 'suppression_pull', state: 'completed' },
-                orderBy: { created_at: 'desc' },
-                select: { created_at: true },
+        await withWorkerLock(LOCK_KEY, LOCK_TTL_SECONDS, async () => {
+            const connections = await prisma.crmConnection.findMany({
+                where: { status: 'active', disconnected_at: null },
+                select: { id: true },
             });
-            const ageMs = lastJob ? Date.now() - lastJob.created_at.getTime() : Number.POSITIVE_INFINITY;
-            if (ageMs < PER_CONNECTION_INTERVAL_MS) continue;
 
-            try {
-                await syncOne(conn.id);
-            } catch (err) {
-                logger.error('[CRM_SUPPRESSION] syncOne crashed', err instanceof Error ? err : new Error(String(err)));
+            for (const conn of connections) {
+                if (stopped) break;
+
+                const lastJob = await prisma.crmSyncJob.findFirst({
+                    where: { crm_connection_id: conn.id, type: 'suppression_pull', state: 'completed' },
+                    orderBy: { created_at: 'desc' },
+                    select: { created_at: true },
+                });
+                const ageMs = lastJob ? Date.now() - lastJob.created_at.getTime() : Number.POSITIVE_INFINITY;
+                if (ageMs < PER_CONNECTION_INTERVAL_MS) continue;
+
+                try {
+                    await syncOne(conn.id);
+                } catch (err) {
+                    logger.error('[CRM_SUPPRESSION] syncOne crashed', err instanceof Error ? err : new Error(String(err)));
+                }
             }
-        }
+        });
     } finally {
         running = false;
     }
