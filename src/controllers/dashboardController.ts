@@ -14,6 +14,7 @@ import * as campaignHealthService from '../services/campaignHealthService';
 import * as entityStateService from '../services/entityStateService';
 import { MailboxState, DomainState, TriggerType } from '../types';
 import { logger } from '../services/observabilityService';
+import { escapeCsvField } from '../utils/csv';
 import { cached } from '../utils/responseCache';
 
 // ─── Unified campaign helpers ───────────────────────────────────────────────
@@ -1274,18 +1275,8 @@ export const resumeDomain = async (req: Request, res: Response, next: NextFuncti
  * Handles quoting fields that contain commas, quotes, or newlines.
  */
 function toCsv(rows: Record<string, any>[], columns: { key: string; label: string }[]): string {
-    const escapeField = (val: any): string => {
-        if (val === null || val === undefined) return '';
-        let str = String(val);
-        // CSV injection protection: prefix formula-triggering characters with single quote
-        if (/^[=+\-@\t\r]/.test(str)) {
-            str = "'" + str;
-        }
-        if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-            return `"${str.replace(/"/g, '""')}"`;
-        }
-        return str;
-    };
+    // Shared CSV escaper - single source of truth for formula-injection + RFC 4180.
+    const escapeField = escapeCsvField;
 
     const header = columns.map(c => escapeField(c.label)).join(',');
     const lines = rows.map(row =>

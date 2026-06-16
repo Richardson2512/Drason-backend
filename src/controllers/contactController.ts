@@ -14,6 +14,7 @@ import { Request, Response } from 'express';
 import { getOrgId } from '../middleware/orgContext';
 import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
+import { escapeCsvField } from '../utils/csv';
 import { classifyLeadHealth } from '../services/leadHealthService';
 import { validateLeadEmail } from '../services/emailValidationService';
 import * as espClassifierService from '../services/espClassifierService';
@@ -1391,8 +1392,8 @@ export const exportContacts = async (req: Request, res: Response): Promise<Respo
         ]);
 
         const csv = [
-            headers.join(','),
-            ...rows.map((r) => r.map((v) => `"${v.replace(/"/g, '""')}"`).join(',')),
+            headers.map(escapeCsvField).join(','),
+            ...rows.map((r) => r.map(escapeCsvField).join(',')),
         ].join('\n');
 
         res.setHeader('Content-Type', 'text/csv');

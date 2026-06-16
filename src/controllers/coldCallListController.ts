@@ -15,6 +15,7 @@
 import { Request, Response } from 'express';
 import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
+import { escapeCsvField } from '../utils/csv';
 import { getOrgId } from '../middleware/orgContext';
 import {
     DEFAULT_CUSTOM_RULES,
@@ -278,14 +279,10 @@ const CSV_HEADERS = [
     'list_source',
 ];
 
-function csvEscape(v: unknown): string {
-    if (v === null || v === undefined) return '';
-    let s = String(v);
-    if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
-        s = `"${s.replace(/"/g, '""')}"`;
-    }
-    return s;
-}
+// Delegates to the shared escaper (RFC 4180 + formula-injection guard). The
+// local copy previously quoted correctly but did NOT neutralize formula
+// injection - call-list names/companies come from ingested leads.
+const csvEscape = escapeCsvField;
 
 function buildCsv(prospects: ProspectRow[], source: 'system_daily' | 'custom'): string {
     const lines = [CSV_HEADERS.join(',')];

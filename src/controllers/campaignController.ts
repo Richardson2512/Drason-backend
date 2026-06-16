@@ -8,6 +8,7 @@ import { Request, Response } from 'express';
 import { prisma } from '../index';
 import { getOrgId } from '../middleware/orgContext';
 import { logger } from '../services/observabilityService';
+import { escapeCsvField } from '../utils/csv';
 import { logAction } from '../services/auditLogService';
 import * as loadBalancingService from '../services/loadBalancingService';
 import * as predictiveMonitoringService from '../services/predictiveMonitoringService';
@@ -525,8 +526,8 @@ export const exportCampaignLeads = async (req: Request, res: Response) => {
         ]);
 
         const csv = [
-            headers.join(','),
-            ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
+            headers.map(escapeCsvField).join(','),
+            ...rows.map(row => row.map(escapeCsvField).join(','))
         ].join('\n');
 
         // Set headers for file download

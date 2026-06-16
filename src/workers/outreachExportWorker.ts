@@ -19,9 +19,12 @@ import {
 } from '../services/outreach/connectionService';
 import { OutreachClient } from '../services/outreach/client';
 import { OutreachError } from '../services/outreach/types';
+import { withWorkerLock, MAX_JOB_RETRIES } from '../utils/workerJobControl';
 
 const POLL_INTERVAL_MS = 15_000;
 const CHUNK_PER_TICK = 25; // ~25 prospects per tick - keeps worker responsive
+const LOCK_KEY = 'worker:lock:outreach_export';
+const LOCK_TTL_SECONDS = 300;
 
 let running = false;
 let stopped = false;
@@ -180,7 +183,7 @@ async function processJob(jobId: string): Promise<void> {
         const retryable = err instanceof OutreachError ? err.retryable : false;
         const code = err instanceof OutreachError ? err.providerCode : undefined;
 
-        if (retryable) {
+        if (retryable && job.error_count + 1 < MAX_JOB_RETRIES) {
             await prisma.outreachExportJob.update({
                 where: { id: job.id },
                 data: {
@@ -195,8 +198,13 @@ async function processJob(jobId: string): Promise<void> {
                     total_failed: totalFailed,
                 },
             });
-            logger.warn('[OUTREACH_EXPORT] retryable failure', { jobId: job.id, code, msg: message });
+            logger.warn('[OUTREACH_EXPORT] retryable failure', { jobId: job.id, code, msg: message, attempt: job.error_count + 1 });
         } else {
+            // Non-retryable, OR a retryable error past the retry ceiling - stop
+            // re-attempting the same chunk every tick forever.
+            if (retryable) {
+                logger.error(`[OUTREACH_EXPORT] giving up after ${MAX_JOB_RETRIES} retryable failures`, new Error(message));
+            }
             await prisma.outreachExportJob.update({
                 where: { id: job.id },
                 data: {
@@ -256,23 +264,27 @@ async function tick(): Promise<void> {
     if (running || stopped) return;
     running = true;
     try {
-        const jobs = await prisma.outreachExportJob.findMany({
-            where: { state: { in: ['pending', 'running'] } },
-            orderBy: { created_at: 'asc' },
-            take: 5,
-            select: { id: true },
-        });
-        for (const j of jobs) {
-            if (stopped) break;
-            try {
-                await processJob(j.id);
-            } catch (err) {
-                logger.error(
-                    '[OUTREACH_EXPORT] processJob crashed',
-                    err instanceof Error ? err : new Error(String(err)),
-                );
+        // Distributed lock: one instance drains the queue per tick so multiple
+        // instances can't double-export the same jobs.
+        await withWorkerLock(LOCK_KEY, LOCK_TTL_SECONDS, async () => {
+            const jobs = await prisma.outreachExportJob.findMany({
+                where: { state: { in: ['pending', 'running'] } },
+                orderBy: { created_at: 'asc' },
+                take: 5,
+                select: { id: true },
+            });
+            for (const j of jobs) {
+                if (stopped) break;
+                try {
+                    await processJob(j.id);
+                } catch (err) {
+                    logger.error(
+                        '[OUTREACH_EXPORT] processJob crashed',
+                        err instanceof Error ? err : new Error(String(err)),
+                    );
+                }
             }
-        }
+        });
     } finally {
         running = false;
     }

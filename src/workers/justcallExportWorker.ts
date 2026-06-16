@@ -29,6 +29,10 @@ import {
 } from '../services/justcall/connectionService';
 import { JustCallClient } from '../services/justcall/client';
 import { JustCallError, type JustCallContactInput } from '../services/justcall/types';
+import { withWorkerLock, MAX_JOB_RETRIES } from '../utils/workerJobControl';
+
+const LOCK_KEY = 'worker:lock:justcall_export';
+const LOCK_TTL_SECONDS = 300;
 
 const POLL_INTERVAL_MS = 15_000;
 /** One bulk_import call per tick. Max payload is 250 contacts.
@@ -241,7 +245,7 @@ async function processJob(jobId: string): Promise<void> {
         const code = err instanceof JustCallError ? err.providerCode : undefined;
         const status = err instanceof JustCallError ? err.status : undefined;
 
-        if (retryable) {
+        if (retryable && job.error_count + 1 < MAX_JOB_RETRIES) {
             await prisma.justCallExportJob.update({
                 where: { id: job.id },
                 data: {
@@ -254,8 +258,13 @@ async function processJob(jobId: string): Promise<void> {
                     total_failed: totalFailed,
                 },
             });
-            logger.warn('[JUSTCALL_EXPORT] retryable failure - will retry', { jobId: job.id, code, status, msg: message });
+            logger.warn('[JUSTCALL_EXPORT] retryable failure - will retry', { jobId: job.id, code, status, msg: message, attempt: job.error_count + 1 });
         } else {
+            // Non-retryable, OR a retryable error past the retry ceiling - stop
+            // re-attempting the same chunk every tick forever.
+            if (retryable) {
+                logger.error(`[JUSTCALL_EXPORT] giving up after ${MAX_JOB_RETRIES} retryable failures`, new Error(message ?? 'retryable'));
+            }
             await prisma.justCallExportJob.update({
                 where: { id: job.id },
                 data: {
@@ -309,23 +318,27 @@ async function tick(): Promise<void> {
     if (running || stopped) return;
     running = true;
     try {
-        const jobs = await prisma.justCallExportJob.findMany({
-            where: { state: { in: ['pending', 'running'] } },
-            orderBy: { created_at: 'asc' },
-            take: 5,
-            select: { id: true },
-        });
-        for (const j of jobs) {
-            if (stopped) break;
-            try {
-                await processJob(j.id);
-            } catch (err) {
-                logger.error(
-                    '[JUSTCALL_EXPORT] processJob crashed',
-                    err instanceof Error ? err : new Error(String(err)),
-                );
+        // Distributed lock: one instance drains the queue per tick so multiple
+        // instances can't double-export the same jobs.
+        await withWorkerLock(LOCK_KEY, LOCK_TTL_SECONDS, async () => {
+            const jobs = await prisma.justCallExportJob.findMany({
+                where: { state: { in: ['pending', 'running'] } },
+                orderBy: { created_at: 'asc' },
+                take: 5,
+                select: { id: true },
+            });
+            for (const j of jobs) {
+                if (stopped) break;
+                try {
+                    await processJob(j.id);
+                } catch (err) {
+                    logger.error(
+                        '[JUSTCALL_EXPORT] processJob crashed',
+                        err instanceof Error ? err : new Error(String(err)),
+                    );
+                }
             }
-        }
+        });
     } finally {
         running = false;
     }

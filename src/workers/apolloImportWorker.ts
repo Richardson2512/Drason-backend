@@ -26,9 +26,12 @@ import { LeadSourceError } from '../services/leadSources/types';
 import { dispatchEmail } from '../services/emailTemplates/dispatcher';
 import { importCompletedEmail } from '../services/emailTemplates/integrations';
 import { buildFrontendUrl } from '../services/emailTemplates/requesterContext';
+import { withWorkerLock, MAX_JOB_RETRIES } from '../utils/workerJobControl';
 
 const POLL_INTERVAL_MS = 30_000;
 const PAGE_SIZE = 100;
+const LOCK_KEY = 'worker:lock:lead_source_import';
+const LOCK_TTL_SECONDS = 300;
 
 let running = false;
 let stopped = false;
@@ -187,7 +190,7 @@ async function processJob(jobId: string): Promise<void> {
         const retryable = err instanceof LeadSourceError ? err.retryable : false;
         const code = err instanceof LeadSourceError ? err.providerCode : undefined;
 
-        if (retryable) {
+        if (retryable && job.error_count + 1 < MAX_JOB_RETRIES) {
             // Bump error counter but leave the job in `running` so the next
             // tick retries from the same cursor.
             await prisma.leadSourceImportJob.update({
@@ -203,8 +206,14 @@ async function processJob(jobId: string): Promise<void> {
                     credits_consumed: creditsConsumed,
                 },
             });
-            logger.warn('[LEAD_SOURCE_IMPORT] retryable failure', { jobId: job.id, code, msg: message });
+            logger.warn('[LEAD_SOURCE_IMPORT] retryable failure', { jobId: job.id, code, msg: message, attempt: job.error_count + 1 });
         } else {
+            // Non-retryable, OR a retryable error that has now exhausted the
+            // retry ceiling - give up rather than loop the same failing page
+            // every tick forever.
+            if (retryable) {
+                logger.error(`[LEAD_SOURCE_IMPORT] giving up after ${MAX_JOB_RETRIES} retryable failures`, new Error(message));
+            }
             await prisma.leadSourceImportJob.update({
                 where: { id: job.id },
                 data: {
@@ -391,23 +400,27 @@ async function tick(): Promise<void> {
     if (running || stopped) return;
     running = true;
     try {
-        const jobs = await prisma.leadSourceImportJob.findMany({
-            where: { state: { in: ['pending', 'running'] } },
-            orderBy: { created_at: 'asc' },
-            take: 5,
-            select: { id: true },
-        });
-        for (const j of jobs) {
-            if (stopped) break;
-            try {
-                await processJob(j.id);
-            } catch (err) {
-                logger.error(
-                    '[LEAD_SOURCE_IMPORT] processJob crashed',
-                    err instanceof Error ? err : new Error(String(err)),
-                );
+        // Distributed lock: only one backend instance drains the queue per
+        // tick, so multiple instances can't double-process the same jobs.
+        await withWorkerLock(LOCK_KEY, LOCK_TTL_SECONDS, async () => {
+            const jobs = await prisma.leadSourceImportJob.findMany({
+                where: { state: { in: ['pending', 'running'] } },
+                orderBy: { created_at: 'asc' },
+                take: 5,
+                select: { id: true },
+            });
+            for (const j of jobs) {
+                if (stopped) break;
+                try {
+                    await processJob(j.id);
+                } catch (err) {
+                    logger.error(
+                        '[LEAD_SOURCE_IMPORT] processJob crashed',
+                        err instanceof Error ? err : new Error(String(err)),
+                    );
+                }
             }
-        }
+        });
     } finally {
         running = false;
     }

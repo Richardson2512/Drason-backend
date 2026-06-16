@@ -8,24 +8,16 @@
 import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
+import { escapeCsvField } from '../utils/csv';
 import { getApiCallStats } from '../services/apiCallTracker';
 
 // ============================================================================
 // CSV HELPERS
 // ============================================================================
 
-function escapeField(val: any): string {
-    if (val === null || val === undefined) return '';
-    let str = String(val);
-    // CSV injection protection: prefix formula-triggering characters with single quote
-    if (/^[=+\-@\t\r]/.test(str)) {
-        str = "'" + str;
-    }
-    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-        str = '"' + str.replace(/"/g, '""') + '"';
-    }
-    return str;
-}
+// Delegates to the shared CSV escaper (single source of truth for
+// formula-injection + RFC 4180 quoting).
+const escapeField = escapeCsvField;
 
 function toCsv(rows: Record<string, any>[], columns: { key: string; label: string }[]): string {
     const header = columns.map(c => escapeField(c.label)).join(',');
