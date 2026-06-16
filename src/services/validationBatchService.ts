@@ -8,6 +8,7 @@
 import { prisma } from '../index';
 import { logger } from './observabilityService';
 import * as emailValidationService from './emailValidationService';
+import { escapeCsvField } from '../utils/csv';
 import * as espClassifierService from './espClassifierService';
 import * as entityStateService from './entityStateService';
 import * as auditLogService from './auditLogService';
@@ -613,19 +614,15 @@ export async function exportCleanCSV(
     });
 
     const headers = ['email', 'first_name', 'last_name', 'company', 'persona', 'lead_score', 'validation_status', 'validation_score', 'esp_bucket'];
-    const escapeCSV = (val: string | number | null | undefined): string => {
-        const str = String(val ?? '');
-        return str.includes(',') || str.includes('"') || str.includes('\n')
-            ? `"${str.replace(/"/g, '""')}"`
-            : str;
-    };
-
+    // Shared escaper: RFC 4180 + formula-injection guard. The local copy here
+    // previously quoted but did NOT neutralize formula injection - these cells
+    // (email/name/company/persona) come from ingested leads.
     const rows = leads.map(l => [
         l.email, l.first_name, l.last_name, l.company, l.persona,
         l.lead_score, l.validation_status, l.validation_score, l.esp_bucket
-    ].map(escapeCSV).join(','));
+    ].map(escapeCsvField).join(','));
 
-    return [headers.join(','), ...rows].join('\n');
+    return [headers.map(escapeCsvField).join(','), ...rows].join('\n');
 }
 
 // ============================================================================

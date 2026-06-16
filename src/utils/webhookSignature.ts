@@ -45,9 +45,21 @@ export function validateWebhookSignature(
         return false;
     }
 
+    // HMAC MUST be computed over the raw request bytes the sender signed -
+    // re-stringifying req.body produces different bytes (whitespace / key-order
+    // / unicode-escaping) and the signature would never match. The raw buffer
+    // is captured by needsRawBody() in index.ts for all webhook/ingest paths.
+    // Fail CLOSED if it's absent rather than silently hashing a re-serialized
+    // body (the exact defect that had killed the HubSpot + Clay verifiers).
+    const rawBody = (req as any).rawBody;
+    if (!(rawBody instanceof Buffer)) {
+        logger.warn('[WEBHOOK] raw body not captured - cannot verify signature (check needsRawBody() allowlist in index.ts)');
+        return false;
+    }
+
     const expectedSignature = crypto
         .createHmac('sha256', secret)
-        .update(JSON.stringify(req.body))
+        .update(rawBody)
         .digest('hex');
 
     try {

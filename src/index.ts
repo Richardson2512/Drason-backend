@@ -410,7 +410,7 @@ app.post('/api/oauth/connections/revoke', asyncHandler(oauthConnectionsControlle
 import * as crmIntegrationsController from './controllers/crmIntegrationsController';
 app.get('/api/integrations/crm/connections', asyncHandler(crmIntegrationsController.listConnections));
 app.get('/api/integrations/crm/connections/:id', asyncHandler(crmIntegrationsController.getConnectionDetail));
-app.post('/api/integrations/crm/connections/:id/disconnect', asyncHandler(crmIntegrationsController.disconnectConnection));
+app.post('/api/integrations/crm/connections/:id/disconnect', requireCapability('access_integrations'), asyncHandler(crmIntegrationsController.disconnectConnection));
 
 // CRM - HubSpot (Phase 2). /authorize requires login; /callback is the
 // public OAuth landing.
