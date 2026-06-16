@@ -3,6 +3,8 @@ import crypto from 'crypto';
 import { prisma } from '../index';
 import { logger } from './observabilityService';
 import { SlackAlertsStatus } from '@prisma/client';
+import { decrypt } from '../utils/encryption';
+import { legacyDecryptSlackToken } from './slackTokenCrypto';
 
 export type AlertSeverity = 'info' | 'warning' | 'critical';
 
@@ -12,23 +14,18 @@ const SEVERITY_COLORS: Record<AlertSeverity, string> = {
     critical: '#e01e5a'  // Red
 };
 
-// Decrypt helper explicitly duplicated here to enforce isolation 
-// from web request threads and prevent token leakage.
+// Decrypt a stored Slack bot token. Canonical AES (utils/encryption) first,
+// with a fall back to the legacy bespoke routine for tokens written before the
+// migration (canonical decrypt() throws on a legacy blob - GCM auth fails -
+// so the fallback only runs for genuinely-legacy values). Single source of
+// truth for the legacy path lives in slackTokenCrypto, shared with
+// slackController so the two can't drift.
 function decryptTokenIsolated(encryptedData: string): string {
-    const algorithm = 'aes-256-gcm';
-    const key = (process.env.SLACK_SIGNING_SECRET || process.env.JWT_SECRET || 'fallback-secret-for-dev-only--').padEnd(32, '0').substring(0, 32);
-
-    const parts = encryptedData.split(':');
-    if (parts.length !== 3) throw new Error('Invalid encrypted token format');
-
-    const iv = Buffer.from(parts[0], 'hex');
-    const authTag = Buffer.from(parts[1], 'hex');
-    const decipher = crypto.createDecipheriv(algorithm, Buffer.from(key), iv);
-    decipher.setAuthTag(authTag);
-    let decrypted = decipher.update(parts[2], 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-
-    return decrypted;
+    try {
+        return decrypt(encryptedData);
+    } catch {
+        return legacyDecryptSlackToken(encryptedData);
+    }
 }
 
 /**

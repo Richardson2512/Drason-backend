@@ -68,9 +68,17 @@ function verifyV3Signature(req: Request): boolean {
     // request host for dev.
     const backendBase = (process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
     const requestUri = `${backendBase}${req.originalUrl}`;
-    const rawBody = (req as any).rawBody instanceof Buffer
-        ? ((req as any).rawBody as Buffer).toString('utf8')
-        : JSON.stringify(req.body ?? '');
+    // Fail CLOSED if the raw body wasn't captured. HubSpot signs the exact
+    // bytes it sent; re-stringifying req.body yields different bytes and the
+    // HMAC would never match anyway. Rejecting here (rather than hashing a
+    // re-serialized body) makes the failure explicit and loud instead of a
+    // silent "every webhook 401s" mystery. The raw body is captured by the
+    // needsRawBody category rule in index.ts for /api/integrations/*/webhooks.
+    if (!((req as any).rawBody instanceof Buffer)) {
+        logger.error('[HUBSPOT_WEBHOOK] raw body not captured - signature cannot be verified. Check needsRawBody() allowlist in index.ts covers this path.');
+        return false;
+    }
+    const rawBody = ((req as any).rawBody as Buffer).toString('utf8');
 
     const sourceString = `${req.method}${requestUri}${rawBody}${timestamp}`;
     const expected = crypto.createHmac('sha256', clientSecret).update(sourceString, 'utf8').digest('base64');

@@ -508,16 +508,29 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
             authPassed = a.length === b.length && cryptoMod.timingSafeEqual(a, b);
         }
 
-        // Fall through to HMAC if secret-header didn't pass.
+        // Fall through to HMAC if secret-header didn't pass. The HMAC is over
+        // the RAW request bytes (as the error message + Clay's contract state),
+        // NOT JSON.stringify(req.body) - re-serializing changes whitespace /
+        // key-order and the signature would never match. The raw buffer is
+        // captured by the needsRawBody category rule in index.ts for
+        // /api/ingest. Fail CLOSED if it's somehow absent rather than silently
+        // hashing a re-stringified body.
         if (!authPassed && signature) {
             authMethod = 'hmac-signature';
-            const expectedSignature = cryptoMod
-                .createHmac('sha256', org.clay_webhook_secret)
-                .update(JSON.stringify(req.body))
-                .digest('hex');
-            const a = Buffer.from(signature);
-            const b = Buffer.from(expectedSignature);
-            authPassed = a.length === b.length && cryptoMod.timingSafeEqual(a, b);
+            const rawBody = (req as any).rawBody instanceof Buffer
+                ? ((req as any).rawBody as Buffer)
+                : null;
+            if (!rawBody) {
+                logger.error('[INGEST CLAY] raw body not captured - HMAC cannot be verified. Check needsRawBody() in index.ts covers /api/ingest.');
+            } else {
+                const expectedSignature = cryptoMod
+                    .createHmac('sha256', org.clay_webhook_secret)
+                    .update(rawBody)
+                    .digest('hex');
+                const a = Buffer.from(signature);
+                const b = Buffer.from(expectedSignature);
+                authPassed = a.length === b.length && cryptoMod.timingSafeEqual(a, b);
+            }
         }
     }
 

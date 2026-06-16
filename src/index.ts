@@ -63,6 +63,8 @@ function appendStatementTimeout(url: string): string {
 import { extractOrgContext, enforceOrgSlug } from './middleware/orgContext';
 import { rateLimit, securityHeaders, initRateLimiters } from './middleware/security';
 import { asyncHandler } from './middleware/asyncHandler';
+import { requireCapability } from './middleware/requireCapability';
+import { needsRawBody } from './utils/rawBodyCapture';
 
 // Import Redis
 import { initRedis, checkRedisHealth, disconnectRedis } from './utils/redis';
@@ -172,17 +174,13 @@ app.use(cors({
 app.use(cookieParser());
 
 // Capture raw body for HMAC signature verification on inbound webhooks.
-// Slack and Polar both sign the byte-exact request payload - re-stringifying
-// req.body produces different bytes (whitespace/key-order), so we need the
-// original buffer. Restricted to known webhook prefixes so we don't double
-// the memory cost on every API request.
-const verifyRawBody = (req: any, res: any, buf: Buffer) => {
+// The capture rule (which paths need it, and why) lives in utils/rawBodyCapture
+// as a pure, unit-tested predicate so a forgotten signed-webhook path can't
+// silently recur (the exact bug that killed HubSpot webhooks + the Clay HMAC
+// path). Matched by category - any provider webhook / ingest endpoint.
+const verifyRawBody = (req: any, _res: any, buf: Buffer) => {
     if (!req.originalUrl) return;
-    if (
-        req.originalUrl.startsWith('/slack') ||
-        req.originalUrl.startsWith('/api/billing/polar-webhook') ||
-        req.originalUrl.startsWith('/api/billing/webhook') // legacy alias
-    ) {
+    if (needsRawBody(req.originalUrl)) {
         req.rawBody = buf;
     }
 };
@@ -417,39 +415,39 @@ app.post('/api/integrations/crm/connections/:id/disconnect', asyncHandler(crmInt
 // CRM - HubSpot (Phase 2). /authorize requires login; /callback is the
 // public OAuth landing.
 import * as hubspotIntegrationController from './controllers/hubspotIntegrationController';
-app.get('/api/integrations/hubspot/authorize', asyncHandler(hubspotIntegrationController.authorize));
+app.get('/api/integrations/hubspot/authorize', requireCapability('access_integrations'), asyncHandler(hubspotIntegrationController.authorize));
 app.get('/api/integrations/hubspot/lists', asyncHandler(hubspotIntegrationController.listLists));
 app.get('/api/integrations/hubspot/fields', asyncHandler(hubspotIntegrationController.describeFields));
-app.post('/api/integrations/hubspot/import', asyncHandler(hubspotIntegrationController.startImport));
+app.post('/api/integrations/hubspot/import', requireCapability('access_integrations'), asyncHandler(hubspotIntegrationController.startImport));
 
 // CRM - Salesforce (Phase 3).
 import * as salesforceIntegrationController from './controllers/salesforceIntegrationController';
-app.get('/api/integrations/salesforce/authorize', asyncHandler(salesforceIntegrationController.authorize));
+app.get('/api/integrations/salesforce/authorize', requireCapability('access_integrations'), asyncHandler(salesforceIntegrationController.authorize));
 app.get('/api/integrations/salesforce/list-views', asyncHandler(salesforceIntegrationController.listViews));
 app.get('/api/integrations/salesforce/fields', asyncHandler(salesforceIntegrationController.describeFields));
-app.post('/api/integrations/salesforce/import', asyncHandler(salesforceIntegrationController.startImport));
+app.post('/api/integrations/salesforce/import', requireCapability('access_integrations'), asyncHandler(salesforceIntegrationController.startImport));
 
 // Lead-source integrations (Phase 5+) - provider-blind reads + Apollo flow.
 import * as leadSourcesController from './controllers/leadSourcesController';
 app.get('/api/integrations/lead-sources/connections', asyncHandler(leadSourcesController.listConnections));
 app.get('/api/integrations/lead-sources/connections/:id', asyncHandler(leadSourcesController.getConnectionDetail));
-app.post('/api/integrations/lead-sources/connections/:id/disconnect', asyncHandler(leadSourcesController.disconnectConnection));
+app.post('/api/integrations/lead-sources/connections/:id/disconnect', requireCapability('access_integrations'), asyncHandler(leadSourcesController.disconnectConnection));
 
 import * as apolloIntegrationController from './controllers/apolloIntegrationController';
-app.post('/api/integrations/apollo/connect', asyncHandler(apolloIntegrationController.connect));
-app.post('/api/integrations/apollo/parse-url', asyncHandler(apolloIntegrationController.parseUrl));
-app.post('/api/integrations/apollo/import', asyncHandler(apolloIntegrationController.startImport));
+app.post('/api/integrations/apollo/connect', requireCapability('access_integrations'), asyncHandler(apolloIntegrationController.connect));
+app.post('/api/integrations/apollo/parse-url', requireCapability('access_integrations'), asyncHandler(apolloIntegrationController.parseUrl));
+app.post('/api/integrations/apollo/import', requireCapability('access_integrations'), asyncHandler(apolloIntegrationController.startImport));
 app.get('/api/integrations/apollo/jobs/:id', asyncHandler(apolloIntegrationController.getJobStatus));
 
 // Outreach.io - outbound prospect/sequence push (Phase 6).
 import * as outreachIntegrationController from './controllers/outreachIntegrationController';
-app.get('/api/integrations/outreach/authorize', asyncHandler(outreachIntegrationController.authorize));
+app.get('/api/integrations/outreach/authorize', requireCapability('access_integrations'), asyncHandler(outreachIntegrationController.authorize));
 app.get('/api/integrations/outreach/connection', asyncHandler(outreachIntegrationController.getConnection));
-app.post('/api/integrations/outreach/disconnect', asyncHandler(outreachIntegrationController.disconnect));
+app.post('/api/integrations/outreach/disconnect', requireCapability('access_integrations'), asyncHandler(outreachIntegrationController.disconnect));
 app.get('/api/integrations/outreach/sequences', asyncHandler(outreachIntegrationController.listSequences));
-app.post('/api/integrations/outreach/sequences', asyncHandler(outreachIntegrationController.createSequence));
+app.post('/api/integrations/outreach/sequences', requireCapability('access_integrations'), asyncHandler(outreachIntegrationController.createSequence));
 app.get('/api/integrations/outreach/mailboxes', asyncHandler(outreachIntegrationController.listMailboxes));
-app.post('/api/integrations/outreach/exports', asyncHandler(outreachIntegrationController.startExport));
+app.post('/api/integrations/outreach/exports', requireCapability('access_integrations'), asyncHandler(outreachIntegrationController.startExport));
 app.get('/api/integrations/outreach/exports/:id', asyncHandler(outreachIntegrationController.getExportJob));
 
 // JustCall.io - outbound voice/SMS dialer push. API key + secret auth
@@ -461,7 +459,6 @@ app.get('/api/integrations/outreach/exports/:id', asyncHandler(outreachIntegrati
 // export status) stay open to any authed user in the org so the UI can
 // render the integration card without elevating role.
 import * as justcallIntegrationController from './controllers/justcallIntegrationController';
-import { requireCapability } from './middleware/requireCapability';
 app.post('/api/integrations/justcall/connect', requireCapability('access_integrations'), asyncHandler(justcallIntegrationController.connect));
 app.get('/api/integrations/justcall/connection', asyncHandler(justcallIntegrationController.getConnection));
 app.post('/api/integrations/justcall/disconnect', requireCapability('access_integrations'), asyncHandler(justcallIntegrationController.disconnect));

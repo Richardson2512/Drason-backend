@@ -1,46 +1,60 @@
 import { Request, Response } from 'express';
+import jwt from 'jsonwebtoken';
 import { verifySlackSignature } from '../utils/slackUtils';
 import { logger } from '../services/observabilityService';
 import { prisma } from '../index';
 import axios from 'axios';
-import crypto from 'crypto';
 import { getPublicBackendUrl } from '../utils/publicBackendUrl';
+import { encrypt, decrypt } from '../utils/encryption';
+import { legacyDecryptSlackToken } from '../services/slackTokenCrypto';
 
 interface RequestWithRawBody extends Request {
     rawBody?: string;
 }
 
-// Token Encryption Helper
+// ── OAuth state (CSRF) ──
+// The install flow signs {orgId, userId} into a short-lived JWT and the
+// callback verifies it. Previously the state was the plaintext string
+// `orgId:userId`, which the callback split and trusted - a classic OAuth CSRF
+// (an attacker could bind their own Slack workspace token to a victim's org).
+// Mirrors the signed-state pattern every other OAuth integration uses.
+const SLACK_STATE_TTL_SEC = 10 * 60;
+const SLACK_STATE_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
+
+interface SlackStatePayload { orgId: string; userId: string }
+
+function signState(payload: SlackStatePayload): string {
+    return jwt.sign(payload, SLACK_STATE_SECRET, { expiresIn: SLACK_STATE_TTL_SEC });
+}
+
+function verifyState(token: string): SlackStatePayload | null {
+    try {
+        return jwt.verify(token, SLACK_STATE_SECRET) as SlackStatePayload;
+    } catch {
+        return null;
+    }
+}
+
+// ── Bot-token encryption ──
+// Tokens are encrypted at rest with the canonical AES-256-GCM helper
+// (scrypt key derivation from ENCRYPTION_KEY, random per-op salt). The old
+// bespoke routine reused the SLACK_SIGNING_SECRET as the AES key with a
+// hardcoded dev fallback - both fixed here by delegating to utils/encryption.
+// Reads are backward-compatible: tokens written by the old routine are 3-part
+// blobs encrypted under a different key, so the canonical decrypt() throws on
+// them (GCM auth fails - never silent garbage); we then fall back to the
+// legacy routine. New writes are always canonical, so connections upgrade
+// transparently with no forced reconnect.
 function encryptToken(text: string): string {
-    const algorithm = 'aes-256-gcm';
-    const iv = crypto.randomBytes(16);
-    // Use SLACK_SIGNING_SECRET or fall back to generic APP secret for encryption key
-    // Ensure key is exactly 32 bytes 
-    let key = (process.env.SLACK_SIGNING_SECRET || process.env.JWT_SECRET || 'fallback-secret-for-dev-only--').padEnd(32, '0').substring(0, 32);
-
-    const cipher = crypto.createCipheriv(algorithm, Buffer.from(key), iv);
-    let encrypted = cipher.update(text, 'utf8', 'hex');
-    encrypted += cipher.final('hex');
-    const authTag = cipher.getAuthTag().toString('hex');
-
-    return `${iv.toString('hex')}:${authTag}:${encrypted}`;
+    return encrypt(text);
 }
 
 function decryptToken(encryptedData: string): string {
-    const algorithm = 'aes-256-gcm';
-    let key = (process.env.SLACK_SIGNING_SECRET || process.env.JWT_SECRET || 'fallback-secret-for-dev-only--').padEnd(32, '0').substring(0, 32);
-
-    const parts = encryptedData.split(':');
-    const iv = Buffer.from(parts[0], 'hex');
-    const authTag = Buffer.from(parts[1], 'hex');
-    const encrypted = parts[2];
-
-    const decipher = crypto.createDecipheriv(algorithm, Buffer.from(key), iv);
-    decipher.setAuthTag(authTag);
-    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-
-    return decrypted;
+    try {
+        return decrypt(encryptedData);
+    } catch {
+        return legacyDecryptSlackToken(encryptedData);
+    }
 }
 
 // ============================================================================
@@ -62,8 +76,8 @@ export const initiateInstall = async (req: Request, res: Response) => {
 
     const redirectUri = `${getPublicBackendUrl()}/slack/oauth/callback`;
 
-    // Encode orgId:userId into state (matches what handleOAuthCallback expects)
-    const state = userId ? `${orgId}:${userId}` : orgId;
+    // Signed, short-lived state - the callback verifies it (CSRF protection).
+    const state = signState({ orgId, userId: userId || 'system' });
 
     const scopes = [
         'chat:write',
@@ -125,17 +139,17 @@ export const handleOAuthCallback = async (req: Request, res: Response) => {
 
         const teamId = data.team.id;
         const botToken = data.access_token;
-        const authedUserId = data.authed_user.id; // Using Slack's user ID as the installer reference for now, but really this should be a Superkabe user ID
 
-        // We temporarily encode the user ID and org ID into the state parameter
-        let orgId = state;
-        let superkabeUserId = 'system';
-
-        if (state.includes(':')) {
-            const parts = state.split(':');
-            orgId = parts[0];
-            superkabeUserId = parts[1];
+        // Verify the signed state (CSRF). A forged/expired/tampered state is
+        // rejected here - org binding comes from the verified payload, never
+        // from an attacker-controllable plaintext string.
+        const decodedState = verifyState(state);
+        if (!decodedState) {
+            logger.warn('[Slack] OAuth callback with invalid or expired state - rejecting');
+            return res.redirect(`${process.env.APP_URL || process.env.FRONTEND_URL}/dashboard/settings?slack_error=invalid_state`);
         }
+        const orgId = decodedState.orgId;
+        const superkabeUserId = decodedState.userId;
 
         // Verify Org exists
         const org = await prisma.organization.findUnique({
