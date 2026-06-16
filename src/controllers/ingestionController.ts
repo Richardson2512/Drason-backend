@@ -174,24 +174,11 @@ export async function processLead(
         }
     });
 
-    // Record validation attempt now that the lead exists
-    if (validationResult.attempt) {
-        try {
-            await prisma.validationAttempt.create({
-                data: {
-                    lead_id: createdLead.id,
-                    organization_id: organizationId,
-                    source: validationResult.attempt.source,
-                    result_status: validationResult.attempt.result_status,
-                    result_score: validationResult.attempt.result_score,
-                    result_details: validationResult.attempt.result_details,
-                    duration_ms: validationResult.attempt.duration_ms,
-                },
-            });
-        } catch (err) {
-            logger.warn('[VALIDATION] Failed to record attempt post-upsert', { error: String(err) });
-        }
-    }
+    // The validation attempt (credit-ledger row) was already written by
+    // validateLeadEmail -> recordAttempt during validation, with lead_id=null
+    // since this lead did not exist yet. ValidationAttempt is the single ledger
+    // now, so we do NOT write a second row here (that previously double-counted
+    // / fragmented credit accounting).
 
     // === 3. VALIDATION + HEALTH GATE DECISION ===
     // Block if validation says invalid OR health gate says red

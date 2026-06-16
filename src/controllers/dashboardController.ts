@@ -778,8 +778,12 @@ export const getValidationActivity = async (req: Request, res: Response, next: N
             prisma.validationAttempt.count({ where: { organization_id: orgId, created_at: { gte: since24h }, result_status: 'unknown' } }),
         ]);
 
-        // Enrich attempts with lead email by looking up lead_id
-        const leadIds = [...new Set(attempts.map(a => a.lead_id).filter(id => id !== 'pre-upsert'))];
+        // Enrich attempts with lead email by looking up lead_id. lead_id is now
+        // nullable (bulk validations have no linked Lead) - skip those; they
+        // render as "Unknown" below, which is accurate.
+        const leadIds = [...new Set(
+            attempts.map(a => a.lead_id).filter((id): id is string => !!id && id !== 'pre-upsert')
+        )];
         const leads = leadIds.length > 0 ? await prisma.lead.findMany({
             where: { id: { in: leadIds } },
             select: { id: true, email: true },
@@ -788,7 +792,7 @@ export const getValidationActivity = async (req: Request, res: Response, next: N
 
         const enrichedAttempts = attempts.map(a => ({
             id: a.id,
-            email: leadMap.get(a.lead_id) || 'Unknown',
+            email: (a.lead_id ? leadMap.get(a.lead_id) : undefined) || 'Unknown',
             source: a.source,
             status: a.result_status,
             score: a.result_score,

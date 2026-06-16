@@ -14,6 +14,7 @@ import * as entityStateService from './entityStateService';
 import * as auditLogService from './auditLogService';
 import { enrollLeadInSequencerCampaign } from './sequencerEnrollmentService';
 import { TIER_LIMITS } from './polarClient';
+import { getValidationCreditsUsed } from './validationCreditService';
 import { LeadState, TriggerType } from '../types';
 import type { ParsedLead } from './csvParserService';
 
@@ -86,18 +87,11 @@ export async function processBatch(organizationId: string, batchId: string): Pro
         const tier = org?.subscription_tier || 'trial';
         const tierLimits = TIER_LIMITS[tier] || TIER_LIMITS.trial;
 
-        // Check monthly validation credit usage
-        const monthStart = new Date();
-        monthStart.setDate(1);
-        monthStart.setHours(0, 0, 0, 0);
-        const monthlyUsage = await prisma.validationBatchLead.count({
-            where: {
-                batch: { organization_id: organizationId },
-                validation_status: { notIn: ['pending', 'duplicate'] },
-                created_at: { gte: monthStart },
-            }
-        });
-
+        // Monthly validation credit usage from the single shared ledger
+        // (ValidationAttempt) - the SAME source the single / by-tag / Clay-ingest
+        // paths read. Previously this counted validationBatchLead, a separate
+        // table the other flows never see, so a batch could overspend the plan.
+        const monthlyUsage = await getValidationCreditsUsed(organizationId);
         const creditsRemaining = Math.max(0, tierLimits.validationCredits - monthlyUsage);
 
         // Fetch all pending leads for this batch
@@ -263,22 +257,12 @@ export async function processBatch(organizationId: string, batchId: string): Pro
                         }
                     });
 
-                    // --- Record validation attempt (for billing credit tracking) ---
-                    if (existingLead && validationResult.attempt) {
-                        try {
-                            await prisma.validationAttempt.create({
-                                data: {
-                                    lead_id: existingLead.id,
-                                    organization_id: organizationId,
-                                    source: validationResult.attempt.source,
-                                    result_status: validationResult.attempt.result_status,
-                                    result_score: validationResult.attempt.result_score,
-                                    result_details: validationResult.attempt.result_details,
-                                    duration_ms: validationResult.attempt.duration_ms,
-                                },
-                            });
-                        } catch { /* best-effort */ }
-                    }
+                    // The validation attempt (credit-ledger row) was already
+                    // written by validateLeadEmail -> recordAttempt above.
+                    // Writing it again here double-counted existing-lead rows
+                    // and skipped new-lead rows entirely; recordAttempt now
+                    // writes exactly one row per validation regardless of Lead
+                    // existence, so this path no longer writes its own.
 
                     // --- Propagate result onto the matching Lead/contact ---
                     // The Email Validation page validates into ValidationBatchLead,

@@ -17,6 +17,7 @@ import { logger } from '../services/observabilityService';
 import { escapeCsvField } from '../utils/csv';
 import { classifyLeadHealth } from '../services/leadHealthService';
 import { validateLeadEmail } from '../services/emailValidationService';
+import { getValidationCreditsUsed } from '../services/validationCreditService';
 import * as espClassifierService from '../services/espClassifierService';
 import { TIER_LIMITS } from '../services/polarClient';
 import * as entityStateService from '../services/entityStateService';
@@ -824,12 +825,7 @@ export const validateContacts = async (req: Request, res: Response): Promise<Res
 
         // Count validations already used this calendar month (ValidationAttempt is
         // the unified record - covers ingestion, batch, and single-lead flows).
-        const monthStart = new Date();
-        monthStart.setDate(1);
-        monthStart.setHours(0, 0, 0, 0);
-        const usedThisMonth = await prisma.validationAttempt.count({
-            where: { organization_id: orgId, created_at: { gte: monthStart } },
-        });
+        const usedThisMonth = await getValidationCreditsUsed(orgId);
         const creditsRemaining = tierLimits.validationCredits === Infinity
             ? Infinity
             : Math.max(0, tierLimits.validationCredits - usedThisMonth);
@@ -1013,12 +1009,7 @@ export const validateLeadsPreview = async (req: Request, res: Response): Promise
         const tier = (org?.subscription_tier || 'trial').toLowerCase();
         const tierLimits = TIER_LIMITS[tier] || TIER_LIMITS.trial;
 
-        const monthStart = new Date();
-        monthStart.setDate(1);
-        monthStart.setHours(0, 0, 0, 0);
-        const usedThisMonth = await prisma.validationAttempt.count({
-            where: { organization_id: orgId, created_at: { gte: monthStart } },
-        });
+        const usedThisMonth = await getValidationCreditsUsed(orgId);
         const creditsRemaining = tierLimits.validationCredits === Infinity
             ? Infinity
             : Math.max(0, tierLimits.validationCredits - usedThisMonth);

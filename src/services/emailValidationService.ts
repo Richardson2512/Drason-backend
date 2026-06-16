@@ -339,20 +339,23 @@ async function recordAttempt(
     durationMs: number
 ): Promise<void> {
     try {
-        // Find the lead - skip recording if lead doesn't exist yet (will be recorded post-upsert)
+        // ValidationAttempt is the SINGLE email-validation credit ledger: one
+        // row per engine run from every path (single, by-tag, CSV batch, Clay
+        // ingest), written here unconditionally. Bulk validations run before a
+        // Lead row exists, so lead_id is nullable - link it when the lead is
+        // already present, leave it null otherwise. Usage is keyed on
+        // organization_id + created_at, not lead_id, so an unlinked row still
+        // counts. (Previously this skipped pre-Lead validations and the batch /
+        // ingest callers wrote their own row - which split accounting across
+        // incompatible counters and double-wrote existing-lead rows.)
         const lead = await prisma.lead.findUnique({
             where: { organization_id_email: { organization_id: organizationId, email } },
             select: { id: true },
         });
 
-        if (!lead) {
-            logger.debug('[VALIDATION] Skipping attempt record - lead not yet created', { email });
-            return;
-        }
-
         await prisma.validationAttempt.create({
             data: {
-                lead_id: lead.id,
+                lead_id: lead?.id ?? null,
                 organization_id: organizationId,
                 source: result.source,
                 result_status: result.status,
