@@ -1552,6 +1552,21 @@ model SendEvent {
   recipient_esp   String? // gmail, microsoft, yahoo, other (classified on capture)
   sent_at         DateTime @default(now())
 
+  // Idempotency identity for native sequencer sends. Populated only by the
+  // send-queue worker (campaign_lead_id = CampaignLead.id, step_number =
+  // delivered SequenceStep.step_number). Webhook-import sends (Smartlead/
+  // Zapmail) and manual Unibox sends leave these NULL - they are inherently
+  // single and never traverse the racing dispatcher.
+  //
+  // The @@unique below is the data-layer guarantee that a given sequence step
+  // is delivered to a given lead AT MOST ONCE, regardless of which writer
+  // interleaves. Postgres treats NULLs as DISTINCT, so this acts as a partial
+  // unique index: it constrains real (lead, step) pairs and ignores the NULL
+  // webhook/unibox rows entirely. No backfill required.
+  campaign_lead_id String?
+  step_number      Int?
+
+  @@unique([campaign_lead_id, step_number])
   @@index([organization_id, sent_at])
   @@index([mailbox_id, recipient_esp])
   @@index([mailbox_id, sent_at])

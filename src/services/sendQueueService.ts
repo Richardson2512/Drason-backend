@@ -26,7 +26,7 @@ import { logger, maskEmail } from './observabilityService';
 import { sendEmail, SendResult } from './emailSendAdapters';
 import { buildUnsubscribeUrl } from './trackingService';
 import { TIER_LIMITS } from './polarClient';
-import { getRedisClient } from '../utils/redis';
+import { getRedisClient, acquireLock, releaseLock } from '../utils/redis';
 import { provisionMailboxForConnectedAccount } from './mailboxProvisioningService';
 import * as healingService from './healingService';
 import * as bounceProcessingService from './bounceProcessingService';
@@ -45,6 +45,89 @@ const LOG_TAG = 'SEND-QUEUE';
 const QUEUE_NAME = 'email-sends';
 const DISPATCH_INTERVAL_MS = 60_000;
 const WORKER_CONCURRENCY = 10;
+
+// Distributed dispatch lock. Without it, a dispatch() that runs longer than
+// the 60s tick (or a second instance) re-selects and re-enqueues leads that
+// were already batched - the root of the mass-duplicate-send bug. TTL
+// auto-expires so a crashed dispatch never deadlocks the next tick. (The
+// held-lead processor uses this same primitive.)
+const DISPATCH_LOCK_KEY = 'worker:lock:send_dispatcher';
+const DISPATCH_LOCK_TTL_SECONDS = 300;
+
+// Safety margin added on top of a batch's worst-case drain time when we claim
+// its leads (push next_send_at forward so later ticks can't re-pick an
+// in-flight lead). Covers BullMQ pickup latency + the post-send transaction.
+// Generous on purpose: too small reintroduces the duplicate-send bug; too
+// large only delays retry of a genuinely lost batch.
+const DISPATCH_CLAIM_MARGIN_MS = 10 * 60 * 1000;
+
+/**
+ * Build the In-Reply-To / References pair for a step-N send (N > 1).
+ *
+ * Before this, sendQueueService dispatched every step of a sequence without
+ * RFC 5322 threading headers, so the recipient's mail client (Gmail, Outlook,
+ * Apple Mail) treated each follow-up as a new conversation instead of a reply
+ * chain. The send adapter already supports the headers - they were just never
+ * set on the dispatch path.
+ *
+ * Lookup key mirrors the one EmailThread uses in the post-send Unibox
+ * recording: (organization_id, account_id, contact_email, campaign_id).
+ * Because mailbox assignment is sticky per lead (CampaignLead.
+ * assigned_account_id), step 2+ always looks up a thread the same account
+ * started.
+ *
+ * Failure modes are silent by design - any miss returns {null, null} and the
+ * send ships without threading headers (same as a first touch), which is safer
+ * than blocking the send:
+ *   - step 1 (first touch) carries no threading headers per RFC.
+ *   - no thread / no prior outbound message -> {null, null}.
+ *   - DB hiccup -> {null, null} + warn log.
+ *
+ * references = parent's References chain + parent's Message-ID (a message's
+ * References lists its ancestors only, never itself).
+ */
+export async function buildThreadingHeaders(params: {
+    organizationId: string;
+    accountId: string;
+    contactEmail: string;
+    campaignId: string;
+    stepNumber: number;
+}): Promise<{ inReplyTo: string | null; references: string | null }> {
+    if (params.stepNumber <= 1) return { inReplyTo: null, references: null };
+
+    try {
+        const thread = await prisma.emailThread.findFirst({
+            where: {
+                organization_id: params.organizationId,
+                account_id: params.accountId,
+                contact_email: params.contactEmail.toLowerCase(),
+                campaign_id: params.campaignId,
+            },
+            select: { id: true },
+        });
+        if (!thread) return { inReplyTo: null, references: null };
+
+        const prev = await prisma.emailMessage.findFirst({
+            where: {
+                thread_id: thread.id,
+                direction: 'outbound',
+                message_id: { not: null },
+            },
+            orderBy: { sent_at: 'desc' },
+            select: { message_id: true, references: true },
+        });
+        if (!prev?.message_id) return { inReplyTo: null, references: null };
+
+        const inReplyTo = prev.message_id;
+        const references = prev.references
+            ? `${prev.references} ${prev.message_id}`
+            : prev.message_id;
+        return { inReplyTo, references };
+    } catch (err: any) {
+        logger.warn(`[${LOG_TAG}] Threading lookup failed for ${maskEmail(params.contactEmail)} step ${params.stepNumber}: ${err?.message}`);
+        return { inReplyTo: null, references: null };
+    }
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -447,6 +530,18 @@ let sendQueue: Queue | null = null;
 
 async function dispatch(): Promise<void> {
     const startTime = Date.now();
+
+    // Skip this tick entirely if a prior dispatch is still running. Without
+    // it, a dispatch that outruns the 60s interval lets the next tick
+    // re-select the same leads before the first run has claimed them - the
+    // duplicate-send root cause. TTL-expiring lock, so a crash never wedges
+    // the dispatcher.
+    const acquired = await acquireLock(DISPATCH_LOCK_KEY, DISPATCH_LOCK_TTL_SECONDS);
+    if (!acquired) {
+        logger.info(`[${LOG_TAG}] Dispatch already running - skipping this tick`);
+        return;
+    }
+
     logger.info(`[${LOG_TAG}] Dispatch scan starting`);
 
     try {
@@ -1071,6 +1166,37 @@ async function dispatch(): Promise<void> {
                 for (const [_accountId, batch] of mailboxBatches) {
                     if (batch.emails.length === 0) continue;
 
+                    // CLAIM the leads in this batch before enqueuing. The
+                    // dispatcher selects leads by (status='active',
+                    // next_send_at<=now) but, until now, never moved them out
+                    // of that window at enqueue time - so every 60s tick
+                    // re-selected and re-enqueued the same leads while their
+                    // batch was still draining in the worker (one email per
+                    // send_gap_minutes, often hours), mass-duplicating sends.
+                    //
+                    // Push next_send_at past this batch's worst-case drain
+                    // time. The worker's post-send update overwrites it with
+                    // the real next-step schedule on success. If the batch is
+                    // lost (worker crash / dropped job) the lead naturally
+                    // becomes due again after the window and is retried -
+                    // self-healing, no stuck rows. Guarded on status='active'
+                    // so we never resurrect a lead that replied/unsubscribed
+                    // between selection and here (canSendNow re-checks at send
+                    // time regardless).
+                    const batchDrainMs = batch.emails.length * sendGap * 60_000;
+                    const claimUntil = new Date(Date.now() + batchDrainMs + DISPATCH_CLAIM_MARGIN_MS);
+                    const claimedIds = batch.emails.map(e => e.leadId);
+                    const claim = await prisma.campaignLead.updateMany({
+                        where: { id: { in: claimedIds }, status: 'active' },
+                        data: { next_send_at: claimUntil },
+                    });
+                    if (claim.count !== claimedIds.length) {
+                        logger.warn(`[${LOG_TAG}] Lead claim partial: ${claim.count}/${claimedIds.length} claimed (rest changed state since selection - canSendNow will skip them)`, {
+                            campaignId: campaign.id,
+                            mailbox: batch.account.email,
+                        });
+                    }
+
                     const jobData: BatchJobData = {
                         orgId: campaign.organization_id,
                         campaignId: campaign.id,
@@ -1134,6 +1260,10 @@ async function dispatch(): Promise<void> {
         });
     } catch (err: any) {
         logger.error(`[${LOG_TAG}] Dispatch failed`, err);
+    } finally {
+        await releaseLock(DISPATCH_LOCK_KEY).catch((err) =>
+            logger.warn(`[${LOG_TAG}] Failed to release dispatch lock (will TTL-expire)`, { error: err?.message }),
+        );
     }
 }
 
@@ -1237,8 +1367,55 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                 continue;
             }
 
+            // ── IDEMPOTENCY: already-delivered guard ──
+            // SendEvent(campaign_lead_id, step_number) is data-layer-unique.
+            // If a row already exists for this (lead, step) the step was already
+            // delivered - a stalled-job re-run, or any two-writer interleaving.
+            // Do NOT physically re-send. Advance the lead past the delivered
+            // step (guarded on status='active') so it doesn't loop, then move
+            // on. The unique constraint on the create below is the race backstop
+            // if two workers clear this check at once.
+            const priorSend = await prisma.sendEvent.findFirst({
+                where: { campaign_lead_id: email.leadId, step_number: email.stepNumber },
+                select: { id: true },
+            });
+            if (priorSend) {
+                logger.warn(`[${LOG_TAG}] Step ${email.stepNumber} already delivered to lead ${email.leadId} - skipping resend, advancing`, {
+                    campaignId, mailbox: account.email,
+                });
+                await prisma.campaignLead.updateMany({
+                    where: { id: email.leadId, status: 'active' },
+                    data: {
+                        current_step: email.nextStepNumber,
+                        last_sent_at: new Date(),
+                        next_send_at: email.isLastStep ? null : calculateNextSendAt({
+                            delay_days: email.nextStepDelayDays,
+                            delay_hours: email.nextStepDelayHours,
+                        }),
+                        status: email.isLastStep ? 'completed' : 'active',
+                    },
+                }).catch((err) => {
+                    logger.warn(`[${LOG_TAG}] Post-dedupe advance failed for ${email.leadId}: ${err?.message}`);
+                });
+                continue;
+            }
+
+            // RFC 5322 threading for step N>1. Without these headers every
+            // follow-up lands as a new conversation in the recipient's client,
+            // breaking thread continuity and hurting reply rates. The helper
+            // returns {null, null} on any miss and never blocks the send.
+            const threadingHeaders = await buildThreadingHeaders({
+                organizationId: orgId,
+                accountId: account.id,
+                contactEmail: email.leadEmail,
+                campaignId,
+                stepNumber: email.stepNumber,
+            });
+
             const result: SendResult = await sendEmail(account, email.leadEmail, email.subject, email.bodyHtml, {
                 unsubscribeUrl: email.unsubscribeUrl || null,
+                inReplyTo: threadingHeaders.inReplyTo,
+                references: threadingHeaders.references,
             });
 
             if (!result.success) {
@@ -1262,10 +1439,27 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                         campaign_id: campaignId,
                         recipient_email: email.leadEmail,
                         sent_at: new Date(),
+                        // Idempotency identity. The @@unique([campaign_lead_id,
+                        // step_number]) makes this the data-layer guarantee that
+                        // a given step is delivered to a given lead at most once,
+                        // even if two writers interleave. The guard above is the
+                        // fast path; this create is the race backstop.
+                        campaign_lead_id: email.leadId,
+                        step_number: email.stepNumber,
                     },
                 }),
-                prisma.campaignLead.update({
-                    where: { id: email.leadId },
+                // Guarded on status='active'. canSendNow re-checks status
+                // immediately before sendEmail(), but a reply / unsubscribe can
+                // still land in the few-second SMTP round-trip after that check
+                // passes. An unconditional update here would resurrect that lead
+                // (status back to 'active', next_send_at set to the next step) -
+                // and because imapReplyWorker dedupes the inbound by message_id
+                // it would NOT self-correct, permanently leaking the sequence
+                // past a reply. updateMany with status='active' makes this a
+                // no-op when the lead is no longer active; the SendEvent + all
+                // counters below still record (the email physically went out).
+                prisma.campaignLead.updateMany({
+                    where: { id: email.leadId, status: 'active' },
                     data: {
                         current_step: email.nextStepNumber,
                         last_sent_at: new Date(),
@@ -1450,6 +1644,14 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                             to_name: null,
                             subject: email.subject,
                             body_html: email.bodyHtml,
+                            // Threading bookkeeping - the SMTP Message-ID plus
+                            // the chain we set on this outgoing message. Saved
+                            // so the NEXT step's buildThreadingHeaders lookup
+                            // can find this row and chain off it. Without these
+                            // the thread is forever un-resumable.
+                            message_id: result.messageId || null,
+                            in_reply_to: threadingHeaders.inReplyTo,
+                            references: threadingHeaders.references,
                             sent_at: now,
                         },
                     });
