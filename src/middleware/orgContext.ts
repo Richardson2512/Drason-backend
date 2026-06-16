@@ -13,6 +13,7 @@ import jwt from 'jsonwebtoken';
 import { prisma } from '../index';
 import { OrgContext, UserRole } from '../types';
 import { logger } from '../services/observabilityService';
+import { JWT_SECRET } from '../utils/jwtSecret';
 import { clearTokenCookie } from '../services/tokenService';
 
 // ============================================================================
@@ -35,18 +36,7 @@ interface JwtPayload {
 /**
  * Get JWT secret - same logic as authController.
  */
-function getJwtSecret(): string {
-    const secret = process.env.JWT_SECRET;
-    if (!secret) {
-        if (process.env.NODE_ENV === 'production') {
-            throw new Error('FATAL: JWT_SECRET is not set in production');
-        }
-        return 'drason_dev_only_secret_DO_NOT_USE_IN_PROD';
-    }
-    return secret;
-}
-
-const JWT_SECRET = getJwtSecret();
+// JWT_SECRET resolved in one place (utils/jwtSecret); imported below.
 
 /**
  * Verify a JWT token and extract claims.

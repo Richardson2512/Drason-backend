@@ -9,21 +9,8 @@ import { dispatchEmail } from '../services/emailTemplates/dispatcher';
 import { welcomeEmail } from '../services/emailTemplates/welcome';
 import { internalNewSignupAlert } from '../services/emailTemplates/internalNewSignupAlert';
 import { buildFrontendUrl } from '../services/emailTemplates/requesterContext';
+import { JWT_SECRET } from '../utils/jwtSecret';
 
-// JWT_SECRET is validated at startup in index.ts
-function getJwtSecret(): string {
-    const secret = process.env.JWT_SECRET;
-    if (!secret) {
-        if (process.env.NODE_ENV === 'production') {
-            throw new Error('FATAL: JWT_SECRET is not set in production');
-        }
-        logger.warn('JWT_SECRET not set - using dev-only fallback. NEVER use this in production.');
-        return 'drason_dev_only_secret_DO_NOT_USE_IN_PROD';
-    }
-    return secret;
-}
-
-const JWT_SECRET = getJwtSecret();
 const TOKEN_EXPIRY = '3d'; // 3-day token lifetime
 const COOKIE_MAX_AGE = 3 * 24 * 60 * 60 * 1000; // 3 days in ms
 const PENDING_TOKEN_EXPIRY_MS = 10 * 60 * 1000; // 10 minutes

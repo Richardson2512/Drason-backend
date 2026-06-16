@@ -10,21 +10,12 @@
 
 import { Response } from 'express';
 import jwt from 'jsonwebtoken';
-import { logger } from './observabilityService';
+import { JWT_SECRET } from '../utils/jwtSecret';
 
-function getJwtSecret(): string {
-    const secret = process.env.JWT_SECRET;
-    if (!secret) {
-        if (process.env.NODE_ENV === 'production') {
-            throw new Error('FATAL: JWT_SECRET is not set in production');
-        }
-        logger.warn('JWT_SECRET not set - using dev-only fallback. NEVER use this in production.');
-        return 'drason_dev_only_secret_DO_NOT_USE_IN_PROD';
-    }
-    return secret;
-}
-
-export const JWT_SECRET = getJwtSecret();
+// JWT_SECRET is resolved in ONE place (utils/jwtSecret): fatal if unset in
+// production, loud dev-only fallback otherwise. Re-exported here so existing
+// importers (authController, security middleware) keep importing it unchanged.
+export { JWT_SECRET };
 export const TOKEN_EXPIRY = '3d';
 export const COOKIE_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 

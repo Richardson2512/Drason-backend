@@ -7,6 +7,7 @@ import axios from 'axios';
 import { getPublicBackendUrl } from '../utils/publicBackendUrl';
 import { encrypt, decrypt } from '../utils/encryption';
 import { legacyDecryptSlackToken } from '../services/slackTokenCrypto';
+import { JWT_SECRET } from '../utils/jwtSecret';
 
 interface RequestWithRawBody extends Request {
     rawBody?: string;
@@ -19,7 +20,7 @@ interface RequestWithRawBody extends Request {
 // (an attacker could bind their own Slack workspace token to a victim's org).
 // Mirrors the signed-state pattern every other OAuth integration uses.
 const SLACK_STATE_TTL_SEC = 10 * 60;
-const SLACK_STATE_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
+const SLACK_STATE_SECRET = JWT_SECRET;
 
 interface SlackStatePayload { orgId: string; userId: string }
 
