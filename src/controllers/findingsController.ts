@@ -52,13 +52,47 @@ export const getEntityFindings = async (req: Request, res: Response) => {
 
         // Filter findings for this specific entity
         const allFindings = (report.findings || []) as Record<string, unknown>[];
-        const entityFindings = allFindings.filter((finding) => {
-            // Match both entity_type and entity_id
-            // Check both possible field name formats (entity_type/entity and entity_id/entityId)
+
+        // Field names are stored inconsistently across finding producers, so
+        // normalize both formats (entity_type/entity and entity_id/entityId).
+        const matchesEntity = (
+            finding: Record<string, unknown>,
+            type: string,
+            id: string
+        ): boolean => {
             const findingEntityType = finding.entity_type || finding.entity;
             const findingEntityId = finding.entity_id || finding.entityId;
-            return findingEntityType === entity_type && findingEntityId === entity_id;
-        });
+            return findingEntityType === type && findingEntityId === id;
+        };
+
+        const entityId = String(entity_id);
+        const entityType = String(entity_type);
+
+        const entityFindings = allFindings.filter((finding) =>
+            matchesEntity(finding, entityType, entityId)
+        );
+
+        // A mailbox inherits the deliverability fate of its parent domain: a
+        // blacklisted or misconfigured domain breaks every mailbox on it. Those
+        // findings are recorded against the DOMAIN entity (entity: 'domain'),
+        // so a mailbox-scoped query would otherwise miss them and the mailbox
+        // would wrongly render as "operating normally" while the domains / infra
+        // health pages show it blacklisted. Roll the parent domain's findings
+        // into the mailbox view, flagged as inherited so the scope stays clear.
+        let inheritedFindings: Record<string, unknown>[] = [];
+        if (entityType === 'mailbox') {
+            const mailbox = await prisma.mailbox.findFirst({
+                where: { id: entityId, organization_id: orgId },
+                select: { domain_id: true },
+            });
+            if (mailbox?.domain_id) {
+                inheritedFindings = allFindings
+                    .filter((finding) => matchesEntity(finding, 'domain', mailbox.domain_id))
+                    .map((finding) => ({ ...finding, inherited_from: 'domain' }));
+            }
+        }
+
+        const combinedFindings = [...entityFindings, ...inheritedFindings];
 
         // Calculate report age
         const reportAgeMinutes = Math.floor((Date.now() - new Date(report.created_at).getTime()) / (1000 * 60)); // minutes
@@ -70,14 +104,15 @@ export const getEntityFindings = async (req: Request, res: Response) => {
 
         logger.info('[FINDINGS] Entity findings retrieved', {
             organizationId: orgId,
-            entityType: entity_type,
-            entityId: entity_id,
+            entityType,
+            entityId,
             findingsCount: entityFindings.length,
+            inheritedCount: inheritedFindings.length,
             reportAge
         });
 
         // Transform findings to match frontend expectations
-        const transformedFindings = entityFindings.map((finding: any) => ({
+        const transformedFindings = combinedFindings.map((finding: any) => ({
             id: finding.id || `${finding.category}-${finding.entityId}`,
             title: finding.title,
             severity: finding.severity,
@@ -86,7 +121,8 @@ export const getEntityFindings = async (req: Request, res: Response) => {
             entity_id: finding.entityId,
             entity_name: finding.entityName,
             recommendation: finding.remediation,
-            category: finding.category
+            category: finding.category,
+            inherited_from: finding.inherited_from || null
         }));
 
         res.json({
