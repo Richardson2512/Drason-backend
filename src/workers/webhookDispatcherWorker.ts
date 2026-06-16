@@ -31,6 +31,7 @@ import {
     type WebhookEventType,
 } from '../services/webhookService';
 import { signWebhookPayload } from '../utils/webhookOutboundSigning';
+import { safeFetch } from '../utils/safeFetch';
 
 const LOG_TAG = 'WEBHOOK_DISPATCHER';
 const WORKER_CONCURRENCY = 10;
@@ -139,35 +140,46 @@ async function postDelivery(
     }
 
     const startedAt = Date.now();
-    try {
-        const res = await fetch(endpoint.url, {
-            method: 'POST',
-            headers,
-            body: rawBody,
-            signal: AbortSignal.timeout(POST_TIMEOUT_MS),
-        });
-        const responseBody = await res.text().catch(() => '');
-        const durationMs = Date.now() - startedAt;
 
-        if (res.ok) {
-            return { success: true, responseCode: res.status, responseBody, durationMs };
-        }
-        return {
-            success: false,
-            responseCode: res.status,
-            responseBody,
-            durationMs,
-            errorMessage: `HTTP ${res.status} ${res.statusText}`,
-        };
-    } catch (err) {
-        const durationMs = Date.now() - startedAt;
-        const msg = err instanceof Error ? err.message : String(err);
-        return {
-            success: false,
-            durationMs,
-            errorMessage: msg.includes('aborted') ? `timeout after ${POST_TIMEOUT_MS}ms` : msg,
-        };
+    // safeFetch wraps native fetch with an SSRF guard: it DNS-resolves the
+    // destination and rejects private / loopback / link-local / cloud-metadata
+    // IPs before issuing the request, re-validates on every redirect hop, and
+    // bounds the response read. Customer-registered webhook URLs are the one
+    // customer-controlled outbound destination in the backend, so this is where
+    // the guard belongs. safeFetch returns a Result (never throws).
+    const result = await safeFetch(endpoint.url, {
+        method: 'POST',
+        headers,
+        body: rawBody,
+        timeoutMs: POST_TIMEOUT_MS,
+    });
+    const durationMs = Date.now() - startedAt;
+
+    if (!result.ok) {
+        // url_blocked / redirect_blocked surface the SSRF rejection to the
+        // operator so they can fix the endpoint URL; timeout / network_error /
+        // too_many_redirects flow through the normal retry + backoff path.
+        const errorMessage =
+            result.reason === 'url_blocked' || result.reason === 'redirect_blocked'
+                ? `blocked: ${result.message}`
+                : result.reason === 'timeout'
+                    ? `timeout after ${POST_TIMEOUT_MS}ms`
+                    : result.message;
+        return { success: false, durationMs, errorMessage };
     }
+
+    // 2xx is success (mirrors the previous res.ok check); any other status is a
+    // failed attempt with the (possibly truncated) body captured for the log.
+    if (result.status >= 200 && result.status < 300) {
+        return { success: true, responseCode: result.status, responseBody: result.body, durationMs };
+    }
+    return {
+        success: false,
+        responseCode: result.status,
+        responseBody: result.body,
+        durationMs,
+        errorMessage: `HTTP ${result.status} ${result.statusText}`,
+    };
 }
 
 // ────────────────────────────────────────────────────────────────────
