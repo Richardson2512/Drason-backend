@@ -37,6 +37,7 @@ import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
 import { JWT_SECRET } from '../utils/jwtSecret';
+import { validateRedirectUriList } from '../utils/redirectUriValidator';
 
 // ────────────────────────────────────────────────────────────────────
 // Constants
@@ -112,6 +113,16 @@ class SuperkabeClientsStore implements OAuthRegisteredClientsStore {
     async registerClient(
         info: Omit<OAuthClientInformationFull, 'client_id' | 'client_id_issued_at'>
     ): Promise<OAuthClientInformationFull> {
+        // G2 fix: validate caller-supplied redirect_uris BEFORE persisting.
+        // Previously they were stored verbatim, so a hostile DCR client could
+        // register javascript:/data:/file: schemes, non-loopback http, userinfo
+        // or fragment URIs and receive the auth code there (open-redirect into
+        // auth-code theft). Throwing surfaces as an OAuth error via mcpAuthRouter.
+        const redirectCheck = validateRedirectUriList(info.redirect_uris);
+        if (!redirectCheck.ok) {
+            throw new Error(`invalid redirect_uri[${redirectCheck.index}]: ${redirectCheck.message}`);
+        }
+
         const clientId = `mcp_client_${crypto.randomBytes(12).toString('hex')}`;
 
         // We allow only public clients (PKCE-based). If a secret is
@@ -129,7 +140,7 @@ class SuperkabeClientsStore implements OAuthRegisteredClientsStore {
                 client_id: clientId,
                 client_secret_hash: secretHash,
                 client_name: info.client_name || 'MCP Client',
-                redirect_uris: info.redirect_uris as any,
+                redirect_uris: redirectCheck.normalized as any,
                 grant_types: (info.grant_types || ['authorization_code', 'refresh_token']) as any,
                 response_types: (info.response_types || ['code']) as any,
                 token_endpoint_auth_method: info.token_endpoint_auth_method || 'none',
