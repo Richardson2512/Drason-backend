@@ -239,7 +239,22 @@ export class SuperkabeOAuthProvider implements OAuthServerProvider {
 
         const row = await prisma.oAuthAuthorizationCode.findUnique({ where: { code_hash: codeHash } });
         if (!row) throw new Error('Invalid authorization code');
-        if (row.used_at) throw new Error('Authorization code already used');
+        if (row.used_at) {
+            // Auth-code reuse is a theft signal (RFC 6749 section 10.5): the
+            // legitimate client already exchanged this code, so a second
+            // presentation means someone intercepted it. Revoke every token
+            // minted from this code so a replayer can't keep a live session,
+            // then reject. (API/MCP audit G4.)
+            await this.revokeTokensMintedFromCode(codeHash).catch(err => {
+                logger.error('[OAUTH] Failed to revoke tokens after code reuse (non-fatal)',
+                    err instanceof Error ? err : new Error(String(err)));
+            });
+            logger.warn('[OAUTH] Authorization code REUSE detected - revoked in-flight tokens', {
+                clientId: client.client_id,
+                organizationId: row.organization_id,
+            });
+            throw new Error('Authorization code already used');
+        }
         if (row.expires_at < new Date()) throw new Error('Authorization code expired');
         if (row.client_id !== client.client_id) throw new Error('Authorization code issued to a different client');
         if (redirectUri && row.redirect_uri !== redirectUri) throw new Error('redirect_uri mismatch');
@@ -256,6 +271,7 @@ export class SuperkabeOAuthProvider implements OAuthServerProvider {
             organization_id: row.organization_id,
             scope: row.scope || SUPPORTED_SCOPES.join(' '),
             resource: resource?.toString() ?? row.resource ?? undefined,
+            source_auth_code_hash: codeHash,
         });
     }
 
@@ -293,6 +309,9 @@ export class SuperkabeOAuthProvider implements OAuthServerProvider {
             organization_id: row.organization_id,
             scope: newScope || SUPPORTED_SCOPES.join(' '),
             resource: resource?.toString() ?? row.resource ?? undefined,
+            // Carry the source code hash forward so revoke-on-reuse catches the
+            // whole refresh chain, not just the original access token.
+            source_auth_code_hash: row.source_auth_code_hash ?? undefined,
         });
     }
 
@@ -342,6 +361,19 @@ export class SuperkabeOAuthProvider implements OAuthServerProvider {
     }
 
     /**
+     * Revoke every OAuthAccessToken minted from a given authorization code
+     * (directly, or via a refresh-token rotation that carried the source hash
+     * forward) - the response to detected code reuse. Idempotent: re-revoking
+     * an already-revoked row is a no-op (the revoked_at: null filter skips it).
+     */
+    async revokeTokensMintedFromCode(codeHash: string): Promise<void> {
+        await prisma.oAuthAccessToken.updateMany({
+            where: { source_auth_code_hash: codeHash, revoked_at: null },
+            data: { revoked_at: new Date() },
+        });
+    }
+
+    /**
      * Mint an access + refresh token pair and persist hashes. Called from
      * exchangeAuthorizationCode and exchangeRefreshToken; also called
      * directly by the consent-approve controller after consent.
@@ -352,6 +384,8 @@ export class SuperkabeOAuthProvider implements OAuthServerProvider {
         organization_id: string;
         scope: string;
         resource?: string;
+        /** Hash of the auth code this token descends from, for revoke-on-reuse. */
+        source_auth_code_hash?: string;
     }): Promise<OAuthTokens> {
         const accessToken = generateToken('oat');
         const refreshToken = generateToken('ort');
@@ -370,6 +404,7 @@ export class SuperkabeOAuthProvider implements OAuthServerProvider {
                 resource: opts.resource ?? null,
                 expires_at: expires,
                 refresh_expires_at: refreshExpires,
+                source_auth_code_hash: opts.source_auth_code_hash ?? null,
             },
         });
 

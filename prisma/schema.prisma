@@ -2212,12 +2212,17 @@ model OAuthAccessToken {
   revoked_at         DateTime?
   created_at         DateTime  @default(now())
   last_used_at       DateTime?
+  // Hash of the authorization code this token (or its refresh ancestor) was
+  // minted from. Lets auth-code-reuse detection revoke the in-flight token
+  // (RFC 6749 §10.5). Null for legacy rows and tokens not minted from a code.
+  source_auth_code_hash String?
 
   client OAuthClient @relation(fields: [client_id], references: [client_id], onDelete: Cascade)
 
   @@index([client_id])
   @@index([organization_id])
   @@index([expires_at])
+  @@index([source_auth_code_hash])
 }
 
 /// CRM connection (HubSpot, Salesforce, future). One per (org, provider).
