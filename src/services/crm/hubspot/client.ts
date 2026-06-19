@@ -21,6 +21,7 @@ import {
     CrmPushError,
     CrmProvider,
 } from '../types';
+import { classifyConnectionError } from '../../../utils/connectionErrorClassifier';
 import {
     exchangeCodeForTokens,
     fetchAccountInfo as fetchAccountInfoCore,
@@ -112,8 +113,12 @@ export class HubSpotCrmClient implements CrmClient {
         if (!res.ok) {
             const text = await res.text().catch(() => '');
             const retryable = res.status >= 500 || res.status === 429;
+            // Classify the upstream failure so last_error tells the operator
+            // what to DO (e.g. 403 scope-drift -> "reconnect to re-grant access")
+            // instead of a bare status. retryable + code are unchanged.
+            const classified = classifyConnectionError(res.status, text, 'HubSpot');
             throw new CrmPushError(
-                `HubSpot ${opName} failed (${res.status}): ${text.slice(0, 300)}`,
+                `${classified.message} [${opName} ${res.status}: ${text.slice(0, 200)}]`,
                 retryable,
                 String(res.status),
             );
@@ -259,8 +264,9 @@ export class HubSpotCrmClient implements CrmClient {
         if (!res.ok) {
             const text = await res.text().catch(() => '');
             const retryable = res.status >= 500 || res.status === 429 || res.status === 408;
+            const classified = classifyConnectionError(res.status, text, 'HubSpot');
             throw new CrmPushError(
-                `HubSpot pushActivity failed (${res.status}): ${text.slice(0, 300)}`,
+                `${classified.message} [pushActivity ${res.status}: ${text.slice(0, 200)}]`,
                 retryable,
                 String(res.status),
             );

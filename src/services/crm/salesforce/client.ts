@@ -22,6 +22,7 @@ import type {
     CrmProvider,
 } from '../types';
 import { CrmPushError } from '../types';
+import { classifyConnectionError } from '../../../utils/connectionErrorClassifier';
 import {
     detectEnvFromInstanceUrl,
     exchangeCodeForTokens as exchangeCodeForTokensCore,
@@ -129,8 +130,11 @@ export class SalesforceCrmClient implements CrmClient {
         if (!res.ok) {
             const text = await res.text().catch(() => '');
             const retryable = res.status >= 500 || res.status === 429;
+            // Classify so last_error is actionable (403 scope-drift -> reconnect)
+            // instead of a bare status. retryable + code unchanged.
+            const classified = classifyConnectionError(res.status, text, 'Salesforce');
             throw new CrmPushError(
-                `Salesforce ${opName} failed (${res.status}): ${text.slice(0, 300)}`,
+                `${classified.message} [${opName} ${res.status}: ${text.slice(0, 200)}]`,
                 retryable,
                 String(res.status),
             );
@@ -235,8 +239,9 @@ export class SalesforceCrmClient implements CrmClient {
         if (!res.ok) {
             const text = await res.text().catch(() => '');
             const retryable = res.status >= 500 || res.status === 429;
+            const classified = classifyConnectionError(res.status, text, 'Salesforce');
             throw new CrmPushError(
-                `Salesforce pushActivity failed (${res.status}): ${text.slice(0, 300)}`,
+                `${classified.message} [pushActivity ${res.status}: ${text.slice(0, 200)}]`,
                 retryable,
                 String(res.status),
             );
