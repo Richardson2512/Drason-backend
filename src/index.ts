@@ -1000,6 +1000,11 @@ const server = app.listen(PORT, () => {
     // signups can't blow the OpenAI quota in a single burst.
     import('./services/aiProfileExtractionQueue').then(m => m.startExtractionWorker());
 
+    // Polar reconciler - hourly drift-correction of subscription state when a
+    // billing webhook is lost/delayed (B1). Self-gated on POLAR_ACCESS_TOKEN;
+    // read-only against Polar + corrects our own DB (never auto-cancels).
+    import('./services/polarReconciler').then(m => m.startPolarReconciler());
+
     // Warmup pool - four cooperating workers + corpus seed.
     //   sender    - schedules sends across the pool (every 15 min)
     //   dispatch  - sends scheduled exchanges via SMTP (every 1 min)

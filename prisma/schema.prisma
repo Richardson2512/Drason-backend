@@ -133,6 +133,9 @@ model Organization {
   trial_ends_at           DateTime?
   subscription_started_at DateTime?
   next_billing_date       DateTime?
+  // Last time the Polar reconciler pulled this org's subscription state to
+  // correct webhook-missed drift (B1). Null = never reconciled.
+  polar_reconciled_at     DateTime?
 
   // Usage tracking - only the metered counters are kept on the org row.
   // Validation credits and monthly sends are derived live from
