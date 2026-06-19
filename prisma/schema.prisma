@@ -149,6 +149,10 @@ model Organization {
 
   // Webhook Security
   clay_webhook_secret String? // HMAC secret for Clay webhook validation
+  // Set by the Clay ingest endpoint on each accepted webhook. The dashboard's
+  // "Clay connected" status reads this (Lead.source defaults to "clay", so a
+  // source count is not a reliable signal); null = Clay has never delivered.
+  last_clay_ingest_at DateTime?
 
   // Zapmail integration - API key (encrypted at rest) used to list mailboxes
   // for one-click bulk import. Single Zapmail workspace per organization.

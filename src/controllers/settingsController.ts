@@ -29,6 +29,14 @@ export const getSettings = async (req: Request, res: Response) => {
             where: { organization_id: orgId }
         });
 
+        // Clay is webhook-based (no OAuth handshake), so "connected" means it
+        // has actually delivered at least one lead - tracked by last_clay_ingest_at,
+        // which is set only by the Clay ingest endpoint.
+        const org = await prisma.organization.findUnique({
+            where: { id: orgId },
+            select: { last_clay_ingest_at: true }
+        });
+
         // Mask secret values
         const maskedSettings: { key: string; value: string; is_secret: boolean }[] = settings.map(s => ({
             key: s.key,
@@ -41,6 +49,20 @@ export const getSettings = async (req: Request, res: Response) => {
             value: slackIntegration ? 'true' : 'false',
             is_secret: false
         });
+
+        maskedSettings.push({
+            key: 'CLAY_CONNECTED',
+            value: org?.last_clay_ingest_at ? 'true' : 'false',
+            is_secret: false
+        });
+
+        if (org?.last_clay_ingest_at) {
+            maskedSettings.push({
+                key: 'CLAY_LAST_INGEST_AT',
+                value: org.last_clay_ingest_at.toISOString(),
+                is_secret: false
+            });
+        }
 
         if (slackIntegration) {
             maskedSettings.push(

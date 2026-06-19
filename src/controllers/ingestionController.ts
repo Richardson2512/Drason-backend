@@ -586,6 +586,14 @@ export const ingestClayWebhook = async (req: Request, res: Response) => {
             extraPayload: payload,
         });
 
+        // Record that Clay has actually delivered, so the dashboard can show a
+        // real "connected" status instead of a hardcoded always-on. Best-effort:
+        // a stamp failure must not fail the ingest the customer is paying for.
+        await prisma.organization.update({
+            where: { id: organizationId },
+            data: { last_clay_ingest_at: new Date() },
+        }).catch(() => undefined);
+
         res.json(result);
     } catch (e) {
         logger.error('[INGEST CLAY] Error processing webhook:', e as Error);
