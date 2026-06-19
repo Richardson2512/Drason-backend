@@ -2,6 +2,7 @@ import { Router } from 'express';
 import * as dashboardController from '../controllers/dashboardController';
 import * as campaignController from '../controllers/campaignController';
 import { validateBody, validateQuery, routingRuleSchema, campaignActionSchema, paginationSchema, auditLogQuerySchema, resolveStalledCampaignSchema, applyLoadBalancingSchema, campaignRecommendationsBatchSchema } from '../middleware/validation';
+import { exportRateLimit, protectionConfigRateLimit } from '../middleware/rateLimitPerOrg';
 
 const router = Router();
 
@@ -23,12 +24,12 @@ router.get('/lead-health-stats', dashboardController.getLeadHealthStats);
 
 // Campaign Health endpoints
 // Removed: /campaign-health-stats - Duplicate of /campaigns endpoint (use that instead)
-router.post('/campaign/pause', validateBody(campaignActionSchema), dashboardController.pauseCampaign);
-router.post('/campaign/resume', validateBody(campaignActionSchema), dashboardController.resumeCampaign);
+router.post('/campaign/pause', protectionConfigRateLimit, validateBody(campaignActionSchema), dashboardController.pauseCampaign);
+router.post('/campaign/resume', protectionConfigRateLimit, validateBody(campaignActionSchema), dashboardController.resumeCampaign);
 router.post('/campaigns/pause-all', campaignController.pauseAllCampaigns);
 router.get('/campaigns/:id/stalled-context', campaignController.getStalledCampaignContext);
 router.post('/campaigns/:id/resolve-stalled', validateBody(resolveStalledCampaignSchema), campaignController.resolveStalledCampaign);
-router.get('/campaigns/:id/export-leads', campaignController.exportCampaignLeads);
+router.get('/campaigns/:id/export-leads', exportRateLimit, campaignController.exportCampaignLeads);
 router.post('/campaigns/:id/archive', campaignController.archiveCampaign);
 
 // Load balancing endpoints
@@ -61,7 +62,7 @@ router.post('/warmup/check', dashboardController.checkWarmupProgress);
 router.get('/healing/recently-recovered', dashboardController.getRecentlyRecovered);
 
 // Report generation endpoint
-router.get('/reports/generate', dashboardController.generateReport);
+router.get('/reports/generate', exportRateLimit, dashboardController.generateReport);
 
 // Support ticket endpoints
 import * as ticketController from '../controllers/ticketController';

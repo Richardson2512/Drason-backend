@@ -7,23 +7,24 @@
 import { Router } from 'express';
 import { asyncHandler } from '../middleware/asyncHandler';
 import * as wh from '../controllers/webhookController';
+import { webhookOpsRateLimit, webhookTestRateLimit } from '../middleware/rateLimitPerOrg';
 
 const router = Router();
 
 router.get('/events', asyncHandler(wh.listEvents));
 
 router.get('/', asyncHandler(wh.listEndpoints));
-router.post('/', asyncHandler(wh.createEndpoint));
+router.post('/', webhookOpsRateLimit, asyncHandler(wh.createEndpoint));
 router.get('/:id', asyncHandler(wh.getEndpoint));
-router.patch('/:id', asyncHandler(wh.updateEndpoint));
-router.delete('/:id', asyncHandler(wh.deleteEndpoint));
+router.patch('/:id', webhookOpsRateLimit, asyncHandler(wh.updateEndpoint));
+router.delete('/:id', webhookOpsRateLimit, asyncHandler(wh.deleteEndpoint));
 
-router.post('/:id/rotate', asyncHandler(wh.rotateSecret));
-router.post('/:id/reactivate', asyncHandler(wh.reactivateEndpoint));
-router.post('/:id/test', asyncHandler(wh.testEndpoint));
+router.post('/:id/rotate', webhookOpsRateLimit, asyncHandler(wh.rotateSecret));
+router.post('/:id/reactivate', webhookOpsRateLimit, asyncHandler(wh.reactivateEndpoint));
+router.post('/:id/test', webhookTestRateLimit, asyncHandler(wh.testEndpoint));
 
 router.get('/:id/deliveries', asyncHandler(wh.listDeliveries));
 router.get('/:id/deliveries/:deliveryId', asyncHandler(wh.getDelivery));
-router.post('/:id/deliveries/:deliveryId/replay', asyncHandler(wh.replay));
+router.post('/:id/deliveries/:deliveryId/replay', webhookOpsRateLimit, asyncHandler(wh.replay));
 
 export default router;
