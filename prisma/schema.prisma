@@ -2225,6 +2225,32 @@ model OAuthAccessToken {
   @@index([source_auth_code_hash])
 }
 
+/// Durable audit trail for OAuth / MCP security events (client registration,
+/// token mint/revoke, auth-code reuse). Operational logs roll over; the
+/// security audit must outlive them (API/MCP audit G6). Writes are best-effort.
+model SecurityAuditLog {
+  id              String   @id @default(uuid())
+  /// Nullable for pre-auth events (e.g. DCR /register) where org is unknown.
+  organization_id String?
+  /// Principal kind: "oauth_client" | "user" | "api_key" | "system".
+  actor_kind      String
+  /// Stable actor id (client_id, user_id, api-key prefix). Never a raw token.
+  actor_id        String?
+  /// Canonical vocabulary - see services/securityAuditLog.ts EVENT_TYPES.
+  event_type      String
+  /// What the event acted on (client_id, token id prefix, etc.).
+  target          String?
+  /// Structured detail (no PII, no raw tokens/payloads).
+  metadata        Json?
+  ip              String?
+  user_agent      String?
+  created_at      DateTime @default(now())
+
+  @@index([organization_id, created_at])
+  @@index([event_type, created_at])
+  @@index([actor_kind, actor_id, created_at])
+}
+
 /// CRM connection (HubSpot, Salesforce, future). One per (org, provider).
 /// OAuth tokens are encrypted at rest using the same encryption helper as
 /// ConnectedAccount mailboxes. `instance_url` is set for Salesforce (each

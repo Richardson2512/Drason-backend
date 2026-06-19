@@ -38,6 +38,7 @@ import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
 import { JWT_SECRET } from '../utils/jwtSecret';
 import { validateRedirectUriList } from '../utils/redirectUriValidator';
+import { recordSecurityEvent, EVENT_TYPES } from '../services/securityAuditLog';
 
 // ────────────────────────────────────────────────────────────────────
 // Constants
@@ -120,6 +121,12 @@ class SuperkabeClientsStore implements OAuthRegisteredClientsStore {
         // auth-code theft). Throwing surfaces as an OAuth error via mcpAuthRouter.
         const redirectCheck = validateRedirectUriList(info.redirect_uris);
         if (!redirectCheck.ok) {
+            await recordSecurityEvent({
+                actorKind: 'oauth_client',
+                eventType: EVENT_TYPES.OAUTH_CLIENT_REGISTRATION_REJECTED,
+                target: info.client_name || null,
+                metadata: { reason: redirectCheck.code, index: redirectCheck.index },
+            });
             throw new Error(`invalid redirect_uri[${redirectCheck.index}]: ${redirectCheck.message}`);
         }
 
@@ -153,6 +160,13 @@ class SuperkabeClientsStore implements OAuthRegisteredClientsStore {
         });
 
         logger.info('[OAUTH] Registered new client', { clientId, name: created.client_name });
+        await recordSecurityEvent({
+            actorKind: 'oauth_client',
+            actorId: clientId,
+            eventType: EVENT_TYPES.OAUTH_CLIENT_REGISTERED,
+            target: clientId,
+            metadata: { name: created.client_name, redirect_uri_count: redirectCheck.normalized.length },
+        });
 
         const full = this.toFullInfo(created);
         if (plainSecret) full.client_secret = plainSecret;
@@ -253,6 +267,13 @@ export class SuperkabeOAuthProvider implements OAuthServerProvider {
                 clientId: client.client_id,
                 organizationId: row.organization_id,
             });
+            await recordSecurityEvent({
+                organizationId: row.organization_id,
+                actorKind: 'oauth_client',
+                actorId: client.client_id,
+                eventType: EVENT_TYPES.OAUTH_CODE_REUSE_DETECTED,
+                target: client.client_id,
+            });
             throw new Error('Authorization code already used');
         }
         if (row.expires_at < new Date()) throw new Error('Authorization code expired');
@@ -302,6 +323,14 @@ export class SuperkabeOAuthProvider implements OAuthServerProvider {
             where: { id: row.id },
             data: { revoked_at: new Date() },
         });
+        await recordSecurityEvent({
+            organizationId: row.organization_id,
+            actorKind: 'oauth_client',
+            actorId: client.client_id,
+            eventType: EVENT_TYPES.OAUTH_TOKEN_REVOKED,
+            target: row.id,
+            metadata: { reason: 'refresh_rotation' },
+        });
 
         return this.mintTokens({
             client_id: client.client_id,
@@ -349,6 +378,14 @@ export class SuperkabeOAuthProvider implements OAuthServerProvider {
                 where: { id: byAccess.id },
                 data: { revoked_at: new Date() },
             });
+            await recordSecurityEvent({
+                organizationId: byAccess.organization_id,
+                actorKind: 'oauth_client',
+                actorId: byAccess.client_id,
+                eventType: EVENT_TYPES.OAUTH_TOKEN_REVOKED,
+                target: byAccess.id,
+                metadata: { reason: 'explicit_revoke' },
+            });
             return;
         }
         const byRefresh = await prisma.oAuthAccessToken.findUnique({ where: { refresh_token_hash: tokenHash } });
@@ -356,6 +393,14 @@ export class SuperkabeOAuthProvider implements OAuthServerProvider {
             await prisma.oAuthAccessToken.update({
                 where: { id: byRefresh.id },
                 data: { revoked_at: new Date() },
+            });
+            await recordSecurityEvent({
+                organizationId: byRefresh.organization_id,
+                actorKind: 'oauth_client',
+                actorId: byRefresh.client_id,
+                eventType: EVENT_TYPES.OAUTH_TOKEN_REVOKED,
+                target: byRefresh.id,
+                metadata: { reason: 'explicit_revoke' },
             });
         }
     }
@@ -406,6 +451,16 @@ export class SuperkabeOAuthProvider implements OAuthServerProvider {
                 refresh_expires_at: refreshExpires,
                 source_auth_code_hash: opts.source_auth_code_hash ?? null,
             },
+        });
+
+        // Single choke point for every mint path (auth-code exchange, refresh
+        // rotation, consent-approve), so the audit trail is complete.
+        await recordSecurityEvent({
+            organizationId: opts.organization_id,
+            actorKind: 'oauth_client',
+            actorId: opts.client_id,
+            eventType: EVENT_TYPES.OAUTH_TOKEN_MINTED,
+            metadata: { scope: opts.scope },
         });
 
         return {

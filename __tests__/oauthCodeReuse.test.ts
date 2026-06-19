@@ -14,6 +14,7 @@ jest.mock('../src/index', () => ({
     prisma: {
         oAuthAuthorizationCode: { findUnique: jest.fn(), update: jest.fn() },
         oAuthAccessToken: { create: jest.fn(), updateMany: jest.fn() },
+        securityAuditLog: { create: jest.fn().mockResolvedValue({}) },
     },
 }));
 jest.mock('../src/services/observabilityService', () => ({
