@@ -636,6 +636,19 @@ async function fetchRepliesFromAccount(account: {
         },
     });
 
+    // CRITICAL: imapflow emits 'error' asynchronously (e.g. a socket timeout
+    // fired on a timer AFTER the operation's await has returned). Node's
+    // EventEmitter rethrows an emitted 'error' with no listener as an
+    // uncaughtException - which the global handler turns into process.exit,
+    // so a single flaky mailbox would crash-loop the entire backend. A no-op
+    // listener keeps these contained; the try/catch below handles anything we
+    // can actually act on, and the mailbox is simply skipped this cycle.
+    client.on('error', (err: any) => {
+        logger.warn(`[${LOG_TAG}] IMAP client error (handled, non-fatal) for ${account.email}`, {
+            error: err?.message || String(err),
+        });
+    });
+
     let fetchedCount = 0;
 
     try {
