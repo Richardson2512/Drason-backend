@@ -727,7 +727,7 @@ export const getMailboxes = async (req: Request, res: Response, next: NextFuncti
                 where,
                 include: {
                     domain: {
-                        select: { id: true, domain: true, status: true }
+                        select: { id: true, domain: true, status: true, infra_status: true, infra_reason: true }
                     },
                     campaigns: {
                         select: { id: true, name: true, status: true }
