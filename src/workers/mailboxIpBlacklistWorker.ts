@@ -21,7 +21,6 @@
 import { prisma } from '../index';
 import { logger } from '../services/observabilityService';
 import * as dnsbl from '../services/dnsblService';
-import { pauseMailbox } from '../services/monitoringService';
 
 const LOG_TAG = 'MAILBOX_IP_BL';
 const RUN_INTERVAL_MS = 6 * 60 * 60 * 1000;     // 6 hours
@@ -107,47 +106,38 @@ export async function runOnce(): Promise<{ checked: number; listed: number; skip
                     total_checked: summary.total_checked || 0,
                 };
 
+                // ── Door B infrastructure gate ─────────────────────────────
+                // A confirmed blocking sending-IP listing makes this mailbox NOT
+                // sendable via infra_status - a dedicated advisory flag that is
+                // SEPARATE from status/recovery_phase (the healing pipeline).
+                // IP-blacklist blocks are deliberately NO LONGER routed through
+                // pauseMailbox/correlation: an unauthenticated infrastructure
+                // problem is not a "burned by sending" event, and forcing it into
+                // healing trapped never-sent mailboxes (no clean sends to
+                // graduate on -> permanent quarantine). Writing 'ready' when the
+                // IP is clean means this same 6h sweep auto-clears the flag once
+                // the IP is delisted - no manual step, no deadlock. This worker is
+                // the sole writer of Mailbox.infra_status (domain-level listings
+                // live on Domain.infra_status), so clearing here is safe.
+                const policy = dnsbl.isBlockingBlacklisted(result.results, lists);
+                const ipBlocked = policy.shouldPause;
+
                 await prisma.mailbox.update({
                     where: { id: mb.id },
                     data: {
                         ip_blacklist_results: ipBlacklistResults as any,
                         ip_blacklist_score: result.penalty,
                         last_ip_blacklist_check: new Date(),
+                        infra_status: ipBlocked ? 'action_required' : 'ready',
+                        infra_reason: ipBlocked
+                            ? `Sending IP on blocking blacklist: ${policy.reason}. Delist the IP, then re-check to resume sending.`
+                            : null,
                     },
                 });
 
                 totalChecked++;
                 if (ipBlacklistResults.critical_listed > 0 || ipBlacklistResults.major_listed > 0) {
                     totalListed++;
-                }
-
-                // ── AUTO-PAUSE on confirmed sending-IP blacklisting ─────────
-                // Mirror the dnsblService.isBlockingBlacklisted policy:
-                //   • Any CONFIRMED critical-tier listing  → pause immediately
-                //   • Two or more CONFIRMED major-tier listings → pause
-                // monitoringService.pauseMailbox respects OBSERVE/SUGGEST/ENFORCE
-                // system modes, runs the correlation pre-check, transitions via
-                // entityStateService (sets cooldown_until → metricsWorker enters
-                // QUARANTINE on expiry), and fires the Slack alert. Calling it
-                // here keeps every pause path going through the same canonical
-                // function; we never mutate Mailbox.status directly.
-                // Idempotency: don't re-pause an already-paused mailbox. The
-                // state machine would reject the transition anyway, but
-                // pauseMailbox runs correlation queries + Slack alert before
-                // hitting the rejection - wasted DB work + duplicate notifs.
-                const policy = dnsbl.isBlockingBlacklisted(result.results, lists);
-                if (policy.shouldPause && mb.status !== 'paused') {
-                    try {
-                        await pauseMailbox(
-                            mb.id,
-                            `IP blacklist: ${policy.reason}`,
-                        );
-                    } catch (pauseErr) {
-                        logger.error(
-                            `[${LOG_TAG}] auto-pause failed for ${mb.id}`,
-                            pauseErr instanceof Error ? pauseErr : new Error(String(pauseErr)),
-                        );
-                    }
                 }
             } catch (err) {
                 logger.warn(`[${LOG_TAG}] mailbox ${mb.id} check failed`, { error: (err as Error)?.message });

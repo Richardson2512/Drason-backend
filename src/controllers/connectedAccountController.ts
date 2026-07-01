@@ -34,10 +34,13 @@ export const listAccounts = async (req: Request, res: Response): Promise<Respons
                     select: {
                         status: true,
                         recovery_phase: true,
+                        infra_status: true,
+                        infra_reason: true,
                         resilience_score: true,
                         hard_bounce_count: true,
                         window_sent_count: true,
                         window_bounce_count: true,
+                        domain: { select: { infra_status: true, infra_reason: true } },
                     },
                 },
             },
@@ -49,15 +52,21 @@ export const listAccounts = async (req: Request, res: Response): Promise<Respons
             // recovery_phase: 'healthy' | 'paused' | 'quarantine' | 'restricted_send' | 'warm_recovery'
             const mailboxStatus = a.mailbox?.status || 'healthy';
             const recoveryPhase = a.mailbox?.recovery_phase || 'healthy';
+            // Door B infrastructure gate (separate from healing). Blocked when the mailbox's
+            // sending IP or its domain is on a blocking blacklist. Not sendable until the user
+            // fixes it and a re-check clears it - but NOT part of the healing pipeline.
+            const mailboxInfra = a.mailbox?.infra_status || 'ready';
+            const domainInfra = a.mailbox?.domain?.infra_status || 'ready';
+            const isInfraBlocked = mailboxInfra === 'action_required' || domainInfra === 'action_required';
 
-            // A mailbox is selectable for new campaigns only if healthy + OAuth/SMTP connection is active
+            // A mailbox is selectable for new campaigns only if healthy + infra-ready + connection active
             const isPausedOrHealing = mailboxStatus === 'paused'
                 || recoveryPhase === 'paused'
                 || recoveryPhase === 'quarantine'
                 || recoveryPhase === 'restricted_send'
                 || recoveryPhase === 'warm_recovery';
             const isConnectionBroken = a.connection_status !== 'active';
-            const selectable = !isPausedOrHealing && !isConnectionBroken;
+            const selectable = !isPausedOrHealing && !isConnectionBroken && !isInfraBlocked;
 
             // ── Utilization (based on today's sends vs daily limit) ──
             const utilizationPct = a.daily_send_limit > 0
@@ -71,6 +80,7 @@ export const listAccounts = async (req: Request, res: Response): Promise<Respons
             // Pick the disabled reason for UI tooltip
             let disabledReason: string | null = null;
             if (isConnectionBroken) disabledReason = `Connection ${a.connection_status} - reconnect mailbox`;
+            else if (isInfraBlocked) disabledReason = a.mailbox?.infra_reason || a.mailbox?.domain?.infra_reason || 'Infrastructure not ready - blocking blacklist listing. Fix and re-check to send.';
             else if (recoveryPhase === 'paused' || mailboxStatus === 'paused') disabledReason = 'Mailbox paused by Protection layer';
             else if (recoveryPhase === 'quarantine') disabledReason = 'Mailbox in quarantine - healing in progress';
             else if (recoveryPhase === 'restricted_send') disabledReason = 'Mailbox in restricted sending - healing phase';
@@ -99,6 +109,9 @@ export const listAccounts = async (req: Request, res: Response): Promise<Respons
                 hard_bounce_count: a.mailbox?.hard_bounce_count ?? 0,
                 selectable,
                 disabled_reason: disabledReason,
+                // Door B advisory - surfaced as a distinct badge/reason in the UI (NOT healing).
+                infra_status: isInfraBlocked ? 'action_required' : 'ready',
+                infra_reason: isInfraBlocked ? (a.mailbox?.infra_reason || a.mailbox?.domain?.infra_reason || null) : null,
                 utilization,
                 utilization_pct: Math.round(utilizationPct),
                 created_at: a.created_at,

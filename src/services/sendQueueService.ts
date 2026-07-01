@@ -570,7 +570,8 @@ async function dispatch(): Promise<void> {
                                         warmup_limit: true,
                                         recovery_phase: true,
                                         status: true,
-                                        domain: { select: { status: true } },
+                                        infra_status: true,
+                                        domain: { select: { status: true, infra_status: true } },
                                     },
                                 },
                             },
@@ -801,6 +802,10 @@ async function dispatch(): Promise<void> {
                     // mailbox whose parent domain is paused.
                     if (acct.mailbox?.domain?.status === 'paused') continue;
                     if (acct.mailbox?.status === 'paused') continue;
+                    // Door B: skip mailboxes/domains blocked by a blocking blacklist listing.
+                    // Not sendable until fixed + re-checked; canSendNow re-checks this per-send too.
+                    if (acct.mailbox?.infra_status === 'action_required') continue;
+                    if (acct.mailbox?.domain?.infra_status === 'action_required') continue;
 
                     const resetResult = await resetDailySendsIfNeeded(acct.id, acct.sends_reset_at);
                     const mailboxSendsToday = resetResult === 0 ? 0 : acct.sends_today;

@@ -10,6 +10,7 @@ import { Request, Response } from 'express';
 import { getOrgId } from '../middleware/orgContext';
 import { prisma } from '../index';
 import * as assessmentService from '../services/infrastructureAssessmentService';
+import * as dnsblService from '../services/dnsblService';
 import { logger } from '../services/observabilityService';
 
 /**
@@ -257,12 +258,35 @@ export const recheckDomainDNS = async (req: Request, res: Response): Promise<voi
                     mx_records: domain.mx_records,
                     mx_valid: domain.mx_valid,
                     dns_checked_at: domain.dns_checked_at,
+                    infra_status: domain.infra_status,
+                    infra_reason: domain.infra_reason,
                 },
             });
             return;
         }
 
-        const dnsResult = await assessmentService.assessDomainDNS(domain.domain, domain.id);
+        // Use the same comprehensive DNSBL list set as the full assessment so an on-demand
+        // re-check evaluates blacklist blocking identically (not just critical-only, which is
+        // what assessDomainDNS falls back to when no lists are passed).
+        const dnsblLists = await dnsblService.getListsForRun('comprehensive');
+        const dnsResult = await assessmentService.assessDomainDNS(domain.domain, domain.id, dnsblLists);
+
+        // Door B: recompute whether the domain is on a blocking blacklist so a confirmed
+        // delisting immediately clears the infra_status gate (no wait for the 24h sweep).
+        let infraBlocked = false;
+        let infraReason: string | null = null;
+        const dnsblCheck = dnsResult._dnsblCheckResult;
+        if (dnsblCheck) {
+            const { shouldPause } = dnsblService.isBlockingBlacklisted(dnsblCheck.results, dnsblLists);
+            if (shouldPause) {
+                infraBlocked = true;
+                const confirmedLists = dnsblCheck.results
+                    .filter((r) => r.status === 'CONFIRMED')
+                    .map((r) => r.listName);
+                infraReason = `On blocking blacklist: ${confirmedLists.join(', ')}. Delist the domain, then re-check to resume sending.`;
+            }
+        }
+
         const updated = await prisma.domain.update({
             where: { id: domain.id },
             data: {
@@ -272,6 +296,8 @@ export const recheckDomainDNS = async (req: Request, res: Response): Promise<voi
                 mx_records: dnsResult.mxRecords,
                 mx_valid: dnsResult.mxValid,
                 dns_checked_at: new Date(),
+                infra_status: infraBlocked ? 'action_required' : 'ready',
+                infra_reason: infraBlocked ? infraReason : null,
             },
             select: {
                 id: true,
@@ -281,6 +307,8 @@ export const recheckDomainDNS = async (req: Request, res: Response): Promise<voi
                 mx_records: true,
                 mx_valid: true,
                 dns_checked_at: true,
+                infra_status: true,
+                infra_reason: true,
             },
         });
 

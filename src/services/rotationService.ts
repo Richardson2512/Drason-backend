@@ -394,13 +394,20 @@ async function executeRotation(
     // Fresh check: verify standby is still healthy (race condition protection)
     const freshCheck = await prisma.mailbox.findUnique({
         where: { id: standby.id },
-        select: { status: true, recovery_phase: true }
+        select: { status: true, recovery_phase: true, infra_status: true, domain: { select: { infra_status: true } } }
     });
 
     if (!freshCheck || freshCheck.status !== 'healthy' || freshCheck.recovery_phase !== 'healthy') {
         return {
             success: false,
             error: `Standby mailbox ${standby.email} is no longer healthy (${freshCheck?.status}/${freshCheck?.recovery_phase})`
+        };
+    }
+    // Door B: never promote a standby whose sending IP or domain is on a blocking blacklist.
+    if (freshCheck.infra_status === 'action_required' || freshCheck.domain?.infra_status === 'action_required') {
+        return {
+            success: false,
+            error: `Standby mailbox ${standby.email} has an infrastructure block (blacklisted sending IP or domain)`
         };
     }
 

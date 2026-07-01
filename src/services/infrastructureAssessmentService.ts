@@ -529,6 +529,13 @@ export async function assessInfrastructure(
 
             // Determine domain state from DNS results
             let domainState = 'healthy';
+            // Door B infrastructure gate: a blocking blacklist listing makes the domain NOT
+            // sendable via infra_status, WITHOUT pausing it into status/recovery_phase (healing).
+            // This keeps blacklist findings off the send-based healing graduation pipeline so
+            // never-sent imported mailboxes are not trapped, and lets a delisting + re-check
+            // flip the domain straight back to sendable.
+            let infraBlocked = false;
+            let infraReason: string | null = null;
 
             // Check blacklists - tier-aware pause logic via dnsblService
             const dnsblCheck = dnsResult._dnsblCheckResult;
@@ -536,10 +543,11 @@ export async function assessInfrastructure(
                 const { shouldPause, reason } = dnsblService.isBlockingBlacklisted(dnsblCheck.results, dnsblLists);
 
                 if (shouldPause) {
-                    domainState = 'paused';
+                    infraBlocked = true;
                     const confirmedLists = dnsblCheck.results
                         .filter(r => r.status === 'CONFIRMED')
                         .map(r => r.listName);
+                    infraReason = `On blocking blacklist: ${confirmedLists.join(', ')}. Delist the domain, then re-check to resume sending.`;
 
                     findings.push({
                         severity: 'critical',
@@ -574,7 +582,7 @@ export async function assessInfrastructure(
 
                 // UNREACHABLE checks → warning
                 const unreachableCount = dnsblCheck.results.filter(r => r.status === 'UNREACHABLE').length;
-                if (unreachableCount > 0 && domainState !== 'paused') {
+                if (unreachableCount > 0 && !infraBlocked) {
                     if (domainState === 'healthy') domainState = 'warning';
                     findings.push({
                         severity: 'warning',
@@ -593,10 +601,11 @@ export async function assessInfrastructure(
                 const hasConfirmedBlacklist = Object.values(dnsResult.blacklistResults)
                     .some(s => s === 'CONFIRMED');
                 if (hasConfirmedBlacklist) {
-                    domainState = 'paused';
+                    infraBlocked = true;
                     const confirmedLists = Object.entries(dnsResult.blacklistResults)
                         .filter(([, s]) => s === 'CONFIRMED')
                         .map(([name]) => name);
+                    infraReason = `On blocking blacklist: ${confirmedLists.join(', ')}. Delist the domain, then re-check to resume sending.`;
                     findings.push({
                         severity: 'critical',
                         category: 'domain_dns',
@@ -696,9 +705,11 @@ export async function assessInfrastructure(
                     mx_valid: dnsResult.mxValid,
                     dns_checked_at: new Date(),
                     initial_assessment_score: dnsResult.score,
-                    ...(domainState === 'paused' ? {
-                        paused_reason: 'Infrastructure assessment: domain health issues detected',
-                    } : {}),
+                    // Door B: a blocking blacklist listing gates sending via infra_status, NOT via
+                    // status/recovery_phase. Writing 'ready' when not blocked also means a later
+                    // re-assessment auto-clears the flag once the domain is delisted.
+                    infra_status: infraBlocked ? 'action_required' : 'ready',
+                    infra_reason: infraBlocked ? infraReason : null,
                 },
             });
 

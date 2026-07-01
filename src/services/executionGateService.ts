@@ -165,12 +165,16 @@ export const canExecuteLead = async (
         where: {
             organization_id: organizationId,
             status: 'healthy',
+            // Door B: a blocking blacklist listing on the mailbox IP or its domain gates
+            // sending here without ever entering status/recovery_phase (healing).
+            infra_status: 'ready',
             OR: [
                 { cooldown_until: null },
                 { cooldown_until: { lt: new Date() } }
             ],
             domain: {
-                status: 'healthy'
+                status: 'healthy',
+                infra_status: 'ready'
             }
         },
         include: {
@@ -617,8 +621,9 @@ export const canSendNow = async (
         select: {
             status: true,
             recovery_phase: true,
+            infra_status: true,
             domain_id: true,
-            domain: { select: { status: true } },
+            domain: { select: { status: true, infra_status: true } },
         },
     });
     if (!mailbox) {
@@ -636,10 +641,30 @@ export const canSendNow = async (
             deferMinutes: 60,
         };
     }
+    // Door B: blocking blacklist listing on the mailbox sending IP. Not sendable until the
+    // user delists and a re-check flips infra_status back to 'ready'. Deferrable so the lead
+    // stays queued instead of being permanently failed.
+    if (mailbox.infra_status === 'action_required') {
+        return {
+            allowed: false,
+            reason: 'Mailbox infrastructure not ready (blacklisted sending IP)',
+            deferrable: true,
+            deferMinutes: 60,
+        };
+    }
     if (mailbox.domain?.status === 'paused') {
         return {
             allowed: false,
             reason: 'Parent domain paused',
+            deferrable: true,
+            deferMinutes: 60,
+        };
+    }
+    // Door B: blocking blacklist listing on the parent domain.
+    if (mailbox.domain?.infra_status === 'action_required') {
+        return {
+            allowed: false,
+            reason: 'Parent domain infrastructure not ready (blacklisted domain)',
             deferrable: true,
             deferMinutes: 60,
         };

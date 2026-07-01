@@ -807,6 +807,14 @@ model Mailbox {
   email                         String
   status                        String    @default("healthy")
   recovery_phase                String    @default("healthy") // RecoveryPhase: healthy|paused|quarantine|restricted_send|warm_recovery
+  // Infrastructure-readiness gate (Door B). DELIBERATELY SEPARATE from status/recovery_phase.
+  // 'ready' = no blocking infrastructure problem. 'action_required' = a blocking blacklist
+  // listing (sending IP on a critical DNSBL) makes this mailbox NOT sendable until the user
+  // fixes it and an on-demand / periodic re-check clears it back to 'ready'. This is NEVER
+  // entered because of send/bounce behaviour - that is recovery_phase's job (Door A). Keeping
+  // the two separate avoids the healing-graduation deadlock for never-sent imported mailboxes.
+  infra_status                  String    @default("ready") // 'ready' | 'action_required'
+  infra_reason                  String? // Short human reason surfaced in the UI when action_required
   healing_origin                String? // HealingOrigin: rehab|recovery
   phase_entered_at              DateTime? // When the entity entered its current recovery phase
   clean_sends_since_phase       Int       @default(0) // Clean sends (0 hard bounces) since entering current phase
@@ -896,6 +904,7 @@ model Mailbox {
   @@index([domain_id])
   @@index([connected_account_id])
   @@index([recovery_phase])
+  @@index([organization_id, infra_status])
 }
 
 model Domain {
@@ -903,6 +912,11 @@ model Domain {
   domain                        String
   status                        String    @default("healthy")
   recovery_phase                String    @default("healthy") // RecoveryPhase
+  // Infrastructure-readiness gate (Door B) - see Mailbox.infra_status. 'action_required' when the
+  // domain is on a blocking (major/critical) DNSBL. Blocks sending from every mailbox on the domain
+  // WITHOUT entering the healing pipeline. Cleared by re-assessment once the domain is delisted.
+  infra_status                  String    @default("ready") // 'ready' | 'action_required'
+  infra_reason                  String? // Short human reason surfaced in the UI when action_required
   healing_origin                String? // HealingOrigin: rehab|recovery
   phase_entered_at              DateTime? // When entered current recovery phase
   clean_sends_since_phase       Int       @default(0) // Clean sends since entering current phase
@@ -968,6 +982,7 @@ model Domain {
   @@index([organization_id, status])
   @@index([organization_id])
   @@index([recovery_phase])
+  @@index([organization_id, infra_status])
 }
 
 /// Per-domain reputation snapshot from Google Postmaster Tools.
