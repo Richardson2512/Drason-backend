@@ -191,10 +191,17 @@ export async function sendWarmupEmail(input: WarmupSendInput): Promise<WarmupSen
                     token_expires_at: true,
                 },
             },
+            domain: { select: { infra_status: true } },
         },
     });
     if (!mailbox?.connectedAccount) {
         return { success: false, error: 'Sender mailbox has no connected account' };
+    }
+    // Door B: never warm up a mailbox whose sending IP or domain is on a blocking blacklist.
+    // Warming a blacklisted IP is futile (the traffic bounces too) and 'not sendable' must
+    // include warmup traffic. Skipped as a soft failure - the pool simply moves on.
+    if (mailbox.infra_status === 'action_required' || mailbox.domain?.infra_status === 'action_required') {
+        return { success: false, error: 'Sender mailbox infrastructure not ready (blacklisted IP or domain)' };
     }
     const account = mailbox.connectedAccount;
     if (!account.smtp_host && !(account.access_token && account.refresh_token)) {
