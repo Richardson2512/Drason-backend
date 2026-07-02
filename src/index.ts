@@ -157,14 +157,25 @@ app.use(cors({
             'https://superkabe.com',
             'https://www.superkabe.com',
             'https://app.superkabe.com',
+            // Anthropic web app origins for the remote MCP connector. Anthropic
+            // migrated the primary web app to claude.com, so both must be allowed
+            // or the browser side of the MCP connect / OAuth flow fails preflight.
             'https://claude.ai',
-            'https://www.claude.ai'
+            'https://www.claude.ai',
+            'https://claude.com',
+            'https://www.claude.com'
         ].filter(Boolean);
 
         if (allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
-            callback(new Error('Not allowed by CORS'));
+            // Disallow WITHOUT throwing. Throwing here makes the cors middleware
+            // surface a 500 on the preflight (OPTIONS), which reads to clients as
+            // "server error / couldn't reach" rather than a clean cross-origin
+            // denial. Returning false omits the CORS headers so the browser blocks
+            // it normally, and non-browser (no-origin) callers are already allowed
+            // above.
+            callback(null, false);
         }
     },
     credentials: true,
