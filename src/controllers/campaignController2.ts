@@ -260,6 +260,17 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
 
         if (!name) return res.status(400).json({ success: false, error: 'Campaign name is required' });
 
+        // Drop lead rows without a usable email up front (blank CSV lines, malformed
+        // rows). A single email-less row used to TypeError inside the transaction
+        // (`lead.email.toLowerCase()`) and 500 the whole create.
+        const leadRows: any[] = Array.isArray(leads)
+            ? leads.filter((l: any) => l && typeof l.email === 'string' && l.email.includes('@'))
+            : [];
+        const droppedNoEmail = (Array.isArray(leads) ? leads.length : 0) - leadRows.length;
+        if (droppedNoEmail > 0) {
+            logger.info(`[CAMPAIGNS2] Dropped ${droppedNoEmail} lead row(s) with no usable email`, { name });
+        }
+
         // No automatic validation pass. Users pre-validate their leads via the
         // "Verify Emails" button in the Leads step of the wizard before launch -
         // credits shouldn't be spent silently on campaign creation. classifyLeadHealth
@@ -363,8 +374,8 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
                 });
             }
 
-            if (leads && Array.isArray(leads) && leads.length > 0) {
-                let inputLeads: any[] = leads;
+            if (leadRows.length > 0) {
+                let inputLeads: any[] = leadRows;
                 let skippedCrossCampaign = 0;
                 if (foldedRules.length > 0) {
                     const suppressed = await getSuppressedEmails({ campaignId: camp.id, organizationId: orgId, client: tx });
@@ -489,6 +500,12 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
             }
 
             return camp;
+        }, {
+            // Large lead lists (suppression checks + classification + createMany)
+            // legitimately exceed Prisma's 5s default interactive-transaction
+            // timeout, which surfaced as a bare 500 on Save/Launch.
+            maxWait: 10_000,
+            timeout: 60_000,
         });
 
         // Forward-wire Protection Lead rows for any email that was accepted into
@@ -637,7 +654,11 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
 
         // No automatic validation on add - users run "Verify Emails" in the wizard
         // before saving if they want to pre-check credits against their list.
-        const addList = Array.isArray(addLeads) ? addLeads : [];
+        // Same blank-email guard as createCampaign - a row without a usable email
+        // must never reach classification/createMany (TypeError / null-column 500s).
+        const addList = Array.isArray(addLeads)
+            ? addLeads.filter((l: any) => l && typeof l.email === 'string' && l.email.includes('@'))
+            : [];
         const leadValidations = new Map<string, { score: number; status: string; isDisposable: boolean; isCatchAll: boolean }>();
 
         const removeIds = Array.isArray(removeLeadIds) ? (removeLeadIds as string[]) : [];
@@ -811,6 +832,11 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
                     data: { total_leads: leadCount },
                 });
             }
+        }, {
+            // Same rationale as createCampaign: bulk lead adds legitimately exceed
+            // the 5s default interactive-transaction timeout.
+            maxWait: 10_000,
+            timeout: 60_000,
         });
 
         // Forward-wire Protection Lead rows for any email newly added to the campaign

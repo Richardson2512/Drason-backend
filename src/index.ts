@@ -197,8 +197,11 @@ const verifyRawBody = (req: any, _res: any, buf: Buffer) => {
     }
 };
 
-app.use(express.json({ limit: '1mb', verify: verifyRawBody }));
-app.use(express.urlencoded({ extended: true, limit: '1mb', verify: verifyRawBody }));
+// 10mb: the campaign wizard inlines the full lead CSV into one POST, and a few
+// thousand leads with custom variables legitimately exceeds the old 1mb cap
+// (which surfaced to users as a bare 500 "Internal server error" on Save/Launch).
+app.use(express.json({ limit: '10mb', verify: verifyRawBody }));
+app.use(express.urlencoded({ extended: true, limit: '10mb', verify: verifyRawBody }));
 
 // Security headers on all responses
 app.use(securityHeaders);
@@ -927,6 +930,17 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
         return res.status(err.statusCode).json({
             success: false,
             error: err.message
+        });
+    }
+
+    // 2b. Body-parser rejections (http-errors). Without this, a payload over the
+    // JSON limit fell through to the generic 500 and users saw "Internal server
+    // error" with no hint that their upload was simply too large.
+    const httpErr = err as any;
+    if (httpErr?.type === 'entity.too.large' || httpErr?.status === 413 || httpErr?.statusCode === 413) {
+        return res.status(413).json({
+            success: false,
+            error: 'Upload too large. Split your lead list into smaller batches and try again.'
         });
     }
 
