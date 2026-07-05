@@ -62,7 +62,13 @@ export async function pickRecipient(opts: {
             receive_enabled: true,
             health: { in: ['warming', 'maintenance'] },
             organization_id: { not: opts.senderOrgId },
-            organization: { warmup_pool_consent: true },
+            organization: {
+                warmup_pool_consent: true,
+                // Expired/lapsed orgs leave the pool entirely - they neither send
+                // nor receive (same denylist as the feature gate). Keeps peer sends
+                // from being wasted on inboxes nobody is paying attention to.
+                subscription_status: { notIn: ['expired', 'past_due', 'canceled'] },
+            },
         },
     });
     if (eligibleCount === 0) {
@@ -84,7 +90,10 @@ export async function pickRecipient(opts: {
                 receive_enabled: true,
                 health: { in: ['warming', 'maintenance'] },
                 organization_id: { not: opts.senderOrgId },
-                organization: { warmup_pool_consent: true },
+                organization: {
+                    warmup_pool_consent: true,
+                    subscription_status: { notIn: ['expired', 'past_due', 'canceled'] },
+                },
             },
             include: {
                 mailbox: {

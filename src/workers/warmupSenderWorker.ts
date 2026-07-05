@@ -149,7 +149,13 @@ async function tick(): Promise<void> {
             where: {
                 enabled: true,
                 health: { in: ['warming', 'maintenance'] },
-                organization: { warmup_pool_consent: true },
+                organization: {
+                    warmup_pool_consent: true,
+                    // Warmup stops the moment a trial expires or a subscription lapses
+                    // (same denylist as the feature gate). Membership rows are kept, so
+                    // reactivating the subscription resumes warmup on the next tick.
+                    subscription_status: { notIn: ['expired', 'past_due', 'canceled'] },
+                },
             },
             select: {
                 id: true,
