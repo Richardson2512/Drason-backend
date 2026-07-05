@@ -92,8 +92,8 @@ export async function buildThreadingHeaders(params: {
     contactEmail: string;
     campaignId: string;
     stepNumber: number;
-}): Promise<{ inReplyTo: string | null; references: string | null }> {
-    if (params.stepNumber <= 1) return { inReplyTo: null, references: null };
+}): Promise<{ inReplyTo: string | null; references: string | null; prevSubject: string | null }> {
+    if (params.stepNumber <= 1) return { inReplyTo: null, references: null, prevSubject: null };
 
     try {
         const thread = await prisma.emailThread.findFirst({
@@ -105,7 +105,7 @@ export async function buildThreadingHeaders(params: {
             },
             select: { id: true },
         });
-        if (!thread) return { inReplyTo: null, references: null };
+        if (!thread) return { inReplyTo: null, references: null, prevSubject: null };
 
         const prev = await prisma.emailMessage.findFirst({
             where: {
@@ -114,18 +114,21 @@ export async function buildThreadingHeaders(params: {
                 message_id: { not: null },
             },
             orderBy: { sent_at: 'desc' },
-            select: { message_id: true, references: true },
+            // subject: follow-up steps with a deliberately empty subject inherit
+            // the thread's subject as "Re: <prev>" so they land in the same
+            // conversation instead of shipping with a blank subject line.
+            select: { message_id: true, references: true, subject: true },
         });
-        if (!prev?.message_id) return { inReplyTo: null, references: null };
+        if (!prev?.message_id) return { inReplyTo: null, references: null, prevSubject: null };
 
         const inReplyTo = prev.message_id;
         const references = prev.references
             ? `${prev.references} ${prev.message_id}`
             : prev.message_id;
-        return { inReplyTo, references };
+        return { inReplyTo, references, prevSubject: prev.subject || null };
     } catch (err: any) {
         logger.warn(`[${LOG_TAG}] Threading lookup failed for ${maskEmail(params.contactEmail)} step ${params.stepNumber}: ${err?.message}`);
-        return { inReplyTo: null, references: null };
+        return { inReplyTo: null, references: null, prevSubject: null };
     }
 }
 
@@ -1027,20 +1030,25 @@ async function dispatch(): Promise<void> {
                     const personalizedBody = resolveSpintax(personalizeEmail(rawBody, lead));
 
                     // ── FAIL-CLOSED BLANK-EMAIL GUARD ─────────────────────────────
-                    // If personalization left the subject or the visible body empty
-                    // (a {{variable}} with no stored value renders as ''), NEVER send.
-                    // Shipping a blank email to a real prospect burns the sender's
-                    // reputation and the customer's brand (incident 2026-07-05: 891
-                    // blank emails went out because custom CSV variables were not
-                    // persisted). Pause the lead with an explicit reason so the
-                    // operator sees exactly what to fix instead of a silent skip.
+                    // If personalization left the visible body empty (a {{variable}}
+                    // with no stored value renders as ''), NEVER send. Shipping a
+                    // blank email burns the sender's reputation and the customer's
+                    // brand (incident 2026-07-05: 891 blank emails went out because
+                    // custom CSV variables were not persisted). Pause the lead with
+                    // an explicit reason so the operator sees exactly what to fix.
+                    //
+                    // Subject rules differ by step: step 1 MUST have a subject, but
+                    // follow-up steps (N>1) conventionally leave it empty to mean
+                    // "continue the thread" - the batch processor inherits the
+                    // previous outbound subject as "Re: <subject>" at send time.
                     const bodyTextProbe = personalizedBody
                         .replace(/<[^>]*>/g, ' ')
                         .replace(/&nbsp;/gi, ' ')
                         .replace(/\s+/g, ' ')
                         .trim();
-                    if (!subject.trim() || !bodyTextProbe) {
-                        const missing = !subject.trim() ? 'subject' : 'body';
+                    const subjectMissing = !subject.trim() && deliveredStepNumber === 1;
+                    if (subjectMissing || !bodyTextProbe) {
+                        const missing = subjectMissing ? 'subject' : 'body';
                         logger.warn(`[${LOG_TAG}] BLANK-EMAIL GUARD: ${missing} rendered empty for lead ${lead.id} (step ${step.step_number}) - lead paused, not sent`, {
                             campaignId: campaign.id,
                             leadId: lead.id,
@@ -1402,7 +1410,31 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                 stepNumber: email.stepNumber,
             });
 
-            const result: SendResult = await sendEmail(account, email.leadEmail, email.subject, email.bodyHtml, {
+            // Follow-up steps with an empty subject continue the thread: inherit
+            // the previous outbound subject as "Re: <subject>". If no usable
+            // previous subject exists either (first touch never landed, or the
+            // prior send itself had a blank subject), fail closed - pause the
+            // lead rather than ship a blank-subject email.
+            let effectiveSubject = email.subject;
+            if (!effectiveSubject.trim() && email.stepNumber > 1) {
+                const base = (threadingHeaders.prevSubject || '').trim();
+                if (base) {
+                    effectiveSubject = /^re:/i.test(base) ? base : `Re: ${base}`;
+                }
+            }
+            if (!effectiveSubject.trim()) {
+                logger.warn(`[${LOG_TAG}] BLANK-SUBJECT GUARD: no subject and no thread subject to inherit for ${maskEmail(email.leadEmail)} (step ${email.stepNumber}) - lead paused, not sent`, {
+                    campaignId, leadId: email.leadId, step: email.stepNumber,
+                });
+                await prisma.campaignLead.update({
+                    where: { id: email.leadId },
+                    data: { status: 'paused', next_send_at: null },
+                }).catch(() => { /* tolerable */ });
+                failedCount++;
+                continue;
+            }
+
+            const result: SendResult = await sendEmail(account, email.leadEmail, effectiveSubject, email.bodyHtml, {
                 unsubscribeUrl: email.unsubscribeUrl || null,
                 inReplyTo: threadingHeaders.inReplyTo,
                 references: threadingHeaders.references,
@@ -1612,7 +1644,7 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                                 organization_id: orgId,
                                 account_id: account.id,
                                 contact_email: email.leadEmail.toLowerCase(),
-                                subject: email.subject,
+                                subject: effectiveSubject,
                                 campaign_id: campaignId,
                                 lead_id: email.leadId,
                                 status: 'open',
@@ -1632,7 +1664,10 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                             from_name: account.display_name || account.email,
                             to_email: email.leadEmail,
                             to_name: null,
-                            subject: email.subject,
+                            // The subject that actually went out (incl. inherited
+                            // "Re: <thread subject>") - the NEXT step's inheritance
+                            // reads this row, so it must record delivered reality.
+                            subject: effectiveSubject,
                             body_html: email.bodyHtml,
                             // Threading bookkeeping - the SMTP Message-ID plus
                             // the chain we set on this outgoing message. Saved
