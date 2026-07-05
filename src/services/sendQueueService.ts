@@ -327,6 +327,58 @@ function personalizeEmail(
     return template.replace(/\{\{(\w+)\}\}/g, (_m, token: string) => tokens[token.toLowerCase()] ?? '');
 }
 
+/**
+ * Final email composition - THE single pipeline, used in two places:
+ *   1. The dispatcher, at enqueue time (blank-guard input + fallback snapshot).
+ *   2. processBatchJob, immediately before each SMTP send, with FRESH step /
+ *      lead / campaign state - so a user editing content while a batch drains
+ *      (batches span hours at send_gap_minutes pacing) still reaches every
+ *      not-yet-sent email. One function, so the two sites cannot drift.
+ * Order matters: personalize → spintax → tracking → preheader.
+ * - Personalize first so {{tokens}} inside spintax options are substituted.
+ * - Spintax second so each lead receives a different lexical variant,
+ *   breaking ISP pattern-fingerprinting on bulk sequence sends.
+ * - Tracking third so the open pixel + click wrappers see the final URL set.
+ * - Preheader last (invisible div ahead of the visible body).
+ */
+function composeFinalEmail(args: {
+    rawSubject: string;
+    rawBody: string;
+    rawPreheader: string;
+    lead: { first_name: string | null; last_name: string | null; company: string | null; email: string; title: string | null; custom_variables: any };
+    leadId: string;
+    trackOpens: boolean;
+    trackClicks: boolean;
+    includeUnsubscribe: boolean;
+    trackingDomain: string | null;
+    euComplianceMode: boolean;
+    mailingAddress: string | null;
+}): { subject: string; bodyHtml: string; unsubscribeUrl: string; bodyTextProbe: string } {
+    const subject = resolveSpintax(personalizeEmail(args.rawSubject, args.lead));
+    const personalizedBody = resolveSpintax(personalizeEmail(args.rawBody, args.lead));
+    // Visible-text probe for the blank-email guard (strip tags + nbsp).
+    const bodyTextProbe = personalizedBody
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const personalizedPreheader = args.rawPreheader
+        ? resolveSpintax(personalizeEmail(args.rawPreheader, args.lead))
+        : '';
+    const trackedBody = applyTracking(personalizedBody, {
+        leadId: args.leadId,
+        trackOpens: args.trackOpens,
+        trackClicks: args.trackClicks,
+        includeUnsubscribe: args.includeUnsubscribe,
+        trackingDomain: args.trackingDomain,
+        euComplianceMode: args.euComplianceMode,
+        mailingAddress: args.mailingAddress,
+    });
+    const bodyHtml = injectPreheader(trackedBody, personalizedPreheader);
+    const unsubscribeUrl = args.includeUnsubscribe ? buildUnsubscribeUrl(args.leadId, args.trackingDomain) : '';
+    return { subject, bodyHtml, unsubscribeUrl, bodyTextProbe };
+}
+
 // Moved to utils/sendWindow so the send-time gate (executionGateService.canSendNow)
 // can enforce the same window when queued batches drain - without a circular import.
 import { isWithinSendingWindow } from '../utils/sendWindow';
@@ -1066,13 +1118,37 @@ async function dispatch(): Promise<void> {
 
                     const { subject: rawSubject, bodyHtml: rawBody, preheader: rawPreheader, variantId } = pickVariant(step);
 
-                    // Pipeline: personalize → spintax → tracking.
-                    // - Personalize first so {{tokens}} inside spintax options are substituted.
-                    // - Spintax second so each lead receives a different lexical variant of the
-                    //   same template, breaking ISP pattern-fingerprinting on bulk sequence sends.
-                    // - Tracking last so the open pixel + click wrappers see the final URL set.
-                    const subject = resolveSpintax(personalizeEmail(rawSubject, lead));
-                    const personalizedBody = resolveSpintax(personalizeEmail(rawBody, lead));
+                    // Enqueue-time composition via the shared pipeline. NOTE: this is a
+                    // SNAPSHOT - processBatchJob re-runs composeFinalEmail with fresh
+                    // step/lead/campaign state immediately before each SMTP send, so
+                    // content edits made while a batch drains still apply. This copy
+                    // feeds the early blank-guard below and serves as the fallback if
+                    // the send-time refresh can't complete.
+                    // Tracking host preference: mailbox-level (verified) > campaign-level > global default.
+                    const effectiveTrackingDomain = (bestAccount.tracking_domain && bestAccount.tracking_domain_verified)
+                        ? bestAccount.tracking_domain
+                        : campaign.tracking_domain;
+                    const orgMailingAddress = mailingAddressByOrg.get(campaign.organization_id) || null;
+                    const { subject, bodyHtml, unsubscribeUrl, bodyTextProbe } = composeFinalEmail({
+                        rawSubject,
+                        rawBody,
+                        rawPreheader,
+                        lead: {
+                            first_name: lead.first_name,
+                            last_name: lead.last_name,
+                            company: lead.company,
+                            email: lead.email,
+                            title: lead.title,
+                            custom_variables: lead.custom_variables,
+                        },
+                        leadId: lead.id,
+                        trackOpens: campaign.track_opens ?? true,
+                        trackClicks: campaign.track_clicks ?? true,
+                        includeUnsubscribe: campaign.include_unsubscribe ?? true,
+                        trackingDomain: effectiveTrackingDomain,
+                        euComplianceMode: campaign.eu_compliance_mode ?? false,
+                        mailingAddress: orgMailingAddress,
+                    });
 
                     // ── FAIL-CLOSED BLANK-EMAIL GUARD ─────────────────────────────
                     // If personalization left the visible body empty (a {{variable}}
@@ -1086,11 +1162,6 @@ async function dispatch(): Promise<void> {
                     // follow-up steps (N>1) conventionally leave it empty to mean
                     // "continue the thread" - the batch processor inherits the
                     // previous outbound subject as "Re: <subject>" at send time.
-                    const bodyTextProbe = personalizedBody
-                        .replace(/<[^>]*>/g, ' ')
-                        .replace(/&nbsp;/gi, ' ')
-                        .replace(/\s+/g, ' ')
-                        .trim();
                     const subjectMissing = !subject.trim() && deliveredStepNumber === 1;
                     if (subjectMissing || !bodyTextProbe) {
                         const missing = subjectMissing ? 'subject' : 'body';
@@ -1105,46 +1176,6 @@ async function dispatch(): Promise<void> {
                         }).catch(() => { /* tolerable - lead simply retries and re-pauses */ });
                         continue;
                     }
-
-                    // Preheader runs through the same personalize+spintax so authors
-                    // can reference {{first_name}} / spintax in the inbox snippet too.
-                    const personalizedPreheader = rawPreheader
-                        ? resolveSpintax(personalizeEmail(rawPreheader, lead))
-                        : '';
-
-                    // Inject open pixel + click wrappers + unsubscribe footer based on campaign settings.
-                    // These transforms need the leadId so tracking hits can be attributed back to the
-                    // CampaignLead on open/click. BACKEND_URL must be publicly reachable for
-                    // recipient mail clients to actually fire the endpoints.
-                    // Tracking host preference: mailbox-level (verified) > campaign-level > global default.
-                    // Verified mailbox domains give each sender's links the appearance of coming from
-                    // their own infrastructure, which avoids the third-party-redirect downrank Gmail
-                    // applies to identical tracking hosts shared across many senders.
-                    const effectiveTrackingDomain = (bestAccount.tracking_domain && bestAccount.tracking_domain_verified)
-                        ? bestAccount.tracking_domain
-                        : campaign.tracking_domain;
-                    const orgMailingAddress = mailingAddressByOrg.get(campaign.organization_id) || null;
-                    const trackedBody = applyTracking(personalizedBody, {
-                        leadId: lead.id,
-                        trackOpens: campaign.track_opens ?? true,
-                        trackClicks: campaign.track_clicks ?? true,
-                        includeUnsubscribe: campaign.include_unsubscribe ?? true,
-                        trackingDomain: effectiveTrackingDomain,
-                        euComplianceMode: campaign.eu_compliance_mode ?? false,
-                        mailingAddress: orgMailingAddress,
-                    });
-                    // Preheader injection - invisible-to-render div placed before
-                    // the visible body. Mail clients (Gmail, Outlook, Apple Mail,
-                    // Yahoo) lift the first non-whitespace text as the inbox-list
-                    // snippet; the trailing &zwnj; whitespace hack prevents
-                    // body content bleeding into the preview window.
-                    const bodyHtml = injectPreheader(trackedBody, personalizedPreheader);
-                    // RFC 8058 one-click unsubscribe URL - populates List-Unsubscribe
-                    // headers in the send services. Always computed when
-                    // include_unsubscribe is on (default true).
-                    const unsubscribeUrl = (campaign.include_unsubscribe ?? true)
-                        ? buildUnsubscribeUrl(lead.id, effectiveTrackingDomain)
-                        : '';
 
                     // Schedule the next dispatch at delivered_step + 1. The branching
                     // engine will re-evaluate conditions when this lead becomes due
@@ -1358,6 +1389,81 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
         }
 
         try {
+            // ── SEND-TIME RE-RENDER (live user input) ──────────────────────
+            // Content was composed at enqueue time, but a batch drains for
+            // hours (one email per send_gap_minutes). Re-compose from FRESH
+            // step / variant / lead / campaign state so edits made after
+            // enqueue reach every not-yet-sent email. Falls back to the
+            // enqueue-time snapshot on any miss (deleted step, legacy job
+            // payload without stepId, transient DB error) - a refresh
+            // problem must never block or alter an otherwise-valid send.
+            // The A/B variant ASSIGNMENT stays frozen (variantId from
+            // enqueue); only its current content is re-read.
+            if (email.stepId) {
+                try {
+                    const [freshStep, freshLead, freshCampaign, freshAccount] = await Promise.all([
+                        prisma.sequenceStep.findUnique({ where: { id: email.stepId }, include: { variants: true } }),
+                        prisma.campaignLead.findUnique({
+                            where: { id: email.leadId },
+                            select: { first_name: true, last_name: true, company: true, email: true, title: true, custom_variables: true },
+                        }),
+                        prisma.campaign.findUnique({
+                            where: { id: campaignId },
+                            select: {
+                                track_opens: true, track_clicks: true, include_unsubscribe: true,
+                                tracking_domain: true, eu_compliance_mode: true,
+                                organization: { select: { mailing_address: true } },
+                            },
+                        }),
+                        prisma.connectedAccount.findUnique({
+                            where: { id: account.id },
+                            select: { tracking_domain: true, tracking_domain_verified: true },
+                        }),
+                    ]);
+                    if (freshStep && freshLead && freshCampaign) {
+                        const variant = email.variantId ? freshStep.variants.find(v => v.id === email.variantId) : null;
+                        const trackingDomain = (freshAccount?.tracking_domain && freshAccount.tracking_domain_verified)
+                            ? freshAccount.tracking_domain
+                            : freshCampaign.tracking_domain;
+                        const fresh = composeFinalEmail({
+                            rawSubject: variant ? variant.subject : freshStep.subject,
+                            rawBody: variant ? variant.body_html : freshStep.body_html,
+                            rawPreheader: variant ? (variant.preheader || freshStep.preheader) : freshStep.preheader,
+                            lead: freshLead,
+                            leadId: email.leadId,
+                            trackOpens: freshCampaign.track_opens ?? true,
+                            trackClicks: freshCampaign.track_clicks ?? true,
+                            includeUnsubscribe: freshCampaign.include_unsubscribe ?? true,
+                            trackingDomain,
+                            euComplianceMode: freshCampaign.eu_compliance_mode ?? false,
+                            mailingAddress: freshCampaign.organization?.mailing_address ?? null,
+                        });
+                        // Same blank rules as the dispatcher guard: an edit that
+                        // blanks the body (any step) or the subject (step 1) must
+                        // pause the lead, not ship a blank email.
+                        if (!fresh.bodyTextProbe || (!fresh.subject.trim() && email.stepNumber === 1)) {
+                            logger.warn(`[${LOG_TAG}] BLANK-EMAIL GUARD (send-time): rendered empty for ${maskEmail(email.leadEmail)} (step ${email.stepNumber}) - lead paused, not sent`, {
+                                campaignId, leadId: email.leadId, step: email.stepNumber,
+                            });
+                            await prisma.campaignLead.update({
+                                where: { id: email.leadId },
+                                data: { status: 'paused', paused_reason: 'blank_content', next_send_at: null },
+                            }).catch(() => { /* tolerable */ });
+                            failedCount++;
+                            continue;
+                        }
+                        // Mutate the payload row in place - every downstream reader
+                        // (compliance check, Re: inheritance, sendEmail, Unibox
+                        // recording) picks up the fresh content automatically.
+                        email.subject = fresh.subject;
+                        email.bodyHtml = fresh.bodyHtml;
+                        email.unsubscribeUrl = fresh.unsubscribeUrl;
+                    }
+                } catch (refreshErr: any) {
+                    logger.warn(`[${LOG_TAG}] Send-time re-render failed for ${maskEmail(email.leadEmail)} - sending enqueue-time content`, { error: refreshErr?.message });
+                }
+            }
+
             // ── COMPLIANCE PRE-SEND CHECK (CAN-SPAM §5(a)(3) + RFC 8058) ──
             // If we requested an unsubscribe URL, the body MUST contain it. If
             // applyTracking() was bypassed or the template was assembled in a
