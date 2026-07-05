@@ -14,6 +14,7 @@ import { classifyLeadHealth } from '../services/leadHealthService';
 import * as entityStateService from '../services/entityStateService';
 import * as webhookBus from '../services/webhookEventBus';
 import { SlackAlertService } from '../services/SlackAlertService';
+import { respondWithError } from '../utils/httpErrorResponse';
 import { LeadState, TriggerType } from '../types';
 
 /**
@@ -560,7 +561,7 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
         return res.status(201).json({ success: true, data: full });
     } catch (error: any) {
         logger.error('[CAMPAIGNS2] Failed to create campaign', error instanceof Error ? error : new Error(String(error)));
-        return res.status(500).json({ success: false, error: 'Failed to create campaign' });
+        return respondWithError(res, error, 'Failed to create campaign');
     }
 };
 
@@ -871,7 +872,7 @@ export const updateCampaign = async (req: Request, res: Response): Promise<Respo
         return res.json({ success: true, data: updated });
     } catch (error: any) {
         logger.error('[CAMPAIGNS2] Failed to update campaign', error instanceof Error ? error : new Error(String(error)));
-        return res.status(500).json({ success: false, error: 'Failed to update campaign' });
+        return respondWithError(res, error, 'Failed to update campaign');
     }
 };
 
@@ -962,7 +963,7 @@ export const launchCampaign = async (req: Request, res: Response): Promise<Respo
         return res.json({ success: true, data: updated });
     } catch (error: any) {
         logger.error('[CAMPAIGNS2] Failed to launch campaign', error instanceof Error ? error : new Error(String(error)));
-        return res.status(500).json({ success: false, error: 'Failed to launch campaign' });
+        return respondWithError(res, error, 'Failed to launch campaign');
     }
 };
 

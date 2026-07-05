@@ -904,6 +904,7 @@ app.patch('/api/organization', asyncHandler(async (req, res) => {
 
 // Import error handling utils
 import { AppError } from './utils/appError';
+import { classifyError } from './utils/httpErrorResponse';
 import { ZodError } from 'zod';
 
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -925,22 +926,16 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
         });
     }
 
-    // 2. Operational Errors (AppError)
-    if (err instanceof AppError) {
-        return res.status(err.statusCode).json({
+    // 2. Known, safe-to-expose error categories (AppError, body-parser 413/400,
+    // user-actionable Prisma codes) - mapped to a proper status + actionable
+    // message via the shared classifier so users stop seeing bare 500s for
+    // problems they can fix themselves.
+    const classified = classifyError(err);
+    if (classified) {
+        return res.status(classified.status).json({
             success: false,
-            error: err.message
-        });
-    }
-
-    // 2b. Body-parser rejections (http-errors). Without this, a payload over the
-    // JSON limit fell through to the generic 500 and users saw "Internal server
-    // error" with no hint that their upload was simply too large.
-    const httpErr = err as any;
-    if (httpErr?.type === 'entity.too.large' || httpErr?.status === 413 || httpErr?.statusCode === 413) {
-        return res.status(413).json({
-            success: false,
-            error: 'Upload too large. Split your lead list into smaller batches and try again.'
+            error: classified.message,
+            code: classified.code
         });
     }
 
