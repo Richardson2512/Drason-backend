@@ -55,6 +55,10 @@ campaignRoutes.delete('/:id', requireCapability('create_campaigns'), campaignCon
 campaignRoutes.post('/:id/launch', requireCapability('launch_pause_campaigns'), campaignController2.launchCampaign);
 campaignRoutes.post('/:id/pause', requireCapability('launch_pause_campaigns'), campaignController2.pauseCampaign);
 campaignRoutes.post('/:id/resume', requireCapability('launch_pause_campaigns'), campaignController2.resumeCampaign);
+// Lost-sticky-mailbox decision flow: list stranded-lead groups + apply the
+// operator's restart/continue/stop choice.
+campaignRoutes.get('/:id/lost-mailboxes', campaignController2.listLostMailboxes);
+campaignRoutes.post('/:id/resolve-lost-mailbox', requireCapability('launch_pause_campaigns'), campaignController2.resolveLostMailbox);
 // Tags. bulk-tag must come BEFORE /:id/tags so Express doesn't treat
 // 'bulk-tag' as a campaign id. Distinct method+path so they don't collide.
 campaignRoutes.post('/bulk-tag', requireCapability('edit_sequences'), campaignController2.bulkTagCampaigns);

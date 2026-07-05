@@ -1812,6 +1812,10 @@ model CampaignLead {
   title             String?
   custom_variables  Json? // any extra fields from CSV for {{custom.X}} tokens
   status            String    @default("active") // active, paused, replied, bounced, unsubscribed, completed
+  // Machine-readable pause cause: 'mailbox_lost' (sticky mailbox permanently
+  // disconnected - operator decides restart/continue/stop) | 'blank_content'
+  // (personalization rendered empty subject/body - blank-email guard) | null.
+  paused_reason     String?
   current_step      Int       @default(0) // which step we're on (0 = not started)
   esp_bucket        String? // gmail, microsoft, yahoo, other
   validation_status String? // valid, risky, invalid

@@ -33,6 +33,7 @@ import * as bounceProcessingService from './bounceProcessingService';
 import * as executionGateService from './executionGateService';
 import { updateDomainLastSent } from './inactivityService';
 import * as auditLogService from './auditLogService';
+import * as notificationService from './notificationService';
 import { SlackAlertService } from './SlackAlertService';
 import * as webhookBus from './webhookEventBus';
 import { applyTracking } from './trackingService';
@@ -96,7 +97,7 @@ export async function buildThreadingHeaders(params: {
     if (params.stepNumber <= 1) return { inReplyTo: null, references: null, prevSubject: null };
 
     try {
-        const thread = await prisma.emailThread.findFirst({
+        let thread = await prisma.emailThread.findFirst({
             where: {
                 organization_id: params.organizationId,
                 account_id: params.accountId,
@@ -105,6 +106,22 @@ export async function buildThreadingHeaders(params: {
             },
             select: { id: true },
         });
+        if (!thread) {
+            // Cross-account fallback: the lead was rebound to a NEW mailbox after
+            // its original one was lost ('continue from current step' resolution).
+            // RFC 5322 References thread across senders in Gmail/Outlook, so chain
+            // off the old mailbox's conversation rather than starting cold - the
+            // recipient keeps one conversation even though the From address changed.
+            thread = await prisma.emailThread.findFirst({
+                where: {
+                    organization_id: params.organizationId,
+                    contact_email: params.contactEmail.toLowerCase(),
+                    campaign_id: params.campaignId,
+                },
+                orderBy: { last_message_at: 'desc' },
+                select: { id: true },
+            });
+        }
         if (!thread) return { inReplyTo: null, references: null, prevSubject: null };
 
         const prev = await prisma.emailMessage.findFirst({
@@ -652,7 +669,13 @@ async function dispatch(): Promise<void> {
                         OR: [{ ooo_until: null }, { ooo_until: { lte: now } }],
                     },
                     take: Math.min(remainingCampaignSends, 500),
-                    orderBy: { next_send_at: 'asc' },
+                    // FOLLOW-UPS FIRST: deepest steps take priority over step-1 sends.
+                    // A stalled follow-up costs more than a delayed first touch (the
+                    // thread is warm and decays fast), and follow-ups must claim their
+                    // sticky mailbox's daily capacity BEFORE new leads can fill it -
+                    // otherwise a large lead pool starves its own follow-ups and forces
+                    // the wait-an-hour sticky stall. Ties break oldest-due first.
+                    orderBy: [{ current_step: 'desc' }, { next_send_at: 'asc' }],
                 });
 
                 if (dueLeadsRaw.length === 0) continue;
@@ -881,6 +904,11 @@ async function dispatch(): Promise<void> {
                 // post-send transaction; only re-write when changed).
                 const leadsToBindStickyAccount: Array<{ leadId: string; accountId: string }> = [];
 
+                // Lost mailboxes already handled this tick - the first lead bound to a
+                // permanently-gone mailbox triggers ONE bulk pause + ONE notification
+                // for every sibling lead; later dueLeads on the same mailbox just skip.
+                const lostMailboxesHandled = new Set<string>();
+
                 const pickBestByScore = (lead: { esp_bucket: string | null }): typeof accounts[0] | null => {
                     let best: typeof accounts[0] | null = null;
                     let bestScore = -Infinity;
@@ -935,15 +963,32 @@ async function dispatch(): Promise<void> {
                         if (sticky && (accountCounts.get(sticky.id) || 0) < sticky.remainingCapacity) {
                             chosenAccount = sticky;
                         } else if (permanentlyDisconnected.has(stickyId) || !allCampaignAccountIds.has(stickyId)) {
-                            // Sticky mailbox is permanently gone - re-assign to a fresh
-                            // best-scored mailbox and update the sticky binding. Threading
-                            // continuity is broken here; this is the lesser-of-two-evils
-                            // fallback (better than indefinitely stalling the lead).
-                            chosenAccount = pickBestByScore(lead);
-                            stickyOverride = !!chosenAccount;
-                            if (chosenAccount) {
-                                logger.warn(`[${LOG_TAG}] Lead ${lead.id} reassigned from disconnected mailbox ${stickyId} → ${chosenAccount.id}`);
+                            // Sticky mailbox is permanently gone. Do NOT silently rebind
+                            // to a different sender - which address a prospect sees
+                            // mid-conversation is the operator's identity decision, not
+                            // the dispatcher's. Pause every lead bound to this mailbox
+                            // with a machine-readable reason and notify once; the
+                            // operator resolves via POST /api/sequencer/campaigns/:id/
+                            // resolve-lost-mailbox (restart | continue | stop). Waiting
+                            // is safe - paused leads cost nothing.
+                            if (!lostMailboxesHandled.has(stickyId)) {
+                                lostMailboxesHandled.add(stickyId);
+                                const affected = await prisma.campaignLead.updateMany({
+                                    where: {
+                                        campaign_id: campaign.id,
+                                        assigned_account_id: stickyId,
+                                        status: 'active',
+                                    },
+                                    data: { status: 'paused', paused_reason: 'mailbox_lost', next_send_at: null },
+                                });
+                                logger.warn(`[${LOG_TAG}] Mailbox ${stickyId} permanently gone - paused ${affected.count} lead(s) in campaign ${campaign.id} pending operator decision`);
+                                await notificationService.createNotification(campaign.organization_id, {
+                                    type: 'WARNING',
+                                    title: 'Campaign mailbox disconnected - decision needed',
+                                    message: `${affected.count} lead(s) in "${campaign.name}" were mid-sequence on a mailbox that is no longer connected. Open the campaign to choose: restart them on a new mailbox, continue from the current step, or stop them where they are.`,
+                                }).catch(() => { /* notification is best-effort */ });
                             }
+                            continue;
                         } else {
                             // Sticky mailbox is temporarily unavailable. Push next_send_at
                             // out by 1 hour so we retry on a future tick when capacity
@@ -1056,7 +1101,7 @@ async function dispatch(): Promise<void> {
                         });
                         await prisma.campaignLead.update({
                             where: { id: lead.id },
-                            data: { status: 'paused', next_send_at: null },
+                            data: { status: 'paused', paused_reason: 'blank_content', next_send_at: null },
                         }).catch(() => { /* tolerable - lead simply retries and re-pauses */ });
                         continue;
                     }
@@ -1428,7 +1473,7 @@ async function processBatchJob(data: BatchJobData): Promise<void> {
                 });
                 await prisma.campaignLead.update({
                     where: { id: email.leadId },
-                    data: { status: 'paused', next_send_at: null },
+                    data: { status: 'paused', paused_reason: 'blank_content', next_send_at: null },
                 }).catch(() => { /* tolerable */ });
                 failedCount++;
                 continue;

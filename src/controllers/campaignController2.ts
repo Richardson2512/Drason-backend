@@ -1006,6 +1006,115 @@ export const launchCampaign = async (req: Request, res: Response): Promise<Respo
 };
 
 /**
+ * GET /api/sequencer/campaigns/:id/lost-mailboxes
+ * Lists mailboxes whose permanent disconnection paused leads mid-sequence
+ * (paused_reason='mailbox_lost'), with affected-lead counts - drives the
+ * decision banner on the campaign page.
+ */
+export const listLostMailboxes = async (req: Request, res: Response): Promise<Response> => {
+    try {
+        const orgId = getOrgId(req);
+        const campaignId = String(req.params.id);
+        const camp = await prisma.campaign.findFirst({ where: { id: campaignId, organization_id: orgId }, select: { id: true } });
+        if (!camp) return res.status(404).json({ success: false, error: 'Campaign not found' });
+
+        const groups = await prisma.campaignLead.groupBy({
+            by: ['assigned_account_id'],
+            where: { campaign_id: campaignId, status: 'paused', paused_reason: 'mailbox_lost' },
+            _count: { id: true },
+        });
+        const accountIds = groups.map(g => g.assigned_account_id).filter((x): x is string => !!x);
+        const accounts = accountIds.length > 0
+            ? await prisma.connectedAccount.findMany({ where: { id: { in: accountIds } }, select: { id: true, email: true } })
+            : [];
+        const emailById = new Map(accounts.map(a => [a.id, a.email]));
+        return res.json({
+            success: true,
+            data: groups.map(g => ({
+                account_id: g.assigned_account_id,
+                // The account row may be hard-deleted - fall back to a label so
+                // the banner still renders something meaningful.
+                account_email: g.assigned_account_id ? (emailById.get(g.assigned_account_id) || '(removed mailbox)') : '(unassigned)',
+                affected_leads: g._count.id,
+            })),
+        });
+    } catch (error: any) {
+        logger.error('[CAMPAIGNS2] Failed to list lost mailboxes', error instanceof Error ? error : new Error(String(error)));
+        return respondWithError(res, error, 'Failed to list lost mailboxes');
+    }
+};
+
+/**
+ * POST /api/sequencer/campaigns/:id/resolve-lost-mailbox
+ * Operator decision for leads stranded by a permanently-disconnected sticky
+ * mailbox. Body: { lostAccountId, action } where action is one of:
+ *   - 'restart_new_mailbox':  leads restart from step 1 on a freshly-picked
+ *     mailbox. Their SendEvent rows are deleted so the per-step idempotency
+ *     backstop (@@unique(campaign_lead_id, step_number)) allows re-delivery -
+ *     a deliberate, operator-authorized reset. Prospects WILL receive step 1
+ *     again, from the new address. (Today's campaign-cap count drops by the
+ *     deleted rows - bounded, and explicitly chosen by the operator.)
+ *   - 'continue_new_mailbox': leads keep their current step and resume on a
+ *     freshly-picked mailbox; threading chains off the old conversation via
+ *     the cross-account References fallback.
+ *   - 'stop_at_current_step': leads are marked completed where they stand.
+ */
+export const resolveLostMailbox = async (req: Request, res: Response): Promise<Response> => {
+    try {
+        const orgId = getOrgId(req);
+        const campaignId = String(req.params.id);
+        const { lostAccountId, action } = req.body || {};
+        const ACTIONS = ['restart_new_mailbox', 'continue_new_mailbox', 'stop_at_current_step'];
+        if (!lostAccountId || !ACTIONS.includes(action)) {
+            return res.status(400).json({ success: false, error: `lostAccountId and action (${ACTIONS.join(' | ')}) are required` });
+        }
+        const camp = await prisma.campaign.findFirst({ where: { id: campaignId, organization_id: orgId }, select: { id: true, name: true } });
+        if (!camp) return res.status(404).json({ success: false, error: 'Campaign not found' });
+
+        const affectedWhere = {
+            campaign_id: campaignId,
+            assigned_account_id: String(lostAccountId),
+            status: 'paused',
+            paused_reason: 'mailbox_lost',
+        };
+
+        let resolved = 0;
+        if (action === 'stop_at_current_step') {
+            const r = await prisma.campaignLead.updateMany({
+                where: affectedWhere,
+                data: { status: 'completed', paused_reason: null, next_send_at: null },
+            });
+            resolved = r.count;
+        } else if (action === 'continue_new_mailbox') {
+            const r = await prisma.campaignLead.updateMany({
+                where: affectedWhere,
+                data: { status: 'active', paused_reason: null, assigned_account_id: null, next_send_at: new Date() },
+            });
+            resolved = r.count;
+        } else {
+            // restart_new_mailbox
+            const ids = (await prisma.campaignLead.findMany({ where: affectedWhere, select: { id: true } })).map(l => l.id);
+            if (ids.length > 0) {
+                await prisma.$transaction([
+                    prisma.sendEvent.deleteMany({ where: { campaign_lead_id: { in: ids } } }),
+                    prisma.campaignLead.updateMany({
+                        where: { id: { in: ids } },
+                        data: { status: 'active', paused_reason: null, assigned_account_id: null, current_step: 0, next_send_at: new Date() },
+                    }),
+                ]);
+            }
+            resolved = ids.length;
+        }
+
+        logger.info(`[CAMPAIGNS2] Lost-mailbox resolution: ${action} for ${resolved} lead(s)`, { campaignId, lostAccountId, action });
+        return res.json({ success: true, data: { action, resolved } });
+    } catch (error: any) {
+        logger.error('[CAMPAIGNS2] Failed to resolve lost mailbox', error instanceof Error ? error : new Error(String(error)));
+        return respondWithError(res, error, 'Failed to resolve lost mailbox');
+    }
+};
+
+/**
  * POST /api/sequencer/campaigns/:id/pause
  * Set status to 'paused'.
  */
