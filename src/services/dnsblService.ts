@@ -130,10 +130,71 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// ─── Response-code validation ────────────────────────────────────────
+// A DNSBL "listing" is ONLY trustworthy when the answer is a documented
+// listing code. Several other answers exist in the wild and every one of
+// them was previously misread as CONFIRMED, which produced mass false
+// positives (never-sent customer domains "listed" on Spamhaus while
+// spamhaus.org showed them clean):
+//   • 127.255.255.252/.254/.255 - Spamhaus error codes (typing error /
+//     query via PUBLIC resolver refused / rate limited). Our resolver pool
+//     is public resolvers, so Spamhaus zones ALWAYS answer .254 here.
+//   • 127.0.1.255  - Spamhaus DBL "IP queries prohibited" error.
+//   • 127.0.0.255  - generic "your resolver is blocked" (dnswl.org et al).
+//   • 127.0.0.1    - RFC 5782 §5 says a DNSBL MUST NOT list 127.0.0.1;
+//     URIBL answers it to mean "resolver blocked".
+//   • Anything outside 127.0.0.0/8 - the blacklist's domain is dead or
+//     parked and a wildcard/parking web IP answered (e.g. AWS Global
+//     Accelerator addresses). The list no longer exists; the answer is
+//     meaningless.
+// Untrustworthy answers map to SKIPPED: no penalty, no pause influence,
+// not persisted - the check is treated as "could not be performed".
+function classifyResponseCode(code: string | null): 'listed' | 'untrusted' {
+  if (!code) return 'untrusted';
+  if (!code.startsWith('127.')) return 'untrusted'; // parked/dead zone wildcard
+  if (code.startsWith('127.255.255.')) return 'untrusted'; // Spamhaus error range
+  if (code === '127.0.1.255') return 'untrusted'; // DBL "IP queries prohibited"
+  if (code === '127.0.0.255') return 'untrusted'; // resolver blocked (generic)
+  if (code === '127.0.0.1') return 'untrusted'; // RFC 5782 forbidden / URIBL blocked
+  return 'listed';
+}
+
+// RFC 5782 §5 negative control: a functioning DNSBL MUST NOT list
+// 127.0.0.1. If a zone answers the control query, the zone wildcards
+// every lookup (dead, parked, or a shutdown protest - AHBL famously
+// "listed the world" when it closed) and none of its answers mean
+// anything. Cached per zone per process; only consulted when a lookup
+// would otherwise be CONFIRMED, so clean paths pay nothing.
+const zoneWildcardCache = new Map<string, boolean>();
+
+async function zoneIsWildcarding(zone: string): Promise<boolean> {
+  const cached = zoneWildcardCache.get(zone);
+  if (cached !== undefined) return cached;
+
+  let wildcarding = false;
+  try {
+    const resolver = getNextResolver();
+    await new Promise<string[]>((resolve, reject) => {
+      resolver.resolve4(`1.0.0.127.${zone}`, (err, addrs) => {
+        if (err) reject(err);
+        else resolve(addrs);
+      });
+    });
+    // The control answered - zone lists 127.0.0.1 - zone is broken.
+    wildcarding = true;
+  } catch {
+    // NXDOMAIN (or any error) - control behaves - trust the zone. A
+    // transient control failure must not suppress a genuine listing.
+    wildcarding = false;
+  }
+  zoneWildcardCache.set(zone, wildcarding);
+  return wildcarding;
+}
+
 async function queryDnsbl(
   reversedIp: string,
   list: DnsblList
-): Promise<{ status: 'CONFIRMED' | 'NOT_LISTED' | 'UNREACHABLE'; responseCode: string | null }> {
+): Promise<{ status: 'CONFIRMED' | 'NOT_LISTED' | 'UNREACHABLE' | 'SKIPPED'; responseCode: string | null }> {
   // Build query hostname
   let query: string;
   if (list.requires_auth && list.auth_config_key && process.env[list.auth_config_key]) {
@@ -155,8 +216,16 @@ async function queryDnsbl(
         });
       });
 
-      // A record found - domain is listed
-      return { status: 'CONFIRMED', responseCode: addresses[0] || null };
+      // A record found - but only a documented listing code from a
+      // non-wildcarding zone counts as a real listing.
+      const responseCode = addresses[0] || null;
+      if (classifyResponseCode(responseCode) !== 'listed') {
+        return { status: 'SKIPPED', responseCode };
+      }
+      if (await zoneIsWildcarding(list.zone)) {
+        return { status: 'SKIPPED', responseCode };
+      }
+      return { status: 'CONFIRMED', responseCode };
     } catch (err: any) {
       const code = err?.code;
 
@@ -553,4 +622,8 @@ function buildSummary(results: SingleListResult[]): BlacklistSummary {
  */
 export function clearIpCache(): void {
   ipCache.clear();
+  // Re-probe zone wildcard controls each assessment run too - a zone that was
+  // broken (or fixed) since the last run should be re-evaluated, not pinned to
+  // a stale process-lifetime verdict.
+  zoneWildcardCache.clear();
 }
