@@ -17,6 +17,44 @@ import { SlackAlertService } from '../services/SlackAlertService';
 import { respondWithError } from '../utils/httpErrorResponse';
 import { LeadState, TriggerType } from '../types';
 
+// ── Custom variable harvesting ────────────────────────────────────────
+// Lead rows arriving from the campaign wizard / CSV import carry custom
+// columns (e.g. Clay-generated `subjectline`, `email_body`) as FLAT keys on
+// the lead object. Historically only a pre-nested `custom_variables` object
+// survived persistence, so flat custom columns were silently dropped - and
+// {{subjectline}} then rendered as empty string at send time (2026-07-05
+// incident: 891 blank emails). This helper collects every non-standard
+// scalar key into custom_variables so template variables always have data.
+const STANDARD_LEAD_KEYS = new Set([
+    'email', 'first_name', 'last_name', 'full_name', 'company', 'website',
+    'title', 'phone', 'linkedin_url', 'company_linkedin_url', 'persona',
+    'source', 'status', 'lead_score', 'custom_variables', 'notes',
+]);
+const MAX_CUSTOM_KEYS = 50;
+const MAX_CUSTOM_VALUE_LEN = 20_000;
+
+function collectCustomVariables(lead: Record<string, any>): Record<string, string> {
+    const out: Record<string, string> = {};
+    // Pre-nested custom_variables win their key slots (explicit intent).
+    if (lead.custom_variables && typeof lead.custom_variables === 'object' && !Array.isArray(lead.custom_variables)) {
+        for (const [k, v] of Object.entries(lead.custom_variables)) {
+            if (v === null || v === undefined) continue;
+            if (Object.keys(out).length >= MAX_CUSTOM_KEYS) break;
+            out[String(k).trim().toLowerCase()] = String(v).slice(0, MAX_CUSTOM_VALUE_LEN);
+        }
+    }
+    // Flat non-standard scalar keys (the wizard/CSV path).
+    for (const [k, v] of Object.entries(lead)) {
+        const key = String(k).trim().toLowerCase();
+        if (STANDARD_LEAD_KEYS.has(key) || key.startsWith('_')) continue;
+        if (v === null || v === undefined) continue;
+        if (typeof v === 'object' || typeof v === 'function') continue;
+        if (Object.keys(out).length >= MAX_CUSTOM_KEYS) break;
+        if (!(key in out)) out[key] = String(v).slice(0, MAX_CUSTOM_VALUE_LEN);
+    }
+    return out;
+}
+
 /**
  * GET /api/sequencer/campaigns
  * List SendCampaigns with pagination and status filter.
@@ -454,7 +492,7 @@ export const createCampaign = async (req: Request, res: Response): Promise<Respo
                     validation_status: validation?.status || null,
                     validation_score: validation?.score ?? null,
                     custom_variables: {
-                        ...(lead.custom_variables || {}),
+                        ...collectCustomVariables(lead),
                         ...(lead.full_name ? { full_name: lead.full_name } : {}),
                         ...(lead.website ? { website: lead.website } : {}),
                         ...((result as any).reasons?.length ? { _health_reasons: (result as any).reasons } : {}),

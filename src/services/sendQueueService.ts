@@ -298,61 +298,18 @@ function personalizeEmail(
     };
     if (lead.custom_variables && typeof lead.custom_variables === 'object') {
         for (const [key, value] of Object.entries(lead.custom_variables as Record<string, any>)) {
-            tokens[key] = String(value ?? '');
+            // Lowercase the key: the token lookup below lowercases the template token,
+            // so a custom variable stored as "SubjectLine" must be reachable as
+            // "subjectline" or it silently renders as empty string.
+            tokens[key.toLowerCase()] = String(value ?? '');
         }
     }
     return template.replace(/\{\{(\w+)\}\}/g, (_m, token: string) => tokens[token.toLowerCase()] ?? '');
 }
 
-function isWithinSendingWindow(campaign: {
-    // Schedule fields are nullable on Campaign post-merge (legacy platform-synced rows
-    // have no schedule since the external platform owns it). Sequencer rows explicitly
-    // populate these. Null timezone / times / days default to "always-open" below.
-    schedule_timezone: string | null;
-    schedule_start_time: string | null;
-    schedule_end_time: string | null;
-    schedule_days: string[];
-}): boolean {
-    // Interpret schedule in the campaign's timezone, not UTC. Prior bug: a user in
-    // ET who set "09:00–17:00 America/New_York" had their window compared against
-    // UTC hours, so sending only happened between 04:00–12:00 ET (or not at all).
-    const tz = campaign.schedule_timezone || 'UTC';
-    const now = new Date();
-
-    let currentDay = 'sun';
-    let hour = 0;
-    let minute = 0;
-    try {
-        const parts = new Intl.DateTimeFormat('en-US', {
-            timeZone: tz,
-            weekday: 'short',
-            hour: '2-digit',
-            minute: '2-digit',
-            hourCycle: 'h23',
-        }).formatToParts(now);
-        const weekdayMap: Record<string, string> = {
-            Sun: 'sun', Mon: 'mon', Tue: 'tue', Wed: 'wed', Thu: 'thu', Fri: 'fri', Sat: 'sat',
-        };
-        currentDay = weekdayMap[parts.find(p => p.type === 'weekday')?.value || 'Sun'] || 'sun';
-        hour = Number(parts.find(p => p.type === 'hour')?.value || '0');
-        minute = Number(parts.find(p => p.type === 'minute')?.value || '0');
-    } catch {
-        // Invalid timezone string - fall back to UTC
-        const days = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-        currentDay = days[now.getUTCDay()];
-        hour = now.getUTCHours();
-        minute = now.getUTCMinutes();
-    }
-
-    if (campaign.schedule_days.length > 0 && !campaign.schedule_days.includes(currentDay)) return false;
-    if (campaign.schedule_start_time && campaign.schedule_end_time) {
-        const nowMin = hour * 60 + minute;
-        const [sH, sM] = campaign.schedule_start_time.split(':').map(Number);
-        const [eH, eM] = campaign.schedule_end_time.split(':').map(Number);
-        if (nowMin < sH * 60 + sM || nowMin > eH * 60 + eM) return false;
-    }
-    return true;
-}
+// Moved to utils/sendWindow so the send-time gate (executionGateService.canSendNow)
+// can enforce the same window when queued batches drain - without a circular import.
+import { isWithinSendingWindow } from '../utils/sendWindow';
 
 /**
  * Evaluate a step's branching condition against a lead's CampaignLead state.
@@ -1068,6 +1025,34 @@ async function dispatch(): Promise<void> {
                     // - Tracking last so the open pixel + click wrappers see the final URL set.
                     const subject = resolveSpintax(personalizeEmail(rawSubject, lead));
                     const personalizedBody = resolveSpintax(personalizeEmail(rawBody, lead));
+
+                    // ── FAIL-CLOSED BLANK-EMAIL GUARD ─────────────────────────────
+                    // If personalization left the subject or the visible body empty
+                    // (a {{variable}} with no stored value renders as ''), NEVER send.
+                    // Shipping a blank email to a real prospect burns the sender's
+                    // reputation and the customer's brand (incident 2026-07-05: 891
+                    // blank emails went out because custom CSV variables were not
+                    // persisted). Pause the lead with an explicit reason so the
+                    // operator sees exactly what to fix instead of a silent skip.
+                    const bodyTextProbe = personalizedBody
+                        .replace(/<[^>]*>/g, ' ')
+                        .replace(/&nbsp;/gi, ' ')
+                        .replace(/\s+/g, ' ')
+                        .trim();
+                    if (!subject.trim() || !bodyTextProbe) {
+                        const missing = !subject.trim() ? 'subject' : 'body';
+                        logger.warn(`[${LOG_TAG}] BLANK-EMAIL GUARD: ${missing} rendered empty for lead ${lead.id} (step ${step.step_number}) - lead paused, not sent`, {
+                            campaignId: campaign.id,
+                            leadId: lead.id,
+                            step: step.step_number,
+                        });
+                        await prisma.campaignLead.update({
+                            where: { id: lead.id },
+                            data: { status: 'paused', next_send_at: null },
+                        }).catch(() => { /* tolerable - lead simply retries and re-pauses */ });
+                        continue;
+                    }
+
                     // Preheader runs through the same personalize+spintax so authors
                     // can reference {{first_name}} / spintax in the inbox snippet too.
                     const personalizedPreheader = rawPreheader

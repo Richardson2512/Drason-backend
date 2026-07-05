@@ -18,6 +18,7 @@ import * as healingService from './healingService';
 import * as notificationService from './notificationService';
 import * as inactivityService from './inactivityService';
 import * as recipientDomainStats from './recipientDomainStatsService';
+import { isWithinSendingWindow } from '../utils/sendWindow';
 import { logger } from './observabilityService';
 import {
     SystemMode,
@@ -668,6 +669,49 @@ export const canSendNow = async (
             deferrable: true,
             deferMinutes: 60,
         };
+    }
+
+    // 1b. Campaign-level daily cap + sending window, enforced at SEND time.
+    // The dispatcher's cap check gates on DELIVERED SendEvent counts - a lagging
+    // signal while enqueued BullMQ batches drain slowly - so committed sends can
+    // overshoot campaign.daily_limit badly (2026-07-05 incident: 891 sent against
+    // a 400 cap). And batches enqueued inside the schedule window keep draining
+    // after it closes. This gate runs immediately before SMTP for EVERY email,
+    // so it is the authoritative stop for both.
+    const campaign = await prisma.campaign.findUnique({
+        where: { id: campaignId },
+        select: {
+            daily_limit: true,
+            schedule_timezone: true,
+            schedule_start_time: true,
+            schedule_end_time: true,
+            schedule_days: true,
+        },
+    });
+    if (campaign) {
+        if (!isWithinSendingWindow(campaign)) {
+            return {
+                allowed: false,
+                reason: 'Outside campaign sending window',
+                deferrable: true,
+                deferMinutes: 30,
+            };
+        }
+        if (campaign.daily_limit && campaign.daily_limit > 0) {
+            const utcMidnight = new Date();
+            utcMidnight.setUTCHours(0, 0, 0, 0);
+            const sentToday = await prisma.sendEvent.count({
+                where: { campaign_id: campaignId, sent_at: { gte: utcMidnight } },
+            });
+            if (sentToday >= campaign.daily_limit) {
+                return {
+                    allowed: false,
+                    reason: `Campaign daily limit reached (${sentToday}/${campaign.daily_limit} sent today)`,
+                    deferrable: true,
+                    deferMinutes: 120,
+                };
+            }
+        }
     }
 
     // 2. Aggregate caps - domain + org. Closes the gap where follow-up
