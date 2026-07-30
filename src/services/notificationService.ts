@@ -30,6 +30,36 @@ export const createNotification = async (orgId: string, params: CreateNotificati
 };
 
 /**
+ * Create a notification only if an unread one with the same title does not
+ * already exist for this org inside `windowHours`.
+ *
+ * For recurring watchdog conditions the underlying state does not change
+ * between worker cycles, so an unguarded create() writes one row every cycle
+ * forever. Use this for anything a worker can re-detect on every pass.
+ */
+export const createNotificationIfAbsent = async (
+    orgId: string,
+    params: CreateNotificationParams,
+    windowHours: number = 24
+) => {
+    const since = new Date(Date.now() - windowHours * 60 * 60 * 1000);
+
+    const existing = await prisma.notification.findFirst({
+        where: {
+            organization_id: orgId,
+            title: params.title,
+            is_read: false,
+            created_at: { gte: since }
+        },
+        select: { id: true }
+    });
+
+    if (existing) return null;
+
+    return await createNotification(orgId, params);
+};
+
+/**
  * Get notifications with pagination.
  */
 export const getNotifications = async (orgId: string, page: number = 1, limit: number = 20, filter?: 'all' | 'unread') => {

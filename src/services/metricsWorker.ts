@@ -163,7 +163,7 @@ async function processOrganization(
             organization_id: organizationId,
             status: { in: [MailboxState.HEALTHY, MailboxState.WARNING, MailboxState.RECOVERING] }
         },
-        select: { id: true, status: true, domain_id: true, smtp_status: true, imap_status: true },
+        select: { id: true, status: true, domain_id: true, smtp_status: true, imap_status: true, last_activity_at: true },
         take: WORKER_CONFIG.batchSize
     });
 
@@ -201,7 +201,7 @@ async function processOrganization(
  */
 async function processMailbox(
     organizationId: string,
-    mailbox: { id: string; status: string; domain_id: string; smtp_status: boolean; imap_status: boolean },
+    mailbox: { id: string; status: string; domain_id: string; smtp_status: boolean; imap_status: boolean; last_activity_at: Date },
     systemMode: string
 ): Promise<void> {
     // CRITICAL: Skip disconnected mailboxes - their status is managed by sync, not metrics
@@ -231,8 +231,21 @@ async function processMailbox(
             targetState = MailboxState.PAUSED;
             reason = `Risk score ${risk.riskScore} exceeded critical threshold`;
         } else if (risk.riskScore < MONITORING_THRESHOLDS.RISK_SCORE_WARNING) {
-            targetState = MailboxState.HEALTHY;
-            reason = `Risk score ${risk.riskScore} dropped below warning threshold`;
+            // A cold mailbox always scores 0 risk because it is not sending, so a
+            // low risk score is NOT evidence that it is healthy. Clearing the
+            // warning here would let the inactivity watchdog re-flag it on the
+            // next cycle, flapping WARNING <-> HEALTHY forever. Re-warmup (which
+            // updates last_activity_at) is what graduates it back to HEALTHY.
+            if (inactivityService.isMailboxInactive(mailbox.last_activity_at)) {
+                logger.debug('Holding WARNING on cold mailbox despite low risk', {
+                    mailboxId: mailbox.id,
+                    riskScore: risk.riskScore,
+                    lastActivityAt: mailbox.last_activity_at,
+                });
+            } else {
+                targetState = MailboxState.HEALTHY;
+                reason = `Risk score ${risk.riskScore} dropped below warning threshold`;
+            }
         }
     } else if (currentState === MailboxState.RECOVERING) {
         // Legacy RECOVERING state - migrate to proper healing pipeline

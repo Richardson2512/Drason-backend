@@ -16,7 +16,24 @@ import { RecoveryPhase, TriggerType, MailboxState } from '../types';
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 /** Domains/mailboxes with no sends for this many days are flagged as cold */
-const INACTIVITY_THRESHOLD_DAYS = 30;
+export const INACTIVITY_THRESHOLD_DAYS = 30;
+
+/**
+ * Single source of truth for "has this mailbox gone cold?".
+ *
+ * Anything that can clear a WARNING must consult this first. A cold mailbox
+ * sends nothing, so it reports a risk score of 0 - if risk alone is allowed to
+ * graduate it back to HEALTHY, the inactivity watchdog re-flags it on the next
+ * cycle and the two rules flap against each other forever.
+ *
+ * Kept deliberately in lockstep with the `last_activity_at` filter in
+ * checkInactivity() below. Change both together.
+ */
+export function isMailboxInactive(lastActivityAt: Date): boolean {
+    const thresholdDate = new Date();
+    thresholdDate.setDate(thresholdDate.getDate() - INACTIVITY_THRESHOLD_DAYS);
+    return lastActivityAt < thresholdDate;
+}
 
 /** Provider daily sending limits (conservative - below actual limits for safety margin) */
 const PROVIDER_VOLUME_CAPS: Record<string, { dailyLimit: number; label: string }> = {
@@ -125,7 +142,9 @@ export async function flagColdEntities(
         const emailList = report.coldMailboxes.slice(0, 5).map(m => m.email).join(', ');
         const suffix = report.totalColdMailboxes > 5 ? ` and ${report.totalColdMailboxes - 5} more` : '';
 
-        await notificationService.createNotification(organizationId, {
+        // Deduped: the watchdog re-detects the same cold mailboxes on every
+        // worker cycle, so an unguarded create writes a row every few minutes.
+        await notificationService.createNotificationIfAbsent(organizationId, {
             type: 'WARNING',
             title: 'Inactive Mailboxes Detected',
             message: `${report.totalColdMailboxes} mailbox(es) have had no activity for 30+ days and need re-warmup before sending: ${emailList}${suffix}`,
@@ -136,7 +155,10 @@ export async function flagColdEntities(
         const domainList = report.coldDomains.slice(0, 5).map(d => d.domain).join(', ');
         const suffix = report.totalColdDomains > 5 ? ` and ${report.totalColdDomains - 5} more` : '';
 
-        await notificationService.createNotification(organizationId, {
+        // Deduped for the same reason, and doubly important here: cold domains
+        // are never transitioned out of 'healthy', so checkInactivity() keeps
+        // returning them on every cycle indefinitely.
+        await notificationService.createNotificationIfAbsent(organizationId, {
             type: 'WARNING',
             title: 'Inactive Domains Detected',
             message: `${report.totalColdDomains} domain(s) have had no sends for 30+ days and are considered cold: ${domainList}${suffix}. Mailboxes under these domains need re-warmup.`,
